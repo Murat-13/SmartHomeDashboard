@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:keepScreenOn="true">
+
+    <!-- Контейнер для виджетов -->
+    <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        app:layout_constraintBottom_toTopOf="@+id/bottomPanel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/widgetsGrid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="12dp"
+            android:clipChildren="false"
+            android:clipToPadding="false" />
+
+    </FrameLayout>
+
+    <!-- Контейнер для overlay виджетов -->
+    <FrameLayout
+        android:id="@+id/overlayContainer"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        app:layout_constraintBottom_toTopOf="@+id/bottomPanel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Нижняя панель с кнопками -->
+    <LinearLayout
+        android:id="@+id/bottomPanel"
+        android:layout_width="0dp"
+        android:layout_height="100dp"
+        android:background="#1A1A1A"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <Button
+            android:id="@+id/btnLight"
+            style="@style/DashboardButton"
+            android:text="@string/btn_light" />
+
+        <Button
+            android:id="@+id/btnBoiler"
+            style="@style/DashboardButton"
+            android:text="@string/btn_boiler" />
+
+        <Button
+            android:id="@+id/btnHeater"
+            style="@style/DashboardButton"
+            android:text="@string/btn_heater" />
+
+        <Button
+            android:id="@+id/btnPump"
+            style="@style/DashboardButton"
+            android:text="@string/btn_pump" />
+
+        <ImageButton
+            android:id="@+id/btnSettings"
+            style="@style/DashboardImageButton"
+            android:src="@android:drawable/ic_menu_preferences"
+            android:contentDescription="@string/settings" />
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

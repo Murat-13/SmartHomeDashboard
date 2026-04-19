@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">SmartHomeDashboard</string>
+    <string name="btn_light">💡 Свет</string>
+    <string name="btn_boiler">🔥 Бойлер</string>
+    <string name="btn_heater">❄️ Обогрев</string>
+    <string name="btn_pump">💧 Насос</string>
+    <string name="settings">Настройки</string>
+    <string name="widget_default_title">Widget</string>
+    <string name="widget_default_value">0</string>
+    <string name="pin_dialog_title">Введите PIN-код для доступа к настройкам</string>
+    <string name="pin_hint">******</string>
+    <string name="cancel">Отмена</string>
+    <string name="ok">OK</string>
+    <string name="settings_title">Настройки</string>
+    <string name="expand_timeout_label">Время показа увеличенного виджета</string>
+    <string name="default_timeout">10 сек</string>
+    <string name="timeout_range_hint">от 3 до 30 секунд</string>
+    <string name="timeout_sec">%d сек</string>
+    <string name="widget_network_title">⚡ Сеть</string>
+    <string name="current_label">Ток: %s A</string>
+    <string name="power_label">Мощность: %s W</string>
+    <string name="frequency_label">Частота: %s Hz</string>
+    <string name="energy_label">Энергия: %s kWh</string>
+    <string name="mqtt_settings_title">MQTT Настройки</string>
+    <string name="mqtt_ip_label">IP-адрес MQTT брокера</string>
+    <string name="mqtt_port_label">Порт</string>
+    <string name="mqtt_username_label">Логин</string>
+    <string name="mqtt_password_label">Пароль</string>
+    <string name="save">Сохранить</string>
+</resources>

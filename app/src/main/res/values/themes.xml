@@ -1,0 +1,32 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.SmartHomeDashboard" parent="Theme.Material3.DayNight.NoActionBar">
+    </style>
+
+    <style name="Theme.SmartHomeDashboard" parent="Base.Theme.SmartHomeDashboard" />
+
+    <!-- Стиль для кнопок нижней панели -->
+    <style name="DashboardButton" parent="Widget.AppCompat.Button">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:layout_margin">6dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:backgroundTint">#424242</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:padding">8dp</item>
+        <item name="cornerRadius">12dp</item>
+    </style>
+
+    <!-- Стиль для кнопки-шестерёнки -->
+    <style name="DashboardImageButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:layout_margin">6dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:backgroundTint">#424242</item>
+        <item name="android:tint">#FFFFFF</item>
+        <item name="android:scaleType">centerInside</item>
+        <item name="cornerRadius">12dp</item>
+    </style>
+</resources>
