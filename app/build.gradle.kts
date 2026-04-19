@@ -45,9 +45,12 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    // MQTT Client (только core, без Android Service)
+    // MQTT Client
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
 
-    // Для фоновой работы
-    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    // Gson для работы с JSON
+    implementation("com.google.code.gson:gson:2.10.1")
+
+    // WebSocket для Home Assistant
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

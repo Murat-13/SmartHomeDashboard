@@ -27,4 +27,13 @@
     <string name="mqtt_username_label">Логин</string>
     <string name="mqtt_password_label">Пароль</string>
     <string name="save">Сохранить</string>
+    <string name="ha_host_label">Адрес Home Assistant</string>
+    <string name="ha_host_hint">192.168.1.253:8123</string>
+    <string name="ha_token_label">Токен доступа</string>
+    <string name="ha_token_hint">Введите токен долгосрочного доступа</string>
+    <string name="connect">Подключиться</string>
+    <string name="local_host_label">Локальный адрес (Wi-Fi)</string>
+    <string name="local_host_hint">192.168.1.253:8123</string>
+    <string name="remote_host_label">Внешний адрес (интернет)</string>
+    <string name="remote_host_hint">ha.saidovmurat.ru</string>
 </resources>
