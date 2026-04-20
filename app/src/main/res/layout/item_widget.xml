@@ -33,7 +33,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="— V"
+            android:text="@string/placeholder_voltage"
             android:textColor="#FFFFFF"
             android:textSize="22sp"
             android:textStyle="bold" />
@@ -43,7 +43,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="— W"
+            android:text="@string/placeholder_power"
             android:textColor="#FFFFFF"
             android:textSize="18sp"
             android:textStyle="bold" />

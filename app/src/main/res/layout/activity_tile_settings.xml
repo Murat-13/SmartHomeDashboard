@@ -12,7 +12,7 @@
         android:layout_height="?attr/actionBarSize"
         android:background="#2A2A2A"
         app:navigationIcon="?attr/homeAsUpIndicator"
-        app:title="@string/mqtt_settings_title"
+        app:title="@string/tile_settings_title"
         app:titleTextColor="#FFFFFF" />
 
     <ScrollView
@@ -25,17 +25,18 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
+            <!-- Название плитки -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/mqtt_ip_label"
+                android:text="@string/tile_title_label"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
                 android:layout_marginTop="8dp"
                 android:layout_marginBottom="4dp" />
 
             <EditText
-                android:id="@+id/etMqttHost"
+                android:id="@+id/etTileTitle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="#2A2A2A"
@@ -43,72 +44,55 @@
                 android:textColorHint="#888888"
                 android:padding="12dp"
                 android:inputType="text"
-                android:hint="@string/mqtt_host_hint"
-                android:autofillHints="host" />
+                android:hint="@string/tile_title_hint"
+                android:autofillHints="name" />
 
+            <!-- Тип плитки -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/mqtt_port_label"
+                android:text="@string/tile_type_label"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="24dp"
                 android:layout_marginBottom="4dp" />
 
-            <EditText
-                android:id="@+id/etMqttPort"
+            <Spinner
+                android:id="@+id/spinnerTileType"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="48dp"
                 android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="number"
-                android:hint="@string/mqtt_port_hint"
-                android:autofillHints="port" />
+                android:entries="@array/tile_types" />
 
+            <!-- Выбор датчиков -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/mqtt_username_label"
+                android:text="@string/sensors_label"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="24dp"
                 android:layout_marginBottom="4dp" />
 
-            <EditText
-                android:id="@+id/etMqttUsername"
+            <Button
+                android:id="@+id/btnSelectSensors"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
+                android:layout_height="48dp"
+                android:text="@string/select_sensors"
                 android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="text"
-                android:hint="@string/mqtt_username_hint"
-                android:autofillHints="username" />
+                android:backgroundTint="#2196F3"
+                android:textSize="14sp" />
 
             <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/mqtt_password_label"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="4dp" />
-
-            <EditText
-                android:id="@+id/etMqttPassword"
+                android:id="@+id/tvSelectedSensors"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="textPassword"
-                android:hint="@string/mqtt_password_hint"
-                android:autofillHints="password" />
+                android:textColor="#888888"
+                android:textSize="12sp"
+                android:layout_marginTop="8dp"
+                android:text="@string/none_selected" />
 
+            <!-- Кнопки -->
             <Button
                 android:id="@+id/btnSave"
                 android:layout_width="match_parent"
@@ -118,6 +102,17 @@
                 android:textColor="#FFFFFF"
                 android:backgroundTint="#4CAF50"
                 android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnDelete"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/delete"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#F44336"
+                android:textSize="16sp"
+                android:visibility="gone" />
 
         </LinearLayout>
     </ScrollView>

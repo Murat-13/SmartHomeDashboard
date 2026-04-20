@@ -81,4 +81,21 @@
 
     </LinearLayout>
 
+    <!-- Кнопка добавления плитки (изначально скрыта) -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fabAddTile"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:src="@android:drawable/ic_input_add"
+        android:visibility="gone"
+        android:scaleX="0"
+        android:scaleY="0"
+        android:alpha="0"
+        app:backgroundTint="#4CAF50"
+        app:tint="#FFFFFF"
+        android:contentDescription="Добавить плитку"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>

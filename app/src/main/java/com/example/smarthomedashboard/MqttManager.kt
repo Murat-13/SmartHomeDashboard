@@ -42,9 +42,11 @@ class MqttManager(
 
         try {
             mqttClient = MqttClient(brokerUrl, clientId, MemoryPersistence())
+
+            val pwd = password  // ← Сначала получаем значение
             val options = MqttConnectOptions().apply {
                 userName = username
-                password = this@MqttManager.password.toCharArray()
+                password = pwd.toCharArray()  // ← Используем полученное значение
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 20
@@ -80,7 +82,6 @@ class MqttManager(
             Log.e("MqttManager", "Connection error: ${e.message}")
         }
     }
-
     private fun subscribeToTopics() {
         subscribe("esp32/pzem/voltage")
         subscribe("esp32/pzem/power")

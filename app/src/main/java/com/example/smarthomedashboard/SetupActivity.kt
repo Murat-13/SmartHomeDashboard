@@ -41,29 +41,29 @@ class SetupActivity : AppCompatActivity() {
             val token = etHaToken.text.toString().trim()
 
             if (localHost.isEmpty() || token.isEmpty()) {
-                tvStatus.text = "Заполните локальный адрес и токен"
+                tvStatus.setText(R.string.fill_fields)
                 return@setOnClickListener
             }
 
-            tvStatus.text = "Проверяю локальную сеть..."
+            tvStatus.setText(R.string.checking_local)
             btnConnect.isEnabled = false
 
             thread {
                 val host = if (isHostReachable(localHost)) {
-                    runOnUiThread { tvStatus.text = "✅ Локальная сеть доступна" }
+                    runOnUiThread { tvStatus.setText(R.string.local_available) }
                     localHost
                 } else if (remoteHost.isNotEmpty()) {
-                    runOnUiThread { tvStatus.text = "⚠️ Локальная сеть недоступна, пробую интернет..." }
+                    runOnUiThread { tvStatus.setText(R.string.trying_remote) }
                     remoteHost
                 } else {
                     runOnUiThread {
-                        tvStatus.text = "❌ Локальная сеть недоступна, внешний адрес не указан"
+                        tvStatus.setText(R.string.local_unavailable)
                         btnConnect.isEnabled = true
                     }
                     return@thread
                 }
 
-                runOnUiThread { tvStatus.text = "Подключение к $host..." }
+                runOnUiThread { tvStatus.text = getString(R.string.connecting_to, host) }
                 testConnection(host, token, localHost, remoteHost)
             }
         }
@@ -77,7 +77,7 @@ class SetupActivity : AppCompatActivity() {
             socket.connect(InetSocketAddress(cleanHost, port), 3000)
             socket.close()
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -89,7 +89,7 @@ class SetupActivity : AppCompatActivity() {
             onStateChanged = { _, _ -> },
             onConnected = {
                 runOnUiThread {
-                    tvStatus.text = "✅ Подключено!"
+                    tvStatus.setText(R.string.connected)
                     saveSettings(localHost, remoteHost, token)
                     startActivity(Intent(this, MainActivity::class.java))
                     finish()
@@ -97,7 +97,7 @@ class SetupActivity : AppCompatActivity() {
             },
             onDisconnected = {
                 runOnUiThread {
-                    tvStatus.text = "❌ Не удалось подключиться"
+                    tvStatus.setText(R.string.connection_failed)
                     btnConnect.isEnabled = true
                 }
             }

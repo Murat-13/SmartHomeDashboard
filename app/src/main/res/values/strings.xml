@@ -36,4 +36,38 @@
     <string name="local_host_hint">192.168.1.253:8123</string>
     <string name="remote_host_label">Внешний адрес (интернет)</string>
     <string name="remote_host_hint">ha.saidovmurat.ru</string>
+    <string name="fill_fields">Заполните локальный адрес и токен</string>
+    <string name="checking_local">Проверяю локальную сеть…</string>
+    <string name="local_available">✅ Локальная сеть доступна</string>
+    <string name="trying_remote">⚠️ Локальная сеть недоступна, пробую интернет…</string>
+    <string name="local_unavailable">❌ Локальная сеть недоступна, внешний адрес не указан</string>
+    <string name="connecting_to">Подключение к %s…</string>
+    <string name="connected">✅ Подключено!</string>
+    <string name="connection_failed">❌ Не удалось подключиться</string>
+    <string name="voltage_format">%s V</string>
+    <string name="power_format">%s W</string>
+    <string name="temperature_format">%s°C</string>
+    <string name="placeholder_voltage">— V</string>
+    <string name="placeholder_power">— W</string>
+    <string name="mqtt_host_hint">192.168.1.253</string>
+    <string name="mqtt_port_hint">1883</string>
+    <string name="mqtt_username_hint">murat</string>
+    <string name="mqtt_password_hint">••••••••</string>
+
+    <!-- Типы плиток -->
+    <string-array name="tile_types">
+        <item>Сенсор (отображение данных)</item>
+        <item>Кнопка (управление)</item>
+        <item>Группа (контейнер)</item>
+    </string-array>
+
+    <!-- Настройки плитки -->
+    <string name="tile_settings_title">Настройка плитки</string>
+    <string name="tile_title_label">Название</string>
+    <string name="tile_title_hint">⚡ Сеть</string>
+    <string name="tile_type_label">Тип плитки</string>
+    <string name="sensors_label">Датчики</string>
+    <string name="select_sensors">Выбрать датчики</string>
+    <string name="none_selected">Не выбрано</string>
+    <string name="delete">Удалить</string>
 </resources>

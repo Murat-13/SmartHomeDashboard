@@ -2,6 +2,7 @@ package com.example.smarthomedashboard.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 
@@ -27,7 +28,7 @@ class TileManager(context: Context) {
 
     fun saveTiles(tiles: List<TileEntity>) {
         val json = gson.toJson(tiles)
-        prefs.edit().putString("tiles", json).apply()
+        prefs.edit { putString("tiles", json) }
     }
 
     fun loadTiles(): List<TileEntity> {

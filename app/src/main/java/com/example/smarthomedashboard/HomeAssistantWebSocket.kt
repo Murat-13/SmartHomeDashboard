@@ -2,14 +2,13 @@ package com.example.smarthomedashboard
 
 import android.util.Log
 import okhttp3.*
-import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class HomeAssistantWebSocket(
     private val host: String,
     private val token: String,
-    private val onStateChanged: (String, String) -> Unit,
+    private val onStateChanged: (entityId: String, state: String) -> Unit,
     private val onConnected: () -> Unit,
     private val onDisconnected: () -> Unit
 ) {
@@ -22,7 +21,15 @@ class HomeAssistantWebSocket(
     private var messageId = 1
 
     fun connect() {
-        val url = "ws://$host/api/websocket"
+        val cleanHost = host
+            .removePrefix("http://")
+            .removePrefix("https://")
+
+        val wsScheme = if (host.startsWith("https")) "wss" else "ws"
+        val url = "$wsScheme://$cleanHost/api/websocket"
+
+        Log.d("HAWebSocket", "Connecting to: $url")
+
         val request = Request.Builder()
             .url(url)
             .build()
@@ -73,23 +80,25 @@ class HomeAssistantWebSocket(
                 subscribeToEvents()
             }
             "auth_invalid" -> {
-                Log.e("HAWebSocket", "Authentication failed: ${json.optString("message")}")
+                Log.e("HAWebSocket", "Authentication failed")
                 disconnect()
             }
             "event" -> {
                 val event = json.optJSONObject("event")
-                val eventType = event?.optString("event_type")
-                if (eventType == "state_changed") {
-                    val data = event.optJSONObject("data")
-                    val entityId = data?.optString("entity_id")
-                    val newState = data?.optJSONObject("new_state")?.optString("state")
-                    if (entityId != null && newState != null) {
-                        onStateChanged(entityId, newState)
+                if (event != null) {
+                    val eventType = event.optString("event_type")
+                    if (eventType == "state_changed") {
+                        val data = event.optJSONObject("data")
+                        if (data != null) {
+                            val entityId = data.optString("entity_id")
+                            val newStateObj = data.optJSONObject("new_state")
+                            val newState = newStateObj?.optString("state")
+                            if (entityId.isNotEmpty() && newState != null) {
+                                onStateChanged(entityId, newState)
+                            }
+                        }
                     }
                 }
-            }
-            "result" -> {
-                // Ответ на наши запросы, пока не используем
             }
         }
     }
@@ -101,17 +110,6 @@ class HomeAssistantWebSocket(
             put("event_type", "state_changed")
         }
         sendMessage(subscribeMessage)
-    }
-
-    fun getStates(callback: (JSONObject) -> Unit) {
-        val requestId = messageId++
-        val getStatesMessage = JSONObject().apply {
-            put("id", requestId)
-            put("type", "get_states")
-        }
-
-        // Временно сохраняем callback (в реальном приложении лучше использовать map)
-        sendMessage(getStatesMessage)
     }
 
     private fun sendMessage(json: JSONObject) {
