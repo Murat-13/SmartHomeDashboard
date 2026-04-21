@@ -18,7 +18,13 @@ data class TileEntity(
     val appearance: String = "{}",
     val conditions: String = "{}",
     val config: String = "{}",
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    // Новые поля для расширенных настроек
+    val collapsedSensorIds: String = "[]",
+    val colorRules: String = "[]",
+    val fontSize: Int = 16,
+    val icon: String = "",
+    val sourceType: String = "auto"
 )
 
 class TileManager(context: Context) {
@@ -48,6 +54,15 @@ class TileManager(context: Context) {
         val index = tiles.indexOfFirst { it.id == tile.id }
         if (index >= 0) {
             tiles[index] = tile
+            saveTiles(tiles)
+        }
+    }
+
+    fun updateTilePosition(tileId: String, newX: Int, newY: Int) {
+        val tiles = loadTiles().toMutableList()
+        val index = tiles.indexOfFirst { it.id == tileId }
+        if (index >= 0) {
+            tiles[index] = tiles[index].copy(x = newX, y = newY)
             saveTiles(tiles)
         }
     }

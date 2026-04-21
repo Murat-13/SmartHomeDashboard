@@ -17,6 +17,7 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var etRemoteHost: EditText
     private lateinit var etHaToken: EditText
     private lateinit var btnConnect: Button
+    private lateinit var btnSkip: Button
     private lateinit var tvStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,6 +28,7 @@ class SetupActivity : AppCompatActivity() {
         etRemoteHost = findViewById(R.id.etRemoteHost)
         etHaToken = findViewById(R.id.etHaToken)
         btnConnect = findViewById(R.id.btnConnect)
+        btnSkip = findViewById(R.id.btnSkip)
         tvStatus = findViewById(R.id.tvStatus)
 
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
@@ -36,36 +38,47 @@ class SetupActivity : AppCompatActivity() {
         etHaToken.setText(prefs.getString("ha_token", ""))
 
         btnConnect.setOnClickListener {
-            val localHost = etLocalHost.text.toString().trim()
-            val remoteHost = etRemoteHost.text.toString().trim()
-            val token = etHaToken.text.toString().trim()
+            tryConnect()
+        }
 
-            if (localHost.isEmpty() || token.isEmpty()) {
-                tvStatus.setText(R.string.fill_fields)
-                return@setOnClickListener
-            }
+        btnSkip.setOnClickListener {
+            startActivity(Intent(this, MainActivity::class.java))
+            finish()
+        }
+    }
 
-            tvStatus.setText(R.string.checking_local)
-            btnConnect.isEnabled = false
+    private fun tryConnect() {
+        val localHost = etLocalHost.text.toString().trim()
+        val remoteHost = etRemoteHost.text.toString().trim()
+        val token = etHaToken.text.toString().trim()
 
-            thread {
-                val host = if (isHostReachable(localHost)) {
-                    runOnUiThread { tvStatus.setText(R.string.local_available) }
-                    localHost
-                } else if (remoteHost.isNotEmpty()) {
-                    runOnUiThread { tvStatus.setText(R.string.trying_remote) }
-                    remoteHost
-                } else {
-                    runOnUiThread {
-                        tvStatus.setText(R.string.local_unavailable)
-                        btnConnect.isEnabled = true
-                    }
-                    return@thread
+        if (localHost.isEmpty() || token.isEmpty()) {
+            tvStatus.setText(R.string.fill_fields)
+            return
+        }
+
+        tvStatus.setText(R.string.checking_local)
+        btnConnect.isEnabled = false
+        btnSkip.isEnabled = false
+
+        thread {
+            val host = if (isHostReachable(localHost)) {
+                runOnUiThread { tvStatus.setText(R.string.local_available) }
+                localHost
+            } else if (remoteHost.isNotEmpty()) {
+                runOnUiThread { tvStatus.setText(R.string.trying_remote) }
+                remoteHost
+            } else {
+                runOnUiThread {
+                    tvStatus.setText(R.string.local_unavailable)
+                    btnConnect.isEnabled = true
+                    btnSkip.isEnabled = true
                 }
-
-                runOnUiThread { tvStatus.text = getString(R.string.connecting_to, host) }
-                testConnection(host, token, localHost, remoteHost)
+                return@thread
             }
+
+            runOnUiThread { tvStatus.text = getString(R.string.connecting_to, host) }
+            testConnection(host, token, localHost, remoteHost)
         }
     }
 
@@ -86,7 +99,7 @@ class SetupActivity : AppCompatActivity() {
         val webSocket = HomeAssistantWebSocket(
             host = host,
             token = token,
-            onStateChanged = { _, _ -> },
+            onStateChanged = { _, _, _ -> },
             onConnected = {
                 runOnUiThread {
                     tvStatus.setText(R.string.connected)
@@ -99,8 +112,10 @@ class SetupActivity : AppCompatActivity() {
                 runOnUiThread {
                     tvStatus.setText(R.string.connection_failed)
                     btnConnect.isEnabled = true
+                    btnSkip.isEnabled = true
                 }
-            }
+            },
+            onEntitiesList = null
         )
         webSocket.connect()
     }

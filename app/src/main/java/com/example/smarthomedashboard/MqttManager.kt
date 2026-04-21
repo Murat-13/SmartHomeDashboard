@@ -38,15 +38,16 @@ class MqttManager(
     fun connect() {
         try {
             mqttClient?.disconnect()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
 
         try {
             mqttClient = MqttClient(brokerUrl, clientId, MemoryPersistence())
 
-            val pwd = password  // ← Сначала получаем значение
+            val pwd = password
             val options = MqttConnectOptions().apply {
                 userName = username
-                password = pwd.toCharArray()  // ← Используем полученное значение
+                password = pwd.toCharArray()
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 20
@@ -82,6 +83,7 @@ class MqttManager(
             Log.e("MqttManager", "Connection error: ${e.message}")
         }
     }
+
     private fun subscribeToTopics() {
         subscribe("esp32/pzem/voltage")
         subscribe("esp32/pzem/power")
@@ -101,13 +103,33 @@ class MqttManager(
         }
     }
 
-    fun setOnVoltageUpdate(callback: (String) -> Unit) { onVoltageUpdate = callback }
-    fun setOnPowerUpdate(callback: (String) -> Unit) { onPowerUpdate = callback }
-    fun setOnCurrentUpdate(callback: (String) -> Unit) { onCurrentUpdate = callback }
-    fun setOnEnergyUpdate(callback: (String) -> Unit) { onEnergyUpdate = callback }
-    fun setOnFrequencyUpdate(callback: (String) -> Unit) { onFrequencyUpdate = callback }
-    fun setOnPowerFactorUpdate(callback: (String) -> Unit) { onPowerFactorUpdate = callback }
-    fun setOnTemperatureUpdate(callback: (String) -> Unit) { onTemperatureUpdate = callback }
+    fun setOnVoltageUpdate(callback: (String) -> Unit) {
+        onVoltageUpdate = callback
+    }
+
+    fun setOnPowerUpdate(callback: (String) -> Unit) {
+        onPowerUpdate = callback
+    }
+
+    fun setOnCurrentUpdate(callback: (String) -> Unit) {
+        onCurrentUpdate = callback
+    }
+
+    fun setOnEnergyUpdate(callback: (String) -> Unit) {
+        onEnergyUpdate = callback
+    }
+
+    fun setOnFrequencyUpdate(callback: (String) -> Unit) {
+        onFrequencyUpdate = callback
+    }
+
+    fun setOnPowerFactorUpdate(callback: (String) -> Unit) {
+        onPowerFactorUpdate = callback
+    }
+
+    fun setOnTemperatureUpdate(callback: (String) -> Unit) {
+        onTemperatureUpdate = callback
+    }
 
     fun disconnect() {
         try {

@@ -92,12 +92,23 @@
                 android:layout_marginTop="8dp"
                 android:text="@string/none_selected" />
 
+            <!-- Расширенные настройки -->
+            <Button
+                android:id="@+id/btnAdvanced"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="24dp"
+                android:text="Расширенные настройки"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#FF9800"
+                android:textSize="16sp" />
+
             <!-- Кнопки -->
             <Button
                 android:id="@+id/btnSave"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
-                android:layout_marginTop="32dp"
+                android:layout_marginTop="8dp"
                 android:text="@string/save"
                 android:textColor="#FFFFFF"
                 android:backgroundTint="#4CAF50"

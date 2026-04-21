@@ -41,6 +41,10 @@
             android:name=".TileSettingsActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".AdvancedWidgetSettingsActivity"
+            android:exported="false" />
+
     </application>
 
 </manifest>

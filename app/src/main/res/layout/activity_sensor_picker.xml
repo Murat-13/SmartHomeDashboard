@@ -12,8 +12,34 @@
         android:layout_height="?attr/actionBarSize"
         android:background="#2A2A2A"
         app:navigationIcon="?attr/homeAsUpIndicator"
-        app:title="Выберите датчики"
+        app:title="Выберите устройства"
         app:titleTextColor="#FFFFFF" />
+
+    <!-- Поле поиска -->
+    <EditText
+        android:id="@+id/etSearch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="12dp"
+        android:background="#2A2A2A"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#888888"
+        android:padding="12dp"
+        android:hint="Поиск по названию или ID"
+        android:inputType="text"
+        android:drawableStart="@android:drawable/ic_menu_search"
+        android:drawablePadding="8dp" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp"
+        android:text="Загрузка устройств…"
+        android:textColor="#888888"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:visibility="gone" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvSensors"

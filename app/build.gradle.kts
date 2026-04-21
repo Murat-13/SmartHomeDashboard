@@ -1,23 +1,18 @@
 plugins {
-    alias(libs.plugins.android.application)
+    id("com.android.application")
+    // id("org.jetbrains.kotlin.android") ← УДАЛИ ЭТУ СТРОКУ
 }
 
 android {
     namespace = "com.example.smarthomedashboard"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.smarthomedashboard"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -36,23 +31,19 @@ android {
 }
 
 dependencies {
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.material)
-    implementation(libs.androidx.activity)
-    implementation(libs.androidx.constraintlayout)
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("androidx.cardview:cardview:1.0.0")
 
-    // MQTT Client
+    // MQTT
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
 
-    // Gson для работы с JSON
-    implementation("com.google.code.gson:gson:2.10.1")
-
-    // WebSocket для Home Assistant
+    // WebSocket
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    implementation("com.google.android.material:material:1.11.0")
+    // Gson
+    implementation("com.google.code.gson:gson:2.10.1")
 }

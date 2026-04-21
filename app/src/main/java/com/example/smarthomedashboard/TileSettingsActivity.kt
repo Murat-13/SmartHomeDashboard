@@ -3,6 +3,7 @@ package com.example.smarthomedashboard
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -15,6 +16,8 @@ import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 class TileSettingsActivity : AppCompatActivity() {
@@ -25,10 +28,10 @@ class TileSettingsActivity : AppCompatActivity() {
     private lateinit var tvSelectedSensors: TextView
     private lateinit var btnSave: Button
     private lateinit var btnDelete: Button
+    private lateinit var btnAdvanced: Button
 
     private var tileId: String? = null
     private val selectedSensors = mutableListOf<String>()
-    private var container = "grid"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,8 +44,7 @@ class TileSettingsActivity : AppCompatActivity() {
         tvSelectedSensors = findViewById(R.id.tvSelectedSensors)
         btnSave = findViewById(R.id.btnSave)
         btnDelete = findViewById(R.id.btnDelete)
-
-        container = intent.getStringExtra("container") ?: "grid"
+        btnAdvanced = findViewById(R.id.btnAdvanced)
 
         val adapter = ArrayAdapter.createFromResource(
             this,
@@ -62,6 +64,12 @@ class TileSettingsActivity : AppCompatActivity() {
             val intent = Intent(this, SensorPickerActivity::class.java)
             intent.putStringArrayListExtra("selected_sensors", ArrayList(selectedSensors))
             startActivityForResult(intent, REQUEST_SELECT_SENSORS)
+        }
+
+        btnAdvanced.setOnClickListener {
+            val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
+            intent.putExtra("tile_id", tileId)
+            startActivity(intent)
         }
 
         btnSave.setOnClickListener {
@@ -91,6 +99,20 @@ class TileSettingsActivity : AppCompatActivity() {
         }
         spinnerType.setSelection(typeIndex)
 
+        try {
+            val configJson = JSONObject(tile.config)
+            val arr = configJson.optJSONArray("entity_ids")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    selectedSensors.add(arr.getString(i))
+                }
+            } else {
+                val single = configJson.optString("entity_id", "")
+                if (single.isNotEmpty()) selectedSensors.add(single)
+            }
+        } catch (_: Exception) {
+        }
+
         updateSelectedSensorsText()
     }
 
@@ -108,9 +130,21 @@ class TileSettingsActivity : AppCompatActivity() {
             else -> "sensor"
         }
 
+        val container = if (type == "button" || type == "group") "bottom_panel" else "grid"
+
         val tiles = tileManager.getTilesByContainer(container)
         val position = tiles.size
-        val spanCount = 4
+        val spanCount = if (container == "grid") 4 else 6
+
+        val configJson = JSONObject()
+        if (selectedSensors.size == 1) {
+            configJson.put("entity_id", selectedSensors.first())
+        } else if (selectedSensors.size > 1) {
+            configJson.put("entity_ids", JSONArray(selectedSensors))
+        }
+        val config = configJson.toString()
+
+        Log.d("TileSettings", "Saving tile: title=$title, type=$type, config=$config")
 
         val tile = TileEntity(
             id = tileId ?: UUID.randomUUID().toString(),
@@ -121,7 +155,7 @@ class TileSettingsActivity : AppCompatActivity() {
             y = position / spanCount,
             width = 1,
             height = 1,
-            config = "{}"
+            config = config
         )
 
         lifecycleScope.launch {
@@ -148,10 +182,10 @@ class TileSettingsActivity : AppCompatActivity() {
     }
 
     private fun updateSelectedSensorsText() {
-        if (selectedSensors.isEmpty()) {
-            tvSelectedSensors.text = getString(R.string.none_selected)
+        tvSelectedSensors.text = if (selectedSensors.isEmpty()) {
+            getString(R.string.none_selected)
         } else {
-            tvSelectedSensors.text = "Выбрано: ${selectedSensors.size}"
+            "Выбрано: ${selectedSensors.size}"
         }
     }
 

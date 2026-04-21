@@ -70,4 +70,19 @@
     <string name="select_sensors">Выбрать датчики</string>
     <string name="none_selected">Не выбрано</string>
     <string name="delete">Удалить</string>
+
+    <!-- Новые строки -->
+    <string name="loading_devices">Загрузка устройств…</string>
+    <string name="server_unavailable">Сервер недоступен</string>
+    <string name="token_not_set">Токен HA не настроен</string>
+    <string name="skip">Пропустить</string>
+    <string name="advanced_settings">Расширенные настройки</string>
+    <string name="theme_label">Тема оформления</string>
+
+    <!-- Опции темы -->
+    <string-array name="theme_options">
+        <item>Как в системе</item>
+        <item>Светлая</item>
+        <item>Тёмная</item>
+    </string-array>
 </resources>

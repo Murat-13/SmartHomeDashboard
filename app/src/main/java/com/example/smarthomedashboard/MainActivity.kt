@@ -12,9 +12,12 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
+import androidx.core.view.isNotEmpty
+import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -28,14 +31,11 @@ import java.util.UUID
 class MainActivity : AppCompatActivity() {
 
     private lateinit var widgetsGrid: RecyclerView
+    private lateinit var bottomPanel: LinearLayout
     private lateinit var overlayContainer: FrameLayout
-    private lateinit var btnLight: Button
-    private lateinit var btnBoiler: Button
-    private lateinit var btnHeater: Button
-    private lateinit var btnPump: Button
     private lateinit var btnSettings: ImageButton
     private lateinit var fabAddTile: FloatingActionButton
-    private lateinit var adapter: WidgetAdapter
+    private lateinit var gridAdapter: WidgetAdapter
 
     private lateinit var tileManager: TileManager
     private lateinit var mqttManager: MqttManager
@@ -45,11 +45,11 @@ class MainActivity : AppCompatActivity() {
     private var pzemCurrent = "—"
     private var pzemPower = "—"
     private var pzemEnergy = "—"
+    @Suppress("SpellCheckingInspection")
     private var pzemFrequency = "—"
     private var gridOnline = true
     private var techRoomTemp = "—"
 
-    private val entityStates = mutableMapOf<String, String>()
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
 
@@ -65,55 +65,117 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         widgetsGrid = findViewById(R.id.widgetsGrid)
+        bottomPanel = findViewById(R.id.bottomPanel)
         overlayContainer = findViewById(R.id.overlayContainer)
-        btnLight = findViewById(R.id.btnLight)
-        btnBoiler = findViewById(R.id.btnBoiler)
-        btnHeater = findViewById(R.id.btnHeater)
-        btnPump = findViewById(R.id.btnPump)
         btnSettings = findViewById(R.id.btnSettings)
         fabAddTile = findViewById(R.id.fabAddTile)
 
         tileManager = TileManager(this)
 
-        setupWidgetsGrid()
-        setupButtons()
+        setupGrid()
+        setupBottomPanel()
         setupMqtt()
         setupWebSocket()
-        setupLongPressForAddTile()
-    }
+        setupLongPressOnEmptySpace()
 
-    private fun setupWidgetsGrid() {
-        widgetsGrid.layoutManager = GridLayoutManager(this, 4)
-
-        val gridTiles = tileManager.getTilesByContainer("grid")
-
-        if (gridTiles.isEmpty()) {
-            createDefaultTiles()
+        btnSettings.setOnClickListener {
+            openWithPinCheck { startActivity(Intent(this, SettingsActivity::class.java)) }
         }
-
-        refreshTiles()
     }
 
-    private fun refreshTiles() {
-        val tiles = tileManager.getTilesByContainer("grid")
-        val widgetItems = tiles.map { it.toWidgetItem() }.toMutableList()
-
-        if (!::adapter.isInitialized) {
-            adapter = WidgetAdapter(
-                this,
-                widgetItems,
-                overlayContainer,
-                widgetsGrid
-            ) {
-                WidgetData(pzemVoltage, pzemCurrent, pzemPower, pzemEnergy, pzemFrequency, gridOnline)
-            }
-            widgetsGrid.adapter = adapter
+    private fun openWithPinCheck(action: () -> Unit) {
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        val lastAuthTime = prefs.getLong("last_auth_time", 0)
+        if (System.currentTimeMillis() - lastAuthTime > 60 * 60 * 1000) {
+            PinDialog(this) {
+                prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
+                action()
+            }.show()
         } else {
-            adapter.updateTiles(widgetItems)
+            action()
         }
     }
 
-    private fun createDefaultTiles() {
+    private fun setupGrid() {
+        widgetsGrid.layoutManager = GridLayoutManager(this, 4)
+        if (tileManager.getTilesByContainer("grid").isEmpty()) {
+            createDefaultGridTiles()
+        }
+        refreshGrid()
+    }
+
+    private fun refreshGrid() {
+        val items = tileManager.getTilesByContainer("grid").map { it.toWidgetItem() }.toMutableList()
+        gridAdapter = WidgetAdapter(
+            context = this,
+            widgets = items,
+            overlayContainer = overlayContainer,
+            recyclerView = widgetsGrid,
+            onDataUpdate = {
+                WidgetData(pzemVoltage, pzemCurrent, pzemPower, pzemEnergy, pzemFrequency, gridOnline)
+            },
+            onTileMoved = { from, to ->
+                // Сохраняем новый порядок плиток
+                val tiles = tileManager.getTilesByContainer("grid").toMutableList()
+                val moved = tiles.removeAt(from)
+                tiles.add(to, moved)
+                tiles.forEachIndexed { index, tile ->
+                    val spanCount = 4
+                    val newTile = tile.copy(x = index % spanCount, y = index / spanCount)
+                    tileManager.updateTile(newTile)
+                }
+            }
+        )
+        widgetsGrid.adapter = gridAdapter
+    }
+
+    private fun setupBottomPanel() {
+        refreshBottomPanel()
+    }
+
+    private fun refreshBottomPanel() {
+        bottomPanel.removeAllViews()
+        val tiles = tileManager.getTilesByContainer("bottom_panel")
+        if (tiles.isEmpty()) {
+            createDefaultButtonTiles()
+            refreshBottomPanel()
+            return
+        }
+        tiles.forEach { tile ->
+            val button = Button(this).apply {
+                text = tile.title
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    setMargins(6, 6, 6, 6)
+                }
+                setBackgroundColor(Color.parseColor("#424242"))
+                setTextColor(Color.WHITE)
+
+                setOnClickListener {
+                    val entityId = JSONObject(tile.config).optString("entity_id", "")
+                    if (entityId.isNotEmpty()) {
+                        webSocket?.callService("switch", "toggle", entityId)
+                        Toast.makeText(this@MainActivity, "Переключаю: $entityId", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "Не указан entity_id", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                setOnLongClickListener {
+                    openWithPinCheck {
+                        startActivity(Intent(this@MainActivity, TileSettingsActivity::class.java).putExtra("tile_id", tile.id))
+                    }
+                    true
+                }
+            }
+            bottomPanel.addView(button)
+        }
+        if (bottomPanel.isNotEmpty() && bottomPanel.getChildAt(bottomPanel.childCount - 1) != btnSettings) {
+            bottomPanel.removeView(btnSettings)
+        }
+        bottomPanel.addView(btnSettings)
+    }
+
+    private fun createDefaultGridTiles() {
         lifecycleScope.launch {
             tileManager.addTile(
                 TileEntity(
@@ -121,9 +183,10 @@ class MainActivity : AppCompatActivity() {
                     type = "sensor",
                     container = "grid",
                     title = "⚡ Сеть",
-                    x = 0, y = 0, width = 1, height = 1,
-                    appearance = "{}",
-                    conditions = "{}",
+                    x = 0,
+                    y = 0,
+                    width = 1,
+                    height = 1,
                     config = "{}"
                 )
             )
@@ -133,279 +196,236 @@ class MainActivity : AppCompatActivity() {
                     type = "sensor",
                     container = "grid",
                     title = "🌡️ Температура",
-                    x = 1, y = 0, width = 1, height = 1,
-                    appearance = "{}",
-                    conditions = "{}",
+                    x = 1,
+                    y = 0,
+                    width = 1,
+                    height = 1,
                     config = "{}"
                 )
             )
         }
     }
 
-    private fun setupLongPressForAddTile() {
-        val container = findViewById<FrameLayout>(R.id.overlayContainer)
+    private fun createDefaultButtonTiles() {
+        lifecycleScope.launch {
+            tileManager.addTile(
+                TileEntity(
+                    id = UUID.randomUUID().toString(),
+                    type = "button",
+                    container = "bottom_panel",
+                    title = "💡 Свет",
+                    x = 0,
+                    y = 0,
+                    width = 1,
+                    height = 1,
+                    config = """{"entity_id":"switch.sonoff_basic_1gs"}"""
+                )
+            )
+            tileManager.addTile(
+                TileEntity(
+                    id = UUID.randomUUID().toString(),
+                    type = "button",
+                    container = "bottom_panel",
+                    title = "🔥 Бойлер",
+                    x = 1,
+                    y = 0,
+                    width = 1,
+                    height = 1,
+                    config = """{"entity_id":"switch.boiler"}"""
+                )
+            )
+        }
+    }
 
-        container.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
+    private fun setupLongPressOnEmptySpace() {
+        widgetsGrid.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                val child = widgetsGrid.findChildViewUnder(event.x, event.y)
+                if (child == null) {
                     longPressRunnable = Runnable {
-                        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-                        val lastAuthTime = prefs.getLong("last_auth_time", 0)
-                        val currentTime = System.currentTimeMillis()
-
-                        if (currentTime - lastAuthTime > 60 * 60 * 1000) {
-                            PinDialog(this@MainActivity) {
-                                prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
-                                showAddTileButton()
-                            }.show()
-                        } else {
-                            showAddTileButton()
-                        }
+                        openWithPinCheck { showAddTileButton() }
                     }
                     handler.postDelayed(longPressRunnable!!, 3000)
-                    true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    longPressRunnable?.let { handler.removeCallbacks(it) }
-                    if (fabAddTile.visibility != View.VISIBLE) {
-                        adapter.collapseExpandedWidget()
-                    }
-                    true
-                }
-                else -> false
+            } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                longPressRunnable?.let { handler.removeCallbacks(it) }
+                widgetsGrid.performClick()
             }
-        }
-
-        container.setOnClickListener {
-            if (fabAddTile.visibility == View.VISIBLE) {
-                hideAddTileButton()
-            }
+            false
         }
 
         fabAddTile.setOnClickListener {
             hideAddTileButton()
-            val intent = Intent(this, TileSettingsActivity::class.java)
-            intent.putExtra("container", "grid")
-            startActivity(intent)
+            startActivity(Intent(this, TileSettingsActivity::class.java).putExtra("container", "grid"))
         }
     }
 
     private fun showAddTileButton() {
-        val tiles = tileManager.getTilesByContainer("grid")
-        val position = tiles.size
-
-        val spanCount = 4
-        val row = position / spanCount
-        val col = position % spanCount
-
         widgetsGrid.post {
+            val tiles = tileManager.getTilesByContainer("grid")
+            val position = tiles.size
+            val spanCount = 4
+            val row = position / spanCount
+            val col = position % spanCount
+
             val firstView = widgetsGrid.getChildAt(0)
             if (firstView != null) {
                 val tileWidth = firstView.width
                 val tileHeight = firstView.height
+                val x = col * tileWidth + tileWidth / 2f - fabAddTile.width / 2
+                val y = row * tileHeight + tileHeight / 2f - fabAddTile.height / 2
 
-                val x = col * tileWidth + tileWidth / 2f
-                val y = row * tileHeight + tileHeight / 2f
-
-                fabAddTile.x = x - fabAddTile.width / 2
-                fabAddTile.y = y - fabAddTile.height / 2
+                fabAddTile.x = x
+                fabAddTile.y = y
             }
 
-            fabAddTile.visibility = View.VISIBLE
-            fabAddTile.animate()
-                .scaleX(1f)
-                .scaleY(1f)
-                .alpha(1f)
-                .setDuration(200)
-                .start()
-
-            handler.postDelayed({
-                hideAddTileButton()
-            }, 10000)
+            fabAddTile.isVisible = true
+            fabAddTile.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200).start()
+            handler.postDelayed({ hideAddTileButton() }, 10000)
         }
     }
 
     private fun hideAddTileButton() {
-        fabAddTile.animate()
-            .scaleX(0f)
-            .scaleY(0f)
-            .alpha(0f)
-            .setDuration(200)
-            .withEndAction {
-                fabAddTile.visibility = View.GONE
-            }
-            .start()
+        fabAddTile.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(200).withEndAction {
+            fabAddTile.isVisible = false
+        }.start()
     }
 
     private fun updatePzemWidget() {
-        adapter.updatePzemData(
-            pzemVoltage, pzemCurrent, pzemPower,
-            pzemEnergy, pzemFrequency, gridOnline
-        )
+        gridAdapter.updatePzemData(pzemVoltage, pzemCurrent, pzemPower, pzemEnergy, pzemFrequency, gridOnline)
     }
 
     private fun updateTemperatureWidget() {
-        adapter.updateTemperatureData(techRoomTemp)
+        gridAdapter.updateTemperatureData(techRoomTemp)
     }
 
     private fun updateGridStatus() {
-        val voltage = pzemVoltage.toFloatOrNull() ?: 0f
-        gridOnline = voltage > 10f
+        gridOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
     }
 
     private fun updateTilesForEntity(entityId: String, state: String) {
         when (entityId) {
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
-                pzemVoltage = state.toFloatOrNull()?.let { "%.0f".format(it) } ?: "—"
-                updateGridStatus()
-                updatePzemWidget()
+                pzemVoltage = formatFloat(state, 0); updateGridStatus(); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_power" -> {
-                pzemPower = state.toFloatOrNull()?.let { "%.0f".format(it) } ?: "—"
-                updatePzemWidget()
+                pzemPower = formatFloat(state, 0); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_current" -> {
-                pzemCurrent = state.toFloatOrNull()?.let { "%.2f".format(it) } ?: "—"
-                updatePzemWidget()
+                pzemCurrent = formatFloat(state, 2); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_energy" -> {
-                pzemEnergy = state.toFloatOrNull()?.let { "%.2f".format(it) } ?: "—"
-                updatePzemWidget()
+                pzemEnergy = formatFloat(state, 2); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_frequency" -> {
-                pzemFrequency = state.toFloatOrNull()?.let { "%.1f".format(it) } ?: "—"
-                updatePzemWidget()
+                pzemFrequency = formatFloat(state, 1); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
-                techRoomTemp = state.toFloatOrNull()?.let { "%.1f".format(it) } ?: "—"
-                updateTemperatureWidget()
+                techRoomTemp = formatFloat(state, 1); updateTemperatureWidget()
             }
         }
     }
 
+    private fun formatFloat(value: String, decimals: Int): String {
+        return value.toFloatOrNull()?.let { String.format("%.${decimals}f", it) } ?: "—"
+    }
+
     private fun setupMqtt() {
         mqttManager = MqttManager(this)
-
-        mqttManager.setOnVoltageUpdate { voltage ->
-            pzemVoltage = voltage.toFloatOrNull()?.let { "%.0f".format(it) } ?: "—"
-            updateGridStatus()
-            runOnUiThread { updatePzemWidget() }
-        }
-
-        mqttManager.setOnPowerUpdate { power ->
-            pzemPower = power.toFloatOrNull()?.let { "%.0f".format(it) } ?: "—"
-            runOnUiThread { updatePzemWidget() }
-        }
-
-        mqttManager.setOnCurrentUpdate { current ->
-            pzemCurrent = current.toFloatOrNull()?.let { "%.2f".format(it) } ?: "—"
-            runOnUiThread { updatePzemWidget() }
-        }
-
-        mqttManager.setOnEnergyUpdate { energy ->
-            pzemEnergy = energy.toFloatOrNull()?.let { "%.2f".format(it) } ?: "—"
-            runOnUiThread { updatePzemWidget() }
-        }
-
-        mqttManager.setOnFrequencyUpdate { frequency ->
-            pzemFrequency = frequency.toFloatOrNull()?.let { "%.1f".format(it) } ?: "—"
-            runOnUiThread { updatePzemWidget() }
-        }
-
+        mqttManager.setOnVoltageUpdate { pzemVoltage = formatFloat(it, 0); updateGridStatus(); runOnUiThread { updatePzemWidget() } }
+        mqttManager.setOnPowerUpdate { pzemPower = formatFloat(it, 0); runOnUiThread { updatePzemWidget() } }
+        mqttManager.setOnCurrentUpdate { pzemCurrent = formatFloat(it, 2); runOnUiThread { updatePzemWidget() } }
+        mqttManager.setOnEnergyUpdate { pzemEnergy = formatFloat(it, 2); runOnUiThread { updatePzemWidget() } }
+        mqttManager.setOnFrequencyUpdate { pzemFrequency = formatFloat(it, 1); runOnUiThread { updatePzemWidget() } }
+        mqttManager.setOnTemperatureUpdate { techRoomTemp = formatFloat(it, 1); runOnUiThread { updateTemperatureWidget() } }
         mqttManager.connect()
     }
 
     private fun setupWebSocket() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        val token = prefs.getString("ha_token", "") ?: ""
+        if (token.isEmpty()) return
+
         val localHost = prefs.getString("ha_local_host", "192.168.1.253:8123") ?: "192.168.1.253:8123"
         val remoteHost = prefs.getString("ha_remote_host", "") ?: ""
-        val token = prefs.getString("ha_token", "") ?: ""
-
-        if (token.isEmpty()) {
-            Toast.makeText(this, "Токен HA не настроен", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        var host = localHost
 
         webSocket = HomeAssistantWebSocket(
-            host = host,
+            host = localHost,
             token = token,
-            onStateChanged = { entityId, state ->
-                Log.d("MainActivity", "State changed: $entityId = $state")
-                entityStates[entityId] = state
+            onStateChanged = { entityId, state, _ ->
                 runOnUiThread { updateTilesForEntity(entityId, state) }
             },
-            onConnected = { Log.d("MainActivity", "WebSocket connected to $host") },
+            onConnected = {
+                Log.d("MainActivity", "WebSocket connected to $localHost")
+                subscribeToNeededEntities()
+            },
             onDisconnected = {
                 Log.d("MainActivity", "WebSocket disconnected")
-                if (host == localHost && remoteHost.isNotEmpty()) {
-                    host = remoteHost
+                if (remoteHost.isNotEmpty()) {
                     webSocket = HomeAssistantWebSocket(
-                        host = host,
+                        host = remoteHost,
                         token = token,
-                        onStateChanged = { entityId, state ->
-                            entityStates[entityId] = state
+                        onStateChanged = { entityId, state, _ ->
                             runOnUiThread { updateTilesForEntity(entityId, state) }
                         },
-                        onConnected = { Log.d("MainActivity", "Connected to remote") },
-                        onDisconnected = { Log.d("MainActivity", "Remote disconnected") }
+                        onConnected = {
+                            Log.d("MainActivity", "WebSocket connected to remote")
+                            subscribeToNeededEntities()
+                        },
+                        onDisconnected = {
+                            Log.d("MainActivity", "Remote disconnected")
+                        },
+                        onEntitiesList = null
                     )
                     webSocket?.connect()
                 }
-            }
+            },
+            onEntitiesList = null
         )
         webSocket?.connect()
     }
 
-    private fun setupButtons() {
-        btnLight.setOnClickListener {
-            val isOn = btnLight.currentTextColor != Color.GREEN
-            btnLight.setTextColor(if (isOn) Color.GREEN else Color.WHITE)
-        }
+    private fun subscribeToNeededEntities() {
+        val allTiles = tileManager.getAllTiles()
+        val entityIds = mutableSetOf<String>()
 
-        btnBoiler.setOnClickListener {
-            val isOn = btnBoiler.currentTextColor != Color.GREEN
-            btnBoiler.setTextColor(if (isOn) Color.GREEN else Color.WHITE)
-        }
+        allTiles.forEach { tile ->
+            try {
+                val config = JSONObject(tile.config)
+                val single = config.optString("entity_id", "")
+                if (single.isNotEmpty()) entityIds.add(single)
 
-        btnHeater.setOnClickListener {
-            val isOn = btnHeater.currentTextColor != Color.GREEN
-            btnHeater.setTextColor(if (isOn) Color.GREEN else Color.WHITE)
-        }
-
-        btnPump.setOnClickListener {
-            val isOn = btnPump.currentTextColor != Color.GREEN
-            btnPump.setTextColor(if (isOn) Color.GREEN else Color.WHITE)
-        }
-
-        btnSettings.setOnClickListener {
-            val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-            val lastAuthTime = prefs.getLong("last_auth_time", 0)
-            val currentTime = System.currentTimeMillis()
-
-            if (currentTime - lastAuthTime > 60 * 60 * 1000) {
-                PinDialog(this) {
-                    prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
-                    startActivity(Intent(this, SettingsActivity::class.java))
-                }.show()
-            } else {
-                startActivity(Intent(this, SettingsActivity::class.java))
+                val arr = config.optJSONArray("entity_ids")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        entityIds.add(arr.getString(i))
+                    }
+                }
+            } catch (_: Exception) {
             }
         }
-    }
 
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.action == MotionEvent.ACTION_DOWN) {
-            adapter.collapseExpandedWidget()
+        // Добавляем стандартные PZEM и температуру, если они есть в виджетах
+        if (tileManager.getTilesByContainer("grid").any { it.title == "⚡ Сеть" }) {
+            entityIds.add("sensor.pzem_energy_monitor_pzem_voltage")
+            entityIds.add("sensor.pzem_energy_monitor_pzem_power")
+            entityIds.add("sensor.pzem_energy_monitor_pzem_current")
+            entityIds.add("sensor.pzem_energy_monitor_pzem_energy")
+            entityIds.add("sensor.pzem_energy_monitor_pzem_frequency")
         }
-        return super.dispatchTouchEvent(ev)
+        if (tileManager.getTilesByContainer("grid").any { it.title == "🌡️ Температура" }) {
+            entityIds.add("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
+        }
+
+        if (entityIds.isNotEmpty()) {
+            webSocket?.subscribeEntities(entityIds.toList())
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        mqttManager.reconnect()
-        refreshTiles()
+        refreshGrid()
+        refreshBottomPanel()
     }
 
     override fun onDestroy() {
@@ -417,12 +437,6 @@ class MainActivity : AppCompatActivity() {
 }
 
 fun TileEntity.toWidgetItem(): WidgetItem {
-    val configJson = try {
-        JSONObject(config)
-    } catch (_: Exception) {
-        JSONObject()
-    }
-    configJson.put("id", id)
     return WidgetItem(
         title = title,
         value = "",
@@ -432,6 +446,6 @@ fun TileEntity.toWidgetItem(): WidgetItem {
             else -> "#80333333"
         },
         type = type,
-        config = configJson
+        config = JSONObject(config).apply { put("id", id) }
     )
 }
