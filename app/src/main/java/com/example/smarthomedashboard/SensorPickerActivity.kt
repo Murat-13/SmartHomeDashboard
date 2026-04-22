@@ -13,7 +13,6 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.edit
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
@@ -29,7 +28,6 @@ class SensorPickerActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var adapter: SensorListAdapter
 
-    private var webSocket: HomeAssistantWebSocket? = null
     private val selectedSensors = mutableSetOf<String>()
     private var allEntities = listOf<HaEntity>()
 
@@ -98,59 +96,13 @@ class SensorPickerActivity : AppCompatActivity() {
             filterEntities(etSearch.text.toString())
             tvStatus.visibility = View.GONE
         } else {
-            tvStatus.text = "Загрузка устройств…"
+            tvStatus.text = "Кэш пуст. Подключитесь к HA для загрузки устройств."
             tvStatus.visibility = View.VISIBLE
-        }
-
-        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        val host = prefs.getString("ha_local_host", "192.168.1.253:8123") ?: "192.168.1.253:8123"
-        val token = prefs.getString("ha_token", "") ?: ""
-
-        if (token.isEmpty()) {
-            tvStatus.text = "Токен HA не настроен"
-            return
-        }
-
-        webSocket = HomeAssistantWebSocket(
-            host = host,
-            token = token,
-            onStateChanged = { _, _, _ -> },
-            onConnected = { runOnUiThread { requestEntities() } },
-            onDisconnected = {
-                runOnUiThread {
-                    tvStatus.text = "Сервер недоступен"
-                    tvStatus.visibility = View.VISIBLE
-                }
-            },
-            onEntitiesList = { entities ->
-                runOnUiThread {
-                    tvStatus.visibility = View.GONE
-                    allEntities = entities
-                    filterEntities(etSearch.text.toString())
-                    cacheEntities(entities)
-                }
-            }
-        )
-        webSocket?.connect()
-    }
-
-    private fun requestEntities() {
-        webSocket?.getEntities()
-    }
-
-    private fun cacheEntities(entities: List<HaEntity>) {
-        val json = Gson().toJson(entities)
-        getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
-            putString("cached_entities", json)
-            putLong("cached_entities_time", System.currentTimeMillis())
         }
     }
 
     private fun loadCachedEntities(): List<HaEntity> {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        val cacheTime = prefs.getLong("cached_entities_time", 0)
-        if (System.currentTimeMillis() - cacheTime > 24 * 60 * 60 * 1000) return emptyList()
-
         val json = prefs.getString("cached_entities", "") ?: ""
         if (json.isEmpty()) return emptyList()
         return try {
@@ -159,11 +111,6 @@ class SensorPickerActivity : AppCompatActivity() {
         } catch (_: Exception) {
             emptyList()
         }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        webSocket?.disconnect()
     }
 }
 

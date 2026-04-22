@@ -1,5 +1,6 @@
 package com.example.smarthomedashboard
 
+import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -41,9 +42,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mqttManager: MqttManager
     private var webSocket: HomeAssistantWebSocket? = null
 
+    @Suppress("SpellCheckingInspection")
     private var pzemVoltage = "—"
+    @Suppress("SpellCheckingInspection")
     private var pzemCurrent = "—"
+    @Suppress("SpellCheckingInspection")
     private var pzemPower = "—"
+    @Suppress("SpellCheckingInspection")
     private var pzemEnergy = "—"
     @Suppress("SpellCheckingInspection")
     private var pzemFrequency = "—"
@@ -52,6 +57,10 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
+
+    companion object {
+        private const val REQUEST_TILE_SETTINGS = 100
+    }
 
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,7 +124,6 @@ class MainActivity : AppCompatActivity() {
                 WidgetData(pzemVoltage, pzemCurrent, pzemPower, pzemEnergy, pzemFrequency, gridOnline)
             },
             onTileMoved = { from, to ->
-                // Сохраняем новый порядок плиток
                 val tiles = tileManager.getTilesByContainer("grid").toMutableList()
                 val moved = tiles.removeAt(from)
                 tiles.add(to, moved)
@@ -162,7 +170,10 @@ class MainActivity : AppCompatActivity() {
 
                 setOnLongClickListener {
                     openWithPinCheck {
-                        startActivity(Intent(this@MainActivity, TileSettingsActivity::class.java).putExtra("tile_id", tile.id))
+                        startActivityForResult(
+                            Intent(this@MainActivity, TileSettingsActivity::class.java).putExtra("tile_id", tile.id),
+                            REQUEST_TILE_SETTINGS
+                        )
                     }
                     true
                 }
@@ -218,7 +229,7 @@ class MainActivity : AppCompatActivity() {
                     y = 0,
                     width = 1,
                     height = 1,
-                    config = """{"entity_id":"switch.sonoff_basic_1gs"}"""
+                    config = """{"entity_id":"switch.sonoff_100288c9c3_1"}"""
                 )
             )
             tileManager.addTile(
@@ -256,7 +267,10 @@ class MainActivity : AppCompatActivity() {
 
         fabAddTile.setOnClickListener {
             hideAddTileButton()
-            startActivity(Intent(this, TileSettingsActivity::class.java).putExtra("container", "grid"))
+            startActivityForResult(
+                Intent(this, TileSettingsActivity::class.java).putExtra("container", "grid"),
+                REQUEST_TILE_SETTINGS
+            )
         }
     }
 
@@ -301,27 +315,46 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateGridStatus() {
         gridOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
+        Log.d("MainActivity", "Grid online: $gridOnline (voltage: $pzemVoltage)")
     }
 
     private fun updateTilesForEntity(entityId: String, state: String) {
+        Log.d("MainActivity", "updateTilesForEntity: entityId=$entityId, state=$state")
+
         when (entityId) {
+            // PZEM сущности — обновляем через WebSocket
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
-                pzemVoltage = formatFloat(state, 0); updateGridStatus(); updatePzemWidget()
+                pzemVoltage = formatFloat(state, 0)
+                updateGridStatus()
+                updatePzemWidget()
+                Log.d("MainActivity", "Updated PZEM voltage via WebSocket: $pzemVoltage")
             }
             "sensor.pzem_energy_monitor_pzem_power" -> {
-                pzemPower = formatFloat(state, 0); updatePzemWidget()
+                pzemPower = formatFloat(state, 0)
+                updatePzemWidget()
+                Log.d("MainActivity", "Updated PZEM power via WebSocket: $pzemPower")
             }
             "sensor.pzem_energy_monitor_pzem_current" -> {
-                pzemCurrent = formatFloat(state, 2); updatePzemWidget()
+                pzemCurrent = formatFloat(state, 2)
+                updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_energy" -> {
-                pzemEnergy = formatFloat(state, 2); updatePzemWidget()
+                pzemEnergy = formatFloat(state, 2)
+                updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_frequency" -> {
-                pzemFrequency = formatFloat(state, 1); updatePzemWidget()
+                pzemFrequency = formatFloat(state, 1)
+                updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
-                techRoomTemp = formatFloat(state, 1); updateTemperatureWidget()
+                techRoomTemp = formatFloat(state, 1)
+                updateTemperatureWidget()
+                Log.d("MainActivity", "Updated temperature: $techRoomTemp")
+            }
+            else -> {
+                val formatted = formatFloat(state, 1)
+                gridAdapter.updateWidgetByEntityId(entityId, formatted)
+                Log.d("MainActivity", "Updated widget by entityId: $entityId = $formatted")
             }
         }
     }
@@ -332,11 +365,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupMqtt() {
         mqttManager = MqttManager(this)
-        mqttManager.setOnVoltageUpdate { pzemVoltage = formatFloat(it, 0); updateGridStatus(); runOnUiThread { updatePzemWidget() } }
-        mqttManager.setOnPowerUpdate { pzemPower = formatFloat(it, 0); runOnUiThread { updatePzemWidget() } }
-        mqttManager.setOnCurrentUpdate { pzemCurrent = formatFloat(it, 2); runOnUiThread { updatePzemWidget() } }
-        mqttManager.setOnEnergyUpdate { pzemEnergy = formatFloat(it, 2); runOnUiThread { updatePzemWidget() } }
-        mqttManager.setOnFrequencyUpdate { pzemFrequency = formatFloat(it, 1); runOnUiThread { updatePzemWidget() } }
+        // MQTT используется только для температуры (пока)
         mqttManager.setOnTemperatureUpdate { techRoomTemp = formatFloat(it, 1); runOnUiThread { updateTemperatureWidget() } }
         mqttManager.connect()
     }
@@ -344,20 +373,28 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebSocket() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         val token = prefs.getString("ha_token", "") ?: ""
-        if (token.isEmpty()) return
+        if (token.isEmpty()) {
+            Log.w("MainActivity", "Token is empty, WebSocket not started")
+            return
+        }
 
         val localHost = prefs.getString("ha_local_host", "192.168.1.253:8123") ?: "192.168.1.253:8123"
         val remoteHost = prefs.getString("ha_remote_host", "") ?: ""
+
+        Log.d("MainActivity", "setupWebSocket: localHost=$localHost, remoteHost=$remoteHost")
 
         webSocket = HomeAssistantWebSocket(
             host = localHost,
             token = token,
             onStateChanged = { entityId, state, _ ->
+                Log.d("MainActivity", "onStateChanged: $entityId = $state")
                 runOnUiThread { updateTilesForEntity(entityId, state) }
             },
             onConnected = {
                 Log.d("MainActivity", "WebSocket connected to $localHost")
-                subscribeToNeededEntities()
+                handler.postDelayed({
+                    subscribeToNeededEntities()
+                }, 2000)
             },
             onDisconnected = {
                 Log.d("MainActivity", "WebSocket disconnected")
@@ -370,7 +407,9 @@ class MainActivity : AppCompatActivity() {
                         },
                         onConnected = {
                             Log.d("MainActivity", "WebSocket connected to remote")
-                            subscribeToNeededEntities()
+                            handler.postDelayed({
+                                subscribeToNeededEntities()
+                            }, 2000)
                         },
                         onDisconnected = {
                             Log.d("MainActivity", "Remote disconnected")
@@ -380,12 +419,25 @@ class MainActivity : AppCompatActivity() {
                     webSocket?.connect()
                 }
             },
-            onEntitiesList = null
+            onEntitiesList = { entities ->
+                Log.d("MainActivity", "Received entities list: ${entities.size} items")
+                cacheEntities(entities)
+            }
         )
         webSocket?.connect()
     }
 
+    private fun cacheEntities(entities: List<HaEntity>) {
+        val json = com.google.gson.Gson().toJson(entities)
+        getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
+            putString("cached_entities", json)
+            putLong("cached_entities_time", System.currentTimeMillis())
+        }
+        Log.d("MainActivity", "Cached ${entities.size} entities")
+    }
+
     private fun subscribeToNeededEntities() {
+        Log.d("MainActivity", "subscribeToNeededEntities called, webSocket=$webSocket")
         val allTiles = tileManager.getAllTiles()
         val entityIds = mutableSetOf<String>()
 
@@ -393,32 +445,49 @@ class MainActivity : AppCompatActivity() {
             try {
                 val config = JSONObject(tile.config)
                 val single = config.optString("entity_id", "")
-                if (single.isNotEmpty()) entityIds.add(single)
+                if (single.isNotEmpty()) {
+                    entityIds.add(single)
+                    Log.d("MainActivity", "Found entity_id: $single from tile ${tile.title}")
+                }
 
                 val arr = config.optJSONArray("entity_ids")
                 if (arr != null) {
                     for (i in 0 until arr.length()) {
-                        entityIds.add(arr.getString(i))
+                        val id = arr.getString(i)
+                        entityIds.add(id)
+                        Log.d("MainActivity", "Found entity_id from array: $id")
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error parsing tile config: ${e.message}")
             }
         }
 
-        // Добавляем стандартные PZEM и температуру, если они есть в виджетах
-        if (tileManager.getTilesByContainer("grid").any { it.title == "⚡ Сеть" }) {
+        // Всегда добавляем PZEM сущности, если виджет "⚡ Сеть" есть
+        if (allTiles.any { it.title == "⚡ Сеть" }) {
             entityIds.add("sensor.pzem_energy_monitor_pzem_voltage")
             entityIds.add("sensor.pzem_energy_monitor_pzem_power")
             entityIds.add("sensor.pzem_energy_monitor_pzem_current")
             entityIds.add("sensor.pzem_energy_monitor_pzem_energy")
             entityIds.add("sensor.pzem_energy_monitor_pzem_frequency")
         }
-        if (tileManager.getTilesByContainer("grid").any { it.title == "🌡️ Температура" }) {
-            entityIds.add("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
-        }
+
+        Log.d("MainActivity", "Final entityIds: $entityIds")
 
         if (entityIds.isNotEmpty()) {
+            Log.d("MainActivity", "Calling subscribeEntities with: $entityIds")
             webSocket?.subscribeEntities(entityIds.toList())
+        } else {
+            Log.d("MainActivity", "entityIds is empty, not subscribing")
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_TILE_SETTINGS && resultCode == Activity.RESULT_OK) {
+            refreshGrid()
+            refreshBottomPanel()
+            subscribeToNeededEntities()
         }
     }
 
@@ -426,6 +495,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshGrid()
         refreshBottomPanel()
+        subscribeToNeededEntities()
     }
 
     override fun onDestroy() {
@@ -437,15 +507,18 @@ class MainActivity : AppCompatActivity() {
 }
 
 fun TileEntity.toWidgetItem(): WidgetItem {
+    val configJson = JSONObject(config)
+    val entityId = configJson.optString("entity_id", "")
+
     return WidgetItem(
         title = title,
         value = "",
+        entityId = entityId,
         backgroundColor = when (title) {
             "⚡ Сеть" -> "#8033CC33"
-            "🌡️ Температура" -> "#803399CC"
             else -> "#80333333"
         },
         type = type,
-        config = JSONObject(config).apply { put("id", id) }
+        config = configJson.apply { put("id", id) }
     )
 }

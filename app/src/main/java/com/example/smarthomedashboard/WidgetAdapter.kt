@@ -5,7 +5,6 @@ import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -21,7 +20,6 @@ import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONObject
-import java.util.Collections
 
 class WidgetAdapter(
     private val context: Context,
@@ -37,8 +35,6 @@ class WidgetAdapter(
     private var hiddenViewPosition = -1
     private val handler = Handler(Looper.getMainLooper())
     private var collapseRunnable: Runnable? = null
-    private var isEditMode = false
-    private var isServerAvailable = true
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): WidgetViewHolder {
         val view = LayoutInflater.from(parent.context)
@@ -73,14 +69,10 @@ class WidgetAdapter(
                 val bgColor = if (data.gridOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
                 holder.cardView.setCardBackgroundColor(bgColor)
             }
-            "🌡️ Температура" -> {
-                holder.primaryText.text = context.getString(R.string.temperature_format, widget.value)
-                holder.secondaryText.text = ""
-                holder.cardView.setCardBackgroundColor("#803399CC".toColorInt())
-            }
             else -> {
-                holder.primaryText.text = widget.value
-                holder.secondaryText.text = ""
+                // Для всех остальных виджетов
+                holder.primaryText.text = if (widget.value.isEmpty() || widget.value == "—") "—" else widget.value
+                holder.secondaryText.text = if (widget.type == "sensor") "—" else ""
                 try {
                     holder.cardView.setCardBackgroundColor(widget.backgroundColor.toColorInt())
                 } catch (_: Exception) {
@@ -89,57 +81,45 @@ class WidgetAdapter(
             }
         }
 
-        if (!isServerAvailable) {
-            holder.cardView.alpha = 0.5f
-        } else {
-            holder.cardView.alpha = 1.0f
-        }
-
         holder.cardView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    if (isEditMode) {
-                        true
-                    } else {
-                        val longPressRunnable = Runnable {
-                            val tileId = widget.config.optString("id", "")
-                            Log.d("WidgetAdapter", "Long press on tile: $tileId")
-                            val prefs = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
-                            val lastAuthTime = prefs.getLong("last_auth_time", 0)
-                            val currentTime = System.currentTimeMillis()
+                    val longPressRunnable = Runnable {
+                        val tileId = widget.config.optString("id", "")
+                        Log.d("WidgetAdapter", "Long press on tile: $tileId")
+                        val prefs = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
+                        val lastAuthTime = prefs.getLong("last_auth_time", 0)
+                        val currentTime = System.currentTimeMillis()
 
-                            if (currentTime - lastAuthTime > 60 * 60 * 1000) {
-                                PinDialog(context) {
-                                    prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
-                                    val intent = Intent(context, TileSettingsActivity::class.java)
-                                    intent.putExtra("tile_id", tileId)
-                                    context.startActivity(intent)
-                                }.show()
-                            } else {
+                        if (currentTime - lastAuthTime > 60 * 60 * 1000) {
+                            PinDialog(context) {
+                                prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
                                 val intent = Intent(context, TileSettingsActivity::class.java)
                                 intent.putExtra("tile_id", tileId)
                                 context.startActivity(intent)
-                            }
+                            }.show()
+                        } else {
+                            val intent = Intent(context, TileSettingsActivity::class.java)
+                            intent.putExtra("tile_id", tileId)
+                            context.startActivity(intent)
                         }
-                        handler.postDelayed(longPressRunnable, 3000)
-                        holder.cardView.tag = longPressRunnable
-                        true
                     }
+                    handler.postDelayed(longPressRunnable, 3000)
+                    holder.cardView.tag = longPressRunnable
+                    true
                 }
                 MotionEvent.ACTION_UP -> {
                     (holder.cardView.tag as? Runnable)?.let { handler.removeCallbacks(it) }
-                    if (!isEditMode) {
-                        when (widget.type) {
-                            "button" -> {
-                                Log.d("WidgetAdapter", "Button clicked: ${widget.title}")
-                            }
-                            else -> {
-                                Log.d("WidgetAdapter", "Click on widget: ${widget.title}")
-                                if (expandedOverlay != null) {
-                                    collapseOverlay()
-                                } else {
-                                    expandWidget(holder.cardView, position)
-                                }
+                    when (widget.type) {
+                        "button" -> {
+                            Log.d("WidgetAdapter", "Button clicked: ${widget.title}")
+                        }
+                        else -> {
+                            Log.d("WidgetAdapter", "Click on widget: ${widget.title}")
+                            if (expandedOverlay != null) {
+                                collapseOverlay()
+                            } else {
+                                expandWidget(holder.cardView, position)
                             }
                         }
                     }
@@ -173,7 +153,6 @@ class WidgetAdapter(
 
         val bgColor = when (widget.title) {
             "⚡ Сеть" -> if (data.gridOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
-            "🌡️ Температура" -> "#803399CC".toColorInt()
             else -> "#80333333".toColorInt()
         }
         overlay.setCardBackgroundColor(bgColor)
@@ -194,17 +173,9 @@ class WidgetAdapter(
                 content.findViewById<TextView>(R.id.overlayFrequency).visibility = View.VISIBLE
                 content.findViewById<TextView>(R.id.overlayEnergy).visibility = View.VISIBLE
             }
-            "🌡️ Температура" -> {
-                content.findViewById<TextView>(R.id.overlayTitle).text = "🌡️ Температура"
-                content.findViewById<TextView>(R.id.overlayVoltage).text = context.getString(R.string.temperature_format, widget.value)
-                content.findViewById<TextView>(R.id.overlayCurrent).visibility = View.GONE
-                content.findViewById<TextView>(R.id.overlayPower).visibility = View.GONE
-                content.findViewById<TextView>(R.id.overlayFrequency).visibility = View.GONE
-                content.findViewById<TextView>(R.id.overlayEnergy).visibility = View.GONE
-            }
             else -> {
                 content.findViewById<TextView>(R.id.overlayTitle).text = widget.title
-                content.findViewById<TextView>(R.id.overlayVoltage).text = widget.value
+                content.findViewById<TextView>(R.id.overlayVoltage).text = if (widget.value.isEmpty() || widget.value == "—") "—" else widget.value
                 content.findViewById<TextView>(R.id.overlayCurrent).visibility = View.GONE
                 content.findViewById<TextView>(R.id.overlayPower).visibility = View.GONE
                 content.findViewById<TextView>(R.id.overlayFrequency).visibility = View.GONE
@@ -287,8 +258,7 @@ class WidgetAdapter(
         collapseRunnable = null
     }
 
-    fun collapseExpandedWidget() = collapseOverlay()
-
+    @Suppress("unused")
     fun updatePzemData(voltage: String, current: String, power: String, energy: String, frequency: String, gridOnline: Boolean) {
         val position = widgets.indexOfFirst { it.title == "⚡ Сеть" }
         if (position >= 0) {
@@ -302,36 +272,39 @@ class WidgetAdapter(
         }
     }
 
+    @Suppress("unused")
     fun updateTemperatureData(temp: String) {
-        val position = widgets.indexOfFirst { it.title == "🌡️ Температура" }
+        // Ищем виджет температуры по entity_id, а не по названию
+        val position = widgets.indexOfFirst { it.entityId == "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" }
         if (position >= 0) {
             val viewHolder = recyclerView.findViewHolderForAdapterPosition(position) as? WidgetViewHolder
             viewHolder?.primaryText?.text = context.getString(R.string.temperature_format, temp)
             widgets[position] = widgets[position].copy(value = temp)
+            Log.d("WidgetAdapter", "Updated temperature widget with value: $temp")
+        } else {
+            Log.w("WidgetAdapter", "Temperature widget not found by entityId")
         }
     }
 
-    fun setServerAvailable(available: Boolean) {
-        isServerAvailable = available
-        notifyDataSetChanged()
-    }
-
-    fun setEditMode(enabled: Boolean) {
-        isEditMode = enabled
-    }
-
-    fun onItemMove(fromPosition: Int, toPosition: Int) {
-        if (fromPosition < toPosition) {
-            for (i in fromPosition until toPosition) {
-                Collections.swap(widgets, i, i + 1)
+    fun updateWidgetByEntityId(entityId: String, value: String) {
+        Log.d("WidgetAdapter", "updateWidgetByEntityId: looking for entityId=$entityId, value=$value")
+        val position = widgets.indexOfFirst { it.entityId == entityId }
+        if (position >= 0) {
+            Log.d("WidgetAdapter", "Found widget at position $position: ${widgets[position].title}")
+            val viewHolder = recyclerView.findViewHolderForAdapterPosition(position) as? WidgetViewHolder
+            viewHolder?.let {
+                it.primaryText.text = value
+                widgets[position] = widgets[position].copy(value = value)
+                Log.d("WidgetAdapter", "Updated widget ${widgets[position].title} with value $value")
+            } ?: run {
+                Log.w("WidgetAdapter", "ViewHolder is null for position $position, notifying item changed")
+                widgets[position] = widgets[position].copy(value = value)
+                notifyItemChanged(position)
             }
         } else {
-            for (i in fromPosition downTo toPosition + 1) {
-                Collections.swap(widgets, i, i - 1)
-            }
+            Log.w("WidgetAdapter", "No widget found with entityId=$entityId")
+            Log.d("WidgetAdapter", "Available widgets: ${widgets.map { "${it.title} -> ${it.entityId}" }}")
         }
-        notifyItemMoved(fromPosition, toPosition)
-        onTileMoved?.invoke(fromPosition, toPosition)
     }
 
     override fun getItemCount(): Int = widgets.size
@@ -347,6 +320,7 @@ class WidgetAdapter(
 data class WidgetItem(
     val title: String,
     val value: String,
+    val entityId: String = "",
     val backgroundColor: String,
     val type: String = "sensor",
     val config: JSONObject = JSONObject()

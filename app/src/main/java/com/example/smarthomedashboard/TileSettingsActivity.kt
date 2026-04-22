@@ -104,13 +104,20 @@ class TileSettingsActivity : AppCompatActivity() {
             val arr = configJson.optJSONArray("entity_ids")
             if (arr != null) {
                 for (i in 0 until arr.length()) {
-                    selectedSensors.add(arr.getString(i))
+                    val id = arr.getString(i)
+                    if (!selectedSensors.contains(id)) {
+                        selectedSensors.add(id)
+                    }
                 }
             } else {
                 val single = configJson.optString("entity_id", "")
-                if (single.isNotEmpty()) selectedSensors.add(single)
+                if (single.isNotEmpty() && !selectedSensors.contains(single)) {
+                    selectedSensors.add(single)
+                }
             }
-        } catch (_: Exception) {
+            Log.d("TileSettings", "Loaded sensors from config: $selectedSensors")
+        } catch (e: Exception) {
+            Log.e("TileSettings", "Error loading config: ${e.message}")
         }
 
         updateSelectedSensorsText()
@@ -136,15 +143,31 @@ class TileSettingsActivity : AppCompatActivity() {
         val position = tiles.size
         val spanCount = if (container == "grid") 4 else 6
 
-        val configJson = JSONObject()
-        if (selectedSensors.size == 1) {
-            configJson.put("entity_id", selectedSensors.first())
-        } else if (selectedSensors.size > 1) {
-            configJson.put("entity_ids", JSONArray(selectedSensors))
+        val existingConfig = if (tileId != null) {
+            try {
+                val tile = tileManager.loadTiles().find { it.id == tileId }
+                if (tile != null) JSONObject(tile.config) else JSONObject()
+            } catch (e: Exception) {
+                JSONObject()
+            }
+        } else {
+            JSONObject()
         }
-        val config = configJson.toString()
 
-        Log.d("TileSettings", "Saving tile: title=$title, type=$type, config=$config")
+        if (selectedSensors.size == 1) {
+            existingConfig.put("entity_id", selectedSensors.first())
+            existingConfig.remove("entity_ids")
+            Log.d("TileSettings", "Saved single entity_id: ${selectedSensors.first()}")
+        } else if (selectedSensors.size > 1) {
+            existingConfig.put("entity_ids", JSONArray(selectedSensors))
+            existingConfig.remove("entity_id")
+            Log.d("TileSettings", "Saved entity_ids array: $selectedSensors")
+        } else {
+            Log.w("TileSettings", "No sensors selected, config unchanged")
+        }
+
+        val config = existingConfig.toString()
+        Log.d("TileSettings", "Final config for tile '$title': $config")
 
         val tile = TileEntity(
             id = tileId ?: UUID.randomUUID().toString(),
@@ -161,10 +184,13 @@ class TileSettingsActivity : AppCompatActivity() {
         lifecycleScope.launch {
             if (tileId == null) {
                 tileManager.addTile(tile)
+                Log.d("TileSettings", "Added new tile: $title")
             } else {
                 tileManager.updateTile(tile)
+                Log.d("TileSettings", "Updated tile: $title")
             }
             Toast.makeText(this@TileSettingsActivity, "Сохранено", Toast.LENGTH_SHORT).show()
+            Log.d("TileSettings", "setResult OK, finishing")
             setResult(Activity.RESULT_OK)
             finish()
         }
@@ -185,7 +211,7 @@ class TileSettingsActivity : AppCompatActivity() {
         tvSelectedSensors.text = if (selectedSensors.isEmpty()) {
             getString(R.string.none_selected)
         } else {
-            "Выбрано: ${selectedSensors.size}"
+            "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
         }
     }
 
@@ -196,6 +222,7 @@ class TileSettingsActivity : AppCompatActivity() {
                 selectedSensors.clear()
                 selectedSensors.addAll(it)
                 updateSelectedSensorsText()
+                Log.d("TileSettings", "Received sensors from picker: $selectedSensors")
             }
         }
     }
