@@ -1,8 +1,10 @@
 package com.example.smarthomedashboard
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.Dialog
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -11,10 +13,11 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
@@ -34,7 +37,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var widgetsGrid: RecyclerView
     private lateinit var bottomPanel: LinearLayout
+    private lateinit var bottomScrollView: HorizontalScrollView
     private lateinit var overlayContainer: FrameLayout
+    private lateinit var dimOverlay: View
     private lateinit var fabAddTile: FloatingActionButton
     private lateinit var gridAdapter: WidgetAdapter
 
@@ -51,10 +56,21 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
+    private var collapseChildrenRunnable: Runnable? = null
+    private var groupLongPressRunnable: Runnable? = null
 
     private val groupStates = mutableMapOf<String, MutableMap<String, String>>()
     private val singleStates = mutableMapOf<String, String>()
     private var isEditMode = false
+
+    private var expandedChildButtons = mutableListOf<Button>()
+    private var expandedGroupId: String? = null
+    private var expandedSourceButton: Button? = null
+    private var expandedTile: TileEntity? = null
+
+    private val scrollResetRunnable = Runnable {
+        bottomScrollView.smoothScrollTo(0, 0)
+    }
 
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
@@ -73,8 +89,14 @@ class MainActivity : AppCompatActivity() {
 
         widgetsGrid = findViewById(R.id.widgetsGrid)
         bottomPanel = findViewById(R.id.bottomPanel)
+        bottomScrollView = findViewById(R.id.bottomScrollView)
         overlayContainer = findViewById(R.id.overlayContainer)
+        dimOverlay = findViewById(R.id.dimOverlay)
         fabAddTile = findViewById(R.id.fabAddTile)
+
+        dimOverlay.setOnClickListener {
+            collapseChildButtons()
+        }
 
         tileManager = TileManager(this)
 
@@ -86,7 +108,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openWithPinCheck(action: () -> Unit) {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        val lastAuthTime = prefs.getLong("last_auth_time", 0)
+        val lastAuthTime = prefs.getLong("last_auth_time", 0L)
         if (System.currentTimeMillis() - lastAuthTime > 60 * 60 * 1000) {
             PinDialog(this) {
                 prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
@@ -120,8 +142,7 @@ class MainActivity : AppCompatActivity() {
                 val moved = tiles.removeAt(from)
                 tiles.add(to, moved)
                 tiles.forEachIndexed { index, tile ->
-                    val spanCount = 4
-                    val newTile = tile.copy(x = index % spanCount, y = index / spanCount)
+                    val newTile = tile.copy(x = index % 4, y = index / 4)
                     tileManager.updateTile(newTile)
                 }
             },
@@ -131,12 +152,7 @@ class MainActivity : AppCompatActivity() {
                     openTileSettings(tileId)
                 }
             },
-            onTileLongClick = { tileId ->
-                val tile = tileManager.getAllTiles().find { it.id == tileId }
-                if (tile?.type == "group" && !isEditMode) {
-                    showGroupDialog(tile)
-                }
-            }
+            onTileLongClick = { _ -> }
         )
         widgetsGrid.adapter = gridAdapter
     }
@@ -153,145 +169,347 @@ class MainActivity : AppCompatActivity() {
             refreshBottomPanel()
             return
         }
-        tiles.forEach { tile ->
-            val button = Button(this).apply {
-                text = tile.title
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    setMargins(6, 6, 6, 6)
-                }
-                tag = tile.id
 
-                if (tile.type == "group") {
-                    val isAnyOn = getGroupState(tile.id)
-                    setBackgroundColor(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
-                } else {
-                    val entityId = JSONObject(tile.config).optString("entity_id", "")
-                    val state = singleStates[entityId] ?: "off"
-                    val isOn = state == "on"
-                    setBackgroundColor(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
-                }
-                setTextColor("#FFFFFF".toColorInt())
+        val buttonSize = 160
+        val tilesList = tiles.toList()
+        val screenWidth = resources.displayMetrics.widthPixels
+        val maxButtonsPerRow = (screenWidth / (buttonSize + 12)) - 1
 
+        val rows = mutableListOf<LinearLayout>()
+        rows.add(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        })
+
+        tilesList.forEach { tile ->
+            val button = createTileButton(tile, buttonSize)
+            var added = false
+            for (row in rows) {
+                if (row.childCount < maxButtonsPerRow) {
+                    row.addView(button)
+                    added = true
+                    break
+                }
+            }
+            if (!added) {
+                val newRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                newRow.addView(button)
+                rows.add(newRow)
+            }
+        }
+
+        rows.forEach { row ->
+            if (row.childCount > 0) {
+                bottomPanel.addView(row)
+            }
+        }
+
+        val btnSettings = createSettingsButton(buttonSize)
+        val lastRow = rows.lastOrNull() ?: rows.first()
+
+        if (lastRow.childCount < maxButtonsPerRow) {
+            lastRow.addView(btnSettings)
+        } else {
+            val newRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            newRow.addView(btnSettings)
+            bottomPanel.addView(newRow)
+        }
+
+        resetScrollWithDelay()
+    }
+
+    private fun createTileButton(tile: TileEntity, size: Int): Button {
+        return Button(this).apply {
+            text = tile.title
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                setMargins(6, 6, 6, 6)
+            }
+            tag = tile.id
+            alpha = 0.8f
+            elevation = 8f
+            background = resources.getDrawable(R.drawable.bg_button_rounded, null)
+
+            if (tile.type == "group") {
+                val isAnyOn = getGroupState(tile.id)
+                background.setTint(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+            } else {
+                val entityId = JSONObject(tile.config).optString("entity_id", "")
+                val state = singleStates[entityId] ?: "off"
+                val isOn = state == "on"
+                background.setTint(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
+            }
+            setTextColor("#FFFFFF".toColorInt())
+            textSize = 14f
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = android.view.Gravity.CENTER
+            isAllCaps = false
+
+            // === ОБРАБОТКА НАЖАТИЙ ДЛЯ ГРУПП ===
+            if (tile.type == "group") {
+                // Короткое нажатие — toggle всей группы
                 setOnClickListener {
                     if (isEditMode) {
                         openTileSettings(tile.id)
                     } else {
-                        if (tile.type == "group") {
-                            toggleGroup(tile.id, tile)
+                        if (expandedGroupId == tile.id) {
+                            // Если дочерние раскрыты — сворачиваем
+                            collapseChildButtons()
+                        }
+                        toggleGroup(tile.id, tile)
+                    }
+                }
+
+                // Долгое нажатие (1 сек) — раскрытие дочерних
+                setOnLongClickListener {
+                    if (isEditMode) {
+                        openTileSettings(tile.id)
+                    } else {
+                        if (expandedGroupId == tile.id) {
+                            collapseChildButtons()
                         } else {
-                            val entityId = JSONObject(tile.config).optString("entity_id", "")
-                            if (entityId.isNotEmpty()) {
-                                val domain = entityId.substringBefore(".")
-                                val currentState = singleStates[entityId] ?: "off"
-                                val targetState = if (currentState == "on") "turn_off" else "turn_on"
+                            expandChildButtons(tile, this)
+                        }
+                    }
+                    true
+                }
 
-                                webSocket?.callService(domain, targetState, entityId)
-
-                                val newState = if (currentState == "on") "off" else "on"
-                                singleStates[entityId] = newState
-                                val isOn = newState == "on"
-                                setBackgroundColor(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
+                // Touch listener для отслеживания длительности нажатия
+                setOnTouchListener { _, event ->
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            groupLongPressRunnable = Runnable {
+                                if (!isEditMode) {
+                                    if (expandedGroupId == tile.id) {
+                                        collapseChildButtons()
+                                    } else {
+                                        expandChildButtons(tile, this@apply)
+                                    }
+                                }
                             }
+                            handler.postDelayed(groupLongPressRunnable!!, 1000L)
+                            false
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            groupLongPressRunnable?.let { handler.removeCallbacks(it) }
+                            false
+                        }
+                        else -> false
+                    }
+                }
+            } else {
+                // === ОБЫЧНЫЕ КНОПКИ ===
+                setOnClickListener {
+                    if (isEditMode) {
+                        openTileSettings(tile.id)
+                    } else {
+                        val entityId = JSONObject(tile.config).optString("entity_id", "")
+                        if (entityId.isNotEmpty()) {
+                            val domain = entityId.substringBefore(".")
+                            val currentState = singleStates[entityId] ?: "off"
+                            val targetState = if (currentState == "on") "turn_off" else "turn_on"
+                            webSocket?.callService(domain, targetState, entityId)
+                            val newState = if (currentState == "on") "off" else "on"
+                            singleStates[entityId] = newState
+                            val isOn = newState == "on"
+                            background.setTint(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
                         }
                     }
                 }
 
                 setOnLongClickListener {
-                    if (!isEditMode && tile.type == "group") {
-                        showGroupDialog(tile)
+                    if (isEditMode) {
+                        openTileSettings(tile.id)
                     }
                     true
                 }
             }
-            bottomPanel.addView(button)
         }
     }
 
-    private fun openTileSettings(tileId: String) {
-        openWithPinCheck {
-            startActivityForResult(
-                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", tileId),
-                REQUEST_TILE_SETTINGS
-            )
+    private fun createSettingsButton(size: Int): Button {
+        return Button(this).apply {
+            text = "⚙"
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                setMargins(6, 6, 6, 6)
+            }
+            alpha = 0.8f
+            elevation = 8f
+            background = resources.getDrawable(R.drawable.bg_button_rounded, null)
+            background.setTint("#424242".toColorInt())
+            setTextColor("#FFFFFF".toColorInt())
+            textSize = 28f
+            gravity = android.view.Gravity.CENTER
+            setOnClickListener {
+                openWithPinCheck { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
+            }
         }
     }
 
-    private fun enterEditMode() {
-        isEditMode = true
-        gridAdapter.setEditMode(true)
-        showAddTileButton()
-        Toast.makeText(this, "Режим редактирования. Нажмите на плитку для настройки.", Toast.LENGTH_LONG).show()
-    }
+    // ==================== ВЫЕЗЖАНИЕ ДОЧЕРНИХ КНОПОК ====================
 
-    private fun exitEditMode() {
-        isEditMode = false
-        gridAdapter.setEditMode(false)
-        hideAddTileButton()
-    }
+    private fun expandChildButtons(tile: TileEntity, sourceButton: Button) {
+        collapseChildButtons()
 
-    private fun createDefaultGridTiles() {
-        lifecycleScope.launch {
-            tileManager.addTile(
-                TileEntity(
-                    id = UUID.randomUUID().toString(),
-                    type = "sensor",
-                    container = "grid",
-                    title = "⚡ Сеть",
-                    x = 0,
-                    y = 0,
-                    width = 1,
-                    height = 1,
-                    config = "{}"
-                )
-            )
-            tileManager.addTile(
-                TileEntity(
-                    id = UUID.randomUUID().toString(),
-                    type = "sensor",
-                    container = "grid",
-                    title = "🌡️ Температура",
-                    x = 1,
-                    y = 0,
-                    width = 1,
-                    height = 1,
-                    config = "{}"
-                )
-            )
+        val config = JSONObject(tile.config)
+        val entityIds = config.optJSONArray("entity_ids")
+        if (entityIds == null || entityIds.length() == 0) {
+            Toast.makeText(this, "В группе нет устройств", Toast.LENGTH_SHORT).show()
+            return
         }
-    }
 
-    private fun createDefaultButtonTiles() {
-        lifecycleScope.launch {
-            tileManager.addTile(
-                TileEntity(
-                    id = UUID.randomUUID().toString(),
-                    type = "button",
-                    container = "bottom_panel",
-                    title = "💡 Свет",
-                    x = 0,
-                    y = 0,
-                    width = 1,
-                    height = 1,
-                    config = """{"entity_id":"switch.sonoff_100288c9c3_1"}"""
-                )
-            )
-            tileManager.addTile(
-                TileEntity(
-                    id = UUID.randomUUID().toString(),
-                    type = "button",
-                    container = "bottom_panel",
-                    title = "🔥 Бойлер",
-                    x = 1,
-                    y = 0,
-                    width = 1,
-                    height = 1,
-                    config = """{"entity_id":"switch.boiler"}"""
-                )
-            )
+        expandedGroupId = tile.id
+        expandedSourceButton = sourceButton
+        expandedTile = tile
+
+        val buttonSize = 160
+        val sourceLocation = IntArray(2)
+        sourceButton.getLocationOnScreen(sourceLocation)
+
+        val sourceCenterX = sourceLocation[0] + sourceButton.width / 2
+        val sourceTop = sourceLocation[1]
+        val screenWidth = resources.displayMetrics.widthPixels
+
+        val childCount = entityIds.length()
+        val maxPerRow = 5
+        val itemsInFirstRow = if (childCount <= maxPerRow) childCount else (childCount + 1) / 2
+        val itemsInSecondRow = childCount - itemsInFirstRow
+
+        val totalWidthFirstRow = itemsInFirstRow * (buttonSize + 12)
+        val totalWidthSecondRow = itemsInSecondRow * (buttonSize + 12)
+
+        var firstRowStartX = sourceCenterX - totalWidthFirstRow / 2
+        var secondRowStartX = sourceCenterX - totalWidthSecondRow / 2
+
+        if (firstRowStartX < 0) firstRowStartX = 8
+        if (firstRowStartX + totalWidthFirstRow > screenWidth) firstRowStartX = screenWidth - totalWidthFirstRow - 8
+        if (secondRowStartX < 0) secondRowStartX = 8
+        if (secondRowStartX + totalWidthSecondRow > screenWidth) secondRowStartX = screenWidth - totalWidthSecondRow - 8
+
+        val rowsNeeded = if (childCount <= maxPerRow) 1 else 2
+        val firstRowY = sourceTop - (buttonSize + 12) * rowsNeeded - 12
+        val secondRowY = firstRowY + buttonSize + 12
+
+        val actualFirstRowY = if (firstRowY < 50) sourceTop + sourceButton.height + 12 else firstRowY
+        val actualSecondRowY = if (firstRowY < 50) actualFirstRowY + buttonSize + 12 else secondRowY
+
+        expandedChildButtons.clear()
+
+        val rootLayout = findViewById<FrameLayout>(android.R.id.content)
+
+        for (i in 0 until childCount) {
+            val entityId = entityIds.getString(i)
+            val state = groupStates[tile.id]?.get(entityId) ?: "off"
+            val isOn = state == "on"
+            val name = (i + 1).toString()
+
+            val childButton = Button(this).apply {
+                text = name
+                layoutParams = FrameLayout.LayoutParams(buttonSize, buttonSize)
+                alpha = 0f
+                scaleX = 0.5f
+                scaleY = 0.5f
+                elevation = 12f
+                background = resources.getDrawable(R.drawable.bg_button_rounded, null)
+                background.setTint(if (isOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                setTextColor("#FFFFFF".toColorInt())
+                textSize = 14f
+                gravity = android.view.Gravity.CENTER
+                isAllCaps = false
+                tag = entityId
+
+                setOnClickListener {
+                    val domain = entityId.substringBefore(".")
+                    val currentState = groupStates[tile.id]?.get(entityId) ?: "off"
+                    val targetState = if (currentState == "on") "turn_off" else "turn_on"
+                    webSocket?.callService(domain, targetState, entityId)
+                    val newState = if (currentState == "on") "off" else "on"
+                    background.setTint(if (newState == "on") "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                    updateGroupState(tile.id, entityId, newState)
+
+                    // Сброс таймера сворачивания при касании
+                    resetCollapseTimer()
+                }
+            }
+
+            val row = if (i < itemsInFirstRow) 0 else 1
+            val col = if (row == 0) i else i - itemsInFirstRow
+            val x = if (row == 0) firstRowStartX + col * (buttonSize + 12) else secondRowStartX + col * (buttonSize + 12)
+            val y = if (row == 0) actualFirstRowY else actualSecondRowY
+
+            childButton.x = x.toFloat()
+            childButton.y = y.toFloat()
+
+            rootLayout.addView(childButton)
+            expandedChildButtons.add(childButton)
+
+            childButton.animate()
+                .alpha(0.8f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(250)
+                .setStartDelay(i * 50L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
         }
+
+        dimOverlay.isVisible = true
+        dimOverlay.animate().alpha(0.4f).setDuration(300).start()
+
+        resetCollapseTimer()
     }
 
-    // ==================== ГРУППОВЫЕ КНОПКИ ====================
+    private fun resetCollapseTimer() {
+        collapseChildrenRunnable?.let { handler.removeCallbacks(it) }
+        collapseChildrenRunnable = Runnable { collapseChildButtons() }
+        handler.postDelayed(collapseChildrenRunnable!!, 10000L)
+    }
+
+    private fun collapseChildButtons() {
+        expandedGroupId = null
+        expandedSourceButton = null
+        expandedTile = null
+
+        val rootLayout = findViewById<FrameLayout>(android.R.id.content)
+
+        expandedChildButtons.forEachIndexed { index, button ->
+            button.animate()
+                .alpha(0f)
+                .scaleX(0.5f)
+                .scaleY(0.5f)
+                .setDuration(200)
+                .setStartDelay(index * 30L)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    rootLayout.removeView(button)
+                }
+                .start()
+        }
+        expandedChildButtons.clear()
+
+        dimOverlay.animate().alpha(0f).setDuration(300).withEndAction {
+            dimOverlay.isVisible = false
+        }.start()
+
+        collapseChildrenRunnable?.let { handler.removeCallbacks(it) }
+    }
+
+    // ==================== ГРУППОВЫЕ КНОПКИ (СОСТОЯНИЯ) ====================
 
     private fun updateGroupState(groupId: String, entityId: String, state: String) {
         if (!groupStates.containsKey(groupId)) {
@@ -302,17 +520,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getGroupState(groupId: String): Boolean {
-        val states = groupStates[groupId] ?: return false
-        return states.values.any { it == "on" }
+        return groupStates[groupId]?.values?.any { it == "on" } ?: false
     }
 
     private fun updateGroupButtonAppearance(groupId: String) {
         val isAnyOn = getGroupState(groupId)
         for (i in 0 until bottomPanel.childCount) {
-            val child = bottomPanel.getChildAt(i)
-            if (child is Button && child.tag == groupId) {
-                child.setBackgroundColor(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
-                break
+            val childLayout = bottomPanel.getChildAt(i)
+            if (childLayout is LinearLayout) {
+                for (j in 0 until childLayout.childCount) {
+                    val child = childLayout.getChildAt(j)
+                    if (child is Button && child.tag == groupId) {
+                        child.background.setTint(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                        return
+                    }
+                }
             }
         }
     }
@@ -331,72 +553,9 @@ class MainActivity : AppCompatActivity() {
                     val domain = entityId.substringBefore(".")
                     webSocket?.callService(domain, targetState, entityId)
                 }
-                Toast.makeText(this, "Группа: ${tile.title}", Toast.LENGTH_SHORT).show()
             }
         } catch (_: Exception) {
             Log.e("MainActivity", "Error toggling group")
-        }
-    }
-
-    private fun showGroupDialog(tile: TileEntity) {
-        try {
-            val config = JSONObject(tile.config)
-            val entityIds = config.optJSONArray("entity_ids")
-
-            if (entityIds == null || entityIds.length() == 0) {
-                Toast.makeText(this, "В группе нет устройств", Toast.LENGTH_SHORT).show()
-                return
-            }
-
-            val items = mutableListOf<GroupButtonItem>()
-            for (i in 0 until entityIds.length()) {
-                val entityId = entityIds.getString(i)
-                val state = groupStates[tile.id]?.get(entityId) ?: "off"
-                val name = entityId.substringAfter(".").replace("_", " ").capitalizeWords()
-                items.add(GroupButtonItem(entityId, name, "", state, true))
-            }
-
-            val dialog = Dialog(this)
-            dialog.setContentView(R.layout.dialog_group_buttons)
-
-            val tvTitle = dialog.findViewById<TextView>(R.id.tvGroupTitle)
-            val rvButtons = dialog.findViewById<RecyclerView>(R.id.rvGroupButtons)
-            val btnClose = dialog.findViewById<Button>(R.id.btnCloseGroup)
-
-            tvTitle.text = tile.title
-            rvButtons.layoutManager = GridLayoutManager(this, 2)
-
-            var adapter: GroupButtonsAdapter? = null
-
-            adapter = GroupButtonsAdapter(items) { item ->
-                val domain = item.entityId.substringBefore(".")
-                val service = if (item.state == "on") "turn_off" else "turn_on"
-                webSocket?.callService(domain, service, item.entityId)
-
-                val newState = if (item.state == "on") "off" else "on"
-                item.state = newState
-
-                updateGroupState(tile.id, item.entityId, newState)
-
-                val position = items.indexOf(item)
-                if (position >= 0) {
-                    adapter?.notifyItemChanged(position)
-                }
-            }
-
-            rvButtons.adapter = adapter
-
-            btnClose.setOnClickListener { dialog.dismiss() }
-            dialog.show()
-
-        } catch (_: Exception) {
-            Log.e("MainActivity", "Error showing group dialog")
-        }
-    }
-
-    private fun String.capitalizeWords(): String {
-        return split(" ").joinToString(" ") { word ->
-            word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
         }
     }
 
@@ -407,32 +566,26 @@ class MainActivity : AppCompatActivity() {
         val isOn = state == "on"
         val targetColor = if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt()
 
-        Log.d("MainActivity", "updateSingleButtonColor: entityId=$entityId, state=$state, isOn=$isOn")
-
-        var found = false
         for (i in 0 until bottomPanel.childCount) {
-            val child = bottomPanel.getChildAt(i)
-            if (child is Button) {
-                val tileId = child.tag as? String
-                val tile = tileId?.let { tileManager.getAllTiles().find { t -> t.id == it } }
-
-                if (tile != null && tile.type != "group") {
-                    try {
-                        val config = JSONObject(tile.config)
-                        val btnEntityId = config.optString("entity_id", "")
-                        Log.d("MainActivity", "Checking button: $btnEntityId")
-                        if (btnEntityId == entityId) {
-                            child.setBackgroundColor(targetColor)
-                            found = true
-                            Log.d("MainActivity", "Button color updated for: $entityId")
+            val childLayout = bottomPanel.getChildAt(i)
+            if (childLayout is LinearLayout) {
+                for (j in 0 until childLayout.childCount) {
+                    val child = childLayout.getChildAt(j)
+                    if (child is Button) {
+                        val tileId = child.tag as? String
+                        val tile = tileId?.let { tileManager.getAllTiles().find { t -> t.id == it } }
+                        if (tile != null && tile.type != "group") {
+                            try {
+                                val config = JSONObject(tile.config)
+                                val btnEntityId = config.optString("entity_id", "")
+                                if (btnEntityId == entityId) {
+                                    child.background.setTint(targetColor)
+                                }
+                            } catch (_: Exception) {}
                         }
-                    } catch (_: Exception) {}
+                    }
                 }
             }
-        }
-
-        if (!found) {
-            Log.w("MainActivity", "Button not found for entityId: $entityId")
         }
     }
 
@@ -450,7 +603,7 @@ class MainActivity : AppCompatActivity() {
                         longPressRunnable = Runnable {
                             openWithPinCheck { enterEditMode() }
                         }
-                        handler.postDelayed(longPressRunnable!!, 1000)
+                        handler.postDelayed(longPressRunnable!!, 1000L)
                     }
                 }
             } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
@@ -469,6 +622,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun enterEditMode() {
+        isEditMode = true
+        gridAdapter.setEditMode(true)
+        showAddTileButton()
+        Toast.makeText(this, "Режим редактирования. Нажмите на плитку для настройки.", Toast.LENGTH_LONG).show()
+    }
+
+    private fun exitEditMode() {
+        isEditMode = false
+        gridAdapter.setEditMode(false)
+        hideAddTileButton()
+    }
+
     private fun showAddTileButton() {
         widgetsGrid.post {
             val tiles = tileManager.getTilesByContainer("grid")
@@ -483,7 +649,6 @@ class MainActivity : AppCompatActivity() {
                 val tileHeight = firstView.height
                 val x = col * tileWidth + tileWidth / 2f - fabAddTile.width / 2
                 val y = row * tileHeight + tileHeight / 2f - fabAddTile.height / 2
-
                 fabAddTile.x = x
                 fabAddTile.y = y
             }
@@ -499,6 +664,34 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun openTileSettings(tileId: String) {
+        openWithPinCheck {
+            startActivityForResult(
+                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", tileId),
+                REQUEST_TILE_SETTINGS
+            )
+        }
+    }
+
+    private fun resetScrollWithDelay() {
+        handler.removeCallbacks(scrollResetRunnable)
+        handler.postDelayed(scrollResetRunnable, 10000L)
+    }
+
+    private fun createDefaultGridTiles() {
+        lifecycleScope.launch {
+            tileManager.addTile(TileEntity(UUID.randomUUID().toString(), "sensor", "grid", "⚡ Сеть", 0, 0, 1, 1, config = "{}"))
+            tileManager.addTile(TileEntity(UUID.randomUUID().toString(), "sensor", "grid", "🌡️ Температура", 1, 0, 1, 1, config = "{}"))
+        }
+    }
+
+    private fun createDefaultButtonTiles() {
+        lifecycleScope.launch {
+            tileManager.addTile(TileEntity(UUID.randomUUID().toString(), "button", "bottom_panel", "💡 Свет", 0, 0, 1, 1, config = """{"entity_id":"switch.sonoff_100288c9c3_1"}"""))
+            tileManager.addTile(TileEntity(UUID.randomUUID().toString(), "button", "bottom_panel", "🔥 Бойлер", 1, 0, 1, 1, config = """{"entity_id":"switch.boiler"}"""))
+        }
+    }
+
     // ==================== ДАННЫЕ С ДАТЧИКОВ ====================
 
     private fun updatePzemWidget() {
@@ -511,20 +704,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateGridStatus() {
         gridOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
-        Log.d("MainActivity", "Grid online: $gridOnline (voltage: $pzemVoltage)")
     }
 
     private fun updateTilesForEntity(entityId: String, state: String) {
-        Log.d("MainActivity", "=== EVENT RECEIVED: $entityId = $state ===")
-        Log.d("MainActivity", "=== UPDATE START ===")
-        Log.d("MainActivity", "entityId: '$entityId'")
-        Log.d("MainActivity", "state: '$state'")
-        Log.d("MainActivity", "singleStates BEFORE: ${singleStates.keys}")
-        Log.d("MainActivity", "is switch: ${entityId.startsWith("switch.")}")
-
-        // Сохраняем состояние для всех сущностей
         singleStates[entityId] = state
-        Log.d("MainActivity", "singleStates AFTER: $singleStates")
 
         when (entityId) {
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
@@ -553,20 +736,15 @@ class MainActivity : AppCompatActivity() {
                 updateTemperatureWidget()
             }
             else -> {
-                val formatted = formatFloat(state, 1)
-                gridAdapter.updateWidgetByEntityId(entityId, formatted)
+                gridAdapter.updateWidgetByEntityId(entityId, formatFloat(state, 1))
             }
         }
 
-        // Обновляем цвет для всех switch-устройств
         if (entityId.startsWith("switch.")) {
-            Log.d("MainActivity", "Calling updateSingleButtonColor for: $entityId")
             updateSingleButtonColor(entityId)
         }
 
-        // Обновление групп
-        val allTiles = tileManager.getAllTiles()
-        allTiles.filter { it.type == "group" }.forEach { tile ->
+        tileManager.getAllTiles().filter { it.type == "group" }.forEach { tile ->
             try {
                 val config = JSONObject(tile.config)
                 val entityIds = config.optJSONArray("entity_ids")
@@ -581,8 +759,6 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (_: Exception) {}
         }
-
-        Log.d("MainActivity", "=== UPDATE END ===")
     }
 
     private fun formatFloat(value: String, decimals: Int): String {
@@ -594,10 +770,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebSocket() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         val token = prefs.getString("ha_token", "") ?: ""
-        if (token.isEmpty()) {
-            Log.w("MainActivity", "Token is empty, WebSocket not started")
-            return
-        }
+        if (token.isEmpty()) return
 
         val localHost = prefs.getString("ha_local_host", "192.168.1.253:8123") ?: "192.168.1.253:8123"
         val remoteHost = prefs.getString("ha_remote_host", "") ?: ""
@@ -605,80 +778,45 @@ class MainActivity : AppCompatActivity() {
         webSocket = HomeAssistantWebSocket(
             host = localHost,
             token = token,
-            onStateChanged = { entityId, state, _ ->
-                runOnUiThread { updateTilesForEntity(entityId, state) }
-            },
-            onConnected = {
-                handler.postDelayed({
-                    subscribeToNeededEntities()
-                }, 2000)
-            },
+            onStateChanged = { entityId, state, _ -> runOnUiThread { updateTilesForEntity(entityId, state) } },
+            onConnected = { handler.postDelayed({ subscribeToNeededEntities() }, 2000L) },
             onDisconnected = {
                 if (remoteHost.isNotEmpty()) {
-                    webSocket = HomeAssistantWebSocket(
-                        host = remoteHost,
-                        token = token,
-                        onStateChanged = { entityId, state, _ ->
-                            runOnUiThread { updateTilesForEntity(entityId, state) }
-                        },
-                        onConnected = {
-                            handler.postDelayed({
-                                subscribeToNeededEntities()
-                            }, 2000)
-                        },
-                        onDisconnected = {},
-                        onEntitiesList = null
-                    )
+                    webSocket = HomeAssistantWebSocket(remoteHost, token, { e, s, _ -> runOnUiThread { updateTilesForEntity(e, s) } }, { handler.postDelayed({ subscribeToNeededEntities() }, 2000L) }, {}, null)
                     webSocket?.connect()
                 }
             },
-            onEntitiesList = { entities ->
-                cacheEntities(entities)
-            }
+            onEntitiesList = { cacheEntities(it) }
         )
         webSocket?.connect()
     }
 
     private fun cacheEntities(entities: List<HaEntity>) {
-        val json = com.google.gson.Gson().toJson(entities)
         getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
-            putString("cached_entities", json)
+            putString("cached_entities", com.google.gson.Gson().toJson(entities))
             putLong("cached_entities_time", System.currentTimeMillis())
         }
     }
 
     private fun subscribeToNeededEntities() {
-        val allTiles = tileManager.getAllTiles()
         val entityIds = mutableSetOf<String>()
-
-        allTiles.forEach { tile ->
+        tileManager.getAllTiles().forEach { tile ->
             try {
                 val config = JSONObject(tile.config)
-                val single = config.optString("entity_id", "")
-                if (single.isNotEmpty()) entityIds.add(single)
-
-                val arr = config.optJSONArray("entity_ids")
-                if (arr != null) {
-                    for (i in 0 until arr.length()) {
-                        entityIds.add(arr.getString(i))
-                    }
+                config.optString("entity_id", "").takeIf { it.isNotEmpty() }?.let { entityIds.add(it) }
+                config.optJSONArray("entity_ids")?.let { arr ->
+                    for (i in 0 until arr.length()) entityIds.add(arr.getString(i))
                 }
-            } catch (_: Exception) {
-                Log.e("MainActivity", "Error parsing tile config")
-            }
+            } catch (_: Exception) {}
         }
-
-        if (allTiles.any { it.title == "⚡ Сеть" }) {
+        if (tileManager.getAllTiles().any { it.title == "⚡ Сеть" }) {
             entityIds.add("sensor.pzem_energy_monitor_pzem_voltage")
             entityIds.add("sensor.pzem_energy_monitor_pzem_power")
             entityIds.add("sensor.pzem_energy_monitor_pzem_current")
             entityIds.add("sensor.pzem_energy_monitor_pzem_energy")
             entityIds.add("sensor.pzem_energy_monitor_pzem_frequency")
         }
-
-        if (entityIds.isNotEmpty()) {
-            webSocket?.subscribeEntities(entityIds.toList())
-        }
+        if (entityIds.isNotEmpty()) webSocket?.subscribeEntities(entityIds.toList())
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -700,22 +838,20 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(scrollResetRunnable)
+        collapseChildrenRunnable?.let { handler.removeCallbacks(it) }
+        groupLongPressRunnable?.let { handler.removeCallbacks(it) }
         webSocket?.disconnect()
     }
 }
 
 fun TileEntity.toWidgetItem(): WidgetItem {
     val configJson = JSONObject(config)
-    val entityId = configJson.optString("entity_id", "")
-
     return WidgetItem(
         title = title,
         value = "",
-        entityId = entityId,
-        backgroundColor = when (title) {
-            "⚡ Сеть" -> "#8033CC33"
-            else -> "#80333333"
-        },
+        entityId = configJson.optString("entity_id", ""),
+        backgroundColor = if (title == "⚡ Сеть") "#8033CC33" else "#80333333",
         type = type,
         config = configJson.apply { put("id", id) }
     )

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#1A1A1A">
@@ -17,13 +18,22 @@
             android:layout_weight="1"
             android:padding="8dp" />
 
-        <LinearLayout
-            android:id="@+id/bottomPanel"
+        <HorizontalScrollView
+            android:id="@+id/bottomScrollView"
             android:layout_width="match_parent"
-            android:layout_height="60dp"
-            android:orientation="horizontal"
-            android:padding="4dp"
-            android:background="#2A2A2A" />
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:id="@+id/bottomPanel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="4dp"
+                android:background="#2A2A2A" />
+
+        </HorizontalScrollView>
 
     </LinearLayout>
 
@@ -31,6 +41,15 @@
         android:id="@+id/overlayContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
+
+    <!-- Затемняющий фон для выезжающих кнопок -->
+    <View
+        android:id="@+id/dimOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:alpha="0"
+        android:visibility="gone" />
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fabAddTile"
