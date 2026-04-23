@@ -416,7 +416,12 @@ class MainActivity : AppCompatActivity() {
             val entityId = entityIds.getString(i)
             val state = groupStates[tile.id]?.get(entityId) ?: "off"
             val isOn = state == "on"
-            val name = (i + 1).toString()
+            val names = config.optJSONArray("child_names")
+            val name = if (names != null && i < names.length()) {
+                names.getString(i)
+            } else {
+                (i + 1).toString()
+            }
 
             val childButton = Button(this).apply {
                 text = name
