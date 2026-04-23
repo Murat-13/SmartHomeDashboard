@@ -29,6 +29,7 @@ class TileSettingsActivity : AppCompatActivity() {
     private lateinit var btnSave: Button
     private lateinit var btnDelete: Button
     private lateinit var btnAdvanced: Button
+    private lateinit var btnSelectSensors: Button
 
     private var tileId: String? = null
     private val selectedSensors = mutableListOf<String>()
@@ -45,6 +46,7 @@ class TileSettingsActivity : AppCompatActivity() {
         btnSave = findViewById(R.id.btnSave)
         btnDelete = findViewById(R.id.btnDelete)
         btnAdvanced = findViewById(R.id.btnAdvanced)
+        btnSelectSensors = findViewById(R.id.btnSelectSensors)
 
         val adapter = ArrayAdapter.createFromResource(
             this,
@@ -60,16 +62,22 @@ class TileSettingsActivity : AppCompatActivity() {
             btnDelete.visibility = View.VISIBLE
         }
 
-        findViewById<Button>(R.id.btnSelectSensors).setOnClickListener {
+        btnSelectSensors.setOnClickListener {
             val intent = Intent(this, SensorPickerActivity::class.java)
             intent.putStringArrayListExtra("selected_sensors", ArrayList(selectedSensors))
             startActivityForResult(intent, REQUEST_SELECT_SENSORS)
         }
 
         btnAdvanced.setOnClickListener {
-            val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
-            intent.putExtra("tile_id", tileId)
-            startActivity(intent)
+            if (tileId == null) {
+                // Сначала сохраняем, чтобы получить ID
+                saveTileWithoutFinish()
+            }
+            tileId?.let { id ->
+                val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
+                intent.putExtra("tile_id", id)
+                startActivity(intent)
+            }
         }
 
         btnSave.setOnClickListener {
@@ -105,17 +113,12 @@ class TileSettingsActivity : AppCompatActivity() {
             if (arr != null) {
                 for (i in 0 until arr.length()) {
                     val id = arr.getString(i)
-                    if (!selectedSensors.contains(id)) {
-                        selectedSensors.add(id)
-                    }
+                    if (!selectedSensors.contains(id)) selectedSensors.add(id)
                 }
             } else {
                 val single = configJson.optString("entity_id", "")
-                if (single.isNotEmpty() && !selectedSensors.contains(single)) {
-                    selectedSensors.add(single)
-                }
+                if (single.isNotEmpty() && !selectedSensors.contains(single)) selectedSensors.add(single)
             }
-            Log.d("TileSettings", "Loaded sensors from config: $selectedSensors")
         } catch (e: Exception) {
             Log.e("TileSettings", "Error loading config: ${e.message}")
         }
@@ -123,7 +126,7 @@ class TileSettingsActivity : AppCompatActivity() {
         updateSelectedSensorsText()
     }
 
-    private fun saveTile() {
+    private fun saveTileWithoutFinish() {
         val title = etTitle.text.toString().trim()
         if (title.isEmpty()) {
             Toast.makeText(this, "Введите название", Toast.LENGTH_SHORT).show()
@@ -157,17 +160,12 @@ class TileSettingsActivity : AppCompatActivity() {
         if (selectedSensors.size == 1) {
             existingConfig.put("entity_id", selectedSensors.first())
             existingConfig.remove("entity_ids")
-            Log.d("TileSettings", "Saved single entity_id: ${selectedSensors.first()}")
         } else if (selectedSensors.size > 1) {
             existingConfig.put("entity_ids", JSONArray(selectedSensors))
             existingConfig.remove("entity_id")
-            Log.d("TileSettings", "Saved entity_ids array: $selectedSensors")
-        } else {
-            Log.w("TileSettings", "No sensors selected, config unchanged")
         }
 
         val config = existingConfig.toString()
-        Log.d("TileSettings", "Final config for tile '$title': $config")
 
         val tile = TileEntity(
             id = tileId ?: UUID.randomUUID().toString(),
@@ -184,16 +182,18 @@ class TileSettingsActivity : AppCompatActivity() {
         lifecycleScope.launch {
             if (tileId == null) {
                 tileManager.addTile(tile)
-                Log.d("TileSettings", "Added new tile: $title")
+                tileId = tile.id
             } else {
                 tileManager.updateTile(tile)
-                Log.d("TileSettings", "Updated tile: $title")
             }
-            Toast.makeText(this@TileSettingsActivity, "Сохранено", Toast.LENGTH_SHORT).show()
-            Log.d("TileSettings", "setResult OK, finishing")
-            setResult(Activity.RESULT_OK)
-            finish()
         }
+    }
+
+    private fun saveTile() {
+        saveTileWithoutFinish()
+        Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+        setResult(Activity.RESULT_OK)
+        finish()
     }
 
     private fun deleteTile() {
@@ -222,7 +222,6 @@ class TileSettingsActivity : AppCompatActivity() {
                 selectedSensors.clear()
                 selectedSensors.addAll(it)
                 updateSelectedSensorsText()
-                Log.d("TileSettings", "Received sensors from picker: $selectedSensors")
             }
         }
     }

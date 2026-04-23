@@ -1,101 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000"
-    android:keepScreenOn="true">
+    android:background="#1A1A1A">
 
-    <!-- Контейнер для виджетов -->
-    <FrameLayout
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:clipChildren="false"
-        android:clipToPadding="false"
-        app:layout_constraintBottom_toTopOf="@+id/bottomPanel"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/widgetsGrid"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:padding="12dp"
-            android:clipChildren="false"
-            android:clipToPadding="false" />
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:padding="8dp" />
 
-    </FrameLayout>
-
-    <!-- Контейнер для overlay виджетов -->
-    <FrameLayout
-        android:id="@+id/overlayContainer"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:clipChildren="false"
-        android:clipToPadding="false"
-        app:layout_constraintBottom_toTopOf="@+id/bottomPanel"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <!-- Нижняя панель с кнопками -->
-    <LinearLayout
-        android:id="@+id/bottomPanel"
-        android:layout_width="0dp"
-        android:layout_height="100dp"
-        android:background="#1A1A1A"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <Button
-            android:id="@+id/btnLight"
-            style="@style/DashboardButton"
-            android:text="@string/btn_light" />
-
-        <Button
-            android:id="@+id/btnBoiler"
-            style="@style/DashboardButton"
-            android:text="@string/btn_boiler" />
-
-        <Button
-            android:id="@+id/btnHeater"
-            style="@style/DashboardButton"
-            android:text="@string/btn_heater" />
-
-        <Button
-            android:id="@+id/btnPump"
-            style="@style/DashboardButton"
-            android:text="@string/btn_pump" />
-
-        <ImageButton
-            android:id="@+id/btnSettings"
-            style="@style/DashboardImageButton"
-            android:src="@android:drawable/ic_menu_preferences"
-            android:contentDescription="@string/settings" />
+        <LinearLayout
+            android:id="@+id/bottomPanel"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:orientation="horizontal"
+            android:padding="4dp"
+            android:background="#2A2A2A" />
 
     </LinearLayout>
 
-    <!-- Кнопка добавления плитки (изначально скрыта) -->
+    <FrameLayout
+        android:id="@+id/overlayContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fabAddTile"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
-        android:src="@android:drawable/ic_input_add"
+        android:src="@drawable/ic_add"
         android:visibility="gone"
         android:scaleX="0"
         android:scaleY="0"
         android:alpha="0"
-        app:backgroundTint="#4CAF50"
-        app:tint="#FFFFFF"
-        android:contentDescription="Добавить плитку"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent" />
+        app:backgroundTint="#4CAF50" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+</FrameLayout>

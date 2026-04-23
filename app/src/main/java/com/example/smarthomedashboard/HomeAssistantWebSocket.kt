@@ -30,7 +30,6 @@ class HomeAssistantWebSocket(
 
     fun connect() {
         val cleanHost = host.removePrefix("http://").removePrefix("https://")
-        // ВСЕГДА используем wss для внешнего адреса
         val wsScheme = if (host.startsWith("https") || host.contains("saidovmurat")) "wss" else "ws"
         val url = "$wsScheme://$cleanHost/api/websocket"
 
@@ -80,15 +79,18 @@ class HomeAssistantWebSocket(
     }
 
     private fun handleMessage(text: String) {
+        Log.d("HAWebSocket", "RAW MESSAGE: ${text.take(300)}")
+
         try {
             val json = JSONObject(text)
             val type = json.optString("type")
+            Log.d("HAWebSocket", "Message type: $type")
+
             when (type) {
                 "auth_ok" -> {
                     Log.d("HAWebSocket", "Auth OK")
                     onConnected()
                     pendingEntityIds?.let {
-                        Log.d("HAWebSocket", "Sending pending subscription for: $it")
                         sendSubscribeMessage(it)
                         pendingEntityIds = null
                     }
@@ -98,7 +100,6 @@ class HomeAssistantWebSocket(
                     disconnect()
                 }
                 "result" -> {
-                    // ИСПРАВЛЕНО: проверяем тип result
                     val resultObj = json.opt("result")
                     if (resultObj is JSONArray) {
                         val entities = mutableListOf<HaEntity>()
@@ -111,22 +112,39 @@ class HomeAssistantWebSocket(
                             ))
                         }
                         onEntitiesList?.invoke(entities)
-                    } else {
-                        // Это ответ на call_service или другую команду — игнорируем
-                        Log.d("HAWebSocket", "Result is not JSONArray, ignoring")
                     }
                 }
                 "event" -> {
                     val event = json.optJSONObject("event")
-                    val data = event?.optJSONObject("a")
-                    if (data != null) {
-                        val keys = data.keys()
+
+                    // Новый формат (HA 2024+) с "c"
+                    val c = event?.optJSONObject("c")
+                    if (c != null) {
+                        val keys = c.keys()
                         while (keys.hasNext()) {
                             val entityId = keys.next()
-                            val stateObj = data.optJSONObject(entityId)
-                            val state = stateObj?.optString("s") ?: "unknown"
-                            val attr = stateObj?.optJSONObject("a") ?: JSONObject()
+                            val stateObj = c.optJSONObject(entityId)
+                            val plus = stateObj?.optJSONObject("+")
+                            val state = plus?.optString("s") ?: "unknown"
+                            val attr = JSONObject()
+
+                            Log.d("HAWebSocket", "State changed: $entityId = $state")
                             onStateChanged(entityId, state, attr)
+                        }
+                    } else {
+                        // Старый формат с "a"
+                        val a = event?.optJSONObject("a")
+                        if (a != null) {
+                            val keys = a.keys()
+                            while (keys.hasNext()) {
+                                val entityId = keys.next()
+                                val stateObj = a.optJSONObject(entityId)
+                                val state = stateObj?.optString("s") ?: "unknown"
+                                val attr = stateObj?.optJSONObject("a") ?: JSONObject()
+
+                                Log.d("HAWebSocket", "State changed (old): $entityId = $state")
+                                onStateChanged(entityId, state, attr)
+                            }
                         }
                     }
                 }
@@ -145,13 +163,10 @@ class HomeAssistantWebSocket(
 
     fun subscribeEntities(entityIds: List<String>) {
         if (entityIds.isEmpty()) return
-
         if (webSocket == null) {
-            Log.w("HAWebSocket", "WebSocket is null, saving subscription for later")
             pendingEntityIds = entityIds
             return
         }
-
         sendSubscribeMessage(entityIds)
     }
 
@@ -159,19 +174,16 @@ class HomeAssistantWebSocket(
         val message = JSONObject().apply {
             put("id", messageId.getAndIncrement())
             put("type", "subscribe_entities")
-            put("entity_ids", JSONArray(entityIds))  // ИСПРАВЛЕНО: отправляем как JSONArray
+            put("entity_ids", JSONArray(entityIds))
         }
         webSocket?.send(message.toString())
-        Log.d("HAWebSocket", "Sent subscribe_entities: $message")
+        Log.d("HAWebSocket", "Subscribed to: ${entityIds.joinToString()}")
     }
 
     fun callService(domain: String, service: String, entityId: String) {
         if (webSocket == null) {
-            Log.w("HAWebSocket", "WebSocket is null, reconnecting...")
             connect()
-            handler.postDelayed({
-                callService(domain, service, entityId)
-            }, 1000)
+            handler.postDelayed({ callService(domain, service, entityId) }, 1000)
             return
         }
 
@@ -185,20 +197,15 @@ class HomeAssistantWebSocket(
 
         try {
             webSocket?.send(message.toString())
-            Log.d("HAWebSocket", "Call service: $domain.$service -> $entityId")
         } catch (e: Exception) {
-            Log.e("HAWebSocket", "Failed to send service call: ${e.message}")
             webSocket = null
             connect()
-            handler.postDelayed({
-                callService(domain, service, entityId)
-            }, 1000)
+            handler.postDelayed({ callService(domain, service, entityId) }, 1000)
         }
     }
 
     private fun sendMessage(json: JSONObject) {
         webSocket?.send(json.toString())
-        Log.d("HAWebSocket", "Sent: $json")
     }
 
     fun disconnect() {

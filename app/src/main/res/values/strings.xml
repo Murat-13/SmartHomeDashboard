@@ -85,4 +85,27 @@
         <item>Светлая</item>
         <item>Тёмная</item>
     </string-array>
+    <string-array name="data_source_options">
+        <item>Auto (WebSocket)</item>
+        <item>MQTT</item>
+    </string-array>
+    <string-array name="operators">
+        <item>></item>
+        <item>=</item>
+        <item>>=</item>
+    </string-array>
+    <!-- Расширенные настройки -->
+    <string name="widget_icon">Иконка виджета</string>
+    <string name="select_icon">Выбрать иконку</string>
+    <string name="upload">Загрузить</string>
+    <string name="font_size_sp">Размер шрифта (sp)</string>
+    <string name="collapsed_sensors">Датчики в свёрнутом виде</string>
+    <string name="expanded_sensors">Датчики в развёрнутом виде</string>
+    <string name="tap_to_select">Нажмите, чтобы выбрать</string>
+    <string name="color_conditions">Условия смены цвета</string>
+    <string name="add_condition">+ Добавить условие</string>
+    <string name="data_source">Источник данных</string>
+    <string name="minus">-</string>
+    <string name="plus">+</string>
+    <string name="default_font_size">16</string>
 </resources>

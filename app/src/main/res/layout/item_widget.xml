@@ -1,53 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.cardview.widget.CardView
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/widgetCard"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_margin="6dp"
-    app:cardCornerRadius="16dp"
-    app:cardElevation="8dp"
-    app:cardUseCompatPadding="true"
-    android:stateListAnimator="@animator/card_animator">
+    android:layout_margin="4dp"
+    app:cardBackgroundColor="#80333333"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="4dp">
 
     <LinearLayout
-        android:id="@+id/widgetContent"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:gravity="center"
-        android:padding="12dp">
+        android:padding="12dp"
+        android:gravity="center">
 
         <TextView
             android:id="@+id/widgetTitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/widget_default_title"
+            android:text="Title"
             android:textColor="#FFFFFF"
             android:textSize="14sp"
-            android:alpha="0.9" />
+            android:maxLines="1"
+            android:ellipsize="end" />
 
         <TextView
             android:id="@+id/widgetPrimary"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/placeholder_voltage"
+            android:text="—"
             android:textColor="#FFFFFF"
-            android:textSize="22sp"
-            android:textStyle="bold" />
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_marginTop="4dp" />
 
         <TextView
             android:id="@+id/widgetSecondary"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/placeholder_power"
-            android:textColor="#FFFFFF"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+            android:text=""
+            android:textColor="#CCCCCC"
+            android:textSize="12sp" />
 
     </LinearLayout>
-
 </androidx.cardview.widget.CardView>

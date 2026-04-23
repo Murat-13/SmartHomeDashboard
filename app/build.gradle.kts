@@ -46,4 +46,10 @@ dependencies {
 
     // Gson
     implementation("com.google.code.gson:gson:2.10.1")
+
+    dependencies {
+        // ... остальные зависимости ...
+        implementation("com.google.android.material:material:1.11.0")
+        implementation("androidx.core:core-ktx:1.12.0")
+    }
 }

@@ -1,8 +1,9 @@
 package com.example.smarthomedashboard
 
+import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.Dialog
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,12 +13,12 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
-import androidx.core.view.isNotEmpty
+import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
@@ -34,29 +35,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var widgetsGrid: RecyclerView
     private lateinit var bottomPanel: LinearLayout
     private lateinit var overlayContainer: FrameLayout
-    private lateinit var btnSettings: ImageButton
     private lateinit var fabAddTile: FloatingActionButton
     private lateinit var gridAdapter: WidgetAdapter
 
     private lateinit var tileManager: TileManager
-    private lateinit var mqttManager: MqttManager
     private var webSocket: HomeAssistantWebSocket? = null
 
-    @Suppress("SpellCheckingInspection")
     private var pzemVoltage = "—"
-    @Suppress("SpellCheckingInspection")
     private var pzemCurrent = "—"
-    @Suppress("SpellCheckingInspection")
     private var pzemPower = "—"
-    @Suppress("SpellCheckingInspection")
     private var pzemEnergy = "—"
-    @Suppress("SpellCheckingInspection")
     private var pzemFrequency = "—"
     private var gridOnline = true
     private var techRoomTemp = "—"
 
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
+
+    private val groupStates = mutableMapOf<String, MutableMap<String, String>>()
+    private val singleStates = mutableMapOf<String, String>()
+    private var isEditMode = false
 
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
@@ -76,20 +74,14 @@ class MainActivity : AppCompatActivity() {
         widgetsGrid = findViewById(R.id.widgetsGrid)
         bottomPanel = findViewById(R.id.bottomPanel)
         overlayContainer = findViewById(R.id.overlayContainer)
-        btnSettings = findViewById(R.id.btnSettings)
         fabAddTile = findViewById(R.id.fabAddTile)
 
         tileManager = TileManager(this)
 
         setupGrid()
         setupBottomPanel()
-        setupMqtt()
         setupWebSocket()
         setupLongPressOnEmptySpace()
-
-        btnSettings.setOnClickListener {
-            openWithPinCheck { startActivity(Intent(this, SettingsActivity::class.java)) }
-        }
     }
 
     private fun openWithPinCheck(action: () -> Unit) {
@@ -132,6 +124,18 @@ class MainActivity : AppCompatActivity() {
                     val newTile = tile.copy(x = index % spanCount, y = index / spanCount)
                     tileManager.updateTile(newTile)
                 }
+            },
+            isEditMode = isEditMode,
+            onTileClick = { tileId ->
+                if (isEditMode) {
+                    openTileSettings(tileId)
+                }
+            },
+            onTileLongClick = { tileId ->
+                val tile = tileManager.getAllTiles().find { it.id == tileId }
+                if (tile?.type == "group" && !isEditMode) {
+                    showGroupDialog(tile)
+                }
             }
         )
         widgetsGrid.adapter = gridAdapter
@@ -155,35 +159,74 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                     setMargins(6, 6, 6, 6)
                 }
-                setBackgroundColor(Color.parseColor("#424242"))
-                setTextColor(Color.WHITE)
+                tag = tile.id
+
+                if (tile.type == "group") {
+                    val isAnyOn = getGroupState(tile.id)
+                    setBackgroundColor(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                } else {
+                    val entityId = JSONObject(tile.config).optString("entity_id", "")
+                    val state = singleStates[entityId] ?: "off"
+                    val isOn = state == "on"
+                    setBackgroundColor(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
+                }
+                setTextColor("#FFFFFF".toColorInt())
 
                 setOnClickListener {
-                    val entityId = JSONObject(tile.config).optString("entity_id", "")
-                    if (entityId.isNotEmpty()) {
-                        webSocket?.callService("switch", "toggle", entityId)
-                        Toast.makeText(this@MainActivity, "Переключаю: $entityId", Toast.LENGTH_SHORT).show()
+                    if (isEditMode) {
+                        openTileSettings(tile.id)
                     } else {
-                        Toast.makeText(this@MainActivity, "Не указан entity_id", Toast.LENGTH_SHORT).show()
+                        if (tile.type == "group") {
+                            toggleGroup(tile.id, tile)
+                        } else {
+                            val entityId = JSONObject(tile.config).optString("entity_id", "")
+                            if (entityId.isNotEmpty()) {
+                                val domain = entityId.substringBefore(".")
+                                val currentState = singleStates[entityId] ?: "off"
+                                val targetState = if (currentState == "on") "turn_off" else "turn_on"
+
+                                webSocket?.callService(domain, targetState, entityId)
+
+                                val newState = if (currentState == "on") "off" else "on"
+                                singleStates[entityId] = newState
+                                val isOn = newState == "on"
+                                setBackgroundColor(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
+                            }
+                        }
                     }
                 }
 
                 setOnLongClickListener {
-                    openWithPinCheck {
-                        startActivityForResult(
-                            Intent(this@MainActivity, TileSettingsActivity::class.java).putExtra("tile_id", tile.id),
-                            REQUEST_TILE_SETTINGS
-                        )
+                    if (!isEditMode && tile.type == "group") {
+                        showGroupDialog(tile)
                     }
                     true
                 }
             }
             bottomPanel.addView(button)
         }
-        if (bottomPanel.isNotEmpty() && bottomPanel.getChildAt(bottomPanel.childCount - 1) != btnSettings) {
-            bottomPanel.removeView(btnSettings)
+    }
+
+    private fun openTileSettings(tileId: String) {
+        openWithPinCheck {
+            startActivityForResult(
+                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", tileId),
+                REQUEST_TILE_SETTINGS
+            )
         }
-        bottomPanel.addView(btnSettings)
+    }
+
+    private fun enterEditMode() {
+        isEditMode = true
+        gridAdapter.setEditMode(true)
+        showAddTileButton()
+        Toast.makeText(this, "Режим редактирования. Нажмите на плитку для настройки.", Toast.LENGTH_LONG).show()
+    }
+
+    private fun exitEditMode() {
+        isEditMode = false
+        gridAdapter.setEditMode(false)
+        hideAddTileButton()
     }
 
     private fun createDefaultGridTiles() {
@@ -248,15 +291,167 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ==================== ГРУППОВЫЕ КНОПКИ ====================
+
+    private fun updateGroupState(groupId: String, entityId: String, state: String) {
+        if (!groupStates.containsKey(groupId)) {
+            groupStates[groupId] = mutableMapOf()
+        }
+        groupStates[groupId]?.put(entityId, state)
+        updateGroupButtonAppearance(groupId)
+    }
+
+    private fun getGroupState(groupId: String): Boolean {
+        val states = groupStates[groupId] ?: return false
+        return states.values.any { it == "on" }
+    }
+
+    private fun updateGroupButtonAppearance(groupId: String) {
+        val isAnyOn = getGroupState(groupId)
+        for (i in 0 until bottomPanel.childCount) {
+            val child = bottomPanel.getChildAt(i)
+            if (child is Button && child.tag == groupId) {
+                child.setBackgroundColor(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                break
+            }
+        }
+    }
+
+    private fun toggleGroup(groupId: String, tile: TileEntity) {
+        try {
+            val config = JSONObject(tile.config)
+            val entityIds = config.optJSONArray("entity_ids")
+
+            if (entityIds != null && entityIds.length() > 0) {
+                val isAnyOn = getGroupState(groupId)
+                val targetState = if (isAnyOn) "turn_off" else "turn_on"
+
+                for (i in 0 until entityIds.length()) {
+                    val entityId = entityIds.getString(i)
+                    val domain = entityId.substringBefore(".")
+                    webSocket?.callService(domain, targetState, entityId)
+                }
+                Toast.makeText(this, "Группа: ${tile.title}", Toast.LENGTH_SHORT).show()
+            }
+        } catch (_: Exception) {
+            Log.e("MainActivity", "Error toggling group")
+        }
+    }
+
+    private fun showGroupDialog(tile: TileEntity) {
+        try {
+            val config = JSONObject(tile.config)
+            val entityIds = config.optJSONArray("entity_ids")
+
+            if (entityIds == null || entityIds.length() == 0) {
+                Toast.makeText(this, "В группе нет устройств", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            val items = mutableListOf<GroupButtonItem>()
+            for (i in 0 until entityIds.length()) {
+                val entityId = entityIds.getString(i)
+                val state = groupStates[tile.id]?.get(entityId) ?: "off"
+                val name = entityId.substringAfter(".").replace("_", " ").capitalizeWords()
+                items.add(GroupButtonItem(entityId, name, "", state, true))
+            }
+
+            val dialog = Dialog(this)
+            dialog.setContentView(R.layout.dialog_group_buttons)
+
+            val tvTitle = dialog.findViewById<TextView>(R.id.tvGroupTitle)
+            val rvButtons = dialog.findViewById<RecyclerView>(R.id.rvGroupButtons)
+            val btnClose = dialog.findViewById<Button>(R.id.btnCloseGroup)
+
+            tvTitle.text = tile.title
+            rvButtons.layoutManager = GridLayoutManager(this, 2)
+
+            var adapter: GroupButtonsAdapter? = null
+
+            adapter = GroupButtonsAdapter(items) { item ->
+                val domain = item.entityId.substringBefore(".")
+                val service = if (item.state == "on") "turn_off" else "turn_on"
+                webSocket?.callService(domain, service, item.entityId)
+
+                val newState = if (item.state == "on") "off" else "on"
+                item.state = newState
+
+                updateGroupState(tile.id, item.entityId, newState)
+
+                val position = items.indexOf(item)
+                if (position >= 0) {
+                    adapter?.notifyItemChanged(position)
+                }
+            }
+
+            rvButtons.adapter = adapter
+
+            btnClose.setOnClickListener { dialog.dismiss() }
+            dialog.show()
+
+        } catch (_: Exception) {
+            Log.e("MainActivity", "Error showing group dialog")
+        }
+    }
+
+    private fun String.capitalizeWords(): String {
+        return split(" ").joinToString(" ") { word ->
+            word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        }
+    }
+
+    // ==================== ОБЫЧНЫЕ КНОПКИ ====================
+
+    private fun updateSingleButtonColor(entityId: String) {
+        val state = singleStates[entityId] ?: "off"
+        val isOn = state == "on"
+        val targetColor = if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt()
+
+        Log.d("MainActivity", "updateSingleButtonColor: entityId=$entityId, state=$state, isOn=$isOn")
+
+        var found = false
+        for (i in 0 until bottomPanel.childCount) {
+            val child = bottomPanel.getChildAt(i)
+            if (child is Button) {
+                val tileId = child.tag as? String
+                val tile = tileId?.let { tileManager.getAllTiles().find { t -> t.id == it } }
+
+                if (tile != null && tile.type != "group") {
+                    try {
+                        val config = JSONObject(tile.config)
+                        val btnEntityId = config.optString("entity_id", "")
+                        Log.d("MainActivity", "Checking button: $btnEntityId")
+                        if (btnEntityId == entityId) {
+                            child.setBackgroundColor(targetColor)
+                            found = true
+                            Log.d("MainActivity", "Button color updated for: $entityId")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        if (!found) {
+            Log.w("MainActivity", "Button not found for entityId: $entityId")
+        }
+    }
+
+    // ==================== РЕЖИМ РЕДАКТИРОВАНИЯ ====================
+
+    @SuppressLint("ClickableViewAccessibility")
     private fun setupLongPressOnEmptySpace() {
         widgetsGrid.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
                 val child = widgetsGrid.findChildViewUnder(event.x, event.y)
                 if (child == null) {
-                    longPressRunnable = Runnable {
-                        openWithPinCheck { showAddTileButton() }
+                    if (isEditMode) {
+                        exitEditMode()
+                    } else {
+                        longPressRunnable = Runnable {
+                            openWithPinCheck { enterEditMode() }
+                        }
+                        handler.postDelayed(longPressRunnable!!, 1000)
                     }
-                    handler.postDelayed(longPressRunnable!!, 3000)
                 }
             } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
                 longPressRunnable?.let { handler.removeCallbacks(it) }
@@ -295,7 +490,6 @@ class MainActivity : AppCompatActivity() {
 
             fabAddTile.isVisible = true
             fabAddTile.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200).start()
-            handler.postDelayed({ hideAddTileButton() }, 10000)
         }
     }
 
@@ -304,6 +498,8 @@ class MainActivity : AppCompatActivity() {
             fabAddTile.isVisible = false
         }.start()
     }
+
+    // ==================== ДАННЫЕ С ДАТЧИКОВ ====================
 
     private fun updatePzemWidget() {
         gridAdapter.updatePzemData(pzemVoltage, pzemCurrent, pzemPower, pzemEnergy, pzemFrequency, gridOnline)
@@ -319,20 +515,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTilesForEntity(entityId: String, state: String) {
-        Log.d("MainActivity", "updateTilesForEntity: entityId=$entityId, state=$state")
+        Log.d("MainActivity", "=== EVENT RECEIVED: $entityId = $state ===")
+        Log.d("MainActivity", "=== UPDATE START ===")
+        Log.d("MainActivity", "entityId: '$entityId'")
+        Log.d("MainActivity", "state: '$state'")
+        Log.d("MainActivity", "singleStates BEFORE: ${singleStates.keys}")
+        Log.d("MainActivity", "is switch: ${entityId.startsWith("switch.")}")
+
+        // Сохраняем состояние для всех сущностей
+        singleStates[entityId] = state
+        Log.d("MainActivity", "singleStates AFTER: $singleStates")
 
         when (entityId) {
-            // PZEM сущности — обновляем через WebSocket
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
                 pzemVoltage = formatFloat(state, 0)
                 updateGridStatus()
                 updatePzemWidget()
-                Log.d("MainActivity", "Updated PZEM voltage via WebSocket: $pzemVoltage")
             }
             "sensor.pzem_energy_monitor_pzem_power" -> {
                 pzemPower = formatFloat(state, 0)
                 updatePzemWidget()
-                Log.d("MainActivity", "Updated PZEM power via WebSocket: $pzemPower")
             }
             "sensor.pzem_energy_monitor_pzem_current" -> {
                 pzemCurrent = formatFloat(state, 2)
@@ -349,26 +551,45 @@ class MainActivity : AppCompatActivity() {
             "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
                 techRoomTemp = formatFloat(state, 1)
                 updateTemperatureWidget()
-                Log.d("MainActivity", "Updated temperature: $techRoomTemp")
             }
             else -> {
                 val formatted = formatFloat(state, 1)
                 gridAdapter.updateWidgetByEntityId(entityId, formatted)
-                Log.d("MainActivity", "Updated widget by entityId: $entityId = $formatted")
             }
         }
+
+        // Обновляем цвет для всех switch-устройств
+        if (entityId.startsWith("switch.")) {
+            Log.d("MainActivity", "Calling updateSingleButtonColor for: $entityId")
+            updateSingleButtonColor(entityId)
+        }
+
+        // Обновление групп
+        val allTiles = tileManager.getAllTiles()
+        allTiles.filter { it.type == "group" }.forEach { tile ->
+            try {
+                val config = JSONObject(tile.config)
+                val entityIds = config.optJSONArray("entity_ids")
+                if (entityIds != null) {
+                    for (i in 0 until entityIds.length()) {
+                        if (entityIds.getString(i) == entityId) {
+                            updateGroupState(tile.id, entityId, state)
+                            updateGroupButtonAppearance(tile.id)
+                            break
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        Log.d("MainActivity", "=== UPDATE END ===")
     }
 
     private fun formatFloat(value: String, decimals: Int): String {
         return value.toFloatOrNull()?.let { String.format("%.${decimals}f", it) } ?: "—"
     }
 
-    private fun setupMqtt() {
-        mqttManager = MqttManager(this)
-        // MQTT используется только для температуры (пока)
-        mqttManager.setOnTemperatureUpdate { techRoomTemp = formatFloat(it, 1); runOnUiThread { updateTemperatureWidget() } }
-        mqttManager.connect()
-    }
+    // ==================== WEBSOCKET ====================
 
     private fun setupWebSocket() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
@@ -381,23 +602,18 @@ class MainActivity : AppCompatActivity() {
         val localHost = prefs.getString("ha_local_host", "192.168.1.253:8123") ?: "192.168.1.253:8123"
         val remoteHost = prefs.getString("ha_remote_host", "") ?: ""
 
-        Log.d("MainActivity", "setupWebSocket: localHost=$localHost, remoteHost=$remoteHost")
-
         webSocket = HomeAssistantWebSocket(
             host = localHost,
             token = token,
             onStateChanged = { entityId, state, _ ->
-                Log.d("MainActivity", "onStateChanged: $entityId = $state")
                 runOnUiThread { updateTilesForEntity(entityId, state) }
             },
             onConnected = {
-                Log.d("MainActivity", "WebSocket connected to $localHost")
                 handler.postDelayed({
                     subscribeToNeededEntities()
                 }, 2000)
             },
             onDisconnected = {
-                Log.d("MainActivity", "WebSocket disconnected")
                 if (remoteHost.isNotEmpty()) {
                     webSocket = HomeAssistantWebSocket(
                         host = remoteHost,
@@ -406,21 +622,17 @@ class MainActivity : AppCompatActivity() {
                             runOnUiThread { updateTilesForEntity(entityId, state) }
                         },
                         onConnected = {
-                            Log.d("MainActivity", "WebSocket connected to remote")
                             handler.postDelayed({
                                 subscribeToNeededEntities()
                             }, 2000)
                         },
-                        onDisconnected = {
-                            Log.d("MainActivity", "Remote disconnected")
-                        },
+                        onDisconnected = {},
                         onEntitiesList = null
                     )
                     webSocket?.connect()
                 }
             },
             onEntitiesList = { entities ->
-                Log.d("MainActivity", "Received entities list: ${entities.size} items")
                 cacheEntities(entities)
             }
         )
@@ -433,11 +645,9 @@ class MainActivity : AppCompatActivity() {
             putString("cached_entities", json)
             putLong("cached_entities_time", System.currentTimeMillis())
         }
-        Log.d("MainActivity", "Cached ${entities.size} entities")
     }
 
     private fun subscribeToNeededEntities() {
-        Log.d("MainActivity", "subscribeToNeededEntities called, webSocket=$webSocket")
         val allTiles = tileManager.getAllTiles()
         val entityIds = mutableSetOf<String>()
 
@@ -445,25 +655,19 @@ class MainActivity : AppCompatActivity() {
             try {
                 val config = JSONObject(tile.config)
                 val single = config.optString("entity_id", "")
-                if (single.isNotEmpty()) {
-                    entityIds.add(single)
-                    Log.d("MainActivity", "Found entity_id: $single from tile ${tile.title}")
-                }
+                if (single.isNotEmpty()) entityIds.add(single)
 
                 val arr = config.optJSONArray("entity_ids")
                 if (arr != null) {
                     for (i in 0 until arr.length()) {
-                        val id = arr.getString(i)
-                        entityIds.add(id)
-                        Log.d("MainActivity", "Found entity_id from array: $id")
+                        entityIds.add(arr.getString(i))
                     }
                 }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error parsing tile config: ${e.message}")
+            } catch (_: Exception) {
+                Log.e("MainActivity", "Error parsing tile config")
             }
         }
 
-        // Всегда добавляем PZEM сущности, если виджет "⚡ Сеть" есть
         if (allTiles.any { it.title == "⚡ Сеть" }) {
             entityIds.add("sensor.pzem_energy_monitor_pzem_voltage")
             entityIds.add("sensor.pzem_energy_monitor_pzem_power")
@@ -472,13 +676,8 @@ class MainActivity : AppCompatActivity() {
             entityIds.add("sensor.pzem_energy_monitor_pzem_frequency")
         }
 
-        Log.d("MainActivity", "Final entityIds: $entityIds")
-
         if (entityIds.isNotEmpty()) {
-            Log.d("MainActivity", "Calling subscribeEntities with: $entityIds")
             webSocket?.subscribeEntities(entityIds.toList())
-        } else {
-            Log.d("MainActivity", "entityIds is empty, not subscribing")
         }
     }
 
@@ -501,7 +700,6 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
-        mqttManager.disconnect()
         webSocket?.disconnect()
     }
 }
