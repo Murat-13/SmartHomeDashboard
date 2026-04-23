@@ -51,7 +51,7 @@
             android:id="@+id/tvDisplayName"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Отображаемое имя"
+            android:text="Имя"
             android:textColor="#4CAF50"
             android:textSize="12sp"
             android:padding="4dp"

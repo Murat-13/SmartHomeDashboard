@@ -1,8 +1,5 @@
 package com.example.smarthomedashboard
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
@@ -21,6 +18,7 @@ import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
+import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
@@ -63,7 +61,7 @@ class MainActivity : AppCompatActivity() {
     private val singleStates = mutableMapOf<String, String>()
     private var isEditMode = false
 
-    private var expandedChildButtons = mutableListOf<Button>()
+    private val expandedChildButtons = mutableListOf<Button>()
     private var expandedGroupId: String? = null
     private var expandedSourceButton: Button? = null
     private var expandedTile: TileEntity? = null
@@ -74,6 +72,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
+        private const val BUTTON_SIZE = 160
     }
 
     @Suppress("DEPRECATION")
@@ -170,10 +169,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val buttonSize = 160
         val tilesList = tiles.toList()
         val screenWidth = resources.displayMetrics.widthPixels
-        val maxButtonsPerRow = (screenWidth / (buttonSize + 12)) - 1
+        val maxButtonsPerRow = (screenWidth / (BUTTON_SIZE + 12)) - 1
 
         val rows = mutableListOf<LinearLayout>()
         rows.add(LinearLayout(this).apply {
@@ -185,7 +183,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         tilesList.forEach { tile ->
-            val button = createTileButton(tile, buttonSize)
+            val button = createTileButton(tile)
             var added = false
             for (row in rows) {
                 if (row.childCount < maxButtonsPerRow) {
@@ -213,7 +211,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val btnSettings = createSettingsButton(buttonSize)
+        val btnSettings = createSettingsButton()
         val lastRow = rows.lastOrNull() ?: rows.first()
 
         if (lastRow.childCount < maxButtonsPerRow) {
@@ -233,25 +231,25 @@ class MainActivity : AppCompatActivity() {
         resetScrollWithDelay()
     }
 
-    private fun createTileButton(tile: TileEntity, size: Int): Button {
+    private fun createTileButton(tile: TileEntity): Button {
         return Button(this).apply {
             text = tile.title
-            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+            layoutParams = LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply {
                 setMargins(6, 6, 6, 6)
             }
             tag = tile.id
             alpha = 0.8f
             elevation = 8f
-            background = resources.getDrawable(R.drawable.bg_button_rounded, null)
+            background = ResourcesCompat.getDrawable(resources, R.drawable.bg_button_rounded, null)
 
             if (tile.type == "group") {
                 val isAnyOn = getGroupState(tile.id)
-                background.setTint(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                background?.setTint(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
             } else {
                 val entityId = JSONObject(tile.config).optString("entity_id", "")
                 val state = singleStates[entityId] ?: "off"
                 val isOn = state == "on"
-                background.setTint(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
+                background?.setTint(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
             }
             setTextColor("#FFFFFF".toColorInt())
             textSize = 14f
@@ -260,22 +258,18 @@ class MainActivity : AppCompatActivity() {
             gravity = android.view.Gravity.CENTER
             isAllCaps = false
 
-            // === ОБРАБОТКА НАЖАТИЙ ДЛЯ ГРУПП ===
             if (tile.type == "group") {
-                // Короткое нажатие — toggle всей группы
                 setOnClickListener {
                     if (isEditMode) {
                         openTileSettings(tile.id)
                     } else {
                         if (expandedGroupId == tile.id) {
-                            // Если дочерние раскрыты — сворачиваем
                             collapseChildButtons()
                         }
                         toggleGroup(tile.id, tile)
                     }
                 }
 
-                // Долгое нажатие (1 сек) — раскрытие дочерних
                 setOnLongClickListener {
                     if (isEditMode) {
                         openTileSettings(tile.id)
@@ -289,7 +283,6 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
 
-                // Touch listener для отслеживания длительности нажатия
                 setOnTouchListener { _, event ->
                     when (event.action) {
                         MotionEvent.ACTION_DOWN -> {
@@ -313,7 +306,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } else {
-                // === ОБЫЧНЫЕ КНОПКИ ===
                 setOnClickListener {
                     if (isEditMode) {
                         openTileSettings(tile.id)
@@ -327,7 +319,7 @@ class MainActivity : AppCompatActivity() {
                             val newState = if (currentState == "on") "off" else "on"
                             singleStates[entityId] = newState
                             val isOn = newState == "on"
-                            background.setTint(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
+                            background?.setTint(if (isOn) "#8033CC33".toColorInt() else "#424242".toColorInt())
                         }
                     }
                 }
@@ -342,16 +334,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun createSettingsButton(size: Int): Button {
+    private fun createSettingsButton(): Button {
         return Button(this).apply {
             text = "⚙"
-            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+            layoutParams = LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply {
                 setMargins(6, 6, 6, 6)
             }
             alpha = 0.8f
             elevation = 8f
-            background = resources.getDrawable(R.drawable.bg_button_rounded, null)
-            background.setTint("#424242".toColorInt())
+            background = ResourcesCompat.getDrawable(resources, R.drawable.bg_button_rounded, null)
+            background?.setTint("#424242".toColorInt())
             setTextColor("#FFFFFF".toColorInt())
             textSize = 28f
             gravity = android.view.Gravity.CENTER
@@ -377,7 +369,6 @@ class MainActivity : AppCompatActivity() {
         expandedSourceButton = sourceButton
         expandedTile = tile
 
-        val buttonSize = 160
         val sourceLocation = IntArray(2)
         sourceButton.getLocationOnScreen(sourceLocation)
 
@@ -390,8 +381,8 @@ class MainActivity : AppCompatActivity() {
         val itemsInFirstRow = if (childCount <= maxPerRow) childCount else (childCount + 1) / 2
         val itemsInSecondRow = childCount - itemsInFirstRow
 
-        val totalWidthFirstRow = itemsInFirstRow * (buttonSize + 12)
-        val totalWidthSecondRow = itemsInSecondRow * (buttonSize + 12)
+        val totalWidthFirstRow = itemsInFirstRow * (BUTTON_SIZE + 12)
+        val totalWidthSecondRow = itemsInSecondRow * (BUTTON_SIZE + 12)
 
         var firstRowStartX = sourceCenterX - totalWidthFirstRow / 2
         var secondRowStartX = sourceCenterX - totalWidthSecondRow / 2
@@ -402,11 +393,11 @@ class MainActivity : AppCompatActivity() {
         if (secondRowStartX + totalWidthSecondRow > screenWidth) secondRowStartX = screenWidth - totalWidthSecondRow - 8
 
         val rowsNeeded = if (childCount <= maxPerRow) 1 else 2
-        val firstRowY = sourceTop - (buttonSize + 12) * rowsNeeded - 12
-        val secondRowY = firstRowY + buttonSize + 12
+        val firstRowY = sourceTop - (BUTTON_SIZE + 12) * rowsNeeded - 12
+        val secondRowY = firstRowY + BUTTON_SIZE + 12
 
         val actualFirstRowY = if (firstRowY < 50) sourceTop + sourceButton.height + 12 else firstRowY
-        val actualSecondRowY = if (firstRowY < 50) actualFirstRowY + buttonSize + 12 else secondRowY
+        val actualSecondRowY = if (firstRowY < 50) actualFirstRowY + BUTTON_SIZE + 12 else secondRowY
 
         expandedChildButtons.clear()
 
@@ -425,13 +416,13 @@ class MainActivity : AppCompatActivity() {
 
             val childButton = Button(this).apply {
                 text = name
-                layoutParams = FrameLayout.LayoutParams(buttonSize, buttonSize)
+                layoutParams = FrameLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE)
                 alpha = 0f
                 scaleX = 0.5f
                 scaleY = 0.5f
                 elevation = 12f
-                background = resources.getDrawable(R.drawable.bg_button_rounded, null)
-                background.setTint(if (isOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                background = ResourcesCompat.getDrawable(resources, R.drawable.bg_button_rounded, null)
+                background?.setTint(if (isOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
                 setTextColor("#FFFFFF".toColorInt())
                 textSize = 14f
                 gravity = android.view.Gravity.CENTER
@@ -444,17 +435,15 @@ class MainActivity : AppCompatActivity() {
                     val targetState = if (currentState == "on") "turn_off" else "turn_on"
                     webSocket?.callService(domain, targetState, entityId)
                     val newState = if (currentState == "on") "off" else "on"
-                    background.setTint(if (newState == "on") "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                    background?.setTint(if (newState == "on") "#8033CC33".toColorInt() else "#80333333".toColorInt())
                     updateGroupState(tile.id, entityId, newState)
-
-                    // Сброс таймера сворачивания при касании
                     resetCollapseTimer()
                 }
             }
 
             val row = if (i < itemsInFirstRow) 0 else 1
             val col = if (row == 0) i else i - itemsInFirstRow
-            val x = if (row == 0) firstRowStartX + col * (buttonSize + 12) else secondRowStartX + col * (buttonSize + 12)
+            val x = if (row == 0) firstRowStartX + col * (BUTTON_SIZE + 12) else secondRowStartX + col * (BUTTON_SIZE + 12)
             val y = if (row == 0) actualFirstRowY else actualSecondRowY
 
             childButton.x = x.toFloat()
@@ -514,7 +503,7 @@ class MainActivity : AppCompatActivity() {
         collapseChildrenRunnable?.let { handler.removeCallbacks(it) }
     }
 
-    // ==================== ГРУППОВЫЕ КНОПКИ (СОСТОЯНИЯ) ====================
+    // ==================== ГРУППОВЫЕ КНОПКИ ====================
 
     private fun updateGroupState(groupId: String, entityId: String, state: String) {
         if (!groupStates.containsKey(groupId)) {
@@ -536,7 +525,7 @@ class MainActivity : AppCompatActivity() {
                 for (j in 0 until childLayout.childCount) {
                     val child = childLayout.getChildAt(j)
                     if (child is Button && child.tag == groupId) {
-                        child.background.setTint(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
+                        child.background?.setTint(if (isAnyOn) "#8033CC33".toColorInt() else "#80333333".toColorInt())
                         return
                     }
                 }
@@ -584,7 +573,7 @@ class MainActivity : AppCompatActivity() {
                                 val config = JSONObject(tile.config)
                                 val btnEntityId = config.optString("entity_id", "")
                                 if (btnEntityId == entityId) {
-                                    child.background.setTint(targetColor)
+                                    child.background?.setTint(targetColor)
                                 }
                             } catch (_: Exception) {}
                         }
@@ -644,9 +633,8 @@ class MainActivity : AppCompatActivity() {
         widgetsGrid.post {
             val tiles = tileManager.getTilesByContainer("grid")
             val position = tiles.size
-            val spanCount = 4
-            val row = position / spanCount
-            val col = position % spanCount
+            val row = position / 4
+            val col = position % 4
 
             val firstView = widgetsGrid.getChildAt(0)
             if (firstView != null) {
@@ -705,6 +693,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTemperatureWidget() {
         gridAdapter.updateTemperatureData(techRoomTemp)
+        gridAdapter.updateWidgetByEntityId("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia", techRoomTemp)
     }
 
     private fun updateGridStatus() {
@@ -713,35 +702,42 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTilesForEntity(entityId: String, state: String) {
         singleStates[entityId] = state
+        val formatted = formatFloat(state, 1)
 
         when (entityId) {
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
                 pzemVoltage = formatFloat(state, 0)
                 updateGridStatus()
                 updatePzemWidget()
+                gridAdapter.updateWidgetByEntityId(entityId, pzemVoltage)
             }
             "sensor.pzem_energy_monitor_pzem_power" -> {
                 pzemPower = formatFloat(state, 0)
                 updatePzemWidget()
+                gridAdapter.updateWidgetByEntityId(entityId, pzemPower)
             }
             "sensor.pzem_energy_monitor_pzem_current" -> {
                 pzemCurrent = formatFloat(state, 2)
                 updatePzemWidget()
+                gridAdapter.updateWidgetByEntityId(entityId, pzemCurrent)
             }
             "sensor.pzem_energy_monitor_pzem_energy" -> {
                 pzemEnergy = formatFloat(state, 2)
                 updatePzemWidget()
+                gridAdapter.updateWidgetByEntityId(entityId, pzemEnergy)
             }
             "sensor.pzem_energy_monitor_pzem_frequency" -> {
                 pzemFrequency = formatFloat(state, 1)
                 updatePzemWidget()
+                gridAdapter.updateWidgetByEntityId(entityId, pzemFrequency)
             }
             "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
                 techRoomTemp = formatFloat(state, 1)
                 updateTemperatureWidget()
+                gridAdapter.updateWidgetByEntityId(entityId, techRoomTemp)
             }
             else -> {
-                gridAdapter.updateWidgetByEntityId(entityId, formatFloat(state, 1))
+                gridAdapter.updateWidgetByEntityId(entityId, formatted)
             }
         }
 
@@ -852,10 +848,19 @@ class MainActivity : AppCompatActivity() {
 
 fun TileEntity.toWidgetItem(): WidgetItem {
     val configJson = JSONObject(config)
+
+    var entityId = configJson.optString("entity_id", "")
+    if (entityId.isEmpty()) {
+        val arr = configJson.optJSONArray("entity_ids")
+        if (arr != null && arr.length() > 0) {
+            entityId = arr.getString(0)
+        }
+    }
+
     return WidgetItem(
         title = title,
         value = "",
-        entityId = configJson.optString("entity_id", ""),
+        entityId = entityId,
         backgroundColor = if (title == "⚡ Сеть") "#8033CC33" else "#80333333",
         type = type,
         config = configJson.apply { put("id", id) }

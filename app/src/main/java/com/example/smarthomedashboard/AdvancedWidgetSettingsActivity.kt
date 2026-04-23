@@ -2,24 +2,26 @@ package com.example.smarthomedashboard
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.*
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.Spinner
+import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
-import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
-import com.google.android.material.color.MaterialColors
-import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Collections
 
 class AdvancedWidgetSettingsActivity : AppCompatActivity() {
 
@@ -27,24 +29,19 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     private var tileId: String? = null
     private var tile: TileEntity? = null
 
-    // UI элементы
-    private lateinit var ivSelectedIcon: ImageView
-    private lateinit var tvFontSize: TextView
     private lateinit var tvCollapsedHint: TextView
     private lateinit var tvExpandedHint: TextView
     private lateinit var rvCollapsedSensors: RecyclerView
     private lateinit var rvExpandedSensors: RecyclerView
-    private lateinit var rvColorRules: RecyclerView
     private lateinit var spinnerDataSource: Spinner
+    private lateinit var etFontSize: EditText
+    private lateinit var btnAddColorRule: Button
+    private lateinit var rvColorRules: RecyclerView
 
-    // Адаптеры
     private lateinit var collapsedAdapter: DraggableSensorAdapter
     private lateinit var expandedAdapter: DraggableSensorAdapter
     private lateinit var colorRulesAdapter: ColorRuleAdapter
 
-    // Данные
-    private var selectedIcon: String = ""
-    private var fontSize: Int = 16
     private val collapsedSensors = mutableListOf<SensorItem>()
     private val expandedSensors = mutableListOf<SensorItem>()
     private val colorRules = mutableListOf<ColorRule>()
@@ -55,46 +52,64 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
 
         tileManager = TileManager(this)
         tileId = intent.getStringExtra("tile_id")
+        tile = tileId?.let { tileManager.loadTiles().find { it.id == tileId } }
 
-        initViews()
+        tvCollapsedHint = findViewById(R.id.tvCollapsedHint)
+        tvExpandedHint = findViewById(R.id.tvExpandedHint)
+        rvCollapsedSensors = findViewById(R.id.rvCollapsedSensors)
+        rvExpandedSensors = findViewById(R.id.rvExpandedSensors)
+        spinnerDataSource = findViewById(R.id.spinnerDataSource)
+        etFontSize = findViewById(R.id.etFontSize)
+        btnAddColorRule = findViewById(R.id.btnAddColorRule)
+        rvColorRules = findViewById(R.id.rvColorRules)
+
+        findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
+            finish()
+        }
+
         loadTileData()
         setupRecyclerViews()
         setupClickListeners()
     }
 
-    private fun initViews() {
-        ivSelectedIcon = findViewById(R.id.ivSelectedIcon)
-        tvFontSize = findViewById(R.id.tvFontSize)
-        tvCollapsedHint = findViewById(R.id.tvCollapsedHint)
-        tvExpandedHint = findViewById(R.id.tvExpandedHint)
-        rvCollapsedSensors = findViewById(R.id.rvCollapsedSensors)
-        rvExpandedSensors = findViewById(R.id.rvExpandedSensors)
-        rvColorRules = findViewById(R.id.rvColorRules)
-        spinnerDataSource = findViewById(R.id.spinnerDataSource)
-
-        findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
-            finish()
-        }
-    }
-
     private fun loadTileData() {
-        tileId?.let { id ->
-            tile = tileManager.loadTiles().find { it.id == id }
-        }
-
         tile?.let { t ->
-            // Загружаем сохранённые настройки
             try {
-                val appearance = JSONObject(t.appearance)
-                selectedIcon = appearance.optString("icon", "")
-                fontSize = appearance.optInt("fontSize", 16)
-                tvFontSize.text = fontSize.toString()
+                val config = JSONObject(t.config)
 
+                // Размер шрифта
+                etFontSize.setText(t.fontSize.toString())
+
+                // Источник данных
+                val sourceIndex = when (t.sourceType) {
+                    "mqtt" -> 1
+                    else -> 0
+                }
+                spinnerDataSource.setSelection(sourceIndex)
+
+                // Свёрнутые датчики
                 val collapsedIds = JSONArray(t.collapsedSensorIds)
                 for (i in 0 until collapsedIds.length()) {
                     collapsedSensors.add(SensorItem(collapsedIds.getString(i), "Датчик", true))
                 }
 
+                // Развёрнутые датчики
+                val entityIds = config.optJSONArray("entity_ids")
+                if (entityIds != null) {
+                    for (i in 0 until entityIds.length()) {
+                        val id = entityIds.getString(i)
+                        if (collapsedSensors.none { it.entityId == id }) {
+                            expandedSensors.add(SensorItem(id, id, true))
+                        }
+                    }
+                } else {
+                    val single = config.optString("entity_id", "")
+                    if (single.isNotEmpty() && collapsedSensors.none { it.entityId == single }) {
+                        expandedSensors.add(SensorItem(single, single, true))
+                    }
+                }
+
+                // Цветовые правила
                 val conditions = JSONArray(t.conditions)
                 for (i in 0 until conditions.length()) {
                     val obj = conditions.getJSONObject(i)
@@ -106,47 +121,14 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                         textColor = obj.optString("text_color", "#FFFFFF")
                     ))
                 }
-
-                val sourceIndex = when (t.sourceType) {
-                    "mqtt" -> 1
-                    else -> 0
-                }
-                spinnerDataSource.setSelection(sourceIndex)
-
-            } catch (e: Exception) {
-                // Значения по умолчанию
-            }
-
-            // Загружаем выбранные датчики из config
-            try {
-                val config = JSONObject(t.config)
-                val ids = config.optJSONArray("entity_ids")
-                if (ids != null) {
-                    for (i in 0 until ids.length()) {
-                        val entityId = ids.getString(i)
-                        if (collapsedSensors.none { it.entityId == entityId } &&
-                            expandedSensors.none { it.entityId == entityId }) {
-                            expandedSensors.add(SensorItem(entityId, entityId, true))
-                        }
-                    }
-                } else {
-                    val single = config.optString("entity_id", "")
-                    if (single.isNotEmpty() && collapsedSensors.isEmpty() && expandedSensors.isEmpty()) {
-                        expandedSensors.add(SensorItem(single, single, true))
-                    }
-                }
-            } catch (e: Exception) {
-                // Игнорируем
-            }
+            } catch (_: Exception) {}
         }
-
         updateHints()
     }
 
     private fun updateHints() {
         tvCollapsedHint.visibility = if (collapsedSensors.isEmpty()) View.VISIBLE else View.GONE
         rvCollapsedSensors.visibility = if (collapsedSensors.isEmpty()) View.GONE else View.VISIBLE
-
         tvExpandedHint.visibility = if (expandedSensors.isEmpty()) View.VISIBLE else View.GONE
         rvExpandedSensors.visibility = if (expandedSensors.isEmpty()) View.GONE else View.VISIBLE
     }
@@ -159,16 +141,15 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         rvCollapsedSensors.layoutManager = LinearLayoutManager(this)
         rvCollapsedSensors.adapter = collapsedAdapter
 
+        val touchHelper1 = ItemTouchHelper(DragCallback(collapsedAdapter))
+        touchHelper1.attachToRecyclerView(rvCollapsedSensors)
+
         // Развёрнутые датчики
         expandedAdapter = DraggableSensorAdapter(expandedSensors) { sensor, isChecked ->
             sensor.visible = isChecked
         }
         rvExpandedSensors.layoutManager = LinearLayoutManager(this)
         rvExpandedSensors.adapter = expandedAdapter
-
-        // Drag-and-drop для обоих списков
-        val touchHelper = ItemTouchHelper(DragCallback(collapsedAdapter))
-        touchHelper.attachToRecyclerView(rvCollapsedSensors)
 
         val touchHelper2 = ItemTouchHelper(DragCallback(expandedAdapter))
         touchHelper2.attachToRecyclerView(rvExpandedSensors)
@@ -180,33 +161,6 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     }
 
     private fun setupClickListeners() {
-        // Выбор иконки
-        findViewById<Button>(R.id.btnSelectIcon).setOnClickListener {
-            // TODO: Открыть выбор Material Symbols
-            Toast.makeText(this, "Выбор иконки (в разработке)", Toast.LENGTH_SHORT).show()
-        }
-
-        findViewById<Button>(R.id.btnUploadIcon).setOnClickListener {
-            // TODO: Загрузка из галереи
-            Toast.makeText(this, "Загрузка из галереи (в разработке)", Toast.LENGTH_SHORT).show()
-        }
-
-        // Размер шрифта
-        findViewById<Button>(R.id.btnFontSizeMinus).setOnClickListener {
-            if (fontSize > 8) {
-                fontSize--
-                tvFontSize.text = fontSize.toString()
-            }
-        }
-
-        findViewById<Button>(R.id.btnFontSizePlus).setOnClickListener {
-            if (fontSize < 48) {
-                fontSize++
-                tvFontSize.text = fontSize.toString()
-            }
-        }
-
-        // Выбор датчиков для свёрнутого вида
         tvCollapsedHint.setOnClickListener {
             openSensorPicker { selected ->
                 selected.forEach { entityId ->
@@ -219,7 +173,6 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
             }
         }
 
-        // Выбор датчиков для развёрнутого вида
         tvExpandedHint.setOnClickListener {
             openSensorPicker { selected ->
                 selected.forEach { entityId ->
@@ -232,40 +185,36 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
             }
         }
 
-        // Добавить цветовое правило
-        findViewById<Button>(R.id.btnAddColorRule).setOnClickListener {
+        btnAddColorRule.setOnClickListener {
             colorRules.add(ColorRule("", ">", 0f, "#4CAF50", "#FFFFFF"))
             colorRulesAdapter.notifyItemInserted(colorRules.size - 1)
         }
 
-        // Сохранить
         findViewById<Button>(R.id.btnSave).setOnClickListener {
             saveSettings()
         }
 
-        // Отмена
         findViewById<Button>(R.id.btnCancel).setOnClickListener {
             finish()
         }
     }
 
-    private fun openSensorPicker(onSelected: (List<String>) -> Unit) {
-        val intent = Intent(this, SensorPickerActivity::class.java)
-        startActivityForResult(intent, REQUEST_SELECT_SENSORS)
-        // Временно сохраняем колбэк
-        tempSensorCallback = onSelected
-    }
-
     private var tempSensorCallback: ((List<String>) -> Unit)? = null
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_SELECT_SENSORS && resultCode == Activity.RESULT_OK) {
-            data?.getStringArrayListExtra("selected_sensors")?.let { selected ->
+    private val selectSensorsLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.getStringArrayListExtra("selected_sensors")?.let { selected ->
                 tempSensorCallback?.invoke(selected)
                 tempSensorCallback = null
             }
         }
+    }
+
+    private fun openSensorPicker(onSelected: (List<String>) -> Unit) {
+        tempSensorCallback = onSelected
+        val intent = Intent(this, SensorPickerActivity::class.java)
+        selectSensorsLauncher.launch(intent)
     }
 
     private fun saveSettings() {
@@ -276,36 +225,31 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
             if (index >= 0) {
                 val oldTile = tiles[index]
 
-                // Формируем appearance
-                val appearance = JSONObject().apply {
-                    put("icon", selectedIcon)
-                    put("fontSize", fontSize)
+                val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
+                val sourceType = when (spinnerDataSource.selectedItemPosition) {
+                    1 -> "mqtt"
+                    else -> "auto"
                 }
 
-                // Формируем collapsedSensorIds
                 val collapsedArray = JSONArray()
                 collapsedSensors.filter { it.visible }.forEach { collapsedArray.put(it.entityId) }
 
-                // Формируем conditions
                 val conditionsArray = JSONArray()
-                colorRules.forEach { rule ->
-                    if (rule.sensor.isNotEmpty()) {
-                        conditionsArray.put(JSONObject().apply {
-                            put("entity_id", rule.sensor)
-                            put("operator", rule.operator)
-                            put("value", rule.value)
-                            put("bg_color", rule.bgColor)
-                            put("text_color", rule.textColor)
-                        })
-                    }
+                colorRules.filter { it.sensor.isNotEmpty() }.forEach { rule ->
+                    conditionsArray.put(JSONObject().apply {
+                        put("entity_id", rule.sensor)
+                        put("operator", rule.operator)
+                        put("value", rule.value.toDouble())
+                        put("bg_color", rule.bgColor)
+                        put("text_color", rule.textColor)
+                    })
                 }
 
-                // Обновляем config — добавляем все датчики
+                val config = JSONObject(oldTile.config)
                 val allSensors = mutableSetOf<String>()
                 collapsedSensors.filter { it.visible }.forEach { allSensors.add(it.entityId) }
                 expandedSensors.filter { it.visible }.forEach { allSensors.add(it.entityId) }
 
-                val config = JSONObject(oldTile.config)
                 if (allSensors.size == 1) {
                     config.put("entity_id", allSensors.first())
                     config.remove("entity_ids")
@@ -314,30 +258,19 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                     config.remove("entity_id")
                 }
 
-                val updatedTile = oldTile.copy(
-                    appearance = appearance.toString(),
+                tiles[index] = oldTile.copy(
                     collapsedSensorIds = collapsedArray.toString(),
                     conditions = conditionsArray.toString(),
                     fontSize = fontSize,
-                    icon = selectedIcon,
-                    sourceType = when (spinnerDataSource.selectedItemPosition) {
-                        1 -> "mqtt"
-                        else -> "auto"
-                    },
+                    sourceType = sourceType,
                     config = config.toString()
                 )
 
-                tiles[index] = updatedTile
                 tileManager.saveTiles(tiles)
-
                 Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()
                 finish()
             }
         }
-    }
-
-    companion object {
-        private const val REQUEST_SELECT_SENSORS = 2001
     }
 }
 
@@ -399,16 +332,14 @@ class DraggableSensorAdapter(
 
 class DragCallback(private val adapter: DraggableSensorAdapter) : ItemTouchHelper.Callback() {
     override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
-        val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
-        return makeMovementFlags(dragFlags, 0)
+        return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
     }
 
-    override fun onMove(
-        recyclerView: RecyclerView,
-        viewHolder: RecyclerView.ViewHolder,
-        target: RecyclerView.ViewHolder
-    ): Boolean {
-        adapter.onItemMove(viewHolder.adapterPosition, target.adapterPosition)
+    override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
+        val fromPos = viewHolder.bindingAdapterPosition
+        val toPos = target.bindingAdapterPosition
+        if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
+        adapter.onItemMove(fromPos, toPos)
         return true
     }
 
@@ -429,20 +360,7 @@ class ColorRuleAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val rule = items[position]
-
-        // TODO: Заполнить спиннер датчиками из кэша
-
         holder.etValue.setText(rule.value.toString())
-        holder.vColorPreview.setBackgroundColor(Color.parseColor(rule.bgColor))
-
-        holder.btnPickBgColor.setOnClickListener {
-            // TODO: ColorPicker
-        }
-
-        holder.btnPickTextColor.setOnClickListener {
-            // TODO: ColorPicker
-        }
-
         holder.btnDeleteRule.setOnClickListener {
             items.removeAt(position)
             notifyItemRemoved(position)
@@ -452,12 +370,7 @@ class ColorRuleAdapter(
     override fun getItemCount(): Int = items.size
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val spinnerSensor: Spinner = view.findViewById(R.id.spinnerSensor)
-        val spinnerOperator: Spinner = view.findViewById(R.id.spinnerOperator)
         val etValue: EditText = view.findViewById(R.id.etValue)
-        val vColorPreview: View = view.findViewById(R.id.vColorPreview)
-        val btnPickBgColor: Button = view.findViewById(R.id.btnPickBgColor)
-        val btnPickTextColor: Button = view.findViewById(R.id.btnPickTextColor)
         val btnDeleteRule: Button = view.findViewById(R.id.btnDeleteRule)
     }
 }

@@ -23,16 +23,16 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Если"
+                android:text="Условие"
                 android:textColor="#FFFFFF"
                 android:textSize="14sp" />
 
-            <Spinner
-                android:id="@+id/spinnerSensor"
-                android:layout_width="0dp"
+            <Button
+                android:id="@+id/btnDeleteRule"
+                android:layout_width="40dp"
                 android:layout_height="40dp"
-                android:layout_weight="2"
-                android:background="#1A1A1A" />
+                android:text="✕"
+                android:backgroundTint="#FF5555" />
 
         </LinearLayout>
 
@@ -67,52 +67,6 @@
                 android:layout_marginStart="8dp"
                 android:background="#4CAF50" />
 
-            <Button
-                android:id="@+id/btnDeleteRule"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:layout_marginStart="8dp"
-                android:text="🗑️"
-                android:backgroundTint="#FF5555" />
-
         </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Цвет фона:"
-                android:textColor="#CCCCCC"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/btnPickBgColor"
-                android:layout_width="40dp"
-                android:layout_height="30dp"
-                android:layout_marginStart="8dp"
-                android:background="#4CAF50" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Цвет текста:"
-                android:textColor="#CCCCCC"
-                android:textSize="12sp"
-                android:layout_marginStart="16dp" />
-
-            <Button
-                android:id="@+id/btnPickTextColor"
-                android:layout_width="40dp"
-                android:layout_height="30dp"
-                android:layout_marginStart="8dp"
-                android:background="#FFFFFF" />
-
-        </LinearLayout>
-
     </LinearLayout>
 </androidx.cardview.widget.CardView>

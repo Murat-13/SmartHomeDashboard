@@ -75,9 +75,18 @@ class WidgetAdapter(
                 else android.graphics.Color.parseColor("#80FF3333")
                 holder.cardView.setCardBackgroundColor(bgColor)
             }
+            "🌡️ Температура" -> {
+                holder.primaryText.text = if (widget.value.isEmpty() || widget.value == "—") "—" else widget.value
+                holder.secondaryText.text = ""
+                try {
+                    holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor(widget.backgroundColor))
+                } catch (_: Exception) {
+                    holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor("#80333333"))
+                }
+            }
             else -> {
                 holder.primaryText.text = if (widget.value.isEmpty() || widget.value == "—") "—" else widget.value
-                holder.secondaryText.text = if (widget.type == "sensor") "—" else ""
+                holder.secondaryText.text = if (widget.type == "sensor") "" else ""
                 try {
                     holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor(widget.backgroundColor))
                 } catch (_: Exception) {
@@ -281,12 +290,13 @@ class WidgetAdapter(
     }
 
     fun updateTemperatureData(temp: String) {
-        val position = widgets.indexOfFirst { it.entityId == "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" }
+        val position = widgets.indexOfFirst { it.title == "🌡️ Температура" }
         if (position >= 0) {
             val viewHolder = recyclerView.findViewHolderForAdapterPosition(position) as? WidgetViewHolder
             viewHolder?.primaryText?.text = context.getString(R.string.temperature_format, temp)
             widgets[position] = widgets[position].copy(value = temp)
         }
+        updateWidgetByEntityId("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia", temp)
     }
 
     fun updateWidgetByEntityId(entityId: String, value: String) {

@@ -79,13 +79,9 @@ class HomeAssistantWebSocket(
     }
 
     private fun handleMessage(text: String) {
-        Log.d("HAWebSocket", "RAW MESSAGE: ${text.take(300)}")
-
         try {
             val json = JSONObject(text)
             val type = json.optString("type")
-            Log.d("HAWebSocket", "Message type: $type")
-
             when (type) {
                 "auth_ok" -> {
                     Log.d("HAWebSocket", "Auth OK")
@@ -117,7 +113,6 @@ class HomeAssistantWebSocket(
                 "event" -> {
                     val event = json.optJSONObject("event")
 
-                    // Новый формат (HA 2024+) с "c"
                     val c = event?.optJSONObject("c")
                     if (c != null) {
                         val keys = c.keys()
@@ -127,12 +122,9 @@ class HomeAssistantWebSocket(
                             val plus = stateObj?.optJSONObject("+")
                             val state = plus?.optString("s") ?: "unknown"
                             val attr = JSONObject()
-
-                            Log.d("HAWebSocket", "State changed: $entityId = $state")
                             onStateChanged(entityId, state, attr)
                         }
                     } else {
-                        // Старый формат с "a"
                         val a = event?.optJSONObject("a")
                         if (a != null) {
                             val keys = a.keys()
@@ -141,8 +133,6 @@ class HomeAssistantWebSocket(
                                 val stateObj = a.optJSONObject(entityId)
                                 val state = stateObj?.optString("s") ?: "unknown"
                                 val attr = stateObj?.optJSONObject("a") ?: JSONObject()
-
-                                Log.d("HAWebSocket", "State changed (old): $entityId = $state")
                                 onStateChanged(entityId, state, attr)
                             }
                         }
@@ -168,6 +158,20 @@ class HomeAssistantWebSocket(
             return
         }
         sendSubscribeMessage(entityIds)
+
+        // Запрашиваем текущие состояния для всех подписанных сущностей
+        handler.postDelayed({
+            requestCurrentStates()
+        }, 500L)
+    }
+
+    private fun requestCurrentStates() {
+        val message = JSONObject().apply {
+            put("id", messageId.getAndIncrement())
+            put("type", "get_states")
+        }
+        webSocket?.send(message.toString())
+        Log.d("HAWebSocket", "Requested current states for all entities")
     }
 
     private fun sendSubscribeMessage(entityIds: List<String>) {
