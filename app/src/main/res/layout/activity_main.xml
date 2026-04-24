@@ -31,7 +31,7 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
                 android:padding="4dp"
-                android:background="#2A2A2A" />
+                android:background="#1A1A1A" />
 
         </HorizontalScrollView>
 
@@ -42,7 +42,6 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Затемняющий фон для выезжающих кнопок -->
     <View
         android:id="@+id/dimOverlay"
         android:layout_width="match_parent"
@@ -50,18 +49,5 @@
         android:background="#000000"
         android:alpha="0"
         android:visibility="gone" />
-
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fabAddTile"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="16dp"
-        android:src="@drawable/ic_add"
-        android:visibility="gone"
-        android:scaleX="0"
-        android:scaleY="0"
-        android:alpha="0"
-        app:backgroundTint="#4CAF50" />
 
 </FrameLayout>

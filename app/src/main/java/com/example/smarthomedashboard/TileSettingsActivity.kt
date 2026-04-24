@@ -31,6 +31,7 @@ class TileSettingsActivity : AppCompatActivity() {
     private lateinit var btnAdvanced: Button
     private lateinit var btnSelectSensors: Button
     private lateinit var btnEditChildren: Button
+    private lateinit var etButtonSize: EditText
 
     private var tileId: String? = null
     private val selectedSensors = mutableListOf<String>()
@@ -49,6 +50,7 @@ class TileSettingsActivity : AppCompatActivity() {
         btnAdvanced = findViewById(R.id.btnAdvanced)
         btnSelectSensors = findViewById(R.id.btnSelectSensors)
         btnEditChildren = findViewById(R.id.btnEditChildren)
+        etButtonSize = findViewById(R.id.etButtonSize)
 
         val adapter = ArrayAdapter.createFromResource(
             this,
@@ -60,9 +62,12 @@ class TileSettingsActivity : AppCompatActivity() {
 
         spinnerType.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                // Показываем кнопку "Редактировать группу" только для типа "Группа"
                 val isGroup = position == 2 && tileId != null
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
+                // Показываем размер кнопки только для кнопок и групп
+                val showSize = position == 1 || position == 2
+                findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
+                etButtonSize.visibility = if (showSize) View.VISIBLE else View.GONE
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         })
@@ -80,9 +85,7 @@ class TileSettingsActivity : AppCompatActivity() {
         }
 
         btnAdvanced.setOnClickListener {
-            if (tileId == null) {
-                saveTileWithoutFinish()
-            }
+            if (tileId == null) saveTileWithoutFinish()
             tileId?.let { id ->
                 val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
                 intent.putExtra("tile_id", id)
@@ -98,13 +101,8 @@ class TileSettingsActivity : AppCompatActivity() {
             }
         }
 
-        btnSave.setOnClickListener {
-            saveTile()
-        }
-
-        btnDelete.setOnClickListener {
-            deleteTile()
-        }
+        btnSave.setOnClickListener { saveTile() }
+        btnDelete.setOnClickListener { deleteTile() }
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
             finish()
@@ -137,6 +135,10 @@ class TileSettingsActivity : AppCompatActivity() {
                 val single = configJson.optString("entity_id", "")
                 if (single.isNotEmpty() && !selectedSensors.contains(single)) selectedSensors.add(single)
             }
+
+            // Загружаем размер кнопки
+            val buttonSize = configJson.optInt("button_size", 160)
+            etButtonSize.setText(buttonSize.toString())
         } catch (e: Exception) {
             Log.e("TileSettings", "Error loading config: ${e.message}")
         }
@@ -181,8 +183,6 @@ class TileSettingsActivity : AppCompatActivity() {
         } else if (selectedSensors.size > 1) {
             existingConfig.put("entity_ids", JSONArray(selectedSensors))
             existingConfig.remove("entity_id")
-
-            // Если создаём группу — создаём child_names по умолчанию
             if (type == "group" && !existingConfig.has("child_names")) {
                 val names = JSONArray()
                 selectedSensors.forEachIndexed { index, _ ->
@@ -191,6 +191,10 @@ class TileSettingsActivity : AppCompatActivity() {
                 existingConfig.put("child_names", names)
             }
         }
+
+        // Сохраняем размер кнопки
+        val buttonSize = etButtonSize.text.toString().toIntOrNull() ?: 160
+        existingConfig.put("button_size", buttonSize)
 
         val config = existingConfig.toString()
 
@@ -252,7 +256,6 @@ class TileSettingsActivity : AppCompatActivity() {
             }
         }
         if (requestCode == REQUEST_EDIT_CHILDREN && resultCode == Activity.RESULT_OK) {
-            // Обновляем данные после редактирования дочерних кнопок
             loadTileData()
         }
     }

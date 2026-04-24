@@ -1,10 +1,10 @@
 package com.example.smarthomedashboard
 
-import android.animation.Animator
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.view.LayoutInflater
@@ -12,6 +12,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.cardview.widget.CardView
 import androidx.core.content.edit
@@ -24,10 +25,11 @@ class WidgetAdapter(
     private val overlayContainer: FrameLayout,
     private val recyclerView: RecyclerView,
     private val onDataUpdate: () -> WidgetData,
-    private val onTileMoved: ((from: Int, to: Int) -> Unit)? = null,
     private var isEditMode: Boolean = false,
     private val onTileClick: ((tileId: String) -> Unit)? = null,
-    private val onTileLongClick: ((tileId: String) -> Unit)? = null
+    private val onTileLongClick: ((tileId: String) -> Unit)? = null,
+    private val onTileResized: ((tileId: String, newWidth: Int, newHeight: Int) -> Unit)? = null,
+    private val onTileDragEnd: ((tileId: String, newX: Int, newY: Int) -> Unit)? = null
 ) : RecyclerView.Adapter<WidgetAdapter.WidgetViewHolder>() {
 
     private var expandedOverlay: View? = null
@@ -35,6 +37,14 @@ class WidgetAdapter(
     private var hiddenViewPosition = -1
     private val handler = Handler(Looper.getMainLooper())
     private var collapseRunnable: Runnable? = null
+
+    private var isDragging = false
+    private var isResizing = false
+    private var dragStartX = 0f
+    private var dragStartY = 0f
+    private var initialTouchX = 0f
+    private var initialTouchY = 0f
+    private var draggedPosition = -1
 
     fun setEditMode(enabled: Boolean) {
         isEditMode = enabled
@@ -53,6 +63,7 @@ class WidgetAdapter(
 
         if (widget.title.isEmpty()) {
             holder.cardView.visibility = View.INVISIBLE
+            holder.resizeHandle.visibility = View.GONE
             return
         }
 
@@ -64,6 +75,7 @@ class WidgetAdapter(
         }
 
         holder.titleText.text = widget.title
+        holder.resizeHandle.visibility = if (isEditMode) View.VISIBLE else View.GONE
 
         val data = onDataUpdate()
 
@@ -71,41 +83,32 @@ class WidgetAdapter(
             "⚡ Сеть" -> {
                 holder.primaryText.text = context.getString(R.string.voltage_format, data.voltage)
                 holder.secondaryText.text = context.getString(R.string.power_format, data.power)
-                val bgColor = if (data.gridOnline) android.graphics.Color.parseColor("#8033CC33")
-                else android.graphics.Color.parseColor("#80FF3333")
+                val bgColor = if (data.gridOnline) Color.parseColor("#8033CC33") else Color.parseColor("#80FF3333")
                 holder.cardView.setCardBackgroundColor(bgColor)
             }
             "🌡️ Температура" -> {
                 holder.primaryText.text = if (widget.value.isEmpty() || widget.value == "—") "—" else widget.value
                 holder.secondaryText.text = ""
-                try {
-                    holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor(widget.backgroundColor))
-                } catch (_: Exception) {
-                    holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor("#80333333"))
-                }
             }
             else -> {
                 holder.primaryText.text = if (widget.value.isEmpty() || widget.value == "—") "—" else widget.value
                 holder.secondaryText.text = if (widget.type == "sensor") "" else ""
-                try {
-                    holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor(widget.backgroundColor))
-                } catch (_: Exception) {
-                    holder.cardView.setCardBackgroundColor(android.graphics.Color.parseColor("#80333333"))
-                }
             }
         }
 
         holder.cardView.setOnClickListener {
-            if (isEditMode) {
-                onTileClick?.invoke(widget.config.optString("id", ""))
-            } else {
-                when (widget.type) {
-                    "button" -> {}
-                    else -> {
-                        if (expandedOverlay != null) {
-                            collapseOverlay()
-                        } else {
-                            expandWidget(holder.cardView, position)
+            if (!isDragging && !isResizing) {
+                if (isEditMode) {
+                    onTileClick?.invoke(widget.config.optString("id", ""))
+                } else {
+                    when (widget.type) {
+                        "button" -> {}
+                        else -> {
+                            if (expandedOverlay != null) {
+                                collapseOverlay()
+                            } else {
+                                expandWidget(holder.cardView, position)
+                            }
                         }
                     }
                 }
@@ -119,35 +122,97 @@ class WidgetAdapter(
             true
         }
 
-        holder.cardView.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
-                val longPressRunnable = Runnable {
-                    if (!isEditMode) {
+        if (isEditMode) {
+            holder.cardView.setOnTouchListener { _, event ->
+                handleDragResizeTouch(event, holder, position)
+            }
+            holder.resizeHandle.setOnTouchListener { _, event ->
+                isResizing = true
+                val result = handleDragResizeTouch(event, holder, position)
+                if (event.action == MotionEvent.ACTION_UP) isResizing = false
+                result
+            }
+        } else {
+            holder.cardView.setOnTouchListener { _, event ->
+                if (event.action == MotionEvent.ACTION_DOWN) {
+                    val longPressRunnable = Runnable {
                         val tileId = widget.config.optString("id", "")
                         val prefs = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
                         val lastAuthTime = prefs.getLong("last_auth_time", 0)
-                        val currentTime = System.currentTimeMillis()
-
-                        if (currentTime - lastAuthTime > 60 * 60 * 1000) {
+                        if (System.currentTimeMillis() - lastAuthTime > 60 * 60 * 1000) {
                             PinDialog(context) {
                                 prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
-                                val intent = Intent(context, TileSettingsActivity::class.java)
-                                intent.putExtra("tile_id", tileId)
-                                context.startActivity(intent)
+                                context.startActivity(Intent(context, TileSettingsActivity::class.java).putExtra("tile_id", tileId))
                             }.show()
                         } else {
-                            val intent = Intent(context, TileSettingsActivity::class.java)
-                            intent.putExtra("tile_id", tileId)
-                            context.startActivity(intent)
+                            context.startActivity(Intent(context, TileSettingsActivity::class.java).putExtra("tile_id", tileId))
                         }
                     }
+                    handler.postDelayed(longPressRunnable, 3000)
+                    holder.cardView.tag = longPressRunnable
+                } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                    (holder.cardView.tag as? Runnable)?.let { handler.removeCallbacks(it) }
                 }
-                handler.postDelayed(longPressRunnable, 3000)
-                holder.cardView.tag = longPressRunnable
-            } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                (holder.cardView.tag as? Runnable)?.let { handler.removeCallbacks(it) }
+                false
             }
-            false
+        }
+    }
+
+    private fun handleDragResizeTouch(event: MotionEvent, holder: WidgetViewHolder, position: Int): Boolean {
+        return when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                initialTouchX = event.rawX
+                initialTouchY = event.rawY
+                dragStartX = holder.cardView.translationX
+                dragStartY = holder.cardView.translationY
+                draggedPosition = position
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val deltaX = event.rawX - initialTouchX
+                val deltaY = event.rawY - initialTouchY
+
+                if (kotlin.math.abs(deltaX) > 10 || kotlin.math.abs(deltaY) > 10) {
+                    if (isResizing) {
+                        val newWidth = (holder.cardView.width + deltaX.toInt()).coerceIn(100, 600)
+                        val newHeight = (holder.cardView.height + deltaY.toInt()).coerceIn(100, 600)
+                        holder.cardView.layoutParams.width = newWidth
+                        holder.cardView.layoutParams.height = newHeight
+                        holder.cardView.requestLayout()
+                    } else {
+                        isDragging = true
+                        holder.cardView.translationX = dragStartX + deltaX
+                        holder.cardView.translationY = dragStartY + deltaY
+                        holder.cardView.alpha = 0.7f
+                        holder.cardView.elevation = 16f
+                    }
+                }
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (isDragging) {
+                    holder.cardView.alpha = 1.0f
+                    holder.cardView.elevation = 4f
+                    holder.cardView.translationX = 0f
+                    holder.cardView.translationY = 0f
+                    val tileWidth = recyclerView.width / 4
+                    val newCol = ((holder.cardView.x + holder.cardView.translationX) / tileWidth).toInt().coerceIn(0, 3)
+                    val newRow = ((holder.cardView.y + holder.cardView.translationY) / tileWidth).toInt().coerceIn(0, Int.MAX_VALUE)
+                    val tileId = widgets[position].config.optString("id", "")
+                    onTileDragEnd?.invoke(tileId, newCol, newRow)
+                    isDragging = false
+                }
+                if (isResizing) {
+                    val tileId = widgets[position].config.optString("id", "")
+                    val tileWidth = recyclerView.width / 4
+                    val newWidthInCols = (holder.cardView.width / tileWidth).toInt().coerceIn(1, 4)
+                    val newHeightInRows = (holder.cardView.height / tileWidth).toInt().coerceIn(1, 3)
+                    onTileResized?.invoke(tileId, newWidthInCols, newHeightInRows)
+                    isResizing = false
+                }
+                true
+            }
+            else -> false
         }
     }
 
@@ -162,20 +227,20 @@ class WidgetAdapter(
 
         val data = onDataUpdate()
 
-        val overlay = CardView(source.context)
-        overlay.alpha = 0.85f
-        overlay.cardElevation = 20f
-        overlay.radius = 16f
-
+        // Используем правильный цвет для сети
         val bgColor = when (widget.title) {
-            "⚡ Сеть" -> if (data.gridOnline) android.graphics.Color.parseColor("#8033CC33")
-            else android.graphics.Color.parseColor("#80FF3333")
-            else -> android.graphics.Color.parseColor("#80333333")
+            "⚡ Сеть" -> if (data.gridOnline) Color.parseColor("#8033CC33") else Color.parseColor("#80FF3333")
+            else -> Color.parseColor("#80333333")
         }
-        overlay.setCardBackgroundColor(bgColor)
 
-        val content = LayoutInflater.from(source.context)
-            .inflate(R.layout.widget_overlay_content, overlay, true)
+        val overlay = CardView(source.context).apply {
+            alpha = 0.85f
+            cardElevation = 20f
+            radius = 16f
+            setCardBackgroundColor(bgColor)
+        }
+
+        val content = LayoutInflater.from(source.context).inflate(R.layout.widget_overlay_content, overlay, true)
 
         when (widget.title) {
             "⚡ Сеть" -> {
@@ -249,27 +314,11 @@ class WidgetAdapter(
 
     private fun collapseOverlay() {
         expandedOverlay?.let { overlay ->
-            val scaleX = ObjectAnimator.ofFloat(overlay, "scaleX", 1.5f, 1f)
-            val scaleY = ObjectAnimator.ofFloat(overlay, "scaleY", 1.5f, 1f)
-            val transX = ObjectAnimator.ofFloat(overlay, "translationX", overlay.translationX, 0f)
-            val transY = ObjectAnimator.ofFloat(overlay, "translationY", overlay.translationY, 0f)
-
-            val animSet = android.animation.AnimatorSet()
-            animSet.playTogether(scaleX, scaleY, transX, transY)
-            animSet.duration = 300
-            animSet.addListener(object : Animator.AnimatorListener {
-                override fun onAnimationStart(animation: Animator) {}
-                override fun onAnimationEnd(animation: Animator) {
-                    overlayContainer.removeView(overlay)
-                    sourceView?.visibility = View.VISIBLE
-                    sourceView = null
-                    hiddenViewPosition = -1
-                    expandedOverlay = null
-                }
-                override fun onAnimationCancel(animation: Animator) {}
-                override fun onAnimationRepeat(animation: Animator) {}
-            })
-            animSet.start()
+            overlayContainer.removeView(overlay)
+            sourceView?.visibility = View.VISIBLE
+            sourceView = null
+            hiddenViewPosition = -1
+            expandedOverlay = null
         }
         collapseRunnable?.let { handler.removeCallbacks(it) }
         collapseRunnable = null
@@ -282,8 +331,7 @@ class WidgetAdapter(
             viewHolder?.let {
                 it.primaryText.text = context.getString(R.string.voltage_format, voltage)
                 it.secondaryText.text = context.getString(R.string.power_format, power)
-                val bgColor = if (gridOnline) android.graphics.Color.parseColor("#8033CC33")
-                else android.graphics.Color.parseColor("#80FF3333")
+                val bgColor = if (gridOnline) Color.parseColor("#8033CC33") else Color.parseColor("#80FF3333")
                 try { it.cardView.setCardBackgroundColor(bgColor) } catch (_: Exception) {}
             }
         }
@@ -320,6 +368,7 @@ class WidgetAdapter(
         val titleText: TextView = view.findViewById(R.id.widgetTitle)
         val primaryText: TextView = view.findViewById(R.id.widgetPrimary)
         val secondaryText: TextView = view.findViewById(R.id.widgetSecondary)
+        val resizeHandle: ImageView = view.findViewById(R.id.resizeHandle)
     }
 }
 
@@ -327,7 +376,7 @@ data class WidgetItem(
     val title: String,
     val value: String,
     val entityId: String = "",
-    val backgroundColor: String,
+    val backgroundColor: String = "#80333333",
     val type: String = "sensor",
     val config: JSONObject = JSONObject()
 )

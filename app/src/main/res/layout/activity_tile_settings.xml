@@ -60,6 +60,30 @@
                 android:background="#2A2A2A"
                 android:entries="@array/tile_types" />
 
+            <!-- Размер кнопки -->
+            <TextView
+                android:id="@+id/tvButtonSizeLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Размер кнопки (px)"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="4dp"
+                android:visibility="gone" />
+
+            <EditText
+                android:id="@+id/etButtonSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888"
+                android:padding="12dp"
+                android:hint="160"
+                android:inputType="number"
+                android:visibility="gone" />
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
