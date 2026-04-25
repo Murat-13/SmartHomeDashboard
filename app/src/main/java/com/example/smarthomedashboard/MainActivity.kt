@@ -235,6 +235,10 @@ class MainActivity : AppCompatActivity() {
 
         // Сенсоры из grid (теперь тоже в bottom_panel)
         val sensorTiles = tileManager.getTilesByContainer("grid")
+        android.util.Log.d("RESIZE", "refreshBottomPanel: sensorTiles count=${sensorTiles.size}")
+        sensorTiles.forEach { tile ->
+            android.util.Log.d("RESIZE", "  tile: ${tile.title} size=${getButtonSize(tile)} config=${tile.config}")
+        }
         sensorTiles.forEach { tile ->
             val card = createSensorView(tile)
             card.x = tile.x.toFloat().coerceIn(0f, (screenW - DEFAULT_WIDGET_W).toFloat())
@@ -276,8 +280,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun createSensorView(tile: TileEntity): View {
+        // ==================== ЧИТАЕМ СОХРАНЁННЫЕ РАЗМЕРЫ ====================
+        val savedWidth = try {
+            JSONObject(tile.config).optInt("button_size", DEFAULT_WIDGET_W)
+        } catch (_: Exception) { DEFAULT_WIDGET_W }
+
+        val savedHeight = try {
+            JSONObject(tile.config).optInt("widget_height", (DEFAULT_WIDGET_W * 0.82).toInt())
+        } catch (_: Exception) { (DEFAULT_WIDGET_W * 0.82).toInt() }
+
+        // ==================== КОНТЕЙНЕР ВИДЖЕТА ====================
         val card = android.widget.FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
+            layoutParams = FrameLayout.LayoutParams(savedWidth, savedHeight)
             tag = tile.id
             alpha = 0.85f
             elevation = 8f
@@ -290,6 +304,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ==================== ТЕКСТ ВНУТРИ ВИДЖЕТА ====================
         val textView = android.widget.TextView(this).apply {
             text = tile.title
             textSize = 16f
@@ -302,31 +317,39 @@ class MainActivity : AppCompatActivity() {
         }
         card.addView(textView)
 
-        // ===== ПЕРЕТАСКИВАНИЕ (как у кнопок) =====
+        // ==================== УГОЛОК ИЗМЕНЕНИЯ РАЗМЕРА ====================
+        val resizeHandle = android.widget.ImageView(this).apply {
+            setImageResource(R.drawable.ic_resize)
+            layoutParams = FrameLayout.LayoutParams(40, 40).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+            }
+            visibility = if (isEditMode) View.VISIBLE else View.GONE
+            setPadding(8, 8, 8, 8)
+        }
+        card.addView(resizeHandle)
+
+        // ==================== ПЕРЕМЕННЫЕ ПЕРЕТАСКИВАНИЯ ====================
         var dragRunnable: Runnable? = null
-        var startX = 0f
-        var startY = 0f
-        var viewStartX = 0f
-        var viewStartY = 0f
+        var startX = 0f; var startY = 0f
+        var viewStartX = 0f; var viewStartY = 0f
         var isDragging = false
         var hasMoved = false
+        var isResizing = false
 
+        // ==================== ПЕРЕТАСКИВАНИЕ И РАСКРЫТИЕ ====================
         card.setOnTouchListener { view, event ->
+            if (isResizing) return@setOnTouchListener true
+
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     hasMoved = false
-                    startX = event.rawX
-                    startY = event.rawY
-                    viewStartX = view.x
-                    viewStartY = view.y
+                    startX = event.rawX; startY = event.rawY
+                    viewStartX = view.x; viewStartY = view.y
                     isDragging = false
-
                     if (isEditMode) {
-                        // В режиме редактирования — готовим перетаскивание
                         dragRunnable = Runnable {
                             isDragging = true
-                            view.alpha = 0.6f
-                            view.elevation = 20f
+                            view.alpha = 0.6f; view.elevation = 20f
                         }
                         handler.postDelayed(dragRunnable!!, 500L)
                     }
@@ -353,17 +376,55 @@ class MainActivity : AppCompatActivity() {
                     view.performClick()
                     dragRunnable?.let { handler.removeCallbacks(it) }
 
-                    if (isEditMode && isDragging && hasMoved) {
-                        // Завершение перетаскивания
-                        view.alpha = 1.0f
-                        view.elevation = 8f
-                        saveButtonPosition(tile.id, view.x.toInt(), view.y.toInt())
-                    } else if (isEditMode && !hasMoved) {
-                        // Тап в режиме редактирования → настройки
-                        openTileSettings(tile.id)
-                    } else if (!isEditMode && !hasMoved) {
-                        // Тап в обычном режиме → раскрытие сенсора
-                        expandSensor(tile, view)
+                    when {
+                        isEditMode && isDragging && hasMoved -> {
+                            view.alpha = 1.0f; view.elevation = 8f
+                            saveButtonPosition(tile.id, view.x.toInt(), view.y.toInt())
+                        }
+                        isEditMode && !hasMoved -> openTileSettings(tile.id)
+                        !isEditMode && !hasMoved -> expandSensor(tile, view)
+                    }
+                    true
+                }
+
+                else -> false
+            }
+        }
+
+        // ==================== ИЗМЕНЕНИЕ РАЗМЕРА ====================
+        var resizeStartX = 0f; var resizeStartY = 0f
+
+        resizeHandle.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    isResizing = true
+                    resizeStartX = event.rawX; resizeStartY = event.rawY
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val newWidth = (card.width + event.rawX - resizeStartX).toInt()
+                        .coerceIn(120, screenW - card.x.toInt() - 20)
+                    val newHeight = (card.height + event.rawY - resizeStartY).toInt()
+                        .coerceIn(100, screenH - card.y.toInt() - 80)
+                    card.layoutParams.width = newWidth
+                    card.layoutParams.height = newHeight
+                    card.requestLayout()
+                    resizeStartX = event.rawX; resizeStartY = event.rawY
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    isResizing = false
+                    val config = JSONObject(tile.config)
+                    config.put("button_size", card.width)
+                    config.put("widget_height", card.height)
+                    val updatedTile = tile.copy(config = config.toString())
+                    val tiles = tileManager.loadTiles().toMutableList()
+                    val idx = tiles.indexOfFirst { it.id == tile.id }
+                    if (idx >= 0) {
+                        tiles[idx] = updatedTile
+                        tileManager.saveTiles(tiles)
                     }
                     true
                 }
