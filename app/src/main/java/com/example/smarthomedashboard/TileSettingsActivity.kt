@@ -89,7 +89,7 @@ class TileSettingsActivity : AppCompatActivity() {
             tileId?.let { id ->
                 val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
                 intent.putExtra("tile_id", id)
-                startActivity(intent)
+                startActivityForResult(intent, REQUEST_ADVANCED_SETTINGS)
             }
         }
 
@@ -255,13 +255,15 @@ class TileSettingsActivity : AppCompatActivity() {
                 updateSelectedSensorsText()
             }
         }
-        if (requestCode == REQUEST_EDIT_CHILDREN && resultCode == Activity.RESULT_OK) {
-            loadTileData()
+        if (requestCode == REQUEST_ADVANCED_SETTINGS) {
+            setResult(Activity.RESULT_OK)
+            finish()
         }
     }
 
     companion object {
         private const val REQUEST_SELECT_SENSORS = 1001
         private const val REQUEST_EDIT_CHILDREN = 1002
+        private const val REQUEST_ADVANCED_SETTINGS = 1003
     }
 }

@@ -113,15 +113,18 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 val conditions = JSONArray(t.conditions)
                 for (i in 0 until conditions.length()) {
                     val obj = conditions.getJSONObject(i)
-                    colorRules.add(ColorRule(
-                        sensor = obj.optString("entity_id", ""),
-                        operator = obj.optString("operator", ">"),
-                        value = obj.optDouble("value", 0.0).toFloat(),
-                        bgColor = obj.optString("bg_color", "#4CAF50"),
-                        textColor = obj.optString("text_color", "#FFFFFF")
-                    ))
+                    colorRules.add(
+                        ColorRule(
+                            sensor = obj.optString("entity_id", ""),
+                            operator = obj.optString("operator", ">"),
+                            value = obj.optDouble("value", 0.0).toFloat(),
+                            bgColor = obj.optString("bg_color", "#4CAF50"),
+                            textColor = obj.optString("text_color", "#FFFFFF")
+                        )
+                    )
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         }
         updateHints()
     }
@@ -267,110 +270,127 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 )
 
                 tileManager.saveTiles(tiles)
+
+                tileManager.saveTiles(tiles)
+
+                val saved = tileManager.loadTiles().find { it.id == id }
+
+                val allTiles = tileManager.loadTiles()
+                allTiles.forEach { t ->
+
+                }
+
                 Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()
                 finish()
             }
         }
     }
-}
 
 // Вспомогательные классы
 
-data class SensorItem(
-    val entityId: String,
-    val displayName: String,
-    var visible: Boolean
-)
+    data class SensorItem(
+        val entityId: String,
+        val displayName: String,
+        var visible: Boolean
+    )
 
-data class ColorRule(
-    val sensor: String,
-    val operator: String,
-    val value: Float,
-    val bgColor: String,
-    val textColor: String
-)
+    data class ColorRule(
+        val sensor: String,
+        val operator: String,
+        val value: Float,
+        val bgColor: String,
+        val textColor: String
+    )
 
-class DraggableSensorAdapter(
-    private val items: MutableList<SensorItem>,
-    private val onCheckedChange: (SensorItem, Boolean) -> Unit
-) : RecyclerView.Adapter<DraggableSensorAdapter.ViewHolder>() {
+    class DraggableSensorAdapter(
+        private val items: MutableList<SensorItem>,
+        private val onCheckedChange: (SensorItem, Boolean) -> Unit
+    ) : RecyclerView.Adapter<DraggableSensorAdapter.ViewHolder>() {
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_draggable_sensor, parent, false)
-        return ViewHolder(view)
-    }
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_draggable_sensor, parent, false)
+            return ViewHolder(view)
+        }
 
-    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val item = items[position]
-        holder.tvSensorName.text = item.displayName
-        holder.tvSensorId.text = item.entityId
-        holder.tvDisplayName.text = item.displayName.take(10)
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val item = items[position]
+            holder.tvSensorName.text = item.displayName
+            holder.tvSensorId.text = item.entityId
+            holder.tvDisplayName.text = item.displayName.take(10)
 
-        holder.cbVisible.setOnCheckedChangeListener(null)
-        holder.cbVisible.isChecked = item.visible
-        holder.cbVisible.setOnCheckedChangeListener { _, isChecked ->
-            onCheckedChange(item, isChecked)
+            holder.cbVisible.setOnCheckedChangeListener(null)
+            holder.cbVisible.isChecked = item.visible
+            holder.cbVisible.setOnCheckedChangeListener { _, isChecked ->
+                onCheckedChange(item, isChecked)
+            }
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        fun onItemMove(from: Int, to: Int) {
+            val item = items.removeAt(from)
+            items.add(to, item)
+            notifyItemMoved(from, to)
+        }
+
+        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvSensorName: TextView = view.findViewById(R.id.tvSensorName)
+            val tvSensorId: TextView = view.findViewById(R.id.tvSensorId)
+            val tvDisplayName: TextView = view.findViewById(R.id.tvDisplayName)
+            val cbVisible: CheckBox = view.findViewById(R.id.cbVisible)
         }
     }
 
-    override fun getItemCount(): Int = items.size
-
-    fun onItemMove(from: Int, to: Int) {
-        val item = items.removeAt(from)
-        items.add(to, item)
-        notifyItemMoved(from, to)
-    }
-
-    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val tvSensorName: TextView = view.findViewById(R.id.tvSensorName)
-        val tvSensorId: TextView = view.findViewById(R.id.tvSensorId)
-        val tvDisplayName: TextView = view.findViewById(R.id.tvDisplayName)
-        val cbVisible: CheckBox = view.findViewById(R.id.cbVisible)
-    }
-}
-
-class DragCallback(private val adapter: DraggableSensorAdapter) : ItemTouchHelper.Callback() {
-    override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
-        return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
-    }
-
-    override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
-        val fromPos = viewHolder.bindingAdapterPosition
-        val toPos = target.bindingAdapterPosition
-        if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
-        adapter.onItemMove(fromPos, toPos)
-        return true
-    }
-
-    override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}
-    override fun isLongPressDragEnabled(): Boolean = true
-}
-
-class ColorRuleAdapter(
-    private val items: MutableList<ColorRule>,
-    private val context: AdvancedWidgetSettingsActivity
-) : RecyclerView.Adapter<ColorRuleAdapter.ViewHolder>() {
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_color_rule, parent, false)
-        return ViewHolder(view)
-    }
-
-    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val rule = items[position]
-        holder.etValue.setText(rule.value.toString())
-        holder.btnDeleteRule.setOnClickListener {
-            items.removeAt(position)
-            notifyItemRemoved(position)
+    class DragCallback(private val adapter: DraggableSensorAdapter) : ItemTouchHelper.Callback() {
+        override fun getMovementFlags(
+            recyclerView: RecyclerView,
+            viewHolder: RecyclerView.ViewHolder
+        ): Int {
+            return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
         }
+
+        override fun onMove(
+            recyclerView: RecyclerView,
+            viewHolder: RecyclerView.ViewHolder,
+            target: RecyclerView.ViewHolder
+        ): Boolean {
+            val fromPos = viewHolder.bindingAdapterPosition
+            val toPos = target.bindingAdapterPosition
+            if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
+            adapter.onItemMove(fromPos, toPos)
+            return true
+        }
+
+        override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}
+        override fun isLongPressDragEnabled(): Boolean = true
     }
 
-    override fun getItemCount(): Int = items.size
+    class ColorRuleAdapter(
+        private val items: MutableList<ColorRule>,
+        private val context: AdvancedWidgetSettingsActivity
+    ) : RecyclerView.Adapter<ColorRuleAdapter.ViewHolder>() {
 
-    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val etValue: EditText = view.findViewById(R.id.etValue)
-        val btnDeleteRule: Button = view.findViewById(R.id.btnDeleteRule)
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_color_rule, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val rule = items[position]
+            holder.etValue.setText(rule.value.toString())
+            holder.btnDeleteRule.setOnClickListener {
+                items.removeAt(position)
+                notifyItemRemoved(position)
+            }
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val etValue: EditText = view.findViewById(R.id.etValue)
+            val btnDeleteRule: Button = view.findViewById(R.id.btnDeleteRule)
+        }
     }
 }

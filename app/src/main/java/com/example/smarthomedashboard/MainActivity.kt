@@ -21,6 +21,7 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
+import com.example.smarthomedashboard.MainActivity.Companion.DEFAULT_WIDGET_W
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.launch
@@ -75,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     // ==================== КОНСТАНТЫ ====================
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
+        private const val REQUEST_ADVANCED_SETTINGS = 101
         private const val DEFAULT_WIDGET_W = 220
         private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
@@ -96,6 +98,13 @@ class MainActivity : AppCompatActivity() {
         dimOverlay.setOnClickListener { collapseAll() }
 
         tileManager = TileManager(this)
+
+        // Создаём плитки по умолчанию, если их нет
+        if (tileManager.getAllTiles().isEmpty()) {
+            createDefaultGridTiles()
+            createDefaultButtonTiles()
+        }
+
         setupBottomPanel()
         setupWebSocket()
     }
@@ -263,132 +272,140 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== СЕНСОР (ВИДЖЕТ) ====================
 
-    private fun createSensorView(tile: TileEntity): View {
-        val savedWidth = try {
-            JSONObject(tile.config).optInt("button_size", DEFAULT_WIDGET_W)
-        } catch (_: Exception) { DEFAULT_WIDGET_W }
+// ==================== СЕНСОР (ВИДЖЕТ) ====================
 
-        val savedHeight = try {
-            JSONObject(tile.config).optInt("widget_height", (DEFAULT_WIDGET_W * 0.82).toInt())
-        } catch (_: Exception) { (DEFAULT_WIDGET_W * 0.82).toInt() }
+private fun createSensorView(tile: TileEntity): View {
+    // Читаем сохранённые размеры из конфига
+    val savedWidth = try {
+        JSONObject(tile.config).optInt("button_size", DEFAULT_WIDGET_W)
+    } catch (_: Exception) { DEFAULT_WIDGET_W }
 
-        val card = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(savedWidth, savedHeight)
-            tag = tile.id
-            alpha = 0.85f
-            elevation = 8f
-            setBackgroundColor("#80333333".toColorInt())
-            clipToOutline = true
-            outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, 32f)
-                }
+    val savedHeight = try {
+        JSONObject(tile.config).optInt("widget_height", (DEFAULT_WIDGET_W * 0.82).toInt())
+    } catch (_: Exception) { (DEFAULT_WIDGET_W * 0.82).toInt() }
+
+    // Основной контейнер виджета
+    val card = FrameLayout(this).apply {
+        layoutParams = FrameLayout.LayoutParams(savedWidth, savedHeight)
+        tag = tile.id
+        alpha = 0.85f
+        elevation = 8f
+        setBackgroundColor("#80333333".toColorInt())
+        clipToOutline = true
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, 32f)
             }
         }
-
-        val textView = android.widget.TextView(this).apply {
-            tag = "sensor_text"
-            text = tile.title
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        }
-        card.addView(textView)
-
-        val resizeHandle = android.widget.ImageView(this).apply {
-            setImageResource(R.drawable.ic_resize)
-            layoutParams = FrameLayout.LayoutParams(40, 40).apply {
-                gravity = Gravity.BOTTOM or Gravity.END
-            }
-            visibility = if (isEditMode) View.VISIBLE else View.GONE
-            setPadding(8, 8, 8, 8)
-        }
-        card.addView(resizeHandle)
-
-        // Перетаскивание и раскрытие
-        setupSensorTouch(card, tile)
-
-        // Изменение размера
-        var resizeStartX = 0f
-        var resizeStartY = 0f
-        resizeHandle.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    isResizing = true
-                    resizeStartX = event.rawX
-                    resizeStartY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val newW = (card.width + event.rawX - resizeStartX).toInt()
-                        .coerceIn(120, screenW - card.x.toInt() - 20)
-                    val newH = (card.height + event.rawY - resizeStartY).toInt()
-                        .coerceIn(100, screenH - card.y.toInt() - 80)
-                    card.layoutParams.width = newW
-                    card.layoutParams.height = newH
-                    card.requestLayout()
-                    resizeStartX = event.rawX
-                    resizeStartY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    isResizing = false
-                    val config = JSONObject(tile.config)
-                    config.put("button_size", card.width)
-                    config.put("widget_height", card.height)
-                    val updatedTile = tile.copy(config = config.toString())
-                    val tiles = tileManager.loadTiles().toMutableList()
-                    val idx = tiles.indexOfFirst { it.id == tile.id }
-                    if (idx >= 0) {
-                        tiles[idx] = updatedTile
-                        tileManager.saveTiles(tiles)
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
-
-        return card
     }
 
-    // ==================== РАСКРЫТИЕ / СВОРАЧИВАНИЕ СЕНСОРА ====================
+    // Текст внутри виджета
+    val textView = android.widget.TextView(this).apply {
+        tag = "sensor_text"
+        text = tile.title
+        textSize = tile.fontSize.toFloat()
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        setShadowLayer(4f, 2f, 2f, Color.BLACK)
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+    }
+    card.addView(textView)
+
+    // Уголок изменения размера
+    val resizeHandle = android.widget.ImageView(this).apply {
+        setImageResource(R.drawable.ic_resize)
+        layoutParams = FrameLayout.LayoutParams(40, 40).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+        }
+        visibility = if (isEditMode) View.VISIBLE else View.GONE
+        setPadding(8, 8, 8, 8)
+    }
+    card.addView(resizeHandle)
+
+    // Перетаскивание и раскрытие
+    setupSensorTouch(card, tile)
+
+    // Изменение размера
+    var resizeStartX = 0f
+    var resizeStartY = 0f
+    resizeHandle.setOnTouchListener { _, event ->
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                isResizing = true
+                resizeStartX = event.rawX
+                resizeStartY = event.rawY
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val newW = (card.width + event.rawX - resizeStartX).toInt()
+                    .coerceIn(120, screenW - card.x.toInt() - 20)
+                val newH = (card.height + event.rawY - resizeStartY).toInt()
+                    .coerceIn(100, screenH - card.y.toInt() - 80)
+                card.layoutParams.width = newW
+                card.layoutParams.height = newH
+                card.requestLayout()
+                resizeStartX = event.rawX
+                resizeStartY = event.rawY
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                isResizing = false
+                val config = JSONObject(tile.config)
+                config.put("button_size", card.width)
+                config.put("widget_height", card.height)
+                val updatedTile = tile.copy(config = config.toString())
+                val tiles = tileManager.loadTiles().toMutableList()
+                val idx = tiles.indexOfFirst { it.id == tile.id }
+                if (idx >= 0) {
+                    tiles[idx] = updatedTile
+                    tileManager.saveTiles(tiles)
+                }
+                true
+            }
+            else -> false
+        }
+    }
+
+    return card
+}
+
+    // ==================== РАСКРЫТИЕ СЕНСОРА ====================
 
     private fun expandSensor(tile: TileEntity, source: View) {
+        // Сохраняем исходные размеры и позицию
         savedOriginalWidth = source.layoutParams.width
         savedOriginalHeight = source.layoutParams.height
         savedOriginalX = source.x
         savedOriginalY = source.y
 
+        // Собираем полный текст для раскрытого режима
         val contentText = when (tile.title) {
             "⚡ Сеть" -> "⚡ Сеть\n\n$pzemVoltage V\n$pzemPower W\n$pzemCurrent A\n$pzemFrequency Hz\n$pzemEnergy kWh"
             "🌡️ Температура" -> "🌡️ Температура\n\n${techRoomTemp}°C"
             else -> "${tile.title}\n\n—"
         }
 
+        // Измеряем нужный размер под текст
         val measureText = android.widget.TextView(this).apply {
             text = contentText
             textSize = 20f
             setPadding(32, 32, 32, 32)
             setShadowLayer(4f, 2f, 2f, Color.BLACK)
         }
-
         val textWidth = (screenW * 0.85).toInt()
         measureText.layoutParams = FrameLayout.LayoutParams(textWidth, FrameLayout.LayoutParams.WRAP_CONTENT)
         measureText.measure(
             View.MeasureSpec.makeMeasureSpec(textWidth, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         )
-
         val neededW = measureText.measuredWidth + 80
         val neededH = measureText.measuredHeight + 80
 
+        // Вычисляем целевую позицию — к центру, но в пределах экрана
         var targetX = savedOriginalX - (neededW - savedOriginalWidth) / 2f
         var targetY = savedOriginalY - (neededH - savedOriginalHeight) / 2f
         if (targetX < 0) targetX = 8f
@@ -396,58 +413,94 @@ class MainActivity : AppCompatActivity() {
         if (targetY < 0) targetY = 8f
         if (targetY + neededH > screenH - 60) targetY = (screenH - neededH - 60).toFloat()
 
+        // Мгновенно показываем полный текст
         val tv = source.findViewWithTag<android.widget.TextView>("sensor_text")
         tv?.text = contentText
-        tv?.textSize = 20f
-        tv?.setShadowLayer(4f, 2f, 2f, Color.BLACK)
+        tv?.textSize = (tile.fontSize + 4).toFloat()
 
-        source.animate()
-            .x(targetX)
-            .y(targetY)
-            .setDuration(300)
-            .setInterpolator(DecelerateInterpolator())
-            .withEndAction {
-                source.layoutParams.width = neededW
-                source.layoutParams.height = neededH
+        // Поднимаем виджет на передний план
+        source.bringToFront()
+        source.elevation = 20f
+
+        // Анимируем размер и позицию одновременно
+        val startW = source.layoutParams.width
+        val startH = source.layoutParams.height
+        val startX = source.x
+        val startY = source.y
+
+        val animator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 300
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val fraction = animation.animatedFraction
+                source.layoutParams.width = (startW + (neededW - startW) * fraction).toInt()
+                source.layoutParams.height = (startH + (neededH - startH) * fraction).toInt()
+                source.x = startX + (targetX - startX) * fraction
+                source.y = startY + (targetY - startY) * fraction
                 source.requestLayout()
             }
-            .start()
+        }
+        animator.start()
 
+        // Сохраняем ссылку для сворачивания
         expandedSensorView = source
         expandedSensorSource = source
 
+        // Тап по раскрытому виджету сворачивает его
         source.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_UP) collapseSensor()
             true
         }
 
+        // Автосворачивание через 15 секунд
         sensorCollapseRunnable = Runnable { collapseSensor() }
         handler.postDelayed(sensorCollapseRunnable!!, 15000L)
     }
+
+    // ==================== СВОРАЧИВАНИЕ СЕНСОРА ====================
 
     private fun collapseSensor() {
         val source = expandedSensorView ?: return
         val tv = source.findViewWithTag<android.widget.TextView>("sensor_text")
         val tile = tileManager.getAllTiles().find { it.id == source.tag as? String } ?: return
 
-        tv?.text = tile.title
-        tv?.textSize = 16f
-        tv?.setShadowLayer(0f, 0f, 0f, 0)
+        // Мгновенно возвращаем короткий текст
+        when (tile.title) {
+            "⚡ Сеть" -> tv?.text = "⚡ Сеть\n${pzemVoltage}V\n${pzemPower}W"
+            "🌡️ Температура" -> tv?.text = "🌡️ Температура\n${techRoomTemp}°C"
+            else -> tv?.text = tile.title
+        }
+        tv?.textSize = tile.fontSize.toFloat()
 
-        source.animate()
-            .x(savedOriginalX)
-            .y(savedOriginalY)
-            .setDuration(250)
-            .setInterpolator(DecelerateInterpolator())
-            .withEndAction {
-                source.layoutParams.width = savedOriginalWidth
-                source.layoutParams.height = savedOriginalHeight
+        // Возвращаем elevation на исходный уровень
+        source.elevation = 8f
+
+        // Анимируем сжатие до исходного размера и позиции
+        val startW = source.layoutParams.width
+        val startH = source.layoutParams.height
+        val startX = source.x
+        val startY = source.y
+
+        val animator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 250
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val fraction = animation.animatedFraction
+                source.layoutParams.width = (startW + (savedOriginalWidth - startW) * fraction).toInt()
+                source.layoutParams.height = (startH + (savedOriginalHeight - startH) * fraction).toInt()
+                source.x = startX + (savedOriginalX - startX) * fraction
+                source.y = startY + (savedOriginalY - startY) * fraction
                 source.requestLayout()
             }
-            .start()
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    setupSensorTouch(source, tile)
+                }
+            })
+        }
+        animator.start()
 
-        setupSensorTouch(source, tile)
-
+        // Сбрасываем состояние
         expandedSensorView = null
         expandedSensorSource = null
         sensorCollapseRunnable?.let { handler.removeCallbacks(it) }
@@ -503,12 +556,23 @@ class MainActivity : AppCompatActivity() {
                     dragRunnable?.let { handler.removeCallbacks(it) }
 
                     when {
+                        // Перетаскивание в режиме редактирования
                         isEditMode && isDragging && hasMoved -> {
                             view.alpha = 1.0f; view.elevation = 8f
                             savePosition(tile.id, view.x.toInt(), view.y.toInt())
                         }
+                        // Тап в режиме редактирования → настройки
                         isEditMode && !hasMoved -> openTileSettings(tile.id)
-                        !isEditMode && !hasMoved -> expandSensor(tile, view)
+                        // Тап в обычном режиме
+                        !isEditMode && !hasMoved -> {
+                            // Если другой виджет уже раскрыт — только сворачиваем его
+                            if (expandedSensorView != null && expandedSensorView != view) {
+                                collapseSensor()
+                            } else {
+                                // Иначе раскрываем/сворачиваем этот виджет
+                                expandSensor(tile, view)
+                            }
+                        }
                     }
                     true
                 }
@@ -905,13 +969,13 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val (x1, y1) = findFreeSpot(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
             tileManager.addTile(
-                TileEntity(UUID.randomUUID().toString(), "sensor", "bottom_panel",
+                TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
                     "⚡ Сеть", x1, y1, 1, 1,
                     config = """{"button_size":$DEFAULT_WIDGET_W}""")
             )
             val (x2, y2) = findFreeSpot(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
             tileManager.addTile(
-                TileEntity(UUID.randomUUID().toString(), "sensor", "bottom_panel",
+                TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
                     "🌡️ Температура", x2, y2, 1, 1,
                     config = """{"button_size":$DEFAULT_WIDGET_W}""")
             )
@@ -948,16 +1012,33 @@ class MainActivity : AppCompatActivity() {
 
             if (child is FrameLayout && child.childCount > 0) {
                 val tv = child.getChildAt(0) as? android.widget.TextView ?: continue
+
+                // Определяем, раскрыт ли этот виджет
+                val isExpanded = (expandedSensorView == child)
+
                 when (tile.title) {
                     "⚡ Сеть" -> {
                         val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
-                        tv.text = "⚡ Сеть\n${pzemVoltage}V"
+                        if (isExpanded) {
+                            // В развёрнутом виде показываем все параметры с живыми данными
+                            tv.text = "⚡ Сеть\n\n${pzemVoltage} V\n${pzemPower} W\n${pzemCurrent} A\n${pzemFrequency} Hz\n${pzemEnergy} kWh"
+                        } else {
+                            // В свёрнутом — напряжение и мощность
+                            tv.text = "⚡ Сеть\n${pzemVoltage}V\n${pzemPower}W"
+                        }
                         child.setBackgroundColor(
                             if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
                         )
                     }
                     "🌡️ Температура" -> {
-                        tv.text = "🌡️ Температура\n${techRoomTemp}°C"
+                        if (isExpanded) {
+                            tv.text = "🌡️ Температура\n\n${techRoomTemp}°C"
+                        } else {
+                            tv.text = "🌡️ Температура\n${techRoomTemp}°C"
+                        }
+                    }
+                    else -> {
+                        tv.text = tile.title
                     }
                 }
             }
@@ -1072,6 +1153,9 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_TILE_SETTINGS && resultCode == Activity.RESULT_OK) {
             refreshBottomPanel()
             subscribeToNeededEntities()
+        }
+        if (requestCode == 100 && resultCode == Activity.RESULT_OK) {
+            refreshBottomPanel()
         }
     }
 }
