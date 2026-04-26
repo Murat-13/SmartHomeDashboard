@@ -1,7 +1,6 @@
 package com.example.smarthomedashboard
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -21,7 +20,7 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
-import com.example.smarthomedashboard.MainActivity.Companion.DEFAULT_WIDGET_W
+import androidx.activity.result.contract.ActivityResultContracts
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.launch
@@ -76,11 +75,16 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== КОНСТАНТЫ ====================
     companion object {
-        private const val REQUEST_TILE_SETTINGS = 100
-        private const val REQUEST_ADVANCED_SETTINGS = 101
         private const val DEFAULT_WIDGET_W = 220
         private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
+    }
+
+    private val tileSettingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            refreshBottomPanel()
+            subscribeToNeededEntities()
+        }
     }
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
@@ -124,6 +128,7 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== ПОИСК СВОБОДНОГО МЕСТА ====================
 
+    @Suppress("SameParameterValue")
     private fun findFreeSpot(width: Int, height: Int): Pair<Int, Int> {
         val step = 20
         var y = 40
@@ -206,9 +211,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun openTileSettings(id: String) {
         openWithPinCheck {
-            startActivityForResult(
-                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", id),
-                REQUEST_TILE_SETTINGS
+            tileSettingsLauncher.launch(
+                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", id)
             )
         }
     }
@@ -345,7 +349,8 @@ class MainActivity : AppCompatActivity() {
         // Изменение размера
         var resizeStartX = 0f
         var resizeStartY = 0f
-        resizeHandle.setOnTouchListener { _, event ->
+        @SuppressLint("ClickableViewAccessibility")
+        resizeHandle.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     isResizing = true
@@ -366,6 +371,7 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    v.performClick()
                     isResizing = false
                     val config = JSONObject(tile.config)
                     config.put("button_size", card.width)
@@ -448,8 +454,12 @@ class MainActivity : AppCompatActivity() {
         expandedSensorSource = source
 
         // Тап по раскрытому виджету сворачивает его
-        source.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_UP) collapseSensor()
+        @SuppressLint("ClickableViewAccessibility")
+        source.setOnTouchListener { v, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                v.performClick()
+                collapseSensor()
+            }
             true
         }
 
@@ -505,8 +515,7 @@ class MainActivity : AppCompatActivity() {
         sensorCollapseRunnable?.let { handler.removeCallbacks(it) }
     }
 
-    // ==================== ОБРАБОТЧИК КАСАНИЙ СЕНСОРА ====================
-
+    @SuppressLint("ClickableViewAccessibility")
     private fun setupSensorTouch(card: View, tile: TileEntity) {
         var dragRunnable: Runnable? = null
         var startX = 0f; var startY = 0f
@@ -524,12 +533,13 @@ class MainActivity : AppCompatActivity() {
                     viewStartX = view.x; viewStartY = view.y
                     isDragging = false
                     if (isEditMode) {
-                        dragRunnable = Runnable {
+                        val runnable = Runnable {
                             isDragging = true
                             view.alpha = 0.6f
                             view.elevation = 20f
                         }
-                        handler.postDelayed(dragRunnable!!, 500L)
+                        dragRunnable = runnable
+                        handler.postDelayed(runnable, 500L)
                     }
                     true
                 }
@@ -618,6 +628,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     private fun setupGroupTouch(tile: TileEntity, button: Button) {
         var pressRunnable: Runnable? = null
         var startX = 0f; var startY = 0f
@@ -632,17 +643,19 @@ class MainActivity : AppCompatActivity() {
                     viewStartX = view.x; viewStartY = view.y
 
                     if (isEditMode) {
-                        pressRunnable = Runnable {
+                        val runnable = Runnable {
                             isDragging = true
                             view.alpha = 0.6f; view.elevation = 20f
                         }
-                        handler.postDelayed(pressRunnable!!, 500L)
+                        pressRunnable = runnable
+                        handler.postDelayed(runnable, 500L)
                     } else {
-                        pressRunnable = Runnable {
+                        val runnable = Runnable {
                             if (expandedGroupId == tile.id) collapseChildButtons()
                             else expandChildButtons(tile, view as Button)
                         }
-                        handler.postDelayed(pressRunnable!!, 1000L)
+                        pressRunnable = runnable
+                        handler.postDelayed(runnable, 1000L)
                     }
                     true
                 }
@@ -683,6 +696,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     private fun setupButtonTouch(
         tile: TileEntity,
         button: Button,
@@ -718,11 +732,12 @@ class MainActivity : AppCompatActivity() {
                     startX = event.rawX; startY = event.rawY
                     viewStartX = view.x; viewStartY = view.y
                     isDragging = false
-                    dragRunnable = Runnable {
+                    val runnable = Runnable {
                         isDragging = true
                         view.alpha = 0.6f; view.elevation = 20f
                     }
-                    handler.postDelayed(dragRunnable!!, 500L)
+                    dragRunnable = runnable
+                    handler.postDelayed(runnable, 500L)
                     true
                 }
 
@@ -797,10 +812,9 @@ class MainActivity : AppCompatActivity() {
             textSize = 32f
             gravity = Gravity.CENTER
             setOnClickListener {
-                startActivityForResult(
+                tileSettingsLauncher.launch(
                     Intent(this@MainActivity, TileSettingsActivity::class.java)
-                        .putExtra("container", "grid"),
-                    REQUEST_TILE_SETTINGS
+                        .putExtra("container", "grid")
                 )
             }
         }
@@ -1094,6 +1108,7 @@ class MainActivity : AppCompatActivity() {
      * Строит содержимое виджета: заголовок + строки параметров.
      * Название параметра слева, значение справа, выровнены по самой длинной строке.
      */
+    @SuppressLint("SetTextI18n")
     private fun buildSensorContent(tile: TileEntity, entityIds: List<String>, isExpanded: Boolean, container: android.widget.LinearLayout) {
         val sensorConfigs = loadSensorConfigs(tile, isExpanded)
 
@@ -1119,8 +1134,9 @@ class MainActivity : AppCompatActivity() {
         val fontSize = tile.fontSize.toFloat()
         for ((name, value) in rows) {
             val paddedName = name.padEnd(maxNameLen, ' ')
+            val rowText = "$paddedName  $value"
             val rowView = android.widget.TextView(container.context).apply {
-                text = "$paddedName  $value"
+                text = rowText
                 textSize = fontSize
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
@@ -1272,11 +1288,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_TILE_SETTINGS && resultCode == Activity.RESULT_OK) {
-            refreshBottomPanel()
-            subscribeToNeededEntities()
-        }
-        if (requestCode == 100 && resultCode == Activity.RESULT_OK) {
+        if (requestCode == 101 && resultCode == RESULT_OK) {
             refreshBottomPanel()
         }
     }
