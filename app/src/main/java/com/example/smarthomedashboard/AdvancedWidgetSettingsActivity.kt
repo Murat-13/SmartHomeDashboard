@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -22,10 +23,11 @@ import org.json.JSONObject
 
 class AdvancedWidgetSettingsActivity : AppCompatActivity() {
 
+    // ==================== ПЕРЕМЕННЫЕ ====================
     private lateinit var tileManager: TileManager
     private var tileId: String? = null
 
-    // UI элементы
+    // UI
     private lateinit var tvCollapsedHint: TextView
     private lateinit var tvExpandedHint: TextView
     private lateinit var rvCollapsedSensors: RecyclerView
@@ -40,6 +42,8 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     // Данные
     private val collapsedConfigs = mutableListOf<SensorConfig>()
     private val expandedConfigs = mutableListOf<SensorConfig>()
+
+    // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,14 +69,18 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         setupClickListeners()
     }
 
-    // ==================== ЗАГРУЗКА ДАННЫХ ====================
+    // ==================== ЗАГРУЗКА ДАННЫХ ПЛИТКИ ====================
 
     private fun loadTileData() {
         val tile = tileId?.let { tileManager.loadTiles().find { t -> t.id == it } } ?: return
 
+        // Размер шрифта
         etFontSize.setText(tile.fontSize.toString())
+
+        // Источник данных
         spinnerDataSource.setSelection(if (tile.sourceType == "mqtt") 1 else 0)
 
+        // Загружаем конфигурации датчиков из JSON
         try {
             val config = JSONObject(tile.config)
 
@@ -113,14 +121,16 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         rvExpandedSensors.visibility = if (expandedConfigs.isEmpty()) View.GONE else View.VISIBLE
     }
 
-    // ==================== НАСТРОЙКА СПИСКОВ ====================
+    // ==================== RECYCLER VIEW ====================
 
     private fun setupRecyclerViews() {
+        // Свёрнутые датчики
         collapsedAdapter = SensorConfigAdapter(collapsedConfigs)
         rvCollapsedSensors.layoutManager = LinearLayoutManager(this)
         rvCollapsedSensors.adapter = collapsedAdapter
         ItemTouchHelper(DragCallback(collapsedAdapter)).attachToRecyclerView(rvCollapsedSensors)
 
+        // Развёрнутые датчики
         expandedAdapter = SensorConfigAdapter(expandedConfigs)
         rvExpandedSensors.layoutManager = LinearLayoutManager(this)
         rvExpandedSensors.adapter = expandedAdapter
@@ -130,6 +140,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     // ==================== ОБРАБОТЧИКИ НАЖАТИЙ ====================
 
     private fun setupClickListeners() {
+        // Добавить датчик в свёрнутый вид
         tvCollapsedHint.setOnClickListener {
             openSensorPicker { selected ->
                 selected.forEach { entityId ->
@@ -143,6 +154,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
             }
         }
 
+        // Добавить датчик в развёрнутый вид
         tvExpandedHint.setOnClickListener {
             openSensorPicker { selected ->
                 selected.forEach { entityId ->
@@ -181,7 +193,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         selectSensorsLauncher.launch(intent)
     }
 
-    // ==================== СОХРАНЕНИЕ ====================
+    // ==================== СОХРАНЕНИЕ НАСТРОЕК ====================
 
     private fun saveSettings() {
         tileId?.let { id ->
@@ -192,13 +204,11 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
 
                 val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
                 val sourceType = if (spinnerDataSource.selectedItemPosition == 1) "mqtt" else "auto"
-
                 val config = JSONObject(oldTile.config)
 
                 // Сохраняем свёрнутые конфиги
-                val collapsedList = collapsedAdapter.getConfigs()
                 val collapsedArr = JSONArray()
-                collapsedList.forEach { sc ->
+                collapsedConfigs.forEach { sc ->
                     collapsedArr.put(JSONObject().apply {
                         put("entity_id", sc.entityId)
                         put("display_name", sc.displayName)
@@ -208,9 +218,8 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 config.put("collapsed_sensor_configs", collapsedArr)
 
                 // Сохраняем развёрнутые конфиги
-                val expandedList = expandedAdapter.getConfigs()
                 val expandedArr = JSONArray()
-                expandedList.forEach { sc ->
+                expandedConfigs.forEach { sc ->
                     expandedArr.put(JSONObject().apply {
                         put("entity_id", sc.entityId)
                         put("display_name", sc.displayName)
@@ -219,6 +228,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 }
                 config.put("expanded_sensor_configs", expandedArr)
 
+                // Сохраняем плитку
                 tiles[index] = oldTile.copy(
                     fontSize = fontSize,
                     sourceType = sourceType,
@@ -234,18 +244,11 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     }
 }
 
-// ==================== АДАПТЕР КОНФИГОВ ДАТЧИКОВ ====================
+// ==================== АДАПТЕР ДАТЧИКОВ ====================
 
 class SensorConfigAdapter(
     private val items: MutableList<SensorConfig>
 ) : RecyclerView.Adapter<SensorConfigAdapter.ViewHolder>() {
-
-    private var recyclerView: RecyclerView? = null
-
-    override fun onAttachedToRecyclerView(rv: RecyclerView) {
-        super.onAttachedToRecyclerView(rv)
-        recyclerView = rv
-    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
@@ -255,15 +258,40 @@ class SensorConfigAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = items[position]
+
+        // Название датчика (из entity_id)
         holder.tvSensorName.text = item.entityId.substringAfterLast("_").replace("_", " ")
         holder.tvSensorId.text = item.entityId
         holder.etDisplayName.setText(item.displayName)
 
+        // Сохраняем название сразу при уходе с поля
+        holder.etDisplayName.setOnFocusChangeListener { _, _ ->
+            val newName = holder.etDisplayName.text.toString().trim()
+            if (newName.isNotEmpty() && position < items.size) {
+                items[position] = items[position].copy(displayName = newName)
+            }
+        }
+
+        // Настройка точности
         val decimalsOptions = arrayOf("0 (целые)", "1 (десятые)", "2 (сотые)")
-        val adapter = ArrayAdapter(holder.itemView.context, android.R.layout.simple_spinner_item, decimalsOptions)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        holder.spinnerDecimals.adapter = adapter
+        val spinnerAdapter = ArrayAdapter(
+            holder.itemView.context,
+            android.R.layout.simple_spinner_item,
+            decimalsOptions
+        )
+        spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        holder.spinnerDecimals.adapter = spinnerAdapter
         holder.spinnerDecimals.setSelection(item.decimals.coerceIn(0, 2))
+
+        // Сохраняем точность сразу при выборе
+        holder.spinnerDecimals.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (position < items.size) {
+                    items[position] = items[position].copy(decimals = pos)
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
     }
 
     override fun getItemCount(): Int = items.size
@@ -272,16 +300,6 @@ class SensorConfigAdapter(
         val item = items.removeAt(from)
         items.add(to, item)
         notifyItemMoved(from, to)
-    }
-
-    fun getConfigs(): List<SensorConfig> {
-        val rv = recyclerView ?: return items.toList()
-        return items.mapIndexed { index, config ->
-            val holder = rv.findViewHolderForAdapterPosition(index) as? ViewHolder
-            val displayName = holder?.etDisplayName?.text?.toString() ?: config.displayName
-            val decimals = holder?.spinnerDecimals?.selectedItemPosition ?: config.decimals
-            config.copy(displayName = displayName, decimals = decimals)
-        }
     }
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -295,11 +313,16 @@ class SensorConfigAdapter(
 // ==================== DRAG-AND-DROP ====================
 
 class DragCallback(private val adapter: SensorConfigAdapter) : ItemTouchHelper.Callback() {
+
     override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
         return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
     }
 
-    override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
+    override fun onMove(
+        recyclerView: RecyclerView,
+        viewHolder: RecyclerView.ViewHolder,
+        target: RecyclerView.ViewHolder
+    ): Boolean {
         val fromPos = viewHolder.bindingAdapterPosition
         val toPos = target.bindingAdapterPosition
         if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
