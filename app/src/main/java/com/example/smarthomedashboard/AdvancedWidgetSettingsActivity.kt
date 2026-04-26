@@ -34,14 +34,17 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     private lateinit var rvExpandedSensors: RecyclerView
     private lateinit var etFontSize: EditText
     private lateinit var spinnerDataSource: Spinner
+    private lateinit var rvColorRules: RecyclerView
 
     // Адаптеры
     private lateinit var collapsedAdapter: SensorConfigAdapter
     private lateinit var expandedAdapter: SensorConfigAdapter
+    private lateinit var colorRuleAdapter: ColorRuleAdapter
 
     // Данные
     private val collapsedConfigs = mutableListOf<SensorConfig>()
     private val expandedConfigs = mutableListOf<SensorConfig>()
+    private val colorRules = mutableListOf<com.example.smarthomedashboard.data.ColorRule>()
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
 
@@ -57,6 +60,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         tvExpandedHint = findViewById(R.id.tvExpandedHint)
         rvCollapsedSensors = findViewById(R.id.rvCollapsedSensors)
         rvExpandedSensors = findViewById(R.id.rvExpandedSensors)
+        rvColorRules = findViewById(R.id.rvColorRules)
         etFontSize = findViewById(R.id.etFontSize)
         spinnerDataSource = findViewById(R.id.spinnerDataSource)
 
@@ -109,6 +113,21 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                     ))
                 }
             }
+
+            // Правила цвета
+            val rulesJson = tile.colorRules
+            if (rulesJson.isNotEmpty() && rulesJson != "[]") {
+                val rulesArr = JSONArray(rulesJson)
+                for (i in 0 until rulesArr.length()) {
+                    val obj = rulesArr.getJSONObject(i)
+                    colorRules.add(com.example.smarthomedashboard.data.ColorRule(
+                        entityId = obj.getString("entity_id"),
+                        condition = obj.getString("condition"),
+                        value = obj.getString("value"),
+                        colorHex = obj.getString("color_hex")
+                    ))
+                }
+            }
         } catch (_: Exception) {}
 
         updateHints()
@@ -135,6 +154,18 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         rvExpandedSensors.layoutManager = LinearLayoutManager(this)
         rvExpandedSensors.adapter = expandedAdapter
         ItemTouchHelper(DragCallback(expandedAdapter)).attachToRecyclerView(rvExpandedSensors)
+
+        // Правила цвета
+        colorRuleAdapter = ColorRuleAdapter(colorRules) { position ->
+            openSensorPicker { selected ->
+                if (selected.isNotEmpty() && position < colorRules.size) {
+                    colorRules[position] = colorRules[position].copy(entityId = selected[0])
+                    colorRuleAdapter.notifyItemChanged(position)
+                }
+            }
+        }
+        rvColorRules.layoutManager = LinearLayoutManager(this)
+        rvColorRules.adapter = colorRuleAdapter
     }
 
     // ==================== ОБРАБОТЧИКИ НАЖАТИЙ ====================
@@ -166,6 +197,12 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 expandedAdapter.notifyDataSetChanged()
                 updateHints()
             }
+        }
+
+        findViewById<Button>(R.id.btnAddColorRule).setOnClickListener {
+            colorRules.add(com.example.smarthomedashboard.data.ColorRule("", "==", "0", "#4CAF50"))
+            colorRuleAdapter.notifyItemInserted(colorRules.size - 1)
+            rvColorRules.scrollToPosition(colorRules.size - 1)
         }
 
         findViewById<Button>(R.id.btnSave).setOnClickListener { saveSettings() }
@@ -228,11 +265,25 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 }
                 config.put("expanded_sensor_configs", expandedArr)
 
+                // Сохраняем правила цвета
+                val rulesArr = JSONArray()
+                colorRules.forEach { rule ->
+                    if (rule.entityId.isNotEmpty()) {
+                        rulesArr.put(JSONObject().apply {
+                            put("entity_id", rule.entityId)
+                            put("condition", rule.condition)
+                            put("value", rule.value)
+                            put("color_hex", rule.colorHex)
+                        })
+                    }
+                }
+
                 // Сохраняем плитку
                 tiles[index] = oldTile.copy(
                     fontSize = fontSize,
                     sourceType = sourceType,
-                    config = config.toString()
+                    config = config.toString(),
+                    colorRules = rulesArr.toString()
                 )
 
                 tileManager.saveTiles(tiles)

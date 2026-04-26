@@ -21,6 +21,7 @@ import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.activity.result.contract.ActivityResultContracts
+import com.example.smarthomedashboard.data.ColorRule
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.launch
@@ -346,6 +347,9 @@ class MainActivity : AppCompatActivity() {
         // Перетаскивание и раскрытие
         setupSensorTouch(card, tile)
 
+        // Динамические цвета
+        applyColorRules(tile, card)
+
         // Изменение размера
         var resizeStartX = 0f
         var resizeStartY = 0f
@@ -605,13 +609,7 @@ class MainActivity : AppCompatActivity() {
             alpha = 0.8f
             elevation = 8f
             background = ResourcesCompat.getDrawable(resources, R.drawable.bg_button_rounded, null)
-
-            if (tile.type == "group") {
-                background?.setTint(if (getGroupState(tile.id)) on else off)
-            } else {
-                val eid = JSONObject(tile.config).optString("entity_id", "")
-                background?.setTint(if (singleStates[eid] == "on") on else off)
-            }
+            applyColorRules(tile, this)
 
             setTextColor("#FFFFFF".toColorInt())
             textSize = 14f
@@ -940,10 +938,13 @@ class MainActivity : AppCompatActivity() {
     private fun getGroupState(gid: String) = groupStates[gid]?.values?.any { it == "on" } ?: false
 
     private fun updateGroupButtonAppearance(gid: String) {
-        val c = if (getGroupState(gid)) "#8033CC33".toColorInt() else "#424242".toColorInt()
+        val tile = tileManager.getAllTiles().find { it.id == gid } ?: return
         for (i in 0 until bottomPanel.childCount) {
             val ch = bottomPanel.getChildAt(i)
-            if (ch is Button && ch.tag == gid) { ch.background?.setTint(c); return }
+            if (ch.tag == gid) {
+                applyColorRules(tile, ch)
+                return
+            }
         }
     }
 
@@ -960,15 +961,15 @@ class MainActivity : AppCompatActivity() {
     // ==================== ОБЫЧНЫЕ КНОПКИ ====================
 
     private fun updateSingleButtonColor(eid: String) {
-        val c = if (singleStates[eid] == "on") "#8033CC33".toColorInt() else "#424242".toColorInt()
         for (i in 0 until bottomPanel.childCount) {
             val ch = bottomPanel.getChildAt(i)
             if (ch is Button) {
                 val tile = (ch.tag as? String)?.let { tileManager.getAllTiles().find { t -> t.id == it } }
-                if (tile != null && tile.type != "group") {
+                if (tile != null && tile.type == "button") {
                     try {
-                        if (JSONObject(tile.config).optString("entity_id", "") == eid) {
-                            ch.background?.setTint(c)
+                        val mainEid = JSONObject(tile.config).optString("entity_id", "")
+                        if (mainEid == eid || tile.colorRules.contains(eid)) {
+                            applyColorRules(tile, ch)
                         }
                     } catch (_: Exception) {}
                 }
@@ -1038,13 +1039,8 @@ class MainActivity : AppCompatActivity() {
                     buildSensorContent(tile, idsToShow, isExpanded, container)
                 }
 
-                // Цвет фона для сети
-                if (tile.title == "⚡ Сеть") {
-                    val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
-                    child.setBackgroundColor(
-                        if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
-                    )
-                }
+                // Динамические цвета (заменяет хардкод "⚡ Сеть")
+                applyColorRules(tile, child)
             }
         }
     }
@@ -1211,7 +1207,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        if (eid.startsWith("switch.")) updateSingleButtonColor(eid)
+        if (eid.startsWith("switch.") || eid.startsWith("light.")) updateSingleButtonColor(eid)
+
+        // Проверка правил цвета для всех плиток, использующих этот eid
+        for (i in 0 until bottomPanel.childCount) {
+            val view = bottomPanel.getChildAt(i)
+            val tid = view.tag as? String ?: continue
+            val tile = tileManager.getAllTiles().find { it.id == tid } ?: continue
+            if (tile.colorRules.contains(eid)) {
+                applyColorRules(tile, view)
+            }
+        }
 
         tileManager.getAllTiles().filter { it.type == "group" }.forEach { t ->
             try {
@@ -1227,6 +1233,75 @@ class MainActivity : AppCompatActivity() {
 
     private fun formatFloat(v: String, d: Int): String {
         return v.toFloatOrNull()?.let { String.format("%.${d}f", it) } ?: "—"
+    }
+
+    // ==================== ДИНАМИЧЕСКИЕ ЦВЕТА ====================
+
+    private fun applyColorRules(tile: TileEntity, view: View) {
+        val rulesJson = tile.colorRules
+        val rules = try {
+            if (rulesJson.isEmpty() || rulesJson == "[]") emptyList()
+            else {
+                val arr = JSONArray(rulesJson)
+                List(arr.length()) { i ->
+                    val obj = arr.getJSONObject(i)
+                    ColorRule(
+                        obj.getString("entity_id"),
+                        obj.getString("condition"),
+                        obj.getString("value"),
+                        obj.getString("color_hex")
+                    )
+                }
+            }
+        } catch (_: Exception) { emptyList() }
+
+        var matchedColor: Int? = null
+        for (rule in rules) {
+            val currentState = singleStates[rule.entityId] ?: continue
+            if (checkCondition(currentState, rule.condition, rule.value)) {
+                matchedColor = try { Color.parseColor(rule.colorHex) } catch (_: Exception) { null }
+                if (matchedColor != null) break
+            }
+        }
+
+        if (matchedColor != null) {
+            if (view is Button) view.background?.setTint(matchedColor)
+            else view.setBackgroundColor(matchedColor)
+        } else {
+            // Дефолтные цвета, если правила не сработали
+            val on = "#8033CC33".toColorInt()
+            val off = "#424242".toColorInt()
+            when (tile.type) {
+                "sensor" -> view.setBackgroundColor("#80333333".toColorInt())
+                "button" -> {
+                    val eid = JSONObject(tile.config).optString("entity_id", "")
+                    view.background?.setTint(if (singleStates[eid] == "on") on else off)
+                }
+                "group" -> view.background?.setTint(if (getGroupState(tile.id)) on else off)
+            }
+        }
+    }
+
+    private fun checkCondition(current: String, op: String, target: String): Boolean {
+        val curNum = current.toDoubleOrNull()
+        val tarNum = target.toDoubleOrNull()
+        return if (curNum != null && tarNum != null) {
+            when (op) {
+                ">" -> curNum > tarNum
+                "<" -> curNum < tarNum
+                "==" -> curNum == tarNum
+                "!=" -> curNum != tarNum
+                ">=" -> curNum >= tarNum
+                "<=" -> curNum <= tarNum
+                else -> false
+            }
+        } else {
+            when (op) {
+                "==" -> current.equals(target, ignoreCase = true)
+                "!=" -> !current.equals(target, ignoreCase = true)
+                else -> false
+            }
+        }
     }
 
     // ==================== WEBSOCKET ====================
@@ -1273,6 +1348,15 @@ class MainActivity : AppCompatActivity() {
                 c.optString("entity_id", "").takeIf { it.isNotEmpty() }?.let { ids.add(it) }
                 c.optJSONArray("entity_ids")?.let {
                     for (i in 0 until it.length()) ids.add(it.getString(i))
+                }
+                // Датчики в виджете
+                val coll = JSONArray(t.collapsedSensorIds)
+                for (i in 0 until coll.length()) ids.add(coll.getString(i))
+
+                // Сущности из правил цвета
+                val rules = JSONArray(t.colorRules)
+                for (i in 0 until rules.length()) {
+                    ids.add(rules.getJSONObject(i).getString("entity_id"))
                 }
             } catch (_: Exception) {}
         }

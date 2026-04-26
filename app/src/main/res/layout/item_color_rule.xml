@@ -20,17 +20,21 @@
             android:gravity="center_vertical">
 
             <TextView
+                android:id="@+id/btnSelectEntity"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Условие"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp" />
+                android:text="Нажмите для выбора"
+                android:textColor="#4CAF50"
+                android:textSize="14sp"
+                android:background="#1A1A1A"
+                android:padding="8dp" />
 
             <Button
                 android:id="@+id/btnDeleteRule"
                 android:layout_width="40dp"
                 android:layout_height="40dp"
+                android:layout_marginStart="8dp"
                 android:text="✕"
                 android:backgroundTint="#FF5555" />
 

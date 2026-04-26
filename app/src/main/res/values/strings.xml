@@ -90,9 +90,12 @@
         <item>MQTT</item>
     </string-array>
     <string-array name="operators">
-        <item>></item>
-        <item>=</item>
-        <item>>=</item>
+        <item>&gt;</item>
+        <item>&lt;</item>
+        <item>==</item>
+        <item>!=</item>
+        <item>&gt;=</item>
+        <item>&lt;=</item>
     </string-array>
     <!-- Расширенные настройки -->
     <string name="widget_icon">Иконка виджета</string>
