@@ -27,6 +27,7 @@ import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
+import org.json.JSONArray
 
 class MainActivity : AppCompatActivity() {
 
@@ -383,11 +384,8 @@ private fun createSensorView(tile: TileEntity): View {
         savedOriginalY = source.y
 
         // Собираем полный текст для раскрытого режима
-        val contentText = when (tile.title) {
-            "⚡ Сеть" -> "⚡ Сеть\n\n$pzemVoltage V\n$pzemPower W\n$pzemCurrent A\n$pzemFrequency Hz\n$pzemEnergy kWh"
-            "🌡️ Температура" -> "🌡️ Температура\n\n${techRoomTemp}°C"
-            else -> "${tile.title}\n\n—"
-        }
+        val idsToShow = getExpandedSensorIds(tile)
+        val contentText = buildSensorText(tile, idsToShow, true)
 
         // Измеряем нужный размер под текст
         val measureText = android.widget.TextView(this).apply {
@@ -465,11 +463,8 @@ private fun createSensorView(tile: TileEntity): View {
         val tile = tileManager.getAllTiles().find { it.id == source.tag as? String } ?: return
 
         // Мгновенно возвращаем короткий текст
-        when (tile.title) {
-            "⚡ Сеть" -> tv?.text = "⚡ Сеть\n${pzemVoltage}V\n${pzemPower}W"
-            "🌡️ Температура" -> tv?.text = "🌡️ Температура\n${techRoomTemp}°C"
-            else -> tv?.text = tile.title
-        }
+        val idsToShow = getCollapsedSensorIds(tile)
+        tv?.text = buildSensorText(tile, idsToShow, false)
         tv?.textSize = tile.fontSize.toFloat()
 
         // Возвращаем elevation на исходный уровень
@@ -1012,37 +1007,129 @@ private fun createSensorView(tile: TileEntity): View {
 
             if (child is FrameLayout && child.childCount > 0) {
                 val tv = child.getChildAt(0) as? android.widget.TextView ?: continue
-
-                // Определяем, раскрыт ли этот виджет
                 val isExpanded = (expandedSensorView == child)
 
-                when (tile.title) {
-                    "⚡ Сеть" -> {
-                        val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
-                        if (isExpanded) {
-                            // В развёрнутом виде показываем все параметры с живыми данными
-                            tv.text = "⚡ Сеть\n\n${pzemVoltage} V\n${pzemPower} W\n${pzemCurrent} A\n${pzemFrequency} Hz\n${pzemEnergy} kWh"
-                        } else {
-                            // В свёрнутом — напряжение и мощность
-                            tv.text = "⚡ Сеть\n${pzemVoltage}V\n${pzemPower}W"
-                        }
-                        child.setBackgroundColor(
-                            if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
-                        )
-                    }
-                    "🌡️ Температура" -> {
-                        if (isExpanded) {
-                            tv.text = "🌡️ Температура\n\n${techRoomTemp}°C"
-                        } else {
-                            tv.text = "🌡️ Температура\n${techRoomTemp}°C"
-                        }
-                    }
-                    else -> {
-                        tv.text = tile.title
-                    }
+                // Собираем список ID для отображения
+                val idsToShow = if (isExpanded) {
+                    getExpandedSensorIds(tile)
+                } else {
+                    getCollapsedSensorIds(tile)
+                }
+
+                // Собираем текст из значений датчиков
+                val text = buildSensorText(tile, idsToShow, isExpanded)
+                tv.text = text
+
+                // Цвет фона для сети
+                if (tile.title == "⚡ Сеть") {
+                    val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
+                    child.setBackgroundColor(
+                        if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * Возвращает список entity_id для свёрнутого режима.
+     * Если ничего не выбрано — возвращает стандартный набор.
+     */
+    private fun getCollapsedSensorIds(tile: TileEntity): List<String> {
+        try {
+            val arr = JSONArray(tile.collapsedSensorIds)
+            if (arr.length() > 0) {
+                val ids = mutableListOf<String>()
+                for (i in 0 until arr.length()) ids.add(arr.getString(i))
+                return ids
+            }
+        } catch (_: Exception) {}
+        // По умолчанию
+        return when (tile.title) {
+            "⚡ Сеть" -> listOf(
+                "sensor.pzem_energy_monitor_pzem_voltage",
+                "sensor.pzem_energy_monitor_pzem_power"
+            )
+            "🌡️ Температура" -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * Возвращает список entity_id для развёрнутого режима.
+     */
+    private fun getExpandedSensorIds(tile: TileEntity): List<String> {
+        try {
+            val config = JSONObject(tile.config)
+            val arr = config.optJSONArray("entity_ids")
+            if (arr != null && arr.length() > 0) {
+                val ids = mutableListOf<String>()
+                for (i in 0 until arr.length()) ids.add(arr.getString(i))
+                return ids
+            }
+        } catch (_: Exception) {}
+        // По умолчанию
+        return when (tile.title) {
+            "⚡ Сеть" -> listOf(
+                "sensor.pzem_energy_monitor_pzem_voltage",
+                "sensor.pzem_energy_monitor_pzem_power",
+                "sensor.pzem_energy_monitor_pzem_current",
+                "sensor.pzem_energy_monitor_pzem_frequency",
+                "sensor.pzem_energy_monitor_pzem_energy"
+            )
+            "🌡️ Температура" -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * Собирает текст виджета из заголовка и значений датчиков
+     * с учётом пользовательских названий и точности.
+     */
+    private fun buildSensorText(tile: TileEntity, entityIds: List<String>, isExpanded: Boolean): String {
+        val sb = StringBuilder(tile.title)
+        val sensorConfigs = loadSensorConfigs(tile, isExpanded)
+        for (eid in entityIds) {
+            val rawValue = singleStates[eid] ?: "—"
+            val config = sensorConfigs.find { it.entityId == eid }
+            val displayName = config?.displayName ?: eid.substringAfterLast("_").replace("_", " ")
+            val decimals = config?.decimals ?: 0
+            val formattedValue = formatSensorValue(rawValue, decimals)
+            sb.append("\n$displayName: $formattedValue")
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Загружает конфигурации датчиков из TileEntity.
+     */
+    private fun loadSensorConfigs(tile: TileEntity, isExpanded: Boolean): List<SensorConfig> {
+        try {
+            val config = JSONObject(tile.config)
+            val key = if (isExpanded) "expanded_sensor_configs" else "collapsed_sensor_configs"
+            val arr = config.optJSONArray(key)
+            if (arr != null && arr.length() > 0) {
+                val list = mutableListOf<SensorConfig>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    list.add(SensorConfig(
+                        entityId = obj.getString("entity_id"),
+                        displayName = obj.optString("display_name", obj.getString("entity_id").substringAfterLast("_")),
+                        decimals = obj.optInt("decimals", 0)
+                    ))
+                }
+                return list
+            }
+        } catch (_: Exception) {}
+        return emptyList()
+    }
+
+    /**
+     * Форматирует значение датчика с заданной точностью.
+     */
+    private fun formatSensorValue(value: String, decimals: Int): String {
+        val floatVal = value.toFloatOrNull() ?: return value
+        return String.format("%.${decimals}f", floatVal)
     }
 
     private fun updateGridStatus() {
