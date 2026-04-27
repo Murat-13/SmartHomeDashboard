@@ -113,6 +113,19 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshBottomPanel()
         subscribeToNeededEntities()
+        checkKioskMode()
+    }
+
+    private fun checkKioskMode() {
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        val isKiosk = prefs.getBoolean("kiosk_mode", false)
+        try {
+            if (isKiosk) {
+                startLockTask()
+            } else {
+                stopLockTask()
+            }
+        } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
