@@ -17,6 +17,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var etMqttPort: EditText
     private lateinit var etMqttUsername: EditText
     private lateinit var etMqttPassword: EditText
+    private lateinit var etAdminPin: EditText
+    private lateinit var etPinSessionMinutes: EditText
     private lateinit var spinnerTheme: Spinner
     private lateinit var cbKioskMode: android.widget.CheckBox
     private lateinit var btnExport: Button
@@ -31,6 +33,8 @@ class SettingsActivity : AppCompatActivity() {
         etMqttPort = findViewById(R.id.etMqttPort)
         etMqttUsername = findViewById(R.id.etMqttUsername)
         etMqttPassword = findViewById(R.id.etMqttPassword)
+        etAdminPin = findViewById(R.id.etAdminPin)
+        etPinSessionMinutes = findViewById(R.id.etPinSessionMinutes)
         spinnerTheme = findViewById(R.id.spinnerTheme)
         cbKioskMode = findViewById(R.id.cbKioskMode)
         btnExport = findViewById(R.id.btnExport)
@@ -43,6 +47,8 @@ class SettingsActivity : AppCompatActivity() {
         etMqttPort.setText(prefs.getInt("mqtt_port", 1883).toString())
         etMqttUsername.setText(prefs.getString("mqtt_username", "murat"))
         etMqttPassword.setText(prefs.getString("mqtt_password", "019137-smS"))
+        etAdminPin.setText(prefs.getString("admin_pin", ""))
+        etPinSessionMinutes.setText(prefs.getInt("pin_session_minutes", 60).toString())
         cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
 
         val theme = prefs.getString("app_theme", "system") ?: "system"
@@ -59,6 +65,8 @@ class SettingsActivity : AppCompatActivity() {
             val port = etMqttPort.text.toString().toIntOrNull() ?: 1883
             val username = etMqttUsername.text.toString()
             val password = etMqttPassword.text.toString()
+            val adminPin = etAdminPin.text.toString()
+            val sessionMinutes = etPinSessionMinutes.text.toString().toIntOrNull() ?: 60
 
             val selectedTheme = when (spinnerTheme.selectedItemPosition) {
                 1 -> "light"
@@ -71,6 +79,8 @@ class SettingsActivity : AppCompatActivity() {
                 putInt("mqtt_port", port)
                 putString("mqtt_username", username)
                 putString("mqtt_password", password)
+                putString("admin_pin", adminPin)
+                putInt("pin_session_minutes", sessionMinutes)
                 putString("app_theme", selectedTheme)
                 putBoolean("kiosk_mode", cbKioskMode.isChecked)
             }
@@ -97,6 +107,8 @@ class SettingsActivity : AppCompatActivity() {
                 put("mqtt_port", mainPrefs.getInt("mqtt_port", 1883))
                 put("mqtt_username", mainPrefs.getString("mqtt_username", ""))
                 put("mqtt_password", mainPrefs.getString("mqtt_password", ""))
+                put("admin_pin", mainPrefs.getString("admin_pin", ""))
+                put("pin_session_minutes", mainPrefs.getInt("pin_session_minutes", 60))
                 put("app_theme", mainPrefs.getString("app_theme", "system"))
                 put("kiosk_mode", mainPrefs.getBoolean("kiosk_mode", false))
                 put("tiles_json", tilePrefs.getString("tiles", "[]"))
@@ -159,6 +171,8 @@ class SettingsActivity : AppCompatActivity() {
                                 putInt("mqtt_port", json.optInt("mqtt_port", 1883))
                                 putString("mqtt_username", json.optString("mqtt_username"))
                                 putString("mqtt_password", json.optString("mqtt_password"))
+                                putString("admin_pin", json.optString("admin_pin", ""))
+                                putInt("pin_session_minutes", json.optInt("pin_session_minutes", 60))
                                 putString("app_theme", json.optString("app_theme", "system"))
                                 putBoolean("kiosk_mode", json.optBoolean("kiosk_mode", false))
                             }

@@ -119,6 +119,7 @@ class TileSettingsActivity : AppCompatActivity() {
             "sensor" -> 0
             "button" -> 1
             "group" -> 2
+            "battery" -> 3
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -157,6 +158,7 @@ class TileSettingsActivity : AppCompatActivity() {
             0 -> "sensor"
             1 -> "button"
             2 -> "group"
+            3 -> "battery"
             else -> "sensor"
         }
 

@@ -76,7 +76,6 @@ class MainActivity : AppCompatActivity() {
     // ==================== КОНСТАНТЫ ====================
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
-        private const val REQUEST_ADVANCED_SETTINGS = 101
         private const val DEFAULT_WIDGET_W = 220
         private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
@@ -162,17 +161,38 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    // ==================== PIN ====================
+    // ==================== БЕЗОПАСНОСТЬ И PIN-КОД ====================
 
+    /**
+     * Выполняет действие только после проверки PIN-кода (если он установлен).
+     * Поддерживает "сессию": если верный PIN был введен недавно, повторный запрос не выводится.
+     */
     private fun openWithPinCheck(action: () -> Unit) {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        val savedPin = prefs.getString("admin_pin", "")
+        
+        // Если PIN не задан в настройках, пропускаем без проверки
+        if (savedPin.isNullOrEmpty()) {
+            action()
+            return
+        }
+
         val lastAuth = prefs.getLong("last_auth_time", 0L)
-        if (System.currentTimeMillis() - lastAuth > 60 * 60 * 1000) {
+        // Получаем время сессии из настроек (в минутах), по умолчанию 60
+        val sessionMinutes = prefs.getInt("pin_session_minutes", 60)
+        val sessionMillis = sessionMinutes.toLong() * 60 * 1000
+
+        // Проверяем, не истекла ли сессия
+        if (System.currentTimeMillis() - lastAuth > sessionMillis) {
             PinDialog(this) {
+                // При успешном вводе обновляем время последней авторизации
                 prefs.edit { putLong("last_auth_time", System.currentTimeMillis()) }
                 action()
             }.show()
-        } else action()
+        } else {
+            // Сессия еще активна
+            action()
+        }
     }
 
     // ==================== РЕЖИМ РЕДАКТИРОВАНИЯ ====================
@@ -185,7 +205,7 @@ class MainActivity : AppCompatActivity() {
                 if (isEditMode) exitEditMode()
                 else {
                     longPressRunnable = Runnable { openWithPinCheck { enterEditMode() } }
-                    handler.postDelayed(longPressRunnable!!, 1000L)
+                    handler.postDelayed(longPressRunnable!!, 3000L)
                 }
             }
         } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
@@ -258,16 +278,15 @@ class MainActivity : AppCompatActivity() {
             bottomPanel.addView(btn)
         }
 
-        // Кнопка настроек
-        val btnS = createSettingsButton().apply {
-            layoutParams = FrameLayout.LayoutParams(DEFAULT_BUTTON_SIZE, DEFAULT_BUTTON_SIZE)
-            x = (screenW - DEFAULT_BUTTON_SIZE - 20).toFloat()
-            y = (screenH - DEFAULT_BUTTON_SIZE - 80).toFloat()
-        }
-        bottomPanel.addView(btnS)
-
-        // Кнопка +
+        // Кнопки управления (Настройки и +) только в режиме редактирования
         if (isEditMode) {
+            val btnS = createSettingsButton().apply {
+                layoutParams = FrameLayout.LayoutParams(DEFAULT_BUTTON_SIZE, DEFAULT_BUTTON_SIZE)
+                x = (screenW - DEFAULT_BUTTON_SIZE - 20).toFloat()
+                y = (screenH - DEFAULT_BUTTON_SIZE - 80).toFloat()
+            }
+            bottomPanel.addView(btnS)
+
             val btnA = createAddButton().apply {
                 layoutParams = FrameLayout.LayoutParams(DEFAULT_BUTTON_SIZE, DEFAULT_BUTTON_SIZE)
                 x = (screenW - DEFAULT_BUTTON_SIZE * 2 - 40).toFloat()
@@ -309,6 +328,16 @@ class MainActivity : AppCompatActivity() {
                     outline.setRoundRect(0, 0, view.width, view.height, 32f)
                 }
             }
+        }
+
+        // Слой наполнения для батареи
+        if (tile.type == "battery") {
+            val progressFill = View(this).apply {
+                tag = "battery_progress_fill"
+                layoutParams = FrameLayout.LayoutParams(0, FrameLayout.LayoutParams.MATCH_PARENT)
+                setBackgroundColor("#8033CC33".toColorInt())
+            }
+            card.addView(progressFill)
         }
 
         // Контейнер для текста
@@ -541,7 +570,7 @@ class MainActivity : AppCompatActivity() {
                             view.alpha = 0.6f
                             view.elevation = 20f
                         }
-                        handler.postDelayed(dragRunnable!!, 500L)
+                        dragRunnable?.let { handler.postDelayed(it, 500L) }
                     }
                     true
                 }
@@ -648,13 +677,13 @@ class MainActivity : AppCompatActivity() {
                             isDragging = true
                             view.alpha = 0.6f; view.elevation = 20f
                         }
-                        handler.postDelayed(pressRunnable!!, 500L)
+                        pressRunnable?.let { handler.postDelayed(it, 500L) }
                     } else {
                         pressRunnable = Runnable {
                             if (expandedGroupId == tile.id) collapseChildButtons()
                             else expandChildButtons(tile, view as Button)
                         }
-                        handler.postDelayed(pressRunnable!!, 1000L)
+                        pressRunnable?.let { handler.postDelayed(it, 1000L) }
                     }
                     true
                 }
@@ -734,7 +763,7 @@ class MainActivity : AppCompatActivity() {
                         isDragging = true
                         view.alpha = 0.6f; view.elevation = 20f
                     }
-                    handler.postDelayed(dragRunnable!!, 500L)
+                    dragRunnable?.let { handler.postDelayed(it, 500L) }
                     true
                 }
 
@@ -1036,46 +1065,96 @@ class MainActivity : AppCompatActivity() {
                     buildSensorContent(tile, idsToShow, isExpanded, container)
                 }
 
-                // Применяем правила цвета (колонки От и До)
-                var finalColor: String? = null
-                try {
-                    val rulesJson = tile.colorRules
-                    if (rulesJson.isNotEmpty() && rulesJson != "[]") {
-                        val rulesArr = JSONArray(rulesJson)
-                        // Проходим по всем правилам. Последнее сработавшее перекроет предыдущие.
-                        for (i in 0 until rulesArr.length()) {
-                            val obj = rulesArr.getJSONObject(i)
-                            val rEntityId = obj.optString("entity_id")
-                            val rFromStr = obj.optString("from", "")
-                            val rToStr = obj.optString("to", "")
-                            val rColor = obj.optString("color_hex", "")
+                if (tile.type == "battery") {
+                    updateBatteryWidget(tile, child)
+                } else {
+                    updateNormalSensorWidget(tile, child)
+                }
+            }
+        }
+    }
 
-                            if (rEntityId.isNotEmpty() && rColor.isNotEmpty()) {
-                                val currentVal = singleStates[rEntityId] ?: ""
-                                if (checkRuleMatch(currentVal, rFromStr, rToStr)) {
-                                    finalColor = rColor
-                                }
-                            }
+    private fun updateBatteryWidget(tile: TileEntity, view: FrameLayout) {
+        val progressFill = view.findViewWithTag<View>("battery_progress_fill") ?: return
+        
+        // Берем первый выбранный датчик как основной источник SOC %
+        val socEntityId = try {
+            val config = JSONObject(tile.config)
+            val arr = config.optJSONArray("entity_ids")
+            if (arr != null && arr.length() > 0) arr.getString(0)
+            else config.optString("entity_id", "")
+        } catch (_: Exception) { "" }
+
+        val socValueStr = singleStates[socEntityId] ?: "0"
+        val soc = socValueStr.replace("%", "").trim().toFloatOrNull() ?: 0f
+        
+        // Расчет ширины
+        val percent = (soc / 100f).coerceIn(0f, 1f)
+        val targetWidth = (view.width * percent).toInt()
+        
+        // Анимация изменения ширины
+        if (progressFill.width != targetWidth) {
+            val anim = android.animation.ValueAnimator.ofInt(progressFill.width, targetWidth)
+            anim.addUpdateListener {
+                val lp = progressFill.layoutParams
+                lp.width = it.animatedValue as Int
+                progressFill.layoutParams = lp
+            }
+            anim.duration = 500
+            anim.start()
+        }
+
+        // Цвет в зависимости от заряда
+        val color = when {
+            soc > 20f -> "#8033CC33" // Зеленый
+            soc > 10f -> "#80FFCC00" // Желтый
+            else -> "#80FF3333"      // Красный
+        }
+        progressFill.setBackgroundColor(color.toColorInt())
+        
+        // Фон самой карточки остается темным
+        view.setBackgroundColor("#80333333".toColorInt())
+    }
+
+    private fun updateNormalSensorWidget(tile: TileEntity, child: FrameLayout) {
+        // Применяем правила цвета (колонки От и До)
+        var finalColor: String? = null
+        try {
+            val rulesJson = tile.colorRules
+            if (rulesJson.isNotEmpty() && rulesJson != "[]") {
+                val rulesArr = JSONArray(rulesJson)
+                // Проходим по всем правилам. Последнее сработавшее перекроет предыдущие.
+                for (i in 0 until rulesArr.length()) {
+                    val obj = rulesArr.getJSONObject(i)
+                    val rEntityId = obj.optString("entity_id")
+                    val rFromStr = obj.optString("from", "")
+                    val rToStr = obj.optString("to", "")
+                    val rColor = obj.optString("color_hex", "")
+
+                    if (rEntityId.isNotEmpty() && rColor.isNotEmpty()) {
+                        val currentVal = singleStates[rEntityId] ?: ""
+                        if (checkRuleMatch(currentVal, rFromStr, rToStr)) {
+                            finalColor = rColor
                         }
                     }
+                }
+            }
 
-                    if (finalColor != null) {
-                        child.setBackgroundColor(finalColor.toColorInt())
-                    } else {
-                        // Стандартная логика для сети или дефолтный фон
-                        if (tile.title.lowercase().contains("сеть")) {
-                            val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
-                            child.setBackgroundColor(
-                                if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
-                            )
-                        } else {
-                            child.setBackgroundColor("#80333333".toColorInt())
-                        }
-                    }
-                } catch (_: Exception) {
+            if (finalColor != null) {
+                child.setBackgroundColor(finalColor.toColorInt())
+            } else {
+                // Стандартная логика для сети или дефолтный фон
+                if (tile.title.lowercase().contains("сеть")) {
+                    val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
+                    child.setBackgroundColor(
+                        if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
+                    )
+                } else {
                     child.setBackgroundColor("#80333333".toColorInt())
                 }
             }
+        } catch (_: Exception) {
+            child.setBackgroundColor("#80333333".toColorInt())
         }
     }
 
@@ -1352,12 +1431,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_TILE_SETTINGS && resultCode == Activity.RESULT_OK) {
+        if (requestCode == REQUEST_TILE_SETTINGS && resultCode == RESULT_OK) {
             refreshBottomPanel()
             subscribeToNeededEntities()
-        }
-        if (requestCode == 100 && resultCode == Activity.RESULT_OK) {
-            refreshBottomPanel()
         }
     }
 }

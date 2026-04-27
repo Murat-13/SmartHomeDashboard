@@ -20,9 +20,15 @@ class PinDialog(context: Context, private val onSuccess: () -> Unit) : Dialog(co
         val btnConfirm = findViewById<Button>(R.id.btnConfirm)
 
         btnConfirm.setOnClickListener {
-            // Пока что сверяем с "зашитым" паролем, позже вынесем в настройки
-            if (pinInput.text.toString() == "019137") {
-                Toast.makeText(context, "Верный PIN", Toast.LENGTH_SHORT).show()
+            val prefs = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
+            val savedPin = prefs.getString("admin_pin", "")
+
+            // Если PIN не задан в настройках, пускаем сразу (или можно реализовать логику "задай при первом входе")
+            // Но по вашему запросу: если пустой в настройках - защиты нет.
+            if (savedPin.isNullOrEmpty() || pinInput.text.toString() == savedPin) {
+                if (!savedPin.isNullOrEmpty()) {
+                    Toast.makeText(context, "Верный PIN", Toast.LENGTH_SHORT).show()
+                }
                 onSuccess()
                 dismiss()
             } else {
