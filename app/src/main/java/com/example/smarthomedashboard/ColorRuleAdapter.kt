@@ -1,6 +1,7 @@
 package com.example.smarthomedashboard
 
 import android.app.AlertDialog
+import android.content.Context
 import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
@@ -9,6 +10,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.GridLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
@@ -44,7 +46,10 @@ class ColorRuleAdapter(
         holder.btnSelectEntity.text = displayName
 
         holder.btnSelectEntity.setOnClickListener {
-            onSelectEntity(position)
+            val currentPos = holder.bindingAdapterPosition
+            if (currentPos != RecyclerView.NO_POSITION) {
+                onSelectEntity(currentPos)
+            }
         }
 
         // Настройка оператора
@@ -54,8 +59,9 @@ class ColorRuleAdapter(
 
         holder.spinnerOperator.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                if (position < items.size) {
-                    items[position] = items[position].copy(condition = operators[pos])
+                val currentPos = holder.bindingAdapterPosition
+                if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                    items[currentPos] = items[currentPos].copy(condition = operators[pos])
                 }
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -64,8 +70,9 @@ class ColorRuleAdapter(
         // Настройка значения
         holder.etValue.setText(item.value)
         holder.etValue.setOnFocusChangeListener { _, hasFocus ->
-            if (!hasFocus && position < items.size) {
-                items[position] = items[position].copy(value = holder.etValue.text.toString())
+            val currentPos = holder.bindingAdapterPosition
+            if (!hasFocus && currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                items[currentPos] = items[currentPos].copy(value = holder.etValue.text.toString())
             }
         }
 
@@ -78,44 +85,42 @@ class ColorRuleAdapter(
 
         holder.vColorPreview.setOnClickListener {
             showColorPickerDialog(holder.itemView.context) { selectedColor ->
-                if (position < items.size) {
-                    items[position] = items[position].copy(colorHex = selectedColor)
-                    notifyItemChanged(position)
+                val currentPos = holder.bindingAdapterPosition
+                if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                    items[currentPos] = items[currentPos].copy(colorHex = selectedColor)
+                    notifyItemChanged(currentPos)
                 }
             }
         }
 
         // Удаление
         holder.btnDeleteRule.setOnClickListener {
-            if (position < items.size) {
-                items.removeAt(position)
-                notifyItemRemoved(position)
-                notifyItemRangeChanged(position, items.size)
+            val currentPos = holder.bindingAdapterPosition
+            if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                items.removeAt(currentPos)
+                notifyItemRemoved(currentPos)
             }
         }
     }
 
-    private fun showColorPickerDialog(context: android.content.Context, onColorSelected: (String) -> Unit) {
+    private fun showColorPickerDialog(context: Context, onColorSelected: (String) -> Unit) {
         val builder = AlertDialog.Builder(context)
         builder.setTitle("Выберите цвет")
         
         // Создаем сетку цветов
-        val grid = android.widget.GridLayout(context).apply {
+        val grid = GridLayout(context).apply {
             columnCount = 3
-            alignmentMode = android.widget.GridLayout.ALIGN_BOUNDS
+            alignmentMode = GridLayout.ALIGN_BOUNDS
             setPadding(20, 20, 20, 20)
         }
 
         colorPresets.forEach { colorStr ->
             val colorView = View(context).apply {
                 val size = 120
-                layoutParams = android.view.ViewGroup.MarginLayoutParams(size, size).apply {
+                layoutParams = ViewGroup.MarginLayoutParams(size, size).apply {
                     setMargins(10, 10, 10, 10)
                 }
                 setBackgroundColor(Color.parseColor(colorStr))
-                setOnClickListener {
-                    onColorSelected(colorStr)
-                }
             }
             grid.addView(colorView)
         }
@@ -124,9 +129,11 @@ class ColorRuleAdapter(
         
         // Закрываем при выборе
         grid.children.forEach { view ->
-            val oldClick = view.performClick() // placeholder logic
             view.setOnClickListener {
-                onColorSelected(colorPresets[grid.indexOfChild(view)])
+                val index = grid.indexOfChild(view)
+                if (index in colorPresets.indices) {
+                    onColorSelected(colorPresets[index])
+                }
                 dialog.dismiss()
             }
         }
@@ -147,7 +154,7 @@ class ColorRuleAdapter(
     }
 
     // Хелпер для получения View в GridLayout
-    private val android.view.ViewGroup.children: Sequence<View>
+    private val ViewGroup.children: Sequence<View>
         get() = object : Sequence<View> {
             override fun iterator() = object : Iterator<View> {
                 private var index = 0

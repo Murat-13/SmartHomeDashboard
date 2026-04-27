@@ -13,10 +13,13 @@ import android.widget.EditText
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.Toolbar
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.example.smarthomedashboard.data.ColorRule
 import com.example.smarthomedashboard.data.TileManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -44,7 +47,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     // Данные
     private val collapsedConfigs = mutableListOf<SensorConfig>()
     private val expandedConfigs = mutableListOf<SensorConfig>()
-    private val colorRules = mutableListOf<com.example.smarthomedashboard.data.ColorRule>()
+    private val colorRules = mutableListOf<ColorRule>()
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
 
@@ -64,7 +67,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         etFontSize = findViewById(R.id.etFontSize)
         spinnerDataSource = findViewById(R.id.spinnerDataSource)
 
-        findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
+        findViewById<Toolbar>(R.id.toolbar).setNavigationOnClickListener {
             finish()
         }
 
@@ -120,7 +123,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                 val rulesArr = JSONArray(rulesJson)
                 for (i in 0 until rulesArr.length()) {
                     val obj = rulesArr.getJSONObject(i)
-                    colorRules.add(com.example.smarthomedashboard.data.ColorRule(
+                    colorRules.add(ColorRule(
                         entityId = obj.getString("entity_id"),
                         condition = obj.getString("condition"),
                         value = obj.getString("value"),
@@ -174,13 +177,18 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         // Добавить датчик в свёрнутый вид
         tvCollapsedHint.setOnClickListener {
             openSensorPicker { selected ->
+                val start = collapsedConfigs.size
+                var added = 0
                 selected.forEach { entityId ->
                     if (collapsedConfigs.none { it.entityId == entityId }) {
                         val defaultName = entityId.substringAfterLast("_").replace("_", " ")
                         collapsedConfigs.add(SensorConfig(entityId, defaultName, 0))
+                        added++
                     }
                 }
-                collapsedAdapter.notifyDataSetChanged()
+                if (added > 0) {
+                    collapsedAdapter.notifyItemRangeInserted(start, added)
+                }
                 updateHints()
             }
         }
@@ -188,19 +196,24 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         // Добавить датчик в развёрнутый вид
         tvExpandedHint.setOnClickListener {
             openSensorPicker { selected ->
+                val start = expandedConfigs.size
+                var added = 0
                 selected.forEach { entityId ->
                     if (expandedConfigs.none { it.entityId == entityId }) {
                         val defaultName = entityId.substringAfterLast("_").replace("_", " ")
                         expandedConfigs.add(SensorConfig(entityId, defaultName, 0))
+                        added++
                     }
                 }
-                expandedAdapter.notifyDataSetChanged()
+                if (added > 0) {
+                    expandedAdapter.notifyItemRangeInserted(start, added)
+                }
                 updateHints()
             }
         }
 
         findViewById<Button>(R.id.btnAddColorRule).setOnClickListener {
-            colorRules.add(com.example.smarthomedashboard.data.ColorRule("", "==", "0", "#4CAF50"))
+            colorRules.add(ColorRule("", "==", "0", "#4CAF50"))
             colorRuleAdapter.notifyItemInserted(colorRules.size - 1)
             rvColorRules.scrollToPosition(colorRules.size - 1)
         }
@@ -214,7 +227,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
     private var tempSensorCallback: ((List<String>) -> Unit)? = null
 
     private val selectSensorsLauncher = registerForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+        ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.getStringArrayListExtra("selected_sensors")?.let { selected ->
@@ -317,9 +330,12 @@ class SensorConfigAdapter(
 
         // Сохраняем название сразу при уходе с поля
         holder.etDisplayName.setOnFocusChangeListener { _, _ ->
-            val newName = holder.etDisplayName.text.toString().trim()
-            if (newName.isNotEmpty() && position < items.size) {
-                items[position] = items[position].copy(displayName = newName)
+            val currentPos = holder.bindingAdapterPosition
+            if (currentPos != RecyclerView.NO_POSITION) {
+                val newName = holder.etDisplayName.text.toString().trim()
+                if (newName.isNotEmpty() && currentPos < items.size) {
+                    items[currentPos] = items[currentPos].copy(displayName = newName)
+                }
             }
         }
 
@@ -337,8 +353,9 @@ class SensorConfigAdapter(
         // Сохраняем точность сразу при выборе
         holder.spinnerDecimals.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                if (position < items.size) {
-                    items[position] = items[position].copy(decimals = pos)
+                val currentPos = holder.bindingAdapterPosition
+                if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                    items[currentPos] = items[currentPos].copy(decimals = pos)
                 }
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}

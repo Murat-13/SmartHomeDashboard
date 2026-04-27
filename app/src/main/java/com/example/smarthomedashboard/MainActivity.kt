@@ -985,13 +985,15 @@ class MainActivity : AppCompatActivity() {
             tileManager.addTile(
                 TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
                     "⚡ Сеть", x1, y1, 1, 1,
-                    config = """{"button_size":$DEFAULT_WIDGET_W}""")
+                    config = """{"button_size":$DEFAULT_WIDGET_W}""",
+                    collapsedSensorIds = """["sensor.pzem_energy_monitor_pzem_voltage","sensor.pzem_energy_monitor_pzem_power"]""")
             )
             val (x2, y2) = findFreeSpot(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
             tileManager.addTile(
                 TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
                     "🌡️ Температура", x2, y2, 1, 1,
-                    config = """{"button_size":$DEFAULT_WIDGET_W}""")
+                    config = """{"button_size":$DEFAULT_WIDGET_W}""",
+                    collapsedSensorIds = """["sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"]""")
             )
         }
     }
@@ -1018,28 +1020,20 @@ class MainActivity : AppCompatActivity() {
     private fun updateTemperatureWidget() { updateSensorDisplay() }
 
     private fun updateSensorDisplay() {
-        val sensorTiles = tileManager.getTilesByContainer("grid")
+        val allTiles = tileManager.getAllTiles()
         for (i in 0 until bottomPanel.childCount) {
             val child = bottomPanel.getChildAt(i)
-            val tag = child.tag as? String ?: continue
-            val tile = sensorTiles.find { it.id == tag } ?: continue
+            val tagId = child.tag as? String ?: continue
+            val tile = allTiles.find { it.id == tagId && it.type == "sensor" } ?: continue
 
             if (child is FrameLayout) {
                 val isExpanded = (expandedSensorView == child)
+                val idsToShow = if (isExpanded) getExpandedSensorIds(tile) else getCollapsedSensorIds(tile)
 
-                val idsToShow = if (isExpanded) {
-                    getExpandedSensorIds(tile)
-                } else {
-                    getCollapsedSensorIds(tile)
-                }
-
-                // Обновляем содержимое виджета (табличный вид)
                 val container = child.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
                 if (container != null) {
                     buildSensorContent(tile, idsToShow, isExpanded, container)
                 }
-
-                // Динамические цвета (заменяет хардкод "⚡ Сеть")
                 applyColorRules(tile, child)
             }
         }
@@ -1050,50 +1044,34 @@ class MainActivity : AppCompatActivity() {
      * Если ничего не выбрано — возвращает стандартный набор.
      */
     private fun getCollapsedSensorIds(tile: TileEntity): List<String> {
+        val ids = mutableListOf<String>()
         try {
-            val arr = JSONArray(tile.collapsedSensorIds)
-            if (arr.length() > 0) {
-                val ids = mutableListOf<String>()
-                for (i in 0 until arr.length()) ids.add(arr.getString(i))
-                return ids
+            val config = JSONObject(tile.config)
+            val arr = config.optJSONArray("collapsed_sensor_configs")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    ids.add(arr.getJSONObject(i).getString("entity_id"))
+                }
             }
         } catch (_: Exception) {}
-        // По умолчанию
-        return when (tile.title) {
-            "⚡ Сеть" -> listOf(
-                "sensor.pzem_energy_monitor_pzem_voltage",
-                "sensor.pzem_energy_monitor_pzem_power"
-            )
-            "🌡️ Температура" -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
-            else -> emptyList()
-        }
+        return ids
     }
 
     /**
      * Возвращает список entity_id для развёрнутого режима.
      */
     private fun getExpandedSensorIds(tile: TileEntity): List<String> {
+        val ids = mutableListOf<String>()
         try {
             val config = JSONObject(tile.config)
-            val arr = config.optJSONArray("entity_ids")
-            if (arr != null && arr.length() > 0) {
-                val ids = mutableListOf<String>()
-                for (i in 0 until arr.length()) ids.add(arr.getString(i))
-                return ids
+            val arr = config.optJSONArray("expanded_sensor_configs")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    ids.add(arr.getJSONObject(i).getString("entity_id"))
+                }
             }
         } catch (_: Exception) {}
-        // По умолчанию
-        return when (tile.title) {
-            "⚡ Сеть" -> listOf(
-                "sensor.pzem_energy_monitor_pzem_voltage",
-                "sensor.pzem_energy_monitor_pzem_power",
-                "sensor.pzem_energy_monitor_pzem_current",
-                "sensor.pzem_energy_monitor_pzem_frequency",
-                "sensor.pzem_energy_monitor_pzem_energy"
-            )
-            "🌡️ Температура" -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
-            else -> emptyList()
-        }
+        return ids
     }
 
     /**
@@ -1112,11 +1090,14 @@ class MainActivity : AppCompatActivity() {
         var maxNameLen = 0
 
         for (eid in entityIds) {
-            val rawValue = singleStates[eid] ?: "—"
+            val rawValue = singleStates[eid]
             val config = sensorConfigs.find { it.entityId == eid }
-            val displayName = config?.displayName ?: eid.substringAfterLast("_").replace("_", " ")
-            val decimals = config?.decimals ?: 0
-            val formattedValue = formatSensorValue(rawValue, decimals)
+            val displayName = config?.displayName?.takeIf { it.isNotEmpty() } 
+                ?: eid.substringAfterLast("_").replace("_", " ")
+            
+            val decimals = config?.decimals ?: 1
+            val formattedValue = if (rawValue != null) formatSensorValue(rawValue, decimals) else "—"
+
             rows.add(displayName to formattedValue)
             if (displayName.length > maxNameLen) maxNameLen = displayName.length
         }
@@ -1185,46 +1166,35 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTilesForEntity(eid: String, st: String) {
         singleStates[eid] = st
+        android.util.Log.d("Dashboard", "Entity update: $eid = $st")
 
-        when (eid) {
-            "sensor.pzem_energy_monitor_pzem_voltage" -> {
-                pzemVoltage = formatFloat(st, 0); updateGridStatus(); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_power" -> {
-                pzemPower = formatFloat(st, 0); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_current" -> {
-                pzemCurrent = formatFloat(st, 2); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_energy" -> {
-                pzemEnergy = formatFloat(st, 2); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_frequency" -> {
-                pzemFrequency = formatFloat(st, 1); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
-                techRoomTemp = formatFloat(st, 1); updateTemperatureWidget()
-            }
-        }
+        // Обновляем ВСЕ сенсоры (это надежнее всего, пока мы не отладили точную фильтрацию)
+        updateSensorDisplay()
 
+        // 2. Обновляем кнопки и правила цвета
         if (eid.startsWith("switch.") || eid.startsWith("light.")) updateSingleButtonColor(eid)
 
-        // Проверка правил цвета для всех плиток, использующих этот eid
+        val allTiles = tileManager.getAllTiles()
+        // Проверка правил цвета для всех вью на экране
         for (i in 0 until bottomPanel.childCount) {
             val view = bottomPanel.getChildAt(i)
             val tid = view.tag as? String ?: continue
-            val tile = tileManager.getAllTiles().find { it.id == tid } ?: continue
+            val tile = allTiles.find { it.id == tid } ?: continue
+            
             if (tile.colorRules.contains(eid)) {
                 applyColorRules(tile, view)
             }
         }
 
-        tileManager.getAllTiles().filter { it.type == "group" }.forEach { t ->
+        // 3. Обновляем группы
+        allTiles.filter { it.type == "group" }.forEach { t ->
             try {
                 val ids = JSONObject(t.config).optJSONArray("entity_ids") ?: return@forEach
                 for (i in 0 until ids.length()) {
                     if (ids.getString(i) == eid) {
-                        updateGroupState(t.id, eid, st); updateGroupButtonAppearance(t.id); break
+                        updateGroupState(t.id, eid, st)
+                        updateGroupButtonAppearance(t.id)
+                        break
                     }
                 }
             } catch (_: Exception) {}
@@ -1342,32 +1312,38 @@ class MainActivity : AppCompatActivity() {
 
     private fun subscribeToNeededEntities() {
         val ids = mutableSetOf<String>()
-        tileManager.getAllTiles().forEach { t ->
+        val tiles = tileManager.getAllTiles()
+        
+        tiles.forEach { t ->
             try {
                 val c = JSONObject(t.config)
-                c.optString("entity_id", "").takeIf { it.isNotEmpty() }?.let { ids.add(it) }
-                c.optJSONArray("entity_ids")?.let {
-                    for (i in 0 until it.length()) ids.add(it.getString(i))
-                }
-                // Датчики в виджете
-                val coll = JSONArray(t.collapsedSensorIds)
-                for (i in 0 until coll.length()) ids.add(coll.getString(i))
+                
+                // Основной ID (для кнопок)
+                c.optString("entity_id").takeIf { it.isNotEmpty() }?.let { ids.add(it) }
 
-                // Сущности из правил цвета
-                val rules = JSONArray(t.colorRules)
-                for (i in 0 until rules.length()) {
-                    ids.add(rules.getJSONObject(i).getString("entity_id"))
+                // Датчики из настроек (свернутый и развернутый вид)
+                listOf("collapsed_sensor_configs", "expanded_sensor_configs").forEach { key ->
+                    c.optJSONArray(key)?.let { arr ->
+                        for (i in 0 until arr.length()) {
+                            ids.add(arr.getJSONObject(i).getString("entity_id"))
+                        }
+                    }
+                }
+
+                // Правила цвета
+                if (t.colorRules.isNotEmpty() && t.colorRules != "[]") {
+                    val rules = JSONArray(t.colorRules)
+                    for (i in 0 until rules.length()) {
+                        ids.add(rules.getJSONObject(i).getString("entity_id"))
+                    }
                 }
             } catch (_: Exception) {}
         }
-        if (tileManager.getAllTiles().any { it.title == "⚡ Сеть" }) {
-            ids.add("sensor.pzem_energy_monitor_pzem_voltage")
-            ids.add("sensor.pzem_energy_monitor_pzem_power")
-            ids.add("sensor.pzem_energy_monitor_pzem_current")
-            ids.add("sensor.pzem_energy_monitor_pzem_energy")
-            ids.add("sensor.pzem_energy_monitor_pzem_frequency")
+        
+        val finalIds = ids.filter { it.isNotEmpty() }.toList()
+        if (finalIds.isNotEmpty()) {
+            webSocket?.subscribeEntities(finalIds)
         }
-        if (ids.isNotEmpty()) webSocket?.subscribeEntities(ids.toList())
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

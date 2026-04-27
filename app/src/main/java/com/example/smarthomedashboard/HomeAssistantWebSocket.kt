@@ -101,39 +101,52 @@ class HomeAssistantWebSocket(
                         val entities = mutableListOf<HaEntity>()
                         for (i in 0 until resultObj.length()) {
                             val obj = resultObj.getJSONObject(i)
+                            val entityId = obj.optString("entity_id")
+                            if (entityId.isEmpty()) continue
+
+                            // Если это ответ на get_states, там есть поле state
+                            if (obj.has("state")) {
+                                val state = obj.getString("state")
+                                onStateChanged(entityId, state, obj.optJSONObject("attributes") ?: JSONObject())
+                            }
+
+                            val friendlyName = obj.optJSONObject("attributes")?.optString("friendly_name")
+                                ?: obj.optString("name", entityId)
+
                             entities.add(HaEntity(
-                                entityId = obj.optString("entity_id"),
-                                name = obj.optString("name", obj.optString("entity_id")),
-                                domain = obj.optString("entity_id").split(".").first()
+                                entityId = entityId,
+                                name = friendlyName,
+                                domain = entityId.split(".").first()
                             ))
                         }
                         onEntitiesList?.invoke(entities)
                     }
                 }
                 "event" -> {
-                    val event = json.optJSONObject("event")
+                    val event = json.optJSONObject("event") ?: return
 
-                    val c = event?.optJSONObject("c")
-                    if (c != null) {
+                    // Обработка "a" (initial/added states)
+                    event.optJSONObject("a")?.let { a ->
+                        val keys = a.keys()
+                        while (keys.hasNext()) {
+                            val entityId = keys.next()
+                            val stateObj = a.optJSONObject(entityId)
+                            val state = stateObj?.optString("s") ?: "unknown"
+                            val attr = stateObj?.optJSONObject("a") ?: JSONObject()
+                            onStateChanged(entityId, state, attr)
+                        }
+                    }
+
+                    // Обработка "c" (changed states)
+                    event.optJSONObject("c")?.let { c ->
                         val keys = c.keys()
                         while (keys.hasNext()) {
                             val entityId = keys.next()
                             val stateObj = c.optJSONObject(entityId)
                             val plus = stateObj?.optJSONObject("+")
-                            val state = plus?.optString("s") ?: "unknown"
-                            val attr = JSONObject()
-                            onStateChanged(entityId, state, attr)
-                        }
-                    } else {
-                        val a = event?.optJSONObject("a")
-                        if (a != null) {
-                            val keys = a.keys()
-                            while (keys.hasNext()) {
-                                val entityId = keys.next()
-                                val stateObj = a.optJSONObject(entityId)
-                                val state = stateObj?.optString("s") ?: "unknown"
-                                val attr = stateObj?.optJSONObject("a") ?: JSONObject()
-                                onStateChanged(entityId, state, attr)
+                            if (plus != null && plus.has("s")) {
+                                val state = plus.getString("s")
+                                onStateChanged(entityId, state, JSONObject())
                             }
                         }
                     }
