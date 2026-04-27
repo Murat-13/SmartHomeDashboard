@@ -1,6 +1,7 @@
 package com.example.smarthomedashboard
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -20,8 +21,6 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
-import androidx.activity.result.contract.ActivityResultContracts
-import com.example.smarthomedashboard.data.ColorRule
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.launch
@@ -76,16 +75,11 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== КОНСТАНТЫ ====================
     companion object {
+        private const val REQUEST_TILE_SETTINGS = 100
+        private const val REQUEST_ADVANCED_SETTINGS = 101
         private const val DEFAULT_WIDGET_W = 220
         private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
-    }
-
-    private val tileSettingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK) {
-            refreshBottomPanel()
-            subscribeToNeededEntities()
-        }
     }
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
@@ -129,7 +123,6 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== ПОИСК СВОБОДНОГО МЕСТА ====================
 
-    @Suppress("SameParameterValue")
     private fun findFreeSpot(width: Int, height: Int): Pair<Int, Int> {
         val step = 20
         var y = 40
@@ -212,8 +205,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun openTileSettings(id: String) {
         openWithPinCheck {
-            tileSettingsLauncher.launch(
-                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", id)
+            startActivityForResult(
+                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", id),
+                REQUEST_TILE_SETTINGS
             )
         }
     }
@@ -347,14 +341,10 @@ class MainActivity : AppCompatActivity() {
         // Перетаскивание и раскрытие
         setupSensorTouch(card, tile)
 
-        // Динамические цвета
-        applyColorRules(tile, card)
-
         // Изменение размера
         var resizeStartX = 0f
         var resizeStartY = 0f
-        @SuppressLint("ClickableViewAccessibility")
-        resizeHandle.setOnTouchListener { v, event ->
+        resizeHandle.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     isResizing = true
@@ -375,7 +365,6 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    v.performClick()
                     isResizing = false
                     val config = JSONObject(tile.config)
                     config.put("button_size", card.width)
@@ -458,12 +447,8 @@ class MainActivity : AppCompatActivity() {
         expandedSensorSource = source
 
         // Тап по раскрытому виджету сворачивает его
-        @SuppressLint("ClickableViewAccessibility")
-        source.setOnTouchListener { v, event ->
-            if (event.action == MotionEvent.ACTION_UP) {
-                v.performClick()
-                collapseSensor()
-            }
+        source.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_UP) collapseSensor()
             true
         }
 
@@ -519,7 +504,8 @@ class MainActivity : AppCompatActivity() {
         sensorCollapseRunnable?.let { handler.removeCallbacks(it) }
     }
 
-    @SuppressLint("ClickableViewAccessibility")
+    // ==================== ОБРАБОТЧИК КАСАНИЙ СЕНСОРА ====================
+
     private fun setupSensorTouch(card: View, tile: TileEntity) {
         var dragRunnable: Runnable? = null
         var startX = 0f; var startY = 0f
@@ -537,13 +523,12 @@ class MainActivity : AppCompatActivity() {
                     viewStartX = view.x; viewStartY = view.y
                     isDragging = false
                     if (isEditMode) {
-                        val runnable = Runnable {
+                        dragRunnable = Runnable {
                             isDragging = true
                             view.alpha = 0.6f
                             view.elevation = 20f
                         }
-                        dragRunnable = runnable
-                        handler.postDelayed(runnable, 500L)
+                        handler.postDelayed(dragRunnable!!, 500L)
                     }
                     true
                 }
@@ -609,7 +594,13 @@ class MainActivity : AppCompatActivity() {
             alpha = 0.8f
             elevation = 8f
             background = ResourcesCompat.getDrawable(resources, R.drawable.bg_button_rounded, null)
-            applyColorRules(tile, this)
+
+            if (tile.type == "group") {
+                background?.setTint(if (getGroupState(tile.id)) on else off)
+            } else {
+                val eid = JSONObject(tile.config).optString("entity_id", "")
+                background?.setTint(if (singleStates[eid] == "on") on else off)
+            }
 
             setTextColor("#FFFFFF".toColorInt())
             textSize = 14f
@@ -626,7 +617,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private fun setupGroupTouch(tile: TileEntity, button: Button) {
         var pressRunnable: Runnable? = null
         var startX = 0f; var startY = 0f
@@ -641,19 +631,17 @@ class MainActivity : AppCompatActivity() {
                     viewStartX = view.x; viewStartY = view.y
 
                     if (isEditMode) {
-                        val runnable = Runnable {
+                        pressRunnable = Runnable {
                             isDragging = true
                             view.alpha = 0.6f; view.elevation = 20f
                         }
-                        pressRunnable = runnable
-                        handler.postDelayed(runnable, 500L)
+                        handler.postDelayed(pressRunnable!!, 500L)
                     } else {
-                        val runnable = Runnable {
+                        pressRunnable = Runnable {
                             if (expandedGroupId == tile.id) collapseChildButtons()
                             else expandChildButtons(tile, view as Button)
                         }
-                        pressRunnable = runnable
-                        handler.postDelayed(runnable, 1000L)
+                        handler.postDelayed(pressRunnable!!, 1000L)
                     }
                     true
                 }
@@ -694,7 +682,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private fun setupButtonTouch(
         tile: TileEntity,
         button: Button,
@@ -730,12 +717,11 @@ class MainActivity : AppCompatActivity() {
                     startX = event.rawX; startY = event.rawY
                     viewStartX = view.x; viewStartY = view.y
                     isDragging = false
-                    val runnable = Runnable {
+                    dragRunnable = Runnable {
                         isDragging = true
                         view.alpha = 0.6f; view.elevation = 20f
                     }
-                    dragRunnable = runnable
-                    handler.postDelayed(runnable, 500L)
+                    handler.postDelayed(dragRunnable!!, 500L)
                     true
                 }
 
@@ -810,9 +796,10 @@ class MainActivity : AppCompatActivity() {
             textSize = 32f
             gravity = Gravity.CENTER
             setOnClickListener {
-                tileSettingsLauncher.launch(
+                startActivityForResult(
                     Intent(this@MainActivity, TileSettingsActivity::class.java)
-                        .putExtra("container", "grid")
+                        .putExtra("container", "grid"),
+                    REQUEST_TILE_SETTINGS
                 )
             }
         }
@@ -938,13 +925,10 @@ class MainActivity : AppCompatActivity() {
     private fun getGroupState(gid: String) = groupStates[gid]?.values?.any { it == "on" } ?: false
 
     private fun updateGroupButtonAppearance(gid: String) {
-        val tile = tileManager.getAllTiles().find { it.id == gid } ?: return
+        val c = if (getGroupState(gid)) "#8033CC33".toColorInt() else "#424242".toColorInt()
         for (i in 0 until bottomPanel.childCount) {
             val ch = bottomPanel.getChildAt(i)
-            if (ch.tag == gid) {
-                applyColorRules(tile, ch)
-                return
-            }
+            if (ch is Button && ch.tag == gid) { ch.background?.setTint(c); return }
         }
     }
 
@@ -961,15 +945,15 @@ class MainActivity : AppCompatActivity() {
     // ==================== ОБЫЧНЫЕ КНОПКИ ====================
 
     private fun updateSingleButtonColor(eid: String) {
+        val c = if (singleStates[eid] == "on") "#8033CC33".toColorInt() else "#424242".toColorInt()
         for (i in 0 until bottomPanel.childCount) {
             val ch = bottomPanel.getChildAt(i)
             if (ch is Button) {
                 val tile = (ch.tag as? String)?.let { tileManager.getAllTiles().find { t -> t.id == it } }
-                if (tile != null && tile.type == "button") {
+                if (tile != null && tile.type != "group") {
                     try {
-                        val mainEid = JSONObject(tile.config).optString("entity_id", "")
-                        if (mainEid == eid || tile.colorRules.contains(eid)) {
-                            applyColorRules(tile, ch)
+                        if (JSONObject(tile.config).optString("entity_id", "") == eid) {
+                            ch.background?.setTint(c)
                         }
                     } catch (_: Exception) {}
                 }
@@ -985,15 +969,13 @@ class MainActivity : AppCompatActivity() {
             tileManager.addTile(
                 TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
                     "⚡ Сеть", x1, y1, 1, 1,
-                    config = """{"button_size":$DEFAULT_WIDGET_W}""",
-                    collapsedSensorIds = """["sensor.pzem_energy_monitor_pzem_voltage","sensor.pzem_energy_monitor_pzem_power"]""")
+                    config = """{"button_size":$DEFAULT_WIDGET_W}""")
             )
             val (x2, y2) = findFreeSpot(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
             tileManager.addTile(
                 TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
                     "🌡️ Температура", x2, y2, 1, 1,
-                    config = """{"button_size":$DEFAULT_WIDGET_W}""",
-                    collapsedSensorIds = """["sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"]""")
+                    config = """{"button_size":$DEFAULT_WIDGET_W}""")
             )
         }
     }
@@ -1020,23 +1002,95 @@ class MainActivity : AppCompatActivity() {
     private fun updateTemperatureWidget() { updateSensorDisplay() }
 
     private fun updateSensorDisplay() {
-        val allTiles = tileManager.getAllTiles()
+        val sensorTiles = tileManager.getTilesByContainer("grid")
         for (i in 0 until bottomPanel.childCount) {
             val child = bottomPanel.getChildAt(i)
-            val tagId = child.tag as? String ?: continue
-            val tile = allTiles.find { it.id == tagId && it.type == "sensor" } ?: continue
+            val tag = child.tag as? String ?: continue
+            val tile = sensorTiles.find { it.id == tag } ?: continue
 
             if (child is FrameLayout) {
                 val isExpanded = (expandedSensorView == child)
-                val idsToShow = if (isExpanded) getExpandedSensorIds(tile) else getCollapsedSensorIds(tile)
 
+                val idsToShow = if (isExpanded) {
+                    getExpandedSensorIds(tile)
+                } else {
+                    getCollapsedSensorIds(tile)
+                }
+
+                // Обновляем содержимое виджета (табличный вид)
                 val container = child.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
                 if (container != null) {
                     buildSensorContent(tile, idsToShow, isExpanded, container)
                 }
-                applyColorRules(tile, child)
+
+                // Применяем правила цвета (колонки От и До)
+                var finalColor: String? = null
+                try {
+                    val rulesJson = tile.colorRules
+                    if (rulesJson.isNotEmpty() && rulesJson != "[]") {
+                        val rulesArr = JSONArray(rulesJson)
+                        // Проходим по всем правилам. Последнее сработавшее перекроет предыдущие.
+                        for (i in 0 until rulesArr.length()) {
+                            val obj = rulesArr.getJSONObject(i)
+                            val rEntityId = obj.optString("entity_id")
+                            val rFromStr = obj.optString("from", "")
+                            val rToStr = obj.optString("to", "")
+                            val rColor = obj.optString("color_hex", "")
+
+                            if (rEntityId.isNotEmpty() && rColor.isNotEmpty()) {
+                                val currentVal = singleStates[rEntityId] ?: ""
+                                if (checkRuleMatch(currentVal, rFromStr, rToStr)) {
+                                    finalColor = rColor
+                                }
+                            }
+                        }
+                    }
+
+                    if (finalColor != null) {
+                        child.setBackgroundColor(finalColor.toColorInt())
+                    } else {
+                        // Стандартная логика для сети или дефолтный фон
+                        if (tile.title.lowercase().contains("сеть")) {
+                            val isOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
+                            child.setBackgroundColor(
+                                if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
+                            )
+                        } else {
+                            child.setBackgroundColor("#80333333".toColorInt())
+                        }
+                    }
+                } catch (_: Exception) {
+                    child.setBackgroundColor("#80333333".toColorInt())
+                }
             }
         }
+    }
+
+    /**
+     * Проверяет, подходит ли значение под диапазон.
+     * Если оба числа — математическое сравнение.
+     * Если нет — строковое.
+     */
+    private fun checkRuleMatch(value: String, from: String, to: String): Boolean {
+        if (value.isEmpty()) return false
+
+        // Очищаем значение от единиц измерения для попытки парсинга числа
+        val cleanValue = value.replace(Regex("[^0-9.-]"), "")
+        val vNum = cleanValue.toDoubleOrNull()
+        val fNum = from.toDoubleOrNull()
+        val tNum = to.toDoubleOrNull()
+
+        // Если значение — число, и хотя бы одна граница — число
+        if (vNum != null && (fNum != null || tNum != null)) {
+            val fromOk = if (from.isEmpty()) true else (fNum != null && vNum >= fNum)
+            val toOk = if (to.isEmpty()) true else (tNum != null && vNum <= tNum)
+            return fromOk && toOk
+        }
+
+        // Иначе сравниваем как строки
+        val fromOk = if (from.isEmpty()) true else value.equals(from, ignoreCase = true) || value >= from
+        val toOk = if (to.isEmpty()) true else value.equals(to, ignoreCase = true) || value <= to
+        return fromOk && toOk
     }
 
     /**
@@ -1044,34 +1098,52 @@ class MainActivity : AppCompatActivity() {
      * Если ничего не выбрано — возвращает стандартный набор.
      */
     private fun getCollapsedSensorIds(tile: TileEntity): List<String> {
-        val ids = mutableListOf<String>()
         try {
-            val config = JSONObject(tile.config)
-            val arr = config.optJSONArray("collapsed_sensor_configs")
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    ids.add(arr.getJSONObject(i).getString("entity_id"))
-                }
+            val arr = JSONArray(tile.collapsedSensorIds)
+            if (arr.length() > 0) {
+                val ids = mutableListOf<String>()
+                for (i in 0 until arr.length()) ids.add(arr.getString(i))
+                return ids
             }
         } catch (_: Exception) {}
-        return ids
+        // По умолчанию (ищем по вхождению слова)
+        val title = tile.title.lowercase()
+        return when {
+            title.contains("сеть") -> listOf(
+                "sensor.pzem_energy_monitor_pzem_voltage",
+                "sensor.pzem_energy_monitor_pzem_power"
+            )
+            title.contains("температура") -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
+            else -> emptyList()
+        }
     }
 
     /**
      * Возвращает список entity_id для развёрнутого режима.
      */
     private fun getExpandedSensorIds(tile: TileEntity): List<String> {
-        val ids = mutableListOf<String>()
         try {
             val config = JSONObject(tile.config)
-            val arr = config.optJSONArray("expanded_sensor_configs")
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    ids.add(arr.getJSONObject(i).getString("entity_id"))
-                }
+            val arr = config.optJSONArray("entity_ids")
+            if (arr != null && arr.length() > 0) {
+                val ids = mutableListOf<String>()
+                for (i in 0 until arr.length()) ids.add(arr.getString(i))
+                return ids
             }
         } catch (_: Exception) {}
-        return ids
+        // По умолчанию
+        val title = tile.title.lowercase()
+        return when {
+            title.contains("сеть") -> listOf(
+                "sensor.pzem_energy_monitor_pzem_voltage",
+                "sensor.pzem_energy_monitor_pzem_power",
+                "sensor.pzem_energy_monitor_pzem_current",
+                "sensor.pzem_energy_monitor_pzem_frequency",
+                "sensor.pzem_energy_monitor_pzem_energy"
+            )
+            title.contains("температура") -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
+            else -> emptyList()
+        }
     }
 
     /**
@@ -1082,7 +1154,6 @@ class MainActivity : AppCompatActivity() {
      * Строит содержимое виджета: заголовок + строки параметров.
      * Название параметра слева, значение справа, выровнены по самой длинной строке.
      */
-    @SuppressLint("SetTextI18n")
     private fun buildSensorContent(tile: TileEntity, entityIds: List<String>, isExpanded: Boolean, container: android.widget.LinearLayout) {
         val sensorConfigs = loadSensorConfigs(tile, isExpanded)
 
@@ -1090,14 +1161,15 @@ class MainActivity : AppCompatActivity() {
         var maxNameLen = 0
 
         for (eid in entityIds) {
-            val rawValue = singleStates[eid]
+            val rawValue = singleStates[eid] ?: "—"
             val config = sensorConfigs.find { it.entityId == eid }
-            val displayName = config?.displayName?.takeIf { it.isNotEmpty() } 
-                ?: eid.substringAfterLast("_").replace("_", " ")
+            val displayName = config?.displayName ?: eid.substringAfterLast("_").replace("_", " ")
             
-            val decimals = config?.decimals ?: 1
-            val formattedValue = if (rawValue != null) formatSensorValue(rawValue, decimals) else "—"
+            // Определяем точность по умолчанию
+            val defaultDecimals = if (eid.contains("temp") || eid.contains("freq")) 1 else if (eid.contains("current") || eid.contains("energy")) 2 else 0
+            val decimals = config?.decimals ?: defaultDecimals
 
+            val formattedValue = formatSensorValue(rawValue, decimals)
             rows.add(displayName to formattedValue)
             if (displayName.length > maxNameLen) maxNameLen = displayName.length
         }
@@ -1111,9 +1183,8 @@ class MainActivity : AppCompatActivity() {
         val fontSize = tile.fontSize.toFloat()
         for ((name, value) in rows) {
             val paddedName = name.padEnd(maxNameLen, ' ')
-            val rowText = "$paddedName  $value"
             val rowView = android.widget.TextView(container.context).apply {
-                text = rowText
+                text = "$paddedName  $value"
                 textSize = fontSize
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
@@ -1166,35 +1237,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTilesForEntity(eid: String, st: String) {
         singleStates[eid] = st
-        android.util.Log.d("Dashboard", "Entity update: $eid = $st")
 
-        // Обновляем ВСЕ сенсоры (это надежнее всего, пока мы не отладили точную фильтрацию)
-        updateSensorDisplay()
-
-        // 2. Обновляем кнопки и правила цвета
-        if (eid.startsWith("switch.") || eid.startsWith("light.")) updateSingleButtonColor(eid)
-
-        val allTiles = tileManager.getAllTiles()
-        // Проверка правил цвета для всех вью на экране
-        for (i in 0 until bottomPanel.childCount) {
-            val view = bottomPanel.getChildAt(i)
-            val tid = view.tag as? String ?: continue
-            val tile = allTiles.find { it.id == tid } ?: continue
-            
-            if (tile.colorRules.contains(eid)) {
-                applyColorRules(tile, view)
+        when (eid) {
+            "sensor.pzem_energy_monitor_pzem_voltage" -> {
+                pzemVoltage = formatFloat(st, 0); updateGridStatus(); updatePzemWidget()
+            }
+            "sensor.pzem_energy_monitor_pzem_power" -> {
+                pzemPower = formatFloat(st, 0); updatePzemWidget()
+            }
+            "sensor.pzem_energy_monitor_pzem_current" -> {
+                pzemCurrent = formatFloat(st, 2); updatePzemWidget()
+            }
+            "sensor.pzem_energy_monitor_pzem_energy" -> {
+                pzemEnergy = formatFloat(st, 2); updatePzemWidget()
+            }
+            "sensor.pzem_energy_monitor_pzem_frequency" -> {
+                pzemFrequency = formatFloat(st, 1); updatePzemWidget()
+            }
+            "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
+                techRoomTemp = formatFloat(st, 1); updateTemperatureWidget()
             }
         }
 
-        // 3. Обновляем группы
-        allTiles.filter { it.type == "group" }.forEach { t ->
+        if (eid.startsWith("switch.")) updateSingleButtonColor(eid)
+
+        tileManager.getAllTiles().filter { it.type == "group" }.forEach { t ->
             try {
                 val ids = JSONObject(t.config).optJSONArray("entity_ids") ?: return@forEach
                 for (i in 0 until ids.length()) {
                     if (ids.getString(i) == eid) {
-                        updateGroupState(t.id, eid, st)
-                        updateGroupButtonAppearance(t.id)
-                        break
+                        updateGroupState(t.id, eid, st); updateGroupButtonAppearance(t.id); break
                     }
                 }
             } catch (_: Exception) {}
@@ -1203,75 +1275,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun formatFloat(v: String, d: Int): String {
         return v.toFloatOrNull()?.let { String.format("%.${d}f", it) } ?: "—"
-    }
-
-    // ==================== ДИНАМИЧЕСКИЕ ЦВЕТА ====================
-
-    private fun applyColorRules(tile: TileEntity, view: View) {
-        val rulesJson = tile.colorRules
-        val rules = try {
-            if (rulesJson.isEmpty() || rulesJson == "[]") emptyList()
-            else {
-                val arr = JSONArray(rulesJson)
-                List(arr.length()) { i ->
-                    val obj = arr.getJSONObject(i)
-                    ColorRule(
-                        obj.getString("entity_id"),
-                        obj.getString("condition"),
-                        obj.getString("value"),
-                        obj.getString("color_hex")
-                    )
-                }
-            }
-        } catch (_: Exception) { emptyList() }
-
-        var matchedColor: Int? = null
-        for (rule in rules) {
-            val currentState = singleStates[rule.entityId] ?: continue
-            if (checkCondition(currentState, rule.condition, rule.value)) {
-                matchedColor = try { Color.parseColor(rule.colorHex) } catch (_: Exception) { null }
-                if (matchedColor != null) break
-            }
-        }
-
-        if (matchedColor != null) {
-            if (view is Button) view.background?.setTint(matchedColor)
-            else view.setBackgroundColor(matchedColor)
-        } else {
-            // Дефолтные цвета, если правила не сработали
-            val on = "#8033CC33".toColorInt()
-            val off = "#424242".toColorInt()
-            when (tile.type) {
-                "sensor" -> view.setBackgroundColor("#80333333".toColorInt())
-                "button" -> {
-                    val eid = JSONObject(tile.config).optString("entity_id", "")
-                    view.background?.setTint(if (singleStates[eid] == "on") on else off)
-                }
-                "group" -> view.background?.setTint(if (getGroupState(tile.id)) on else off)
-            }
-        }
-    }
-
-    private fun checkCondition(current: String, op: String, target: String): Boolean {
-        val curNum = current.toDoubleOrNull()
-        val tarNum = target.toDoubleOrNull()
-        return if (curNum != null && tarNum != null) {
-            when (op) {
-                ">" -> curNum > tarNum
-                "<" -> curNum < tarNum
-                "==" -> curNum == tarNum
-                "!=" -> curNum != tarNum
-                ">=" -> curNum >= tarNum
-                "<=" -> curNum <= tarNum
-                else -> false
-            }
-        } else {
-            when (op) {
-                "==" -> current.equals(target, ignoreCase = true)
-                "!=" -> !current.equals(target, ignoreCase = true)
-                else -> false
-            }
-        }
     }
 
     // ==================== WEBSOCKET ====================
@@ -1312,43 +1315,35 @@ class MainActivity : AppCompatActivity() {
 
     private fun subscribeToNeededEntities() {
         val ids = mutableSetOf<String>()
-        val tiles = tileManager.getAllTiles()
-        
-        tiles.forEach { t ->
+        tileManager.getAllTiles().forEach { t ->
             try {
                 val c = JSONObject(t.config)
-                
-                // Основной ID (для кнопок)
-                c.optString("entity_id").takeIf { it.isNotEmpty() }?.let { ids.add(it) }
-
-                // Датчики из настроек (свернутый и развернутый вид)
-                listOf("collapsed_sensor_configs", "expanded_sensor_configs").forEach { key ->
-                    c.optJSONArray(key)?.let { arr ->
-                        for (i in 0 until arr.length()) {
-                            ids.add(arr.getJSONObject(i).getString("entity_id"))
-                        }
-                    }
-                }
-
-                // Правила цвета
-                if (t.colorRules.isNotEmpty() && t.colorRules != "[]") {
-                    val rules = JSONArray(t.colorRules)
-                    for (i in 0 until rules.length()) {
-                        ids.add(rules.getJSONObject(i).getString("entity_id"))
-                    }
+                c.optString("entity_id", "").takeIf { it.isNotEmpty() }?.let { ids.add(it) }
+                c.optJSONArray("entity_ids")?.let {
+                    for (i in 0 until it.length()) ids.add(it.getString(i))
                 }
             } catch (_: Exception) {}
         }
-        
-        val finalIds = ids.filter { it.isNotEmpty() }.toList()
-        if (finalIds.isNotEmpty()) {
-            webSocket?.subscribeEntities(finalIds)
+        if (tileManager.getAllTiles().any { it.title == "⚡ Сеть" }) {
+            ids.add("sensor.pzem_energy_monitor_pzem_voltage")
+            ids.add("sensor.pzem_energy_monitor_pzem_power")
+            ids.add("sensor.pzem_energy_monitor_pzem_current")
+            ids.add("sensor.pzem_energy_monitor_pzem_energy")
+            ids.add("sensor.pzem_energy_monitor_pzem_frequency")
         }
+        if (tileManager.getAllTiles().any { it.title == "🌡️ Температура" }) {
+            ids.add("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
+        }
+        if (ids.isNotEmpty()) webSocket?.subscribeEntities(ids.toList())
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 101 && resultCode == RESULT_OK) {
+        if (requestCode == REQUEST_TILE_SETTINGS && resultCode == Activity.RESULT_OK) {
+            refreshBottomPanel()
+            subscribeToNeededEntities()
+        }
+        if (requestCode == 100 && resultCode == Activity.RESULT_OK) {
             refreshBottomPanel()
         }
     }

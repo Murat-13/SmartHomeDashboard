@@ -125,8 +125,8 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                     val obj = rulesArr.getJSONObject(i)
                     colorRules.add(ColorRule(
                         entityId = obj.getString("entity_id"),
-                        condition = obj.getString("condition"),
-                        value = obj.getString("value"),
+                        from = obj.optString("from", ""),
+                        to = obj.optString("to", ""),
                         colorHex = obj.getString("color_hex")
                     ))
                 }
@@ -213,7 +213,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnAddColorRule).setOnClickListener {
-            colorRules.add(ColorRule("", "==", "0", "#4CAF50"))
+            colorRules.add(ColorRule("", "", "", "#8033CC33"))
             colorRuleAdapter.notifyItemInserted(colorRules.size - 1)
             rvColorRules.scrollToPosition(colorRules.size - 1)
         }
@@ -284,8 +284,8 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
                     if (rule.entityId.isNotEmpty()) {
                         rulesArr.put(JSONObject().apply {
                             put("entity_id", rule.entityId)
-                            put("condition", rule.condition)
-                            put("value", rule.value)
+                            put("from", rule.from ?: "")
+                            put("to", rule.to ?: "")
                             put("color_hex", rule.colorHex)
                         })
                     }

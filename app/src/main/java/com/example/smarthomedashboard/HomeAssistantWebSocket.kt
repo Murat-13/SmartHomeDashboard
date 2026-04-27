@@ -50,11 +50,13 @@ class HomeAssistantWebSocket(
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d("HAWebSocket", "Closed")
+                this@HomeAssistantWebSocket.webSocket = null
                 onDisconnected()
                 scheduleReconnect()
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e("HAWebSocket", "Failure: ${t.message}")
+                this@HomeAssistantWebSocket.webSocket = null
                 onDisconnected()
                 scheduleReconnect()
             }
@@ -215,7 +217,7 @@ class HomeAssistantWebSocket(
         try {
             webSocket?.send(message.toString())
         } catch (e: Exception) {
-            webSocket = null
+            this@HomeAssistantWebSocket.webSocket = null
             connect()
             handler.postDelayed({ callService(domain, service, entityId) }, 1000)
         }

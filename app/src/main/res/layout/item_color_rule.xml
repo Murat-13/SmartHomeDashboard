@@ -47,22 +47,31 @@
             android:gravity="center_vertical"
             android:layout_marginTop="8dp">
 
-            <Spinner
-                android:id="@+id/spinnerOperator"
-                android:layout_width="80dp"
-                android:layout_height="40dp"
-                android:background="#1A1A1A"
-                android:entries="@array/operators" />
-
             <EditText
-                android:id="@+id/etValue"
-                android:layout_width="100dp"
+                android:id="@+id/etFrom"
+                android:layout_width="0dp"
                 android:layout_height="40dp"
-                android:layout_marginStart="8dp"
+                android:layout_weight="1"
                 android:background="#1A1A1A"
                 android:textColor="#FFFFFF"
-                android:inputType="numberDecimal"
-                android:hint="Значение" />
+                android:hint="От"
+                android:padding="4dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=" — "
+                android:textColor="#FFFFFF" />
+
+            <EditText
+                android:id="@+id/etTo"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:background="#1A1A1A"
+                android:textColor="#FFFFFF"
+                android:hint="До"
+                android:padding="4dp" />
 
             <View
                 android:id="@+id/vColorPreview"
