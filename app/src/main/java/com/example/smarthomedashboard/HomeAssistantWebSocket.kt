@@ -24,6 +24,7 @@ class HomeAssistantWebSocket(
         .build()
 
     private val messageId = AtomicInteger(1)
+    private val forecastSubscriptions = mutableMapOf<Int, String>() // msgId -> entityId
     private var isReconnecting = false
     private val handler = Handler(Looper.getMainLooper())
     private var pendingEntityIds: List<String>? = null
@@ -126,6 +127,17 @@ class HomeAssistantWebSocket(
                 }
                 "event" -> {
                     val event = json.optJSONObject("event") ?: return
+                    val msgId = json.optInt("id")
+
+                    // Обработка прогноза погоды (новый формат через подписку)
+                    if (msgId != 0 && event.has("forecast") && forecastSubscriptions.containsKey(msgId)) {
+                        val entityId = forecastSubscriptions[msgId]!!
+                        val forecast = event.optJSONArray("forecast")
+                        if (forecast != null) {
+                            val attrs = JSONObject().put("forecast", forecast)
+                            onStateChanged(entityId, "unknown", attrs)
+                        }
+                    }
 
                     // Обработка "a" (initial/added states)
                     event.optJSONObject("a")?.let { a ->
@@ -146,17 +158,36 @@ class HomeAssistantWebSocket(
                             val entityId = keys.next()
                             val stateObj = c.optJSONObject(entityId)
                             val plus = stateObj?.optJSONObject("+")
-                            if (plus != null && plus.has("s")) {
-                                val state = plus.getString("s")
-                                onStateChanged(entityId, state, JSONObject())
+                            if (plus != null) {
+                                val state = if (plus.has("s")) plus.getString("s") else "unknown"
+                                val attrs = plus.optJSONObject("a") ?: JSONObject()
+                                onStateChanged(entityId, state, attrs)
                             }
                         }
                     }
+                }
+                "forecast" -> {
+                    // Некоторые версии HA присылают тип "forecast" напрямую
+                    val forecast = json.optJSONArray("forecast")
+                    // Здесь сложно понять к какому entity относится, если не хранить map ID -> Entity
                 }
             }
         } catch (e: Exception) {
             Log.e("HAWebSocket", "Error parsing message: ${e.message}")
         }
+    }
+
+    fun subscribeForecast(entityId: String) {
+        val id = messageId.getAndIncrement()
+        forecastSubscriptions[id] = entityId
+        val message = JSONObject().apply {
+            put("id", id)
+            put("type", "weather/subscribe_forecasts")
+            put("entity_id", entityId)
+            put("forecast_type", "daily")
+        }
+        webSocket?.send(message.toString())
+        Log.d("HAWebSocket", "Subscribed to forecast: $entityId (msgId: $id)")
     }
 
     fun getEntities() {

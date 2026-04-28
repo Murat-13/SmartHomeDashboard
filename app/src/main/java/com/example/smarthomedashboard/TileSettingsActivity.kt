@@ -129,6 +129,7 @@ class TileSettingsActivity : AppCompatActivity() {
             "group" -> 2
             "battery" -> 3
             "clock" -> 4
+            "weather" -> 5
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -169,12 +170,13 @@ class TileSettingsActivity : AppCompatActivity() {
             2 -> "group"
             3 -> "battery"
             4 -> "clock"
+            5 -> "weather"
             else -> "sensor"
         }
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
-            "clock", "sensor", "battery" -> "grid"
+            "clock", "sensor", "battery", "weather" -> "grid"
             else -> "grid"
         }
 

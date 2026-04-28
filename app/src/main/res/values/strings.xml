@@ -61,6 +61,7 @@
         <item>Группа (контейнер)</item>
         <item>Батарея (SOC %)</item>
         <item>Часы</item>
+        <item>Погода</item>
     </string-array>
 
     <!-- Настройки плитки -->
