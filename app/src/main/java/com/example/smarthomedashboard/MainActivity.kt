@@ -27,6 +27,11 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
 import org.json.JSONArray
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.Date
+import android.util.TypedValue
+import android.graphics.Typeface
 
 class MainActivity : AppCompatActivity() {
 
@@ -125,6 +130,12 @@ class MainActivity : AppCompatActivity() {
         subscribeToNeededEntities()
         checkKioskMode()
         resetIdleTimer()
+        clockHandler.post(clockRunnable)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        clockHandler.removeCallbacks(clockRunnable)
     }
 
     private fun checkKioskMode() {
@@ -370,20 +381,53 @@ class MainActivity : AppCompatActivity() {
             tag = "sensor_text_container"
         }
 
-        // Заголовок виджета
-        val titleView = android.widget.TextView(this).apply {
-            text = tile.title
-            textSize = tile.fontSize.toFloat()
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setShadowLayer(4f, 2f, 2f, Color.BLACK)
-            layoutParams = android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            tag = "sensor_title"
+        if (tile.type == "clock") {
+            val clockView = android.widget.TextView(this).apply {
+                tag = "clock_text"
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setShadowLayer(8f, 0f, 0f, Color.BLACK)
+                typeface = Typeface.DEFAULT_BOLD
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.4f)
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            textContainer.addView(clockView)
+
+            val dateView = android.widget.TextView(this).apply {
+                tag = "clock_date"
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setShadowLayer(4f, 0f, 0f, Color.BLACK)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.15f)
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            textContainer.addView(dateView)
+
+            val now = Date()
+            clockView.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+            dateView.text = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
+        } else {
+            // Заголовок виджета
+            val titleView = android.widget.TextView(this).apply {
+                text = tile.title
+                textSize = tile.fontSize.toFloat()
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setShadowLayer(4f, 2f, 2f, Color.BLACK)
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                tag = "sensor_title"
+            }
+            textContainer.addView(titleView)
         }
-        textContainer.addView(titleView)
 
         card.addView(textContainer)
 
@@ -419,6 +463,14 @@ class MainActivity : AppCompatActivity() {
                         .coerceIn(120, screenH - card.y.toInt() - 80)
                     card.layoutParams.width = newW
                     card.layoutParams.height = newH
+                    if (tile.type == "clock") {
+                        card.findViewWithTag<android.widget.TextView>("clock_text")?.let {
+                            it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.4f)
+                        }
+                        card.findViewWithTag<android.widget.TextView>("clock_date")?.let {
+                            it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.15f)
+                        }
+                    }
                     card.requestLayout()
                     resizeStartX = event.rawX
                     resizeStartY = event.rawY
@@ -1058,6 +1110,25 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== ДАННЫЕ С ДАТЧИКОВ ====================
 
+    private val clockHandler = Handler(Looper.getMainLooper())
+    private val clockRunnable = object : Runnable {
+        override fun run() {
+            updateClockViews()
+            clockHandler.postDelayed(this, 10000L)
+        }
+    }
+
+    private fun updateClockViews() {
+        val now = Date()
+        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+        val date = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
+        for (i in 0 until bottomPanel.childCount) {
+            val v = bottomPanel.getChildAt(i)
+            v.findViewWithTag<android.widget.TextView>("clock_text")?.text = time
+            v.findViewWithTag<android.widget.TextView>("clock_date")?.text = date
+        }
+    }
+
     private fun updatePzemWidget() { updateSensorDisplay() }
     private fun updateTemperatureWidget() { updateSensorDisplay() }
 
@@ -1079,11 +1150,13 @@ class MainActivity : AppCompatActivity() {
 
                 // Обновляем содержимое виджета (табличный вид)
                 val container = child.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
-                if (container != null) {
+                if (container != null && tile.type != "clock") {
                     buildSensorContent(tile, idsToShow, isExpanded, container)
                 }
 
-                if (tile.type == "battery") {
+                if (tile.type == "clock") {
+                    updateClockViews()
+                } else if (tile.type == "battery") {
                     updateBatteryWidget(tile, child)
                 } else {
                     updateNormalSensorWidget(tile, child)

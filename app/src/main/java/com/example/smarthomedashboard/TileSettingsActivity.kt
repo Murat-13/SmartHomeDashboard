@@ -128,6 +128,7 @@ class TileSettingsActivity : AppCompatActivity() {
             "button" -> 1
             "group" -> 2
             "battery" -> 3
+            "clock" -> 4
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -167,10 +168,15 @@ class TileSettingsActivity : AppCompatActivity() {
             1 -> "button"
             2 -> "group"
             3 -> "battery"
+            4 -> "clock"
             else -> "sensor"
         }
 
-        val container = if (type == "button" || type == "group") "bottom_panel" else "grid"
+        val container = when (type) {
+            "button", "group" -> "bottom_panel"
+            "clock", "sensor", "battery" -> "grid"
+            else -> "grid"
+        }
 
         val tiles = tileManager.getTilesByContainer(container)
         val position = tiles.size
