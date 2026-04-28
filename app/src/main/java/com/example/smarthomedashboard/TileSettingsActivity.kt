@@ -30,6 +30,7 @@ class TileSettingsActivity : AppCompatActivity() {
     private lateinit var btnDelete: Button
     private lateinit var btnAdvanced: Button
     private lateinit var btnSelectSensors: Button
+    private lateinit var btnClearSensors: Button
     private lateinit var btnEditChildren: Button
     private lateinit var etButtonSize: EditText
 
@@ -49,6 +50,7 @@ class TileSettingsActivity : AppCompatActivity() {
         btnDelete = findViewById(R.id.btnDelete)
         btnAdvanced = findViewById(R.id.btnAdvanced)
         btnSelectSensors = findViewById(R.id.btnSelectSensors)
+        btnClearSensors = findViewById(R.id.btnClearSensors)
         btnEditChildren = findViewById(R.id.btnEditChildren)
         etButtonSize = findViewById(R.id.etButtonSize)
 
@@ -82,6 +84,12 @@ class TileSettingsActivity : AppCompatActivity() {
             val intent = Intent(this, SensorPickerActivity::class.java)
             intent.putStringArrayListExtra("selected_sensors", ArrayList(selectedSensors))
             startActivityForResult(intent, REQUEST_SELECT_SENSORS)
+        }
+
+        btnClearSensors.setOnClickListener {
+            selectedSensors.clear()
+            updateSelectedSensorsText()
+            Toast.makeText(this, "Выбор очищен", Toast.LENGTH_SHORT).show()
         }
 
         btnAdvanced.setOnClickListener {

@@ -47,6 +47,12 @@ class MainActivity : AppCompatActivity() {
     private var gridOnline = true
     private var techRoomTemp = "—"
 
+    private var motionSensorId: String? = null
+    private var screenTimeoutMinutes = 5
+    private var isDimmed = false
+    private val idleHandler = Handler(Looper.getMainLooper())
+    private val idleRunnable = Runnable { dimScreen() }
+
     // ==================== СОСТОЯНИЯ ====================
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
@@ -111,8 +117,14 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshBottomPanel()
+        
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        motionSensorId = prefs.getString("motion_sensor_id", null)
+        screenTimeoutMinutes = prefs.getInt("screen_timeout_minutes", 5)
+        
         subscribeToNeededEntities()
         checkKioskMode()
+        resetIdleTimer()
     }
 
     private fun checkKioskMode() {
@@ -199,6 +211,7 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        resetIdleTimer()
         if (event.action == MotionEvent.ACTION_DOWN) {
             val hit = findViewAt(event.x, event.y)
             if (hit == null || hit == dimOverlay) {
@@ -212,6 +225,11 @@ class MainActivity : AppCompatActivity() {
             longPressRunnable?.let { handler.removeCallbacks(it) }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        resetIdleTimer()
+        return super.dispatchTouchEvent(event)
     }
 
     private fun findViewAt(x: Float, y: Float): View? {
@@ -1330,6 +1348,12 @@ class MainActivity : AppCompatActivity() {
     private fun updateTilesForEntity(eid: String, st: String) {
         singleStates[eid] = st
 
+        if (eid == motionSensorId) {
+            if (st == "on" || st == "true" || st == "playing") {
+                wakeScreen()
+            }
+        }
+
         when (eid) {
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
                 pzemVoltage = formatFloat(st, 0); updateGridStatus(); updatePzemWidget()
@@ -1407,6 +1431,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun subscribeToNeededEntities() {
         val ids = mutableSetOf<String>()
+        motionSensorId?.let { ids.add(it) }
         tileManager.getAllTiles().forEach { t ->
             try {
                 val c = JSONObject(t.config)
@@ -1435,5 +1460,34 @@ class MainActivity : AppCompatActivity() {
             refreshBottomPanel()
             subscribeToNeededEntities()
         }
+    }
+
+    // ==================== ЭНЕРГОСБЕРЕЖЕНИЕ ====================
+
+    private fun resetIdleTimer() {
+        idleHandler.removeCallbacks(idleRunnable)
+        if (isDimmed) {
+            wakeScreen()
+        }
+        // Запускаем таймер только если датчик движения выбран в настройках
+        if (!motionSensorId.isNullOrEmpty()) {
+            idleHandler.postDelayed(idleRunnable, screenTimeoutMinutes * 60 * 1000L)
+        }
+    }
+
+    private fun dimScreen() {
+        if (isDimmed) return
+        isDimmed = true
+        val params = window.attributes
+        params.screenBrightness = 0.01f // Минимальная яркость
+        window.attributes = params
+    }
+
+    private fun wakeScreen() {
+        isDimmed = false
+        val params = window.attributes
+        params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE // Системное значение
+        window.attributes = params
+        resetIdleTimer()
     }
 }

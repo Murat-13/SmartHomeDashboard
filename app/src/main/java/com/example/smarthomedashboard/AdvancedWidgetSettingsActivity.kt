@@ -360,6 +360,15 @@ class SensorConfigAdapter(
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+
+        // Удаление датчика из списка
+        holder.itemView.findViewById<View>(R.id.btnRemoveSensor).setOnClickListener {
+            val currentPos = holder.bindingAdapterPosition
+            if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                items.removeAt(currentPos)
+                notifyItemRemoved(currentPos)
+            }
+        }
     }
 
     override fun getItemCount(): Int = items.size

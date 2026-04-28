@@ -1,11 +1,13 @@
 package com.example.smarthomedashboard
 
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
@@ -19,8 +21,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var etMqttPassword: EditText
     private lateinit var etAdminPin: EditText
     private lateinit var etPinSessionMinutes: EditText
+    private lateinit var etScreenTimeout: EditText
+    private lateinit var tvMotionSensor: TextView
+    private lateinit var btnSelectMotionSensor: Button
+    private lateinit var btnClearMotionSensor: Button
     private lateinit var spinnerTheme: Spinner
-    private lateinit var cbKioskMode: android.widget.CheckBox
+    private lateinit var cbKioskMode: CheckBox
     private lateinit var btnExport: Button
     private lateinit var btnImport: Button
     private lateinit var btnSave: Button
@@ -35,6 +41,10 @@ class SettingsActivity : AppCompatActivity() {
         etMqttPassword = findViewById(R.id.etMqttPassword)
         etAdminPin = findViewById(R.id.etAdminPin)
         etPinSessionMinutes = findViewById(R.id.etPinSessionMinutes)
+        etScreenTimeout = findViewById(R.id.etScreenTimeout)
+        tvMotionSensor = findViewById(R.id.tvMotionSensor)
+        btnSelectMotionSensor = findViewById(R.id.btnSelectMotionSensor)
+        btnClearMotionSensor = findViewById(R.id.btnClearMotionSensor)
         spinnerTheme = findViewById(R.id.spinnerTheme)
         cbKioskMode = findViewById(R.id.cbKioskMode)
         btnExport = findViewById(R.id.btnExport)
@@ -49,6 +59,11 @@ class SettingsActivity : AppCompatActivity() {
         etMqttPassword.setText(prefs.getString("mqtt_password", "019137-smS"))
         etAdminPin.setText(prefs.getString("admin_pin", ""))
         etPinSessionMinutes.setText(prefs.getInt("pin_session_minutes", 60).toString())
+        
+        val motionSensorId = prefs.getString("motion_sensor_id", "")
+        tvMotionSensor.text = if (motionSensorId.isNullOrEmpty()) "Датчик движения: Не выбран" else "Датчик: $motionSensorId"
+        etScreenTimeout.setText(prefs.getInt("screen_timeout_minutes", 5).toString())
+
         cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
 
         val theme = prefs.getString("app_theme", "system") ?: "system"
@@ -67,6 +82,7 @@ class SettingsActivity : AppCompatActivity() {
             val password = etMqttPassword.text.toString()
             val adminPin = etAdminPin.text.toString()
             val sessionMinutes = etPinSessionMinutes.text.toString().toIntOrNull() ?: 60
+            val screenTimeout = etScreenTimeout.text.toString().toIntOrNull() ?: 5
 
             val selectedTheme = when (spinnerTheme.selectedItemPosition) {
                 1 -> "light"
@@ -81,12 +97,24 @@ class SettingsActivity : AppCompatActivity() {
                 putString("mqtt_password", password)
                 putString("admin_pin", adminPin)
                 putInt("pin_session_minutes", sessionMinutes)
+                putInt("screen_timeout_minutes", screenTimeout)
                 putString("app_theme", selectedTheme)
                 putBoolean("kiosk_mode", cbKioskMode.isChecked)
             }
 
             Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()
             finish()
+        }
+
+        btnSelectMotionSensor.setOnClickListener {
+            val intent = Intent(this, SensorPickerActivity::class.java)
+            startActivityForResult(intent, REQUEST_SELECT_MOTION_SENSOR)
+        }
+
+        btnClearMotionSensor.setOnClickListener {
+            prefs.edit { remove("motion_sensor_id") }
+            tvMotionSensor.text = "Датчик движения: Не выбран"
+            Toast.makeText(this, "Датчик удален", Toast.LENGTH_SHORT).show()
         }
 
         btnExport.setOnClickListener { exportConfig() }
@@ -102,13 +130,15 @@ class SettingsActivity : AppCompatActivity() {
             val mainPrefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
             val tilePrefs = getSharedPreferences("tiles_prefs", MODE_PRIVATE)
 
-            val fullConfig = org.json.JSONObject().apply {
+            val fullConfig = JSONObject().apply {
                 put("mqtt_host", mainPrefs.getString("mqtt_host", ""))
                 put("mqtt_port", mainPrefs.getInt("mqtt_port", 1883))
                 put("mqtt_username", mainPrefs.getString("mqtt_username", ""))
                 put("mqtt_password", mainPrefs.getString("mqtt_password", ""))
                 put("admin_pin", mainPrefs.getString("admin_pin", ""))
                 put("pin_session_minutes", mainPrefs.getInt("pin_session_minutes", 60))
+                put("screen_timeout_minutes", mainPrefs.getInt("screen_timeout_minutes", 5))
+                put("motion_sensor_id", mainPrefs.getString("motion_sensor_id", ""))
                 put("app_theme", mainPrefs.getString("app_theme", "system"))
                 put("kiosk_mode", mainPrefs.getBoolean("kiosk_mode", false))
                 put("tiles_json", tilePrefs.getString("tiles", "[]"))
@@ -135,18 +165,32 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != android.app.Activity.RESULT_OK) return
+        if (resultCode != Activity.RESULT_OK) return
 
         when (requestCode) {
+            REQUEST_SELECT_MOTION_SENSOR -> {
+                val selected = data?.getStringArrayListExtra("selected_sensors")
+                if (!selected.isNullOrEmpty()) {
+                    val sensorId = selected[0]
+                    getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
+                        putString("motion_sensor_id", sensorId)
+                    }
+                    tvMotionSensor.text = "Датчик: $sensorId"
+                }
+            }
             200 -> { // Export save
                 data?.data?.let { uri ->
                     val mainPrefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
                     val tilePrefs = getSharedPreferences("tiles_prefs", MODE_PRIVATE)
-                    val fullConfig = org.json.JSONObject().apply {
+                    val fullConfig = JSONObject().apply {
                         put("mqtt_host", mainPrefs.getString("mqtt_host", ""))
                         put("mqtt_port", mainPrefs.getInt("mqtt_port", 1883))
                         put("mqtt_username", mainPrefs.getString("mqtt_username", ""))
                         put("mqtt_password", mainPrefs.getString("mqtt_password", ""))
+                        put("admin_pin", mainPrefs.getString("admin_pin", ""))
+                        put("pin_session_minutes", mainPrefs.getInt("pin_session_minutes", 60))
+                        put("screen_timeout_minutes", mainPrefs.getInt("screen_timeout_minutes", 5))
+                        put("motion_sensor_id", mainPrefs.getString("motion_sensor_id", ""))
                         put("app_theme", mainPrefs.getString("app_theme", "system"))
                         put("kiosk_mode", mainPrefs.getBoolean("kiosk_mode", false))
                         put("tiles_json", tilePrefs.getString("tiles", "[]"))
@@ -162,7 +206,7 @@ class SettingsActivity : AppCompatActivity() {
                     try {
                         val jsonString = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                         if (jsonString != null) {
-                            val json = org.json.JSONObject(jsonString)
+                            val json = JSONObject(jsonString)
                             val mainPrefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
                             val tilePrefs = getSharedPreferences("tiles_prefs", MODE_PRIVATE)
 
@@ -173,6 +217,8 @@ class SettingsActivity : AppCompatActivity() {
                                 putString("mqtt_password", json.optString("mqtt_password"))
                                 putString("admin_pin", json.optString("admin_pin", ""))
                                 putInt("pin_session_minutes", json.optInt("pin_session_minutes", 60))
+                                putInt("screen_timeout_minutes", json.optInt("screen_timeout_minutes", 5))
+                                putString("motion_sensor_id", json.optString("motion_sensor_id", ""))
                                 putString("app_theme", json.optString("app_theme", "system"))
                                 putBoolean("kiosk_mode", json.optBoolean("kiosk_mode", false))
                             }
@@ -181,7 +227,6 @@ class SettingsActivity : AppCompatActivity() {
                             }
                             Toast.makeText(this, "Конфиг успешно импортирован. Перезагрузка...", Toast.LENGTH_LONG).show()
                             
-                            // Перезапуск приложения для применения всех настроек
                             val restartIntent = packageManager.getLaunchIntentForPackage(packageName)
                             restartIntent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
                             startActivity(restartIntent)
@@ -193,5 +238,9 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        private const val REQUEST_SELECT_MOTION_SENSOR = 1004
     }
 }

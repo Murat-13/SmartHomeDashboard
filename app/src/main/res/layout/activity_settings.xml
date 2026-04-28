@@ -154,6 +154,66 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:text="Энергосбережение и движение"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/tvMotionSensor"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Датчик движения: Не выбран"
+                    android:textColor="#BBBBBB" />
+
+                <Button
+                    android:id="@+id/btnSelectMotionSensor"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Выбрать"
+                    android:textSize="12sp"
+                    android:backgroundTint="#444444" />
+
+                <Button
+                    android:id="@+id/btnClearMotionSensor"
+                    android:layout_width="40dp"
+                    android:layout_height="wrap_content"
+                    android:text="✕"
+                    android:textSize="12sp"
+                    android:layout_marginStart="4dp"
+                    android:backgroundTint="#B3261E" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Таймер отключения (минуты)"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:layout_marginTop="8dp" />
+
+            <EditText
+                android:id="@+id/etScreenTimeout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:textColor="#FFFFFF"
+                android:padding="12dp"
+                android:inputType="number"
+                android:hint="Напр. 5"
+                android:text="5" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:text="Тема оформления"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
