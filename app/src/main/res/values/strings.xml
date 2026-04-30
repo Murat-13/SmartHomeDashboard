@@ -81,6 +81,9 @@
     <string name="skip">Пропустить</string>
     <string name="advanced_settings">Расширенные настройки</string>
     <string name="theme_label">Тема оформления</string>
+    <string name="temp_unit_label">Единицы температуры</string>
+    <string name="unit_celsius">Цельсий (°C)</string>
+    <string name="unit_fahrenheit">Фаренгейт (°F)</string>
 
     <!-- Опции темы -->
     <string-array name="theme_options">

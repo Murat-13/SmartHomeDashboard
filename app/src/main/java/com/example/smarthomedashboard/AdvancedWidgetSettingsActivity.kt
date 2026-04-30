@@ -136,7 +136,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         updateHints()
     }
 
-    private fun updateHints() {
+    fun updateHints() {
         tvCollapsedHint.visibility = if (collapsedConfigs.isEmpty()) View.VISIBLE else View.GONE
         rvCollapsedSensors.visibility = if (collapsedConfigs.isEmpty()) View.GONE else View.VISIBLE
         tvExpandedHint.visibility = if (expandedConfigs.isEmpty()) View.VISIBLE else View.GONE
@@ -175,7 +175,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
 
     private fun setupClickListeners() {
         // Добавить датчик в свёрнутый вид
-        tvCollapsedHint.setOnClickListener {
+        findViewById<Button>(R.id.btnAddCollapsed).setOnClickListener {
             openSensorPicker { selected ->
                 val start = collapsedConfigs.size
                 var added = 0
@@ -194,7 +194,7 @@ class AdvancedWidgetSettingsActivity : AppCompatActivity() {
         }
 
         // Добавить датчик в развёрнутый вид
-        tvExpandedHint.setOnClickListener {
+        findViewById<Button>(R.id.btnAddExpanded).setOnClickListener {
             openSensorPicker { selected ->
                 val start = expandedConfigs.size
                 var added = 0
@@ -328,16 +328,18 @@ class SensorConfigAdapter(
         holder.tvSensorId.text = item.entityId
         holder.etDisplayName.setText(item.displayName)
 
-        // Сохраняем название сразу при уходе с поля
-        holder.etDisplayName.setOnFocusChangeListener { _, _ ->
-            val currentPos = holder.bindingAdapterPosition
-            if (currentPos != RecyclerView.NO_POSITION) {
-                val newName = holder.etDisplayName.text.toString().trim()
-                if (newName.isNotEmpty() && currentPos < items.size) {
-                    items[currentPos] = items[currentPos].copy(displayName = newName)
+        // Сохраняем данные при любом изменении
+        val textWatcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val currentPos = holder.bindingAdapterPosition
+                if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
+                    items[currentPos] = items[currentPos].copy(displayName = s?.toString()?.trim() ?: "")
                 }
             }
         }
+        holder.etDisplayName.addTextChangedListener(textWatcher)
 
         // Настройка точности
         val decimalsOptions = arrayOf("0 (целые)", "1 (десятые)", "2 (сотые)")
@@ -367,6 +369,8 @@ class SensorConfigAdapter(
             if (currentPos != RecyclerView.NO_POSITION && currentPos < items.size) {
                 items.removeAt(currentPos)
                 notifyItemRemoved(currentPos)
+                // Важно вызвать обновление подсказок во внешней активности
+                (holder.itemView.context as? AdvancedWidgetSettingsActivity)?.updateHints()
             }
         }
     }

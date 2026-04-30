@@ -214,6 +214,42 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:text="@string/temp_unit_label"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="4dp" />
+
+            <RadioGroup
+                android:id="@+id/rgTempUnit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:background="#2A2A2A"
+                android:padding="8dp">
+
+                <RadioButton
+                    android:id="@+id/rbCelsius"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/unit_celsius"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#4CAF50" />
+
+                <RadioButton
+                    android:id="@+id/rbFahrenheit"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/unit_fahrenheit"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#4CAF50" />
+            </RadioGroup>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:text="Тема оформления"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"

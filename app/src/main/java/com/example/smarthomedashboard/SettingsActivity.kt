@@ -6,6 +6,8 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -22,6 +24,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var etAdminPin: EditText
     private lateinit var etPinSessionMinutes: EditText
     private lateinit var etScreenTimeout: EditText
+    private lateinit var rgTempUnit: RadioGroup
     private lateinit var tvMotionSensor: TextView
     private lateinit var btnSelectMotionSensor: Button
     private lateinit var btnClearMotionSensor: Button
@@ -42,6 +45,7 @@ class SettingsActivity : AppCompatActivity() {
         etAdminPin = findViewById(R.id.etAdminPin)
         etPinSessionMinutes = findViewById(R.id.etPinSessionMinutes)
         etScreenTimeout = findViewById(R.id.etScreenTimeout)
+        rgTempUnit = findViewById(R.id.rgTempUnit)
         tvMotionSensor = findViewById(R.id.tvMotionSensor)
         btnSelectMotionSensor = findViewById(R.id.btnSelectMotionSensor)
         btnClearMotionSensor = findViewById(R.id.btnClearMotionSensor)
@@ -65,6 +69,13 @@ class SettingsActivity : AppCompatActivity() {
         etScreenTimeout.setText(prefs.getInt("screen_timeout_minutes", 5).toString())
 
         cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
+
+        val tempUnit = prefs.getString("temp_unit", "C") ?: "C"
+        if (tempUnit == "F") {
+            findViewById<RadioButton>(R.id.rbFahrenheit).isChecked = true
+        } else {
+            findViewById<RadioButton>(R.id.rbCelsius).isChecked = true
+        }
 
         val theme = prefs.getString("app_theme", "system") ?: "system"
         spinnerTheme.setSelection(
@@ -90,6 +101,8 @@ class SettingsActivity : AppCompatActivity() {
                 else -> "system"
             }
 
+            val tempUnit = if (rgTempUnit.checkedRadioButtonId == R.id.rbFahrenheit) "F" else "C"
+
             prefs.edit {
                 putString("mqtt_host", host)
                 putInt("mqtt_port", port)
@@ -99,6 +112,7 @@ class SettingsActivity : AppCompatActivity() {
                 putInt("pin_session_minutes", sessionMinutes)
                 putInt("screen_timeout_minutes", screenTimeout)
                 putString("app_theme", selectedTheme)
+                putString("temp_unit", tempUnit)
                 putBoolean("kiosk_mode", cbKioskMode.isChecked)
             }
 

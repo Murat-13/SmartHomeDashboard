@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var gridOnline = true
     private var techRoomTemp = "—"
 
+    private var tempUnit = "C"
     private var motionSensorId: String? = null
     private var screenTimeoutMinutes = 5
     private var isDimmed = false
@@ -128,6 +129,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         motionSensorId = prefs.getString("motion_sensor_id", null)
         screenTimeoutMinutes = prefs.getInt("screen_timeout_minutes", 5)
+        tempUnit = prefs.getString("temp_unit", "C") ?: "C"
         
         subscribeToNeededEntities()
         checkKioskMode()
@@ -1627,6 +1629,17 @@ class MainActivity : AppCompatActivity() {
      */
     private fun getCollapsedSensorIds(tile: TileEntity): List<String> {
         try {
+            val config = JSONObject(tile.config)
+            val specificArr = config.optJSONArray("collapsed_sensor_configs")
+            if (specificArr != null && specificArr.length() > 0) {
+                val ids = mutableListOf<String>()
+                for (i in 0 until specificArr.length()) {
+                    ids.add(specificArr.getJSONObject(i).getString("entity_id"))
+                }
+                return ids
+            }
+            
+            // Совместимость со старым полем
             val arr = JSONArray(tile.collapsedSensorIds)
             if (arr.length() > 0) {
                 val ids = mutableListOf<String>()
@@ -1652,6 +1665,16 @@ class MainActivity : AppCompatActivity() {
     private fun getExpandedSensorIds(tile: TileEntity): List<String> {
         try {
             val config = JSONObject(tile.config)
+            // Пытаемся взять специфичные для режима конфиги
+            val specificArr = config.optJSONArray("expanded_sensor_configs")
+            if (specificArr != null && specificArr.length() > 0) {
+                val ids = mutableListOf<String>()
+                for (i in 0 until specificArr.length()) {
+                    ids.add(specificArr.getJSONObject(i).getString("entity_id"))
+                }
+                return ids
+            }
+
             val arr = config.optJSONArray("entity_ids")
             if (arr != null && arr.length() > 0) {
                 val ids = mutableListOf<String>()
@@ -1697,7 +1720,7 @@ class MainActivity : AppCompatActivity() {
             val defaultDecimals = if (eid.contains("temp") || eid.contains("freq")) 1 else if (eid.contains("current") || eid.contains("energy")) 2 else 0
             val decimals = config?.decimals ?: defaultDecimals
 
-            val formattedValue = formatSensorValue(rawValue, decimals)
+            val formattedValue = formatSensorValue(rawValue, decimals, eid)
             rows.add(displayName to formattedValue)
             if (displayName.length > maxNameLen) maxNameLen = displayName.length
         }
@@ -1752,11 +1775,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Форматирует значение датчика с заданной точностью.
+     * Форматирует значение датчика с заданной точностью и конвертирует температуру, если нужно.
      */
-    private fun formatSensorValue(value: String, decimals: Int): String {
-        val floatVal = value.toFloatOrNull() ?: return value
+    private fun formatSensorValue(value: String, decimals: Int, entityId: String? = null): String {
+        var floatVal = value.toFloatOrNull() ?: return value
+
+        // Если передан entityId, проверим, не температура ли это
+        if (entityId != null) {
+            val attrs = entityAttributes[entityId]
+            val unit = attrs?.optString("unit_of_measurement") ?: ""
+            
+            if (unit.contains("°")) {
+                if (unit.contains("C") && tempUnit == "F") {
+                    // Конвертируем C в F
+                    floatVal = (floatVal * 9f / 5f) + 32f
+                } else if (unit.contains("F") && tempUnit == "C") {
+                    // Конвертируем F в C
+                    floatVal = (floatVal - 32f) * 5f / 9f
+                }
+            }
+        }
+
         return String.format("%.${decimals}f", floatVal)
+    }
+
+    private fun formatFloat(v: String, d: Int, eid: String? = null): String {
+        return formatSensorValue(v, d, eid)
     }
 
     private fun updateGridStatus() {
@@ -1798,22 +1842,22 @@ class MainActivity : AppCompatActivity() {
 
         when (eid) {
             "sensor.pzem_energy_monitor_pzem_voltage" -> {
-                pzemVoltage = formatFloat(st, 0); updateGridStatus(); updatePzemWidget()
+                pzemVoltage = formatFloat(st, 0, eid); updateGridStatus(); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_power" -> {
-                pzemPower = formatFloat(st, 0); updatePzemWidget()
+                pzemPower = formatFloat(st, 0, eid); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_current" -> {
-                pzemCurrent = formatFloat(st, 2); updatePzemWidget()
+                pzemCurrent = formatFloat(st, 2, eid); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_energy" -> {
-                pzemEnergy = formatFloat(st, 2); updatePzemWidget()
+                pzemEnergy = formatFloat(st, 2, eid); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_pzem_frequency" -> {
-                pzemFrequency = formatFloat(st, 1); updatePzemWidget()
+                pzemFrequency = formatFloat(st, 1, eid); updatePzemWidget()
             }
             "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
-                techRoomTemp = formatFloat(st, 1); updateTemperatureWidget()
+                techRoomTemp = formatFloat(st, 1, eid); updateTemperatureWidget()
             }
         }
 
