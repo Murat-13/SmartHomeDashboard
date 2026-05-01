@@ -17,6 +17,10 @@ import org.json.JSONObject
 
 class SettingsActivity : AppCompatActivity() {
 
+    private lateinit var etHaLocalHost: EditText
+    private lateinit var etHaRemoteHost: EditText
+    private lateinit var etHaToken: EditText
+    private lateinit var tvHaConnectionStatus: TextView
     private lateinit var etMqttHost: EditText
     private lateinit var etMqttPort: EditText
     private lateinit var etMqttUsername: EditText
@@ -38,6 +42,10 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
 
+        etHaLocalHost = findViewById(R.id.etHaLocalHost)
+        etHaRemoteHost = findViewById(R.id.etHaRemoteHost)
+        etHaToken = findViewById(R.id.etHaToken)
+        tvHaConnectionStatus = findViewById(R.id.tvHaConnectionStatus)
         etMqttHost = findViewById(R.id.etMqttHost)
         etMqttPort = findViewById(R.id.etMqttPort)
         etMqttUsername = findViewById(R.id.etMqttUsername)
@@ -57,6 +65,10 @@ class SettingsActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
 
+        etHaLocalHost.setText(prefs.getString("ha_local_host", "192.168.1.253:8123"))
+        etHaRemoteHost.setText(prefs.getString("ha_remote_host", ""))
+        etHaToken.setText(prefs.getString("ha_token", ""))
+        tvHaConnectionStatus.text = "Статус: ${prefs.getString("ha_connection_status", "Не подключено")}"
         etMqttHost.setText(prefs.getString("mqtt_host", "192.168.1.253"))
         etMqttPort.setText(prefs.getInt("mqtt_port", 1883).toString())
         etMqttUsername.setText(prefs.getString("mqtt_username", "murat"))
@@ -87,6 +99,10 @@ class SettingsActivity : AppCompatActivity() {
         )
 
         btnSave.setOnClickListener {
+            val haLocal = etHaLocalHost.text.toString().trim()
+            val haRemote = etHaRemoteHost.text.toString().trim()
+            val haToken = etHaToken.text.toString().trim()
+
             val host = etMqttHost.text.toString().ifEmpty { "192.168.1.253" }
             val port = etMqttPort.text.toString().toIntOrNull() ?: 1883
             val username = etMqttUsername.text.toString()
@@ -104,6 +120,9 @@ class SettingsActivity : AppCompatActivity() {
             val tempUnit = if (rgTempUnit.checkedRadioButtonId == R.id.rbFahrenheit) "F" else "C"
 
             prefs.edit {
+                putString("ha_local_host", haLocal)
+                putString("ha_remote_host", haRemote)
+                putString("ha_token", haToken)
                 putString("mqtt_host", host)
                 putInt("mqtt_port", port)
                 putString("mqtt_username", username)

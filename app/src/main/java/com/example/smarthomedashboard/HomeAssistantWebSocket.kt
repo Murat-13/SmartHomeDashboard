@@ -29,6 +29,8 @@ class HomeAssistantWebSocket(
     private val handler = Handler(Looper.getMainLooper())
     private var pendingEntityIds: List<String>? = null
 
+    fun getHost(): String = host
+
     fun connect() {
         val cleanHost = host.removePrefix("http://").removePrefix("https://")
         val wsScheme = if (host.startsWith("https") || host.contains("saidovmurat")) "wss" else "ws"

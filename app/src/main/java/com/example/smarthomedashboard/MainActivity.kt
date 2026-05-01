@@ -105,6 +105,13 @@ class MainActivity : AppCompatActivity() {
             WindowManager.LayoutParams.FLAG_FULLSCREEN
         )
         setContentView(R.layout.activity_main)
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        if (prefs.getString("ha_token", "").isNullOrEmpty()) {
+            startActivity(Intent(this, SetupActivity::class.java))
+            finish()
+            return
+        }
+
         bottomPanel = findViewById(R.id.bottomPanel)
         overlayContainer = findViewById(R.id.overlayContainer)
         dimOverlay = findViewById(R.id.dimOverlay)
@@ -1897,13 +1904,34 @@ class MainActivity : AppCompatActivity() {
         webSocket = HomeAssistantWebSocket(
             lh, tkn,
             { e, s, a -> runOnUiThread { updateTilesForEntity(e, s, a) } },
-            { handler.postDelayed({ subscribeToNeededEntities() }, 2000L) },
+            { 
+                runOnUiThread {
+                    Toast.makeText(this, "Подключено: Локальная сеть ($lh)", Toast.LENGTH_SHORT).show()
+                    getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit().putString("ha_connection_status", "Локальная сеть ($lh)").apply()
+                }
+                handler.postDelayed({ subscribeToNeededEntities() }, 2000L) 
+            },
             {
-                if (rh.isNotEmpty()) {
+                runOnUiThread {
+                    getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit().putString("ha_connection_status", "Отключено").apply()
+                }
+                if (rh.isNotEmpty() && webSocket?.getHost() == lh) {
                     webSocket = HomeAssistantWebSocket(
                         rh, tkn,
                         { e, s, a -> runOnUiThread { updateTilesForEntity(e, s, a) } },
-                        { handler.postDelayed({ subscribeToNeededEntities() }, 2000L) }, {}, null
+                        { 
+                            runOnUiThread {
+                                Toast.makeText(this, "Подключено: Интернет ($rh)", Toast.LENGTH_SHORT).show()
+                                getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit().putString("ha_connection_status", "Интернет ($rh)").apply()
+                            }
+                            handler.postDelayed({ subscribeToNeededEntities() }, 2000L) 
+                        }, 
+                        {
+                            runOnUiThread {
+                                getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit().putString("ha_connection_status", "Ошибка подключения").apply()
+                            }
+                        }, 
+                        null
                     )
                     webSocket?.connect()
                 }

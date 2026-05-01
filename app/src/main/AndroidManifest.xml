@@ -17,13 +17,17 @@
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
-            android:name=".SetupActivity"
+            android:name=".SplashActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"

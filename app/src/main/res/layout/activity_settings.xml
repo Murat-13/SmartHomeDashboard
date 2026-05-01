@@ -25,6 +25,102 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
+            <!-- Home Assistant Settings -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Home Assistant"
+                android:textColor="#4CAF50"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/tvHaConnectionStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Статус: Неизвестно"
+                android:textColor="#BBBBBB"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/local_host_label"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="4dp" />
+
+            <EditText
+                android:id="@+id/etHaLocalHost"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888"
+                android:padding="12dp"
+                android:inputType="text"
+                android:hint="@string/local_host_hint" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/remote_host_label"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="4dp" />
+
+            <EditText
+                android:id="@+id/etHaRemoteHost"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888"
+                android:padding="12dp"
+                android:inputType="text"
+                android:hint="@string/remote_host_hint" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/ha_token_label"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="4dp" />
+
+            <EditText
+                android:id="@+id/etHaToken"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888"
+                android:padding="12dp"
+                android:inputType="textPassword"
+                android:hint="@string/ha_token_hint" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#444444"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MQTT"
+                android:textColor="#2196F3"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
