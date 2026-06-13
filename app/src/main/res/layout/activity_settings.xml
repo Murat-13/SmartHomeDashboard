@@ -409,6 +409,106 @@
                     android:backgroundTint="#FF9800" />
             </LinearLayout>
 
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#444444"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Погода (Яндекс)"
+                android:textColor="#FFEB3B"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <CheckBox
+                android:id="@+id/cbUseYandexWeather"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Использовать Яндекс.Погоду"
+                android:textColor="#FFFFFF"
+                android:buttonTint="#FFEB3B" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="API Ключ Яндекса"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="4dp" />
+
+            <EditText
+                android:id="@+id/etYandexApiKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:textColor="#FFFFFF"
+                android:padding="12dp"
+                android:inputType="text"
+                android:hint="Введите ключ" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="16dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Широта (Lat)"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/etYandexLat"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="#2A2A2A"
+                        android:textColor="#FFFFFF"
+                        android:padding="12dp"
+                        android:inputType="numberDecimal"
+                        android:hint="43.09" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginStart="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Долгота (Lon)"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/etYandexLon"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="#2A2A2A"
+                        android:textColor="#FFFFFF"
+                        android:padding="12dp"
+                        android:inputType="numberDecimal"
+                        android:hint="46.38" />
+                </LinearLayout>
+            </LinearLayout>
+
             <Button
                 android:id="@+id/btnSave"
                 android:layout_width="match_parent"

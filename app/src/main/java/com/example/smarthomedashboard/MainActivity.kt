@@ -12,9 +12,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
-import android.widget.Button
-import android.widget.FrameLayout
-import android.widget.Toast
+import android.widget.*
+import android.graphics.drawable.GradientDrawable
+import android.animation.*
+import android.view.ViewOutlineProvider
+import android.graphics.Outline
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
 import androidx.core.content.res.ResourcesCompat
@@ -43,6 +45,7 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== ДАННЫЕ ====================
     private lateinit var tileManager: TileManager
+    private lateinit var yandexWeatherManager: YandexWeatherManager
     private var webSocket: HomeAssistantWebSocket? = null
 
     private var pzemVoltage = "—"
@@ -118,6 +121,8 @@ class MainActivity : AppCompatActivity() {
         dimOverlay.setOnClickListener { collapseAll() }
 
         tileManager = TileManager(this)
+        yandexWeatherManager = YandexWeatherManager(this)
+        yandexWeatherManager.loadFromCache()
 
         // Создаём плитки по умолчанию, если их нет
         if (tileManager.getAllTiles().isEmpty()) {
@@ -137,6 +142,17 @@ class MainActivity : AppCompatActivity() {
         motionSensorId = prefs.getString("motion_sensor_id", null)
         screenTimeoutMinutes = prefs.getInt("screen_timeout_minutes", 5)
         tempUnit = prefs.getString("temp_unit", "C") ?: "C"
+        
+        if (prefs.getBoolean("use_yandex_weather", false)) {
+            yandexWeatherManager.fetchWeather(object : YandexWeatherManager.WeatherCallback {
+                override fun onWeatherUpdated() {
+                    runOnUiThread { updateWeatherViews() }
+                }
+                override fun onError(error: String) {
+                    Log.e("MainActivity", "Yandex Weather Error: $error")
+                }
+            })
+        }
         
         subscribeToNeededEntities()
         checkKioskMode()
@@ -363,8 +379,8 @@ class MainActivity : AppCompatActivity() {
             elevation = 8f
             setBackgroundColor("#80333333".toColorInt())
             clipToOutline = true
-            outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: android.graphics.Outline) {
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
                     outline.setRoundRect(0, 0, view.width, view.height, 32f)
                 }
             }
@@ -381,8 +397,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Контейнер для текста
-        val textContainer = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
+        val textContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -393,29 +409,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (tile.type == "clock") {
-            val clockView = android.widget.TextView(this).apply {
+            val clockView = TextView(this).apply {
                 tag = "clock_text"
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(8f, 0f, 0f, Color.BLACK)
                 typeface = Typeface.DEFAULT_BOLD
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.4f)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
             textContainer.addView(clockView)
 
-            val dateView = android.widget.TextView(this).apply {
+            val dateView = TextView(this).apply {
                 tag = "clock_date"
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.15f)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
             textContainer.addView(dateView)
@@ -424,56 +440,56 @@ class MainActivity : AppCompatActivity() {
             clockView.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
             dateView.text = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
         } else if (tile.type == "weather") {
-            val weatherIcon = android.widget.TextView(this).apply {
+            val weatherIcon = TextView(this).apply {
                 tag = "weather_icon"
                 text = "☀️"
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.35f)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
             textContainer.addView(weatherIcon)
 
-            val tempView = android.widget.TextView(this).apply {
+            val tempView = TextView(this).apply {
                 tag = "weather_temp"
                 text = "—°C"
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 typeface = Typeface.DEFAULT_BOLD
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.25f)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
             textContainer.addView(tempView)
 
-            val descView = android.widget.TextView(this).apply {
+            val descView = TextView(this).apply {
                 tag = "weather_desc"
                 text = "Загрузка..."
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, savedHeight * 0.12f)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
             textContainer.addView(descView)
         } else {
             // Заголовок виджета
-            val titleView = android.widget.TextView(this).apply {
+            val titleView = TextView(this).apply {
                 text = tile.title
                 textSize = tile.fontSize.toFloat()
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 2f, 2f, Color.BLACK)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
                 tag = "sensor_title"
             }
@@ -483,7 +499,7 @@ class MainActivity : AppCompatActivity() {
         card.addView(textContainer)
 
         // Уголок изменения размера
-        val resizeHandle = android.widget.ImageView(this).apply {
+        val resizeHandle = ImageView(this).apply {
             setImageResource(R.drawable.ic_resize)
             layoutParams = FrameLayout.LayoutParams(40, 40).apply {
                 gravity = Gravity.BOTTOM or Gravity.END
@@ -515,20 +531,20 @@ class MainActivity : AppCompatActivity() {
                     card.layoutParams.width = newW
                     card.layoutParams.height = newH
                     if (tile.type == "clock") {
-                        card.findViewWithTag<android.widget.TextView>("clock_text")?.let {
+                        card.findViewWithTag<TextView>("clock_text")?.let {
                             it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.4f)
                         }
-                        card.findViewWithTag<android.widget.TextView>("clock_date")?.let {
+                        card.findViewWithTag<TextView>("clock_date")?.let {
                             it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.15f)
                         }
                     } else if (tile.type == "weather") {
-                        card.findViewWithTag<android.widget.TextView>("weather_icon")?.let {
+                        card.findViewWithTag<TextView>("weather_icon")?.let {
                             it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.35f)
                         }
-                        card.findViewWithTag<android.widget.TextView>("weather_temp")?.let {
+                        card.findViewWithTag<TextView>("weather_temp")?.let {
                             it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.25f)
                         }
-                        card.findViewWithTag<android.widget.TextView>("weather_desc")?.let {
+                        card.findViewWithTag<TextView>("weather_desc")?.let {
                             it.setTextSize(TypedValue.COMPLEX_UNIT_PX, newH * 0.12f)
                         }
                     }
@@ -570,7 +586,7 @@ class MainActivity : AppCompatActivity() {
         val idsToShow = getExpandedSensorIds(tile)
 
         // Обновляем содержимое виджета (табличный вид)
-        val container = source.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
+        val container = source.findViewWithTag<LinearLayout>("sensor_text_container")
         if (container != null) {
             if (tile.type == "weather") {
                 buildWeatherDetailedContent(tile, container)
@@ -612,7 +628,7 @@ class MainActivity : AppCompatActivity() {
         val startX = source.x
         val startY = source.y
 
-        val animator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 300
             interpolator = DecelerateInterpolator()
             addUpdateListener { animation ->
@@ -630,18 +646,40 @@ class MainActivity : AppCompatActivity() {
         expandedSensorView = source
         expandedSensorSource = source
 
-        // Тап по раскрытому виджету сворачивает его
+        // Тап по раскрытому виджету сворачивает его (с проверкой на скролл)
+        var expandStartX = 0f
+        var expandStartY = 0f
         source.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_UP) collapseSensor()
-            true
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    expandStartX = event.rawX
+                    expandStartY = event.rawY
+                    resetSensorCollapseTimer()
+                }
+                MotionEvent.ACTION_UP -> {
+                    val deltaX = kotlin.math.abs(event.rawX - expandStartX)
+                    val deltaY = kotlin.math.abs(event.rawY - expandStartY)
+                    if (deltaX < 10 && deltaY < 10) {
+                        collapseSensor()
+                    }
+                }
+            }
+            false
         }
 
         // Автосворачивание через 15 секунд
         sensorCollapseRunnable = Runnable { collapseSensor() }
-        handler.postDelayed(sensorCollapseRunnable!!, 15000L)
+        handler.postDelayed(sensorCollapseRunnable!!, 30000L)
     }
 
     // ==================== СВОРАЧИВАНИЕ СЕНСОРА ====================
+
+    private fun resetSensorCollapseTimer() {
+        sensorCollapseRunnable?.let {
+            handler.removeCallbacks(it)
+            handler.postDelayed(it, 30000L)
+        }
+    }
 
     private fun collapseSensor() {
         val source = expandedSensorView ?: return
@@ -649,7 +687,7 @@ class MainActivity : AppCompatActivity() {
         val idsToShow = getCollapsedSensorIds(tile)
 
         // Обновляем содержимое виджета (табличный вид)
-        val container = source.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
+        val container = source.findViewWithTag<LinearLayout>("sensor_text_container")
         if (container != null) {
             buildSensorContent(tile, idsToShow, false, container)
         }
@@ -663,7 +701,7 @@ class MainActivity : AppCompatActivity() {
         val startX = source.x
         val startY = source.y
 
-        val animator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 250
             interpolator = DecelerateInterpolator()
             addUpdateListener { animation ->
@@ -674,8 +712,8 @@ class MainActivity : AppCompatActivity() {
                 source.y = startY + (savedOriginalY - startY) * fraction
                 source.requestLayout()
             }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) {
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
                     setupSensorTouch(source, tile)
                 }
             })
@@ -1200,64 +1238,75 @@ class MainActivity : AppCompatActivity() {
         val date = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
         for (i in 0 until bottomPanel.childCount) {
             val v = bottomPanel.getChildAt(i)
-            v.findViewWithTag<android.widget.TextView>("clock_text")?.text = time
-            v.findViewWithTag<android.widget.TextView>("clock_date")?.text = date
+            v.findViewWithTag<TextView>("clock_text")?.text = time
+            v.findViewWithTag<TextView>("clock_date")?.text = date
         }
         updateWeatherViews()
     }
 
     private fun updateWeatherViews() {
+        val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
+
         for (i in 0 until bottomPanel.childCount) {
             val v = bottomPanel.getChildAt(i)
             val tag = v.tag as? String ?: continue
             val tile = tileManager.getAllTiles().find { it.id == tag } ?: continue
             if (tile.type == "weather") {
-                val container = v.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
+                val container = v.findViewWithTag<LinearLayout>("sensor_text_container")
                 if (container != null && expandedSensorView == v) {
                     buildWeatherDetailedContent(tile, container)
                     continue
                 }
-            }
 
-            val entityId = try {
-                val config = JSONObject(tile.config)
-                val arr = config.optJSONArray("entity_ids")
-                if (arr != null && arr.length() > 0) arr.getString(0)
-                else config.optString("entity_id", "weather.home")
-            } catch (_: Exception) { "weather.home" }
+                if (useYandex) {
+                    v.findViewWithTag<TextView>("weather_temp")?.text = "${yandexWeatherManager.currentTemp}°C"
+                    v.findViewWithTag<TextView>("weather_icon")?.text = yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState)
+                    v.findViewWithTag<TextView>("weather_desc")?.text = yandexWeatherManager.translateCondition(yandexWeatherManager.currentState)
+                } else {
+                    val entityId = try {
+                        val config = JSONObject(tile.config)
+                        val arr = config.optJSONArray("entity_ids")
+                        if (arr != null && arr.length() > 0) arr.getString(0)
+                        else config.optString("entity_id", "weather.home")
+                    } catch (_: Exception) { "weather.home" }
 
-            val state = singleStates[entityId]?.lowercase() ?: "unknown"
-            
-            // Пытаемся достать температуру из атрибутов (для weather.*) или из состояния (для sensor.*)
-            val attrs = entityAttributes[entityId]
-            val temp = if (entityId.startsWith("weather.")) {
-                if (attrs != null && attrs.has("temperature")) {
-                    attrs.opt("temperature")?.toString() ?: "—"
-                } else "—"
-            } else {
-                singleStates[entityId] ?: "—"
+                    val state = singleStates[entityId]?.lowercase() ?: "unknown"
+                    val attrs = entityAttributes[entityId]
+                    val temp = if (entityId.startsWith("weather.")) {
+                        if (attrs != null && attrs.has("temperature")) {
+                            attrs.opt("temperature")?.toString() ?: "—"
+                        } else "—"
+                    } else {
+                        singleStates[entityId] ?: "—"
+                    }
+                    
+                    v.findViewWithTag<TextView>("weather_temp")?.text = if (temp != "—") "$temp°C" else temp
+                    
+                    val icon = when {
+                        state.contains("sunny") || state.contains("clear") -> "☀️"
+                        state.contains("partlycloudy") -> "⛅"
+                        state.contains("cloudy") -> "☁️"
+                        state.contains("rain") || state.contains("pouring") -> "🌧️"
+                        state.contains("snow") -> "❄️"
+                        state.contains("lightning") || state.contains("thunder") -> "⚡"
+                        state.contains("fog") || state.contains("mist") -> "🌫️"
+                        else -> "🌡️"
+                    }
+                    v.findViewWithTag<TextView>("weather_icon")?.text = icon
+                    v.findViewWithTag<TextView>("weather_desc")?.text = tile.title
+                }
             }
-            
-            v.findViewWithTag<android.widget.TextView>("weather_temp")?.text = if (temp != "—") "$temp°C" else temp
-            
-            val icon = when {
-                state.contains("sunny") || state.contains("clear") -> "☀️"
-                state.contains("partlycloudy") -> "⛅"
-                state.contains("cloudy") -> "☁️"
-                state.contains("rain") || state.contains("pouring") -> "🌧️"
-                state.contains("snow") -> "❄️"
-                state.contains("lightning") || state.contains("thunder") -> "⚡"
-                state.contains("fog") || state.contains("mist") -> "🌫️"
-                else -> "🌡️"
-            }
-            v.findViewWithTag<android.widget.TextView>("weather_icon")?.text = icon
-            v.findViewWithTag<android.widget.TextView>("weather_desc")?.text = tile.title
         }
     }
 
-    private fun buildWeatherDetailedContent(tile: TileEntity, container: android.widget.LinearLayout) {
+    private fun buildWeatherDetailedContent(tile: TileEntity, container: LinearLayout) {
+        val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
+        if (useYandex) {
+            buildYandexWeatherDetailedContent(tile, container)
+            return
+        }
         container.removeAllViews()
-        container.orientation = android.widget.LinearLayout.VERTICAL
+        container.orientation = LinearLayout.VERTICAL
         container.gravity = Gravity.TOP
         container.setPadding(30, 30, 30, 30)
 
@@ -1272,12 +1321,12 @@ class MainActivity : AppCompatActivity() {
         val state = singleStates[entityId]?.lowercase() ?: "unknown"
 
         // 1. Заголовок и текущая погода
-        val topRow = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         
-        val bigIcon = android.widget.TextView(this).apply {
+        val bigIcon = TextView(this).apply {
             textSize = 48f
             text = when {
                 state.contains("sunny") || state.contains("clear") -> "☀️"
@@ -1292,17 +1341,17 @@ class MainActivity : AppCompatActivity() {
         }
         topRow.addView(bigIcon)
 
-        val mainInfo = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
+        val mainInfo = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(30, 0, 0, 0)
         }
-        mainInfo.addView(android.widget.TextView(this).apply {
+        mainInfo.addView(TextView(this).apply {
             text = tile.title
             setTextColor(Color.WHITE)
             textSize = 24f
             typeface = Typeface.DEFAULT_BOLD
         })
-        mainInfo.addView(android.widget.TextView(this).apply {
+        mainInfo.addView(TextView(this).apply {
             val stRus = when {
                 state.contains("sunny") || state.contains("clear") -> "Ясно"
                 state.contains("partlycloudy") -> "Переменная облачность"
@@ -1319,10 +1368,10 @@ class MainActivity : AppCompatActivity() {
         })
         topRow.addView(mainInfo)
 
-        val spacer = View(this).apply { layoutParams = android.widget.LinearLayout.LayoutParams(0, 1, 1f) }
+        val spacer = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
         topRow.addView(spacer)
 
-        val bigTemp = android.widget.TextView(this).apply {
+        val bigTemp = TextView(this).apply {
             val t = attrs.opt("temperature")?.toString() ?: "—"
             text = "$t°C"
             setTextColor(Color.WHITE)
@@ -1333,23 +1382,23 @@ class MainActivity : AppCompatActivity() {
         container.addView(topRow)
 
         // 2. Доп. параметры (Влажность, Давление, Ветер)
-        val detailsGrid = android.widget.GridLayout(this).apply {
+        val detailsGrid = GridLayout(this).apply {
             columnCount = 2
             setPadding(0, 30, 0, 20)
         }
         
         val addDetail = { icon: String, label: String, value: String ->
-            val row = android.widget.LinearLayout(this).apply {
+            val row = LinearLayout(this).apply {
                 setPadding(0, 10, 40, 10)
                 gravity = Gravity.CENTER_VERTICAL
             }
-            row.addView(android.widget.TextView(this).apply { text = icon; textSize = 18f })
-            val txt = android.widget.LinearLayout(this).apply { 
-                orientation = android.widget.LinearLayout.VERTICAL
+            row.addView(TextView(this).apply { text = icon; textSize = 18f })
+            val txt = LinearLayout(this).apply { 
+                orientation = LinearLayout.VERTICAL
                 setPadding(15, 0, 0, 0)
             }
-            txt.addView(android.widget.TextView(this).apply { text = label; setTextColor(Color.LTGRAY); textSize = 12f })
-            txt.addView(android.widget.TextView(this).apply { text = value; setTextColor(Color.WHITE); textSize = 14f })
+            txt.addView(TextView(this).apply { text = label; setTextColor(Color.LTGRAY); textSize = 12f })
+            txt.addView(TextView(this).apply { text = value; setTextColor(Color.WHITE); textSize = 14f })
             row.addView(txt)
             detailsGrid.addView(row)
         }
@@ -1362,7 +1411,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(detailsGrid)
 
         // 3. Прогноз
-        val forecastLabel = android.widget.TextView(this).apply {
+        val forecastLabel = TextView(this).apply {
             text = "Прогноз:"
             setTextColor(Color.WHITE)
             textSize = 18f
@@ -1371,15 +1420,19 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(forecastLabel)
 
-        val forecastScroll = android.widget.HorizontalScrollView(this).apply {
-            layoutParams = android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        val forecastScroll = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
             isFillViewport = true
+            setOnTouchListener { _, _ ->
+                resetSensorCollapseTimer()
+                false
+            }
         }
-        val forecastRow = android.widget.LinearLayout(this).apply { 
-            orientation = android.widget.LinearLayout.HORIZONTAL 
+        val forecastRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
         }
         
         var forecastArr = attrs.optJSONArray("forecast")
@@ -1399,17 +1452,17 @@ class MainActivity : AppCompatActivity() {
         if (forecastArr != null && forecastArr.length() > 0) {
             for (i in 0 until forecastArr.length().coerceAtMost(14)) {
                 val f = forecastArr.getJSONObject(i)
-                val day = android.widget.LinearLayout(this).apply {
-                    orientation = android.widget.LinearLayout.VERTICAL
+                val day = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
                     setPadding(20, 15, 20, 15)
-                    background = android.graphics.drawable.GradientDrawable().apply {
+                    background = GradientDrawable().apply {
                         setColor("#25FFFFFF".toColorInt())
                         cornerRadius = 16f
                     }
-                    val lp = android.widget.LinearLayout.LayoutParams(
-                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                    val lp = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
                     )
                     lp.setMargins(0, 0, 15, 0)
                     layoutParams = lp
@@ -1430,13 +1483,13 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(_: Exception) { dt.takeLast(5) }
 
-                day.addView(android.widget.TextView(this).apply { 
+                day.addView(TextView(this).apply { 
                     text = dateLabel
                     setTextColor(Color.LTGRAY)
                     textSize = 10f 
                 })
                 
-                day.addView(android.widget.TextView(this).apply { 
+                day.addView(TextView(this).apply { 
                     val fst = f.optString("condition", "").lowercase()
                     text = when {
                         fst.contains("sun") || fst.contains("clear") -> "☀️"
@@ -1455,7 +1508,7 @@ class MainActivity : AppCompatActivity() {
                 val tempHigh = f.optString("temperature", f.optString("temp", "—"))
                 val tempLow = f.optString("templow", "")
                 
-                day.addView(android.widget.TextView(this).apply { 
+                day.addView(TextView(this).apply { 
                     text = if (tempLow.isNotEmpty()) "$tempHigh°/$tempLow°" else "$tempHigh°"
                     setTextColor(Color.WHITE)
                     typeface = Typeface.DEFAULT_BOLD
@@ -1464,7 +1517,7 @@ class MainActivity : AppCompatActivity() {
                 forecastRow.addView(day)
             }
         } else {
-            forecastRow.addView(android.widget.TextView(this).apply {
+            forecastRow.addView(TextView(this).apply {
                 text = "Прогноз временно недоступен\n(Проверьте атрибуты в HA)"
                 setTextColor(Color.GRAY)
                 textSize = 12f
@@ -1474,6 +1527,210 @@ class MainActivity : AppCompatActivity() {
         }
         forecastScroll.addView(forecastRow)
         container.addView(forecastScroll)
+    }
+
+    private fun buildYandexWeatherDetailedContent(tile: TileEntity, container: LinearLayout) {
+        container.removeAllViews()
+        container.orientation = LinearLayout.VERTICAL
+        container.gravity = Gravity.TOP
+        container.setPadding(30, 30, 30, 30)
+
+        // 1. Заголовок и текущая погода
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val bigIcon = TextView(this).apply {
+            textSize = 48f
+            text = yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState)
+        }
+        topRow.addView(bigIcon)
+
+        val mainInfo = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(30, 0, 0, 0)
+        }
+        mainInfo.addView(TextView(this).apply {
+            text = "Погода"
+            setTextColor(Color.WHITE)
+            textSize = 24f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        mainInfo.addView(TextView(this).apply {
+            text = yandexWeatherManager.translateCondition(yandexWeatherManager.currentState)
+            setTextColor(Color.LTGRAY)
+            textSize = 16f
+        })
+        topRow.addView(mainInfo)
+
+        val spacer = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
+        topRow.addView(spacer)
+
+        val bigTemp = TextView(this).apply {
+            text = "${yandexWeatherManager.currentTemp}°C"
+            setTextColor(Color.WHITE)
+            textSize = 32f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        topRow.addView(bigTemp)
+        container.addView(topRow)
+
+        // 2. Доп. параметры
+        val detailsGrid = GridLayout(this).apply {
+            columnCount = 2
+            setPadding(0, 30, 0, 20)
+        }
+
+        val addDetail = { icon: String, label: String, value: String ->
+            val row = LinearLayout(this).apply {
+                setPadding(0, 10, 40, 10)
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(TextView(this).apply { text = icon; textSize = 18f })
+            val txt = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(15, 0, 0, 0)
+            }
+            txt.addView(TextView(this).apply { text = label; setTextColor(Color.LTGRAY); textSize = 12f })
+            txt.addView(TextView(this).apply { text = value; setTextColor(Color.WHITE); textSize = 14f })
+            row.addView(txt)
+            detailsGrid.addView(row)
+        }
+
+        addDetail("💧", "Влажность", "${yandexWeatherManager.humidity}%")
+        addDetail("⏲️", "Давление", "${yandexWeatherManager.pressure} мм")
+        addDetail("🌬️", "Ветер", "${yandexWeatherManager.windSpeed} м/с")
+        addDetail("🧭", "Напр.", yandexWeatherManager.windDir)
+
+        container.addView(detailsGrid)
+
+        // 3. Почасовой прогноз
+        if (yandexWeatherManager.hourlyForecasts.isNotEmpty()) {
+            container.addView(TextView(this).apply {
+                text = "Сегодня:"
+                setTextColor(Color.WHITE)
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, 10, 0, 10)
+            })
+
+            val hourlyScroll = HorizontalScrollView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                isFillViewport = true
+                setOnTouchListener { _, _ ->
+                    resetSensorCollapseTimer()
+                    false
+                }
+            }
+            val hourlyRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+
+            yandexWeatherManager.hourlyForecasts.forEach { h ->
+                val hourItem = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(15, 10, 15, 10)
+                    val lp = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                    lp.setMargins(0, 0, 10, 0)
+                    layoutParams = lp
+                }
+                hourItem.addView(TextView(this).apply {
+                    text = "${h.hour}:00"
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                })
+                hourItem.addView(TextView(this).apply {
+                    text = yandexWeatherManager.getWeatherIcon(h.condition)
+                    textSize = 20f
+                })
+                hourItem.addView(TextView(this).apply {
+                    text = "${h.temp}°"
+                    setTextColor(Color.WHITE)
+                    textSize = 12f
+                })
+                hourlyRow.addView(hourItem)
+            }
+            hourlyScroll.addView(hourlyRow)
+            container.addView(hourlyScroll)
+        }
+
+        // 4. Прогноз на неделю
+        if (yandexWeatherManager.forecasts.isNotEmpty()) {
+            container.addView(TextView(this).apply {
+                text = "На неделю:"
+                setTextColor(Color.WHITE)
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, 20, 0, 10)
+            })
+
+            val forecastScroll = HorizontalScrollView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                isFillViewport = true
+                setOnTouchListener { _, _ ->
+                    resetSensorCollapseTimer()
+                    false
+                }
+            }
+            val forecastRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+
+            yandexWeatherManager.forecasts.forEach { f ->
+                val day = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(20, 15, 20, 15)
+                    background = GradientDrawable().apply {
+                        setColor("#25FFFFFF".toColorInt())
+                        cornerRadius = 16f
+                    }
+                    val lp = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                    lp.setMargins(0, 0, 15, 0)
+                    layoutParams = lp
+                }
+
+                val dateLabel = try {
+                    val sdfIn = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                    val outSdf = SimpleDateFormat("E d", Locale.getDefault())
+                    outSdf.format(sdfIn.parse(f.date) ?: Date()).uppercase()
+                } catch(_: Exception) { f.date }
+
+                day.addView(TextView(this).apply {
+                    text = dateLabel
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                })
+                day.addView(TextView(this).apply {
+                    text = yandexWeatherManager.getWeatherIcon(f.condition)
+                    textSize = 24f
+                    setPadding(0, 8, 0, 8)
+                })
+                day.addView(TextView(this).apply {
+                    text = "${f.tempDay}°/${f.tempNight}°"
+                    setTextColor(Color.WHITE)
+                    typeface = Typeface.DEFAULT_BOLD
+                    textSize = 13f
+                })
+                forecastRow.addView(day)
+            }
+            forecastScroll.addView(forecastRow)
+            container.addView(forecastScroll)
+        }
     }
     private fun updatePzemWidget() {
         updateSensorDisplay()
@@ -1499,7 +1756,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // Обновляем содержимое виджета (табличный вид)
-                val container = child.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
+                val container = child.findViewWithTag<LinearLayout>("sensor_text_container")
                 if (container != null && tile.type != "clock") {
                     if (tile.type == "weather" && isExpanded) {
                         buildWeatherDetailedContent(tile, container)
@@ -1712,7 +1969,7 @@ class MainActivity : AppCompatActivity() {
      * Строит содержимое виджета: заголовок + строки параметров.
      * Название параметра слева, значение справа, выровнены по самой длинной строке.
      */
-    private fun buildSensorContent(tile: TileEntity, entityIds: List<String>, isExpanded: Boolean, container: android.widget.LinearLayout) {
+    private fun buildSensorContent(tile: TileEntity, entityIds: List<String>, isExpanded: Boolean, container: LinearLayout) {
         val sensorConfigs = loadSensorConfigs(tile, isExpanded)
 
         val rows = mutableListOf<Pair<String, String>>()
@@ -1741,17 +1998,17 @@ class MainActivity : AppCompatActivity() {
         val fontSize = tile.fontSize.toFloat()
         for ((name, value) in rows) {
             val paddedName = name.padEnd(maxNameLen, ' ')
-            val rowView = android.widget.TextView(container.context).apply {
+            val rowView = TextView(container.context).apply {
                 text = "$paddedName  $value"
                 textSize = fontSize
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 2f, 2f, Color.BLACK)
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
                 )
-                typeface = android.graphics.Typeface.create("monospace", android.graphics.Typeface.BOLD)
+                typeface = Typeface.create("monospace", Typeface.BOLD)
             }
             container.addView(rowView)
         }
@@ -1833,7 +2090,7 @@ class MainActivity : AppCompatActivity() {
                 val tag = expandedSensorView?.tag as? String
                 val tile = tileManager.getAllTiles().find { it.id == tag }
                 if (tile != null && tile.type == "weather") {
-                    val container = expandedSensorView?.findViewWithTag<android.widget.LinearLayout>("sensor_text_container")
+                    val container = expandedSensorView?.findViewWithTag<LinearLayout>("sensor_text_container")
                     if (container != null) {
                         buildWeatherDetailedContent(tile, container)
                     }

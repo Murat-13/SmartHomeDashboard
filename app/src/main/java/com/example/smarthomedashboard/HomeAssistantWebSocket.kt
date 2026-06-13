@@ -25,6 +25,7 @@ class HomeAssistantWebSocket(
 
     private val messageId = AtomicInteger(1)
     private val forecastSubscriptions = mutableMapOf<Int, String>() // msgId -> entityId
+    private val subscribedIds = mutableSetOf<String>() // Локальный список для фильтрации
     private var isReconnecting = false
     private val handler = Handler(Looper.getMainLooper())
     private var pendingEntityIds: List<String>? = null
@@ -45,6 +46,7 @@ class HomeAssistantWebSocket(
                 authenticate()
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
+                Log.d("HAWebSocket", "Raw message: $text") // Логирование входящих сообщений
                 handleMessage(text)
             }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -129,8 +131,20 @@ class HomeAssistantWebSocket(
                 }
                 "event" -> {
                     val event = json.optJSONObject("event") ?: return
-                    val msgId = json.optInt("id")
+                    
+                    // Обработка формата subscribe_events для state_changed
+                    if (event.optString("event_type") == "state_changed") {
+                        val data = event.optJSONObject("data")
+                        val entityId = data?.optString("entity_id") ?: ""
+                        val newState = data?.optJSONObject("new_state")
+                        if (newState != null) {
+                            val state = newState.optString("state", "unknown")
+                            val attrs = newState.optJSONObject("attributes") ?: JSONObject()
+                            onStateChanged(entityId, state, attrs)
+                        }
+                    }
 
+                    val msgId = json.optInt("id")
                     // Обработка прогноза погоды (новый формат через подписку)
                     if (msgId != 0 && event.has("forecast") && forecastSubscriptions.containsKey(msgId)) {
                         val entityId = forecastSubscriptions[msgId]!!
@@ -201,6 +215,10 @@ class HomeAssistantWebSocket(
 
     fun subscribeEntities(entityIds: List<String>) {
         if (entityIds.isEmpty()) return
+        
+        subscribedIds.clear()
+        subscribedIds.addAll(entityIds)
+
         if (webSocket == null) {
             pendingEntityIds = entityIds
             return
@@ -225,11 +243,11 @@ class HomeAssistantWebSocket(
     private fun sendSubscribeMessage(entityIds: List<String>) {
         val message = JSONObject().apply {
             put("id", messageId.getAndIncrement())
-            put("type", "subscribe_entities")
-            put("entity_ids", JSONArray(entityIds))
+            put("type", "subscribe_events")
+            put("event_type", "state_changed")
         }
         webSocket?.send(message.toString())
-        Log.d("HAWebSocket", "Subscribed to: ${entityIds.joinToString()}")
+        Log.d("HAWebSocket", "Subscribed to state_changed events")
     }
 
     fun callService(domain: String, service: String, entityId: String) {

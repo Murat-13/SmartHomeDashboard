@@ -34,6 +34,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnClearMotionSensor: Button
     private lateinit var spinnerTheme: Spinner
     private lateinit var cbKioskMode: CheckBox
+    private lateinit var cbUseYandexWeather: CheckBox
+    private lateinit var etYandexApiKey: EditText
+    private lateinit var etYandexLat: EditText
+    private lateinit var etYandexLon: EditText
     private lateinit var btnExport: Button
     private lateinit var btnImport: Button
     private lateinit var btnSave: Button
@@ -59,6 +63,10 @@ class SettingsActivity : AppCompatActivity() {
         btnClearMotionSensor = findViewById(R.id.btnClearMotionSensor)
         spinnerTheme = findViewById(R.id.spinnerTheme)
         cbKioskMode = findViewById(R.id.cbKioskMode)
+        cbUseYandexWeather = findViewById(R.id.cbUseYandexWeather)
+        etYandexApiKey = findViewById(R.id.etYandexApiKey)
+        etYandexLat = findViewById(R.id.etYandexLat)
+        etYandexLon = findViewById(R.id.etYandexLon)
         btnExport = findViewById(R.id.btnExport)
         btnImport = findViewById(R.id.btnImport)
         btnSave = findViewById(R.id.btnSave)
@@ -79,6 +87,11 @@ class SettingsActivity : AppCompatActivity() {
         val motionSensorId = prefs.getString("motion_sensor_id", "")
         tvMotionSensor.text = if (motionSensorId.isNullOrEmpty()) "Датчик движения: Не выбран" else "Датчик: $motionSensorId"
         etScreenTimeout.setText(prefs.getInt("screen_timeout_minutes", 5).toString())
+
+        cbUseYandexWeather.isChecked = prefs.getBoolean("use_yandex_weather", false)
+        etYandexApiKey.setText(prefs.getString("yandex_api_key", "055767bf-dc48-4046-9f4c-e54919e7add7"))
+        etYandexLat.setText(prefs.getString("yandex_lat", "43.09"))
+        etYandexLon.setText(prefs.getString("yandex_lon", "46.38"))
 
         cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
 
@@ -133,6 +146,10 @@ class SettingsActivity : AppCompatActivity() {
                 putString("app_theme", selectedTheme)
                 putString("temp_unit", tempUnit)
                 putBoolean("kiosk_mode", cbKioskMode.isChecked)
+                putBoolean("use_yandex_weather", cbUseYandexWeather.isChecked)
+                putString("yandex_api_key", etYandexApiKey.text.toString().trim())
+                putString("yandex_lat", etYandexLat.text.toString().trim())
+                putString("yandex_lon", etYandexLon.text.toString().trim())
             }
 
             Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()

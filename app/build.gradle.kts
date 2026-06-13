@@ -1,6 +1,5 @@
 plugins {
-    id("com.android.application")
-    // id("org.jetbrains.kotlin.android") ← УДАЛИ ЭТУ СТРОКУ
+    alias(libs.plugins.android.application)
 }
 
 android {
@@ -31,10 +30,10 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.material)
+    implementation(libs.androidx.constraintlayout)
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.cardview:cardview:1.0.0")
 
@@ -46,10 +45,4 @@ dependencies {
 
     // Gson
     implementation("com.google.code.gson:gson:2.10.1")
-
-    dependencies {
-        // ... остальные зависимости ...
-        implementation("com.google.android.material:material:1.11.0")
-        implementation("androidx.core:core-ktx:1.12.0")
-    }
 }

@@ -11,6 +11,7 @@ import android.widget.EditText
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.AdapterView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileEntity
@@ -62,8 +63,8 @@ class TileSettingsActivity : AppCompatActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         spinnerType.adapter = adapter
 
-        spinnerType.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+        spinnerType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 val isGroup = position == 2 && tileId != null
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 // Показываем размер кнопки только для кнопок и групп
@@ -71,8 +72,8 @@ class TileSettingsActivity : AppCompatActivity() {
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
                 etButtonSize.visibility = if (showSize) View.VISIBLE else View.GONE
             }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
-        })
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
 
         tileId = intent.getStringExtra("tile_id")
         if (tileId != null) {
