@@ -24,6 +24,19 @@ internal object TilePlacement {
         }
     }
 
+    /**
+     * Отступ подсказки от нижнего края, чтобы она стояла над нижним рядом кнопок.
+     * Кнопки расставлены свободно, поэтому «нижний ряд» — это кнопки, чей центр ниже
+     * середины экрана; отступ считается от верхнего края самой высокой из них.
+     * [buttons] — пары (top, height) в пикселях панели.
+     */
+    fun hintBottomMargin(buttons: List<Pair<Float, Int>>, panelHeight: Int, gap: Int, minMargin: Int): Int {
+        val rowTop = buttons.filter { (top, height) -> top + height / 2f > panelHeight / 2f }
+            .minOfOrNull { it.first } ?: return minMargin
+        // Подсказка не уходит выше середины экрана даже при необычной раскладке.
+        return (panelHeight - rowTop.toInt() + gap).coerceIn(minMargin, maxOf(minMargin, panelHeight / 2))
+    }
+
     /** Первое место сверху слева, не перекрывающее плитки и кнопки режима редактирования. */
     fun findFreeSpot(tiles: List<TileEntity>, width: Int, height: Int, screenW: Int, screenH: Int): Pair<Int, Int> {
         val occupied = tiles.map { tile ->

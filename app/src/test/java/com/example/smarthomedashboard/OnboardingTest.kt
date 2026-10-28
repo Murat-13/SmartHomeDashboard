@@ -175,6 +175,29 @@ class OnboardingTest {
         assertEquals(View.GONE, hint.visibility)
     }
 
+    @Test fun hintIsPlacedAboveBottomButtonsInNormalAndEditMode() {
+        attachPanel()
+        UserHints.restoreAll(activity)
+        hint.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT)
+        manager.saveTiles(listOf(TileEntity("b", "button", "bottom_panel", "Свет", 20, 980, 1, 1,
+            config = """{"entity_id":"switch.kitchen"}""")))
+        val density = activity.resources.displayMetrics.density
+        val gap = (8 * density).toInt()
+        fun margin() = (hint.layoutParams as FrameLayout.LayoutParams).bottomMargin
+
+        invoke("refreshBottomPanel")
+        assertEquals(View.VISIBLE, hint.visibility)
+        // Кнопка стоит на y=980 при высоте экрана 1200: плашка заканчивается на 8dp выше.
+        assertEquals(1200 - 980 + gap, margin())
+
+        set("pinAccess", null)
+        invoke("enterEditMode")
+        // В редактировании выше всех кнопки «+» и «⚙»: верх на 1200 − 160 − 80 = 960.
+        assertEquals(UserHints.EDIT_MODE, hintText.text.toString())
+        assertEquals(1200 - 960 + gap, margin())
+    }
+
     @Test fun undoRightAfterClosingBringsHintBack() {
         attachPanel()
         invoke("createStarterTilesOnFirstLaunch")

@@ -29,30 +29,34 @@
         android:textSize="12sp"
         android:maxLines="2" />
 
-    <!-- Подсказка: как войти в редактирование и что в нём можно. Текст не перехватывает
-         касания панели; нажимается только крестик. -->
-    <LinearLayout
+    <!-- Подсказка: как войти в редактирование и что в нём можно. Ширина по экрану,
+         но не больше 720dp. Текст занимает оставшееся место, крестик всегда 48×48dp
+         в правом верхнем углу. Отступ снизу MainActivity ставит над нижним рядом кнопок.
+         Текст не перехватывает касания панели; нажимается только крестик. -->
+    <com.example.smarthomedashboard.MaxWidthLinearLayout
         android:id="@+id/panelHint"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="12dp"
         android:layout_marginStart="24dp"
         android:layout_marginEnd="24dp"
+        android:maxWidth="720dp"
         android:background="@drawable/bg_hint"
         android:elevation="6dp"
-        android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="16dp"
+        android:paddingEnd="4dp"
         android:visibility="gone">
 
         <TextView
             android:id="@+id/tvPanelHint"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:maxWidth="720dp"
-            android:paddingTop="10dp"
-            android:paddingBottom="10dp"
+            android:layout_weight="1"
+            android:layout_gravity="center_vertical"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
             android:textColor="#FFFFFF"
             android:textSize="16sp" />
 
@@ -60,12 +64,13 @@
             android:id="@+id/btnPanelHintClose"
             android:layout_width="48dp"
             android:layout_height="48dp"
+            android:layout_gravity="top"
             android:layout_marginStart="4dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Закрыть подсказку"
             android:src="@drawable/ic_close"
             app:tint="#B3FFFFFF" />
-    </LinearLayout>
+    </com.example.smarthomedashboard.MaxWidthLinearLayout>
 
     <!-- Затемнение -->
     <View

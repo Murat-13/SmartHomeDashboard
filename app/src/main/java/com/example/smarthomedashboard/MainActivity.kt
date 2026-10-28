@@ -127,6 +127,10 @@ class MainActivity : AppCompatActivity() {
         dimOverlay = findViewById(R.id.dimOverlay)
         dimOverlay.setOnClickListener { collapseAll() }
         setupPanelHint(findViewById(R.id.panelHint), findViewById(R.id.tvPanelHint), findViewById(R.id.btnPanelHintClose))
+        // Реальная высота панели известна только после layout: тогда уточняем место подсказки.
+        bottomPanel.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) updatePanelHint()
+        }
 
         tileManager = TileManager(this)
         yandexWeatherManager = YandexWeatherManager(this)
@@ -1454,6 +1458,24 @@ class MainActivity : AppCompatActivity() {
             else -> ""
         }
         container.isVisible = hint != null
+        if (hint != null) placePanelHintAboveButtons(container)
+    }
+
+    private fun placePanelHintAboveButtons(container: View) {
+        val params = container.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        val density = resources.displayMetrics.density
+        // До первого layout высоты панели ещё нет: берём экран, после layout пересчитаем.
+        val panelHeight = bottomPanel.height.takeIf { it > 0 } ?: screenH
+        val buttons = (0 until bottomPanel.childCount).map { bottomPanel.getChildAt(it) }
+            .filter { it is Button && it.isVisible }
+            .map { it.y to (it.layoutParams?.height?.takeIf { h -> h > 0 } ?: it.height) }
+        val margin = TilePlacement.hintBottomMargin(
+            buttons, panelHeight, gap = (8 * density).toInt(), minMargin = (12 * density).toInt()
+        )
+        if (params.bottomMargin != margin) {
+            params.bottomMargin = margin
+            container.layoutParams = params
+        }
     }
 
     // ==================== ДАННЫЕ С ДАТЧИКОВ ====================
