@@ -152,7 +152,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         if (!::tileManager.isInitialized) return
         refreshBottomPanel()
-        // Только локальный dormant bridge. Результат доступен в Settings; клиентов и connect здесь нет.
+        // Переносим сохранённый пароль локально; запуск панели не должен включать MQTT-подключение.
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
                 (mqttCredentials ?: MqttCredentialAccess.create(applicationContext).also { mqttCredentials = it }).read()
@@ -1812,7 +1812,11 @@ class MainActivity : AppCompatActivity() {
         connectedTokenRevision = HaTokenAccess.revision
         val tokenRevision = connectedTokenRevision
         val configuration = listOf(local, remote, token)
-        if (haConfiguration == configuration) return
+        if (haConfiguration == configuration && webSocket != null) {
+            // connect() restarts a stopped client and leaves active/backoff connections alone.
+            webSocket?.connect()
+            return
+        }
         haConfiguration = configuration
         val generation = ++haGeneration
         webSocket?.disconnect()

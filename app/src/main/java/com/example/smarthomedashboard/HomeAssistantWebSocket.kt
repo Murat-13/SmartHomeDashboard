@@ -55,6 +55,7 @@ class HomeAssistantWebSocket(
     )
     private val forecastSubscriptions = mutableMapOf<Int, ForecastRequest>()
     private val rejectedHosts = mutableSetOf<String>()
+    private val tokenRejectedHosts = mutableSetOf<String>()
     private var reconnectTask: Runnable? = null
     private var timeoutTask: Runnable? = null
 
@@ -69,6 +70,7 @@ class HomeAssistantWebSocket(
             running = true
             failures = 0
             rejectedHosts.clear()
+            tokenRejectedHosts.clear()
             endpointIndex = 0
             openConnection()
         }
@@ -116,7 +118,7 @@ class HomeAssistantWebSocket(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 current {
                     if (response?.code == 401 || response?.code == 403) {
-                        fail("Отказ авторизации: проверьте токен и доступ к серверу", permanent = true)
+                        fail("Сервер временно отказал в доступе (HTTP ${response.code})")
                     } else {
                         fail(HomeAssistantAddress.errorMessage(t))
                     }
@@ -125,7 +127,7 @@ class HomeAssistantWebSocket(
         })
     }
 
-    private fun fail(message: String, permanent: Boolean = false) {
+    private fun fail(message: String, permanent: Boolean = false, tokenRejected: Boolean = false) {
         if (!running) return
         // Invalidate first: cancel() can itself cause onFailure.
         generation++
@@ -135,11 +137,25 @@ class HomeAssistantWebSocket(
         webSocket = null
         authenticated = false
         forecastSubscriptions.clear()
-        if (permanent) rejectedHosts.add(getHost())
+        if (permanent || tokenRejected) rejectedHosts.add(getHost())
+        if (tokenRejected) tokenRejectedHosts.add(getHost())
         failures++
         onDisconnected()
         onError(message)
         val available = hosts.indices.filter { hosts[it] !in rejectedHosts }
+        if (available.isEmpty() && autoReconnect && tokenRejectedHosts.isNotEmpty()) {
+            // A revoked token must not cause a tight loop, but may become usable again later.
+            val delay = TimeUnit.MINUTES.toMillis(10)
+            onStatus("Неверный или отозванный токен HA. Повторная проверка через 10 минут")
+            reconnectTask = Runnable {
+                rejectedHosts.removeAll(tokenRejectedHosts)
+                tokenRejectedHosts.clear()
+                failures = 0
+                endpointIndex = hosts.indices.first { hosts[it] !in rejectedHosts }
+                openConnection()
+            }.also { handler.postDelayed(it, delay) }
+            return
+        }
         if (available.isEmpty() || (!autoReconnect && failures >= hosts.size)) {
             running = false
             onStatus("Ошибка: $message")
@@ -159,7 +175,7 @@ class HomeAssistantWebSocket(
                 authSent = true
                 webSocket?.send(JSONObject().put("type", "auth").put("access_token", token).toString())
             }
-            "auth_invalid" -> fail("Отказ авторизации: неверный или отозванный токен", permanent = true)
+            "auth_invalid" -> fail("Отказ авторизации: неверный или отозванный токен", tokenRejected = true)
             "auth_ok" -> if (authSent && !authenticated) {
                 authenticated = true
                 failures = 0
