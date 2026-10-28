@@ -152,7 +152,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         if (!::tileManager.isInitialized) return
         refreshBottomPanel()
-        // Только локальный dormant bridge. Результат доступен в Settings; клиентов и connect здесь нет.
+        // Переносим сохранённый пароль локально; запуск панели не должен включать MQTT-подключение.
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
                 (mqttCredentials ?: MqttCredentialAccess.create(applicationContext).also { mqttCredentials = it }).read()

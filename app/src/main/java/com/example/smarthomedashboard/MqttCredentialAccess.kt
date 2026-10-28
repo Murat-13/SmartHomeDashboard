@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 import android.os.Looper
 import java.util.concurrent.atomic.AtomicLong
 
-/** Только dormant MQTT. Секрет, bridge и prefs — на worker, без создания сетевого клиента. */
+/** Читает и переносит настройки MQTT в фоновом потоке, не создавая сетевое соединение. */
 internal class MqttCredentialAccess(
     private val slot: MqttPasswordSlot,
     private val legacy: MqttLegacy,

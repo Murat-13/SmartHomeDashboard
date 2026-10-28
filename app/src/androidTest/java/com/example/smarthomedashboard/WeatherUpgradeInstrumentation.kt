@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Bundle
 import android.os.Looper
 
-/** Только известная искусственная S3-установка. Любое несовпадение останавливает seed до записи. */
+/** Запись разрешена только в известную искусственную установку; несовпадение данных останавливает тест. */
 internal object WeatherUpgradeFixture {
     const val LEGACY = "  FAKE-WEATHER-UPGRADE-Юникод  "
     const val REPLACEMENT = "FAKE-WEATHER-UPGRADE-REPLACEMENT"

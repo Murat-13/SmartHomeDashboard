@@ -11,7 +11,7 @@ class MqttManager(
 ) {
     private val prefs: SharedPreferences = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
 
-    // Единственное прежнее место defaults; только worker legacy bridge до S4e.
+    // Чтение прежних настроек нужно для переноса пароля без изменения сохранённого подключения.
     internal fun legacyHostForBridge(): String {
             val host = prefs.getString("mqtt_host", "") ?: ""
             return host
@@ -38,7 +38,7 @@ class MqttManager(
     private fun loadConnectionConfiguration(): MqttCredentialAccess.Result =
         (credentials ?: MqttCredentialAccess.create(context).also { credentials = it }).read()
 
-    // Синхронный dormant API: вызывается только явно с worker, не из UI.
+    // Подключение блокирует поток: вызывающий код должен запускать его в фоновом потоке.
     fun connect() {
         val credentials = loadConnectionConfiguration()
         if (!credentials.usable || !MqttCredentialAccess.isCurrent(credentials)) {
