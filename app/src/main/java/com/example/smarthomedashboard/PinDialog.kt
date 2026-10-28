@@ -10,6 +10,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
+import android.widget.ProgressBar
 import androidx.appcompat.app.AppCompatActivity
 import kotlinx.coroutines.*
 
@@ -25,14 +26,21 @@ internal class PinDialog(context:Context,private val onSuccess:()->Unit,private 
   val input=findViewById<EditText>(R.id.pinInput)
   input.inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
   input.filters=arrayOf(android.text.InputFilter.LengthFilter(256));input.isSaveEnabled=false;input.isSaveFromParentEnabled=false;input.importantForAutofill=View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+  val progress=ProgressBar(context).apply {
+   tag="pinVerificationProgress"
+   isIndeterminate=true
+   contentDescription="Проверка PIN"
+   visibility=View.GONE
+  }
+  (input.parent as LinearLayout).addView(progress)
   val confirm=findViewById<Button>(R.id.btnConfirm)
   val confirmLabel=confirm.text.toString()
   confirm.setOnClickListener {
-   val chars=input.text.toString().toCharArray();confirm.isEnabled=false;input.isEnabled=false;confirm.text="Проверка…"
+   val chars=input.text.toString().toCharArray();confirm.isEnabled=false;input.isEnabled=false;confirm.text="Проверка…";progress.visibility=View.VISIBLE
    scope.launch {
     val result=try{withContext(Dispatchers.IO){access.verify(chars)}}finally{chars.fill(' ')}
     if(!isShowing)return@launch
-    confirm.isEnabled=true;confirm.text=confirmLabel;input.isEnabled=true;input.text.clear()
+    progress.visibility=View.GONE;confirm.isEnabled=true;confirm.text=confirmLabel;input.isEnabled=true;input.text.clear()
     if(result.status in listOf(PinAccess.Status.SUCCESS,PinAccess.Status.DISABLED)){
      if(result.status==PinAccess.Status.SUCCESS)PinSecurityUi.session.grant()
      onSuccess();dismiss()

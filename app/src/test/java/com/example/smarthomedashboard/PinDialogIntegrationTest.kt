@@ -53,4 +53,38 @@ class PinDialogIntegrationTest {
   val button=dialog.findViewById<Button>(R.id.btnConfirm);button.performClick();weatherAwait{button.isEnabled}
   assertFalse(granted);assertTrue(dialog.isShowing);dialog.dismiss()
  }
+ @Test fun slowVerificationShowsProgressAndLeavesMainLooperResponsive() {
+  val a=activity()
+  val entered=java.util.concurrent.CountDownLatch(1)
+  val release=java.util.concurrent.CountDownLatch(1)
+  val access=disabled {
+   entered.countDown()
+   check(release.await(4,java.util.concurrent.TimeUnit.SECONDS))
+   PinAccess.State(null,null)
+  }
+  val dialog=PinDialog(a,{},access,::content)
+  dialog.show()
+  try {
+   val button=dialog.findViewById<Button>(R.id.btnConfirm)
+   button.performClick()
+   weatherAwait{entered.count==0L}
+   val progress=dialog.window!!.decorView.findViewWithTag<android.widget.ProgressBar>("pinVerificationProgress")
+   assertEquals(android.view.View.VISIBLE,progress.visibility)
+   assertTrue(progress.isIndeterminate)
+   assertFalse(button.isEnabled)
+   assertEquals("Проверка…",button.text.toString())
+   var mainCallbackRan=false
+   android.os.Handler(android.os.Looper.getMainLooper()).post{mainCallbackRan=true}
+   org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+   assertTrue(mainCallbackRan)
+   assertEquals(1L,release.count)
+   release.countDown()
+   weatherAwait{!dialog.isShowing}
+   assertEquals(android.view.View.GONE,progress.visibility)
+  } finally {
+   release.countDown()
+   dialog.dismiss()
+  }
+ }
+
 }
