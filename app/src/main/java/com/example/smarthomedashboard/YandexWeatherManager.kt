@@ -146,7 +146,7 @@ class YandexWeatherManager(private val context: Context) {
             val url = "https://api.weather.yandex.ru/v2/forecast?lat=$lat&lon=$lon&limit=7"
 
             val weatherRequest = try {
-                Request.Builder().url(url).addHeader("X-Yandex-API-Key", apiKey).build()
+                Request.Builder().url(url).addHeader("X-Yandex-Weather-Key", apiKey).build()
             } catch (_: IllegalArgumentException) {
                 // OkHttp включает недопустимое значение заголовка в exception.message.
                 // Ключ оставляем в хранилище, но не передаём исключение в UI/логи.
@@ -165,6 +165,8 @@ class YandexWeatherManager(private val context: Context) {
                 override fun onResponse(call: Call, response: Response) {
                     response.use {
                         if (!active()) return
+                        // Только код ответа: ключ, URL и тело ответа не попадают в диагностику.
+                        android.util.Log.d("YandexWeather", "HTTP ${response.code}")
                         if (!response.isSuccessful) {
                             scope.launch { if (active()) callback?.onError("Response not successful: ${response.code}") }
                             return
@@ -269,6 +271,7 @@ class YandexWeatherManager(private val context: Context) {
                                     apply()
                                 }
 
+                                android.util.Log.d("YandexWeather", "Forecast updated")
                                 callback?.onWeatherUpdated()
                             }
                         } catch (_: Exception) {

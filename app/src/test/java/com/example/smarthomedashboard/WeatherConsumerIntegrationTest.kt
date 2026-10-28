@@ -162,7 +162,7 @@ class WeatherConsumerIntegrationTest {
             manager.fetchWeather(scope, callback(updated = { updated++ }))
             weatherAwait { updated == 1 }
             assertEquals(1, requests.size)
-            assertEquals("FAKE-WEATHER", requests.single().header("X-Yandex-API-Key"))
+            assertEquals("FAKE-WEATHER", requests.single().header("X-Yandex-Weather-Key"))
             assertEquals("10.0", requests.single().url.queryParameter("lat"))
             assertEquals("20.0", requests.single().url.queryParameter("lon"))
             assertFalse(prefs.contains("yandex_api_key"))
@@ -384,5 +384,52 @@ class WeatherConsumerIntegrationTest {
             assertEquals(before,prefs.all)
             assertFalse(activity.isFinishing)
         }
+    }
+
+    @Test fun weatherAuthenticationUsesDocumentedHeaderAndKeepsKeyOutOfUrl() {
+        seed()
+        val requests = CopyOnWriteArrayList<Request>()
+        val manager = manager { request -> requests.add(request); response(request) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        var updated = false
+        try {
+            manager.fetchWeather(scope, callback(updated = { updated = true }))
+            weatherAwait { updated }
+            val request = requests.single()
+            assertEquals("FAKE-WEATHER", request.header("X-Yandex-Weather-Key"))
+            assertNull(request.header("X-Yandex-API-Key"))
+            assertEquals("api.weather.yandex.ru", request.url.host)
+            assertEquals("/v2/forecast", request.url.encodedPath)
+            assertFalse(request.url.toString().contains("FAKE-WEATHER"))
+            val logs = org.robolectric.shadows.ShadowLog.getLogsForTag("YandexWeather").map { it.msg }
+            assertTrue(logs.contains("HTTP 200"))
+            assertTrue(logs.contains("Forecast updated"))
+            assertTrue(logs.none { it.contains("FAKE-WEATHER") || it.contains("lat=") || it.contains("lon=") })
+        } finally { scope.cancel(); manager.cancelPendingRequests() }
+    }
+
+    @Test fun forbiddenResponsePreservesCachedForecastAndNeverExposesResponseBodyOrKey() {
+        seed()
+        prefs.edit().putString("yandex_last_temp", "7").putLong("yandex_last_update", 1234L).commit()
+        val manager = manager { request -> Response.Builder().request(request)
+            .protocol(Protocol.HTTP_1_1).code(403).message("Forbidden")
+            .body("FAKE-WEATHER should not escape from response".toResponseBody("text/plain".toMediaType())).build() }
+        manager.loadFromCache()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        var message: String? = null
+        try {
+            manager.fetchWeather(scope, callback(updated = { fail("403 must not replace the cache") }, error = { message = it }))
+            weatherAwait { message != null }
+            assertTrue(message!!.contains("403"))
+            assertFalse(message!!.contains("FAKE-WEATHER"))
+            val logs = org.robolectric.shadows.ShadowLog.getLogsForTag("YandexWeather").map { it.msg }
+            assertTrue(logs.contains("HTTP 403"))
+            assertFalse(logs.contains("Forecast updated"))
+            assertTrue(logs.none { it.contains("FAKE-WEATHER") })
+            assertEquals("7", manager.currentTemp)
+            assertEquals(1234L, manager.lastUpdate)
+            assertEquals("7", prefs.getString("yandex_last_temp", null))
+            assertEquals(1234L, prefs.getLong("yandex_last_update", 0L))
+        } finally { scope.cancel(); manager.cancelPendingRequests() }
     }
 }
