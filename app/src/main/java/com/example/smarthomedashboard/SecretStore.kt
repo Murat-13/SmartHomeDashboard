@@ -27,7 +27,12 @@ internal class SecretStore(
     private val keys: SecretKeyProvider,
     private val checkWorkerThread: () -> Unit
 ) {
-    enum class Slot(val bit: Int) { HA_TOKEN(1), MQTT_PASSWORD(2), WEATHER_KEY(4) }
+    enum class Slot(val bit: Int) {
+        HA_TOKEN(1),
+        // Устаревший, только для удаления при обновлении; новые значения не записываются.
+        MQTT_PASSWORD(2),
+        WEATHER_KEY(4)
+    }
     enum class Status {
         SUCCESS, ABSENT, KEY_UNAVAILABLE, STORAGE_UNAVAILABLE,
         CORRUPTED, UNSUPPORTED_VERSION, WRITE_FAILED
