@@ -48,7 +48,7 @@ class OnboardingTest {
         ArchitectureTestAccess.setField(activity, name, value)
     }
     private fun invoke(name: String): Any? = try {
-        MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.isEmpty() }
+        ArchitectureTestAccess.methods(activity).single { it.name == name && it.parameterTypes.isEmpty() }
             .apply { isAccessible = true }.invoke(activity)
     } catch (error: InvocationTargetException) {
         throw error.targetException
@@ -73,7 +73,7 @@ class OnboardingTest {
         set("tileManager", manager)
         set("bottomPanel", panel)
         set("dimOverlay", View(activity))
-        MainActivity::class.java.getDeclaredMethod("setupPanelHint", View::class.java, TextView::class.java,
+        ArchitectureTestAccess.method(activity, "setupPanelHint", View::class.java, TextView::class.java,
             View::class.java).apply { isAccessible = true }.invoke(activity, hint, hintText, hintClose)
         set("yandexWeatherManager", YandexWeatherManager(activity))
         val root = FrameLayout(activity)

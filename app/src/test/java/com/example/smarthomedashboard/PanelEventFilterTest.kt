@@ -34,7 +34,7 @@ class PanelEventFilterTest {
     }
     private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
-        MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(activity).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
     } catch (error: InvocationTargetException) {
         throw error.targetException

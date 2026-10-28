@@ -85,7 +85,7 @@ class SensorCardFactoryTest {
 
     private fun invoke(name: String, vararg args: Any?): Any? {
         try {
-            return MainActivity::class.java.declaredMethods.single {
+            return ArchitectureTestAccess.methods(activity).single {
                 it.name == name && it.parameterTypes.size == args.size
             }.apply { isAccessible = true }.invoke(activity, *args)
         } catch (error: InvocationTargetException) {

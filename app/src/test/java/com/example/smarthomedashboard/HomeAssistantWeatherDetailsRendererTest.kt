@@ -55,7 +55,7 @@ class HomeAssistantWeatherDetailsRendererTest {
             }
         }
         try {
-            MainActivity::class.java.getDeclaredMethod("buildWeatherDetailedContent",
+            ArchitectureTestAccess.method(activity, "buildWeatherDetailedContent",
                 TileEntity::class.java, LinearLayout::class.java).apply {
                 isAccessible = true
                 invoke(activity, tile, container)

@@ -59,7 +59,7 @@ class SensorContentRendererTest {
             set(activity, targetTemperature)
         }
         try {
-            MainActivity::class.java.getDeclaredMethod("buildSensorContent", TileEntity::class.java,
+            ArchitectureTestAccess.method(activity, "buildSensorContent", TileEntity::class.java,
                 List::class.java, Boolean::class.javaPrimitiveType, LinearLayout::class.java).apply {
                 isAccessible = true
                 invoke(activity, tile, ids, expanded, container)

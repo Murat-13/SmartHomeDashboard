@@ -57,7 +57,7 @@ internal fun weatherLive(activity: androidx.appcompat.app.AppCompatActivity) {
 }
 
 internal fun weatherInvoke(target: Any, name: String, vararg arguments: Any?): Any? = try {
-    target.javaClass.declaredMethods.single { it.name == name }.apply { isAccessible = true }.invoke(target, *arguments)
+    ArchitectureTestAccess.methods(target).single { it.name == name }.apply { isAccessible = true }.invoke(target, *arguments)
 } catch (e: java.lang.reflect.InvocationTargetException) { throw e.targetException }
 
 internal fun attachWeatherSettingsFields(activity: SettingsActivity, access: WeatherKeyAccess = weatherKeyTestAccess(activity)) {

@@ -92,7 +92,7 @@ class ButtonStateIntegrationTest {
     }
 
     private fun invoke(target: Any, name: String, vararg args: Any?): Any? = try {
-        target.javaClass.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(target).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(target, *args)
     } catch (error: InvocationTargetException) {
         throw error.targetException

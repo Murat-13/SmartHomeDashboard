@@ -52,7 +52,7 @@ class HaTokenConsumerIntegrationTest {
     private val access by lazy { haTokenTestAccess(context) }
     private fun set(target: Any, name: String, value: Any?) = ArchitectureTestAccess.setField(target, name, value)
     private fun invoke(target: Any, name: String, vararg args: Any?) = try {
-        target.javaClass.declaredMethods.single { it.name == name }.apply { isAccessible = true }.invoke(target, *args)
+        ArchitectureTestAccess.methods(target).single { it.name == name }.apply { isAccessible = true }.invoke(target, *args)
     } catch (e: InvocationTargetException) { throw e.targetException }
     private fun live(activity: androidx.appcompat.app.AppCompatActivity) {
         activity.setTheme(android.R.style.Theme_Material_Light_NoActionBar)

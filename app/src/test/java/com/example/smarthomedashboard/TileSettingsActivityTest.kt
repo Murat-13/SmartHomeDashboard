@@ -196,7 +196,7 @@ class TileSettingsActivityTest {
         set("bottomPanel", panel)
         set("dimOverlay", android.view.View(main))
         set("yandexWeatherManager", YandexWeatherManager(main))
-        MainActivity::class.java.getDeclaredMethod("refreshBottomPanel").apply {
+        ArchitectureTestAccess.method(main, "refreshBottomPanel").apply {
             isAccessible = true
             invoke(main)
         }

@@ -44,7 +44,7 @@ class SensorResizeIntegrationTest {
     }
 
     private fun create(tile: TileEntity): FrameLayout = try {
-        MainActivity::class.java.getDeclaredMethod("createSensorView", TileEntity::class.java)
+        ArchitectureTestAccess.method(activity, "createSensorView", TileEntity::class.java)
             .apply { isAccessible = true }.invoke(activity, tile) as FrameLayout
     } catch (error: InvocationTargetException) {
         throw error.targetException
@@ -102,7 +102,7 @@ class SensorResizeIntegrationTest {
     }
 
     private fun clearInteractions() {
-        MainActivity::class.java.getDeclaredMethod("clearPanelInteractions").apply {
+        ArchitectureTestAccess.method(activity, "clearPanelInteractions").apply {
             isAccessible = true
             invoke(activity)
         }

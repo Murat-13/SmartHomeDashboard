@@ -18,7 +18,7 @@ class PanelWindowTest {
     private val activity by lazy { Robolectric.buildActivity(MainActivity::class.java).get() }
 
     private fun invoke(name: String) = try {
-        MainActivity::class.java.getDeclaredMethod(name).apply { isAccessible = true }.invoke(activity)
+        ArchitectureTestAccess.method(activity, name).apply { isAccessible = true }.invoke(activity)
     } catch (error: InvocationTargetException) {
         throw error.targetException
     }

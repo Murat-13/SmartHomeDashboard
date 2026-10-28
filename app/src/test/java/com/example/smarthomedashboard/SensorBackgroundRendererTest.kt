@@ -52,7 +52,7 @@ class SensorBackgroundRendererTest {
                 putAll(states)
             }
         }
-        MainActivity::class.java.getDeclaredMethod(
+        ArchitectureTestAccess.method(activity,
             "updateNormalSensorWidget", TileEntity::class.java, FrameLayout::class.java
         ).apply {
             isAccessible = true

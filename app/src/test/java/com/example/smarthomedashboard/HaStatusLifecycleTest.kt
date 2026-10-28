@@ -47,14 +47,14 @@ class HaStatusLifecycleTest {
     }
 
     private fun lifecycle(activity: MainActivity, method: String) {
-        MainActivity::class.java.getDeclaredMethod(method).apply { isAccessible = true }.invoke(activity)
+        ArchitectureTestAccess.method(activity, method).apply { isAccessible = true }.invoke(activity)
         shadowOf(Looper.getMainLooper()).idle()
     }
     private fun text(activity: MainActivity) =
         activity.findViewById<TextView>(R.id.tvHaLiveStatus).text.toString()
 
     private fun client(activity: MainActivity): HomeAssistantWebSocket? =
-        MainActivity::class.java.getDeclaredMethod("getWebSocket").apply {
+        ArchitectureTestAccess.method(activity, "getWebSocket").apply {
             isAccessible = true
         }.invoke(activity) as HomeAssistantWebSocket?
 

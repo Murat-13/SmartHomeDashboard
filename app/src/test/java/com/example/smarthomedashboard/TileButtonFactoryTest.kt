@@ -118,7 +118,7 @@ class TileButtonFactoryTest {
         set(activity, "tileManager", manager)
         syncStates()
         return try {
-            MainActivity::class.java.getDeclaredMethod("createTileButton", TileEntity::class.java).apply {
+            ArchitectureTestAccess.method(activity, "createTileButton", TileEntity::class.java).apply {
                 isAccessible = true
             }.invoke(activity, tile) as Button
         } catch (error: InvocationTargetException) {
@@ -303,7 +303,7 @@ class TileButtonFactoryTest {
     }
 
     private fun invoke(name: String, vararg args: Any?) {
-        val method = MainActivity::class.java.declaredMethods.single {
+        val method = ArchitectureTestAccess.methods(activity).single {
             it.name == name && it.parameterTypes.size == args.size
         }
         try {
