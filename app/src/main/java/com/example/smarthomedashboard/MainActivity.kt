@@ -1812,7 +1812,11 @@ class MainActivity : AppCompatActivity() {
         connectedTokenRevision = HaTokenAccess.revision
         val tokenRevision = connectedTokenRevision
         val configuration = listOf(local, remote, token)
-        if (haConfiguration == configuration) return
+        if (haConfiguration == configuration && webSocket != null) {
+            // connect() restarts a stopped client and leaves active/backoff connections alone.
+            webSocket?.connect()
+            return
+        }
         haConfiguration = configuration
         val generation = ++haGeneration
         webSocket?.disconnect()

@@ -6,7 +6,7 @@ import android.os.Looper
 import java.io.File
 
 /**
- * Ожидаемые искусственные данные из seed-runner приватной сборочной копии S2.
+ * Проверяет перенос заранее подготовленных искусственных данных из прежней версии приложения.
  * Текущий runner не засеивает и не очищает prefs, не запускает Activity/сетевые клиенты.
  */
 internal object HaUpgradeFixture {

@@ -35,4 +35,24 @@ class PinVerifierTest {
         assertTrue(String(a).matches(Regex("[0-9A-F]{5}(-[0-9A-F]{5}){7}")))
         a.fill(' ');b.fill(' ')
     }
+    @Test fun savedSha1AndSha256RecordsKeepTheirOriginalWorkFactors() {
+        val input = "135790".toCharArray()
+        val salt = ByteArray(32) { 7 }
+        fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
+        try {
+            for ((algorithm, cost) in listOf("PBKDF2WithHmacSHA1" to 1_400_000, "PBKDF2WithHmacSHA256" to 600_000)) {
+                val spec = javax.crypto.spec.PBEKeySpec(input, "PIN".toByteArray(Charsets.US_ASCII) + byteArrayOf(0) + salt, cost, 256)
+                val digest = try { javax.crypto.SecretKeyFactory.getInstance(algorithm).generateSecret(spec).encoded }
+                    finally { spec.clearPassword() }
+                val record = "1:PIN:$algorithm:$cost:${hex(salt)}:${hex(digest)}"
+                digest.fill(0)
+                assertEquals(PinVerifier.Verdict.MATCH, verifier.verify(input, record, PinVerifier.Purpose.PIN))
+                assertEquals(PinVerifier.Verdict.MISMATCH, verifier.verify("135791".toCharArray(), record, PinVerifier.Purpose.PIN))
+            }
+        } finally {
+            input.fill(' ')
+            salt.fill(0)
+        }
+    }
+
 }

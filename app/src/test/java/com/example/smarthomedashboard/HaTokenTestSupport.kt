@@ -5,7 +5,7 @@ import android.os.Looper
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
-// Тестовая граница S2: настоящий JCA AES-GCM, память вместо диска и искусственный ключ вместо AndroidKeyStore.
+// Настоящий JCA AES-GCM проверяется с памятью вместо диска и искусственным ключом вместо AndroidKeyStore.
 internal fun haTokenTestAccess(context: Context): HaTokenAccess {
     val slot = SecretStore(object : SecretContainerFile {
         private var bytes: ByteArray? = null

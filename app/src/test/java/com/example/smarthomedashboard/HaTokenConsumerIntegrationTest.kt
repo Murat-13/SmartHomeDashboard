@@ -42,7 +42,7 @@ class HaTokenResources : ShadowResources() {
     }
 }
 
-// Настоящие методы потребителей и WebSocket auth по loopback. Store S2 — JCA с тестовой выдачей ключа.
+// Настоящие методы потребителей и WebSocket auth по loopback; JCA использует искусственный тестовый ключ.
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28], shadows = [HaTokenResources::class])
 @LooperMode(LooperMode.Mode.PAUSED)

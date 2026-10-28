@@ -3,4 +3,13 @@
     <instrumentation
         android:name="com.example.smarthomedashboard.SecretStorePlatformInstrumentation"
         android:targetPackage="com.example.smarthomedashboard" />
-<instrumentation android:name="com.example.smarthomedashboard.PinPlatformInstrumentation" android:targetPackage="com.example.smarthomedashboard" /><instrumentation android:name="com.example.smarthomedashboard.PinUpgradeInstrumentation" android:targetPackage="com.example.smarthomedashboard" /></manifest>
+    <instrumentation
+        android:name="com.example.smarthomedashboard.PinPlatformInstrumentation"
+        android:targetPackage="com.example.smarthomedashboard" />
+    <instrumentation
+        android:name="com.example.smarthomedashboard.PinUpgradeInstrumentation"
+        android:targetPackage="com.example.smarthomedashboard" />
+    <instrumentation
+        android:name="com.example.smarthomedashboard.PinBenchmarkInstrumentation"
+        android:targetPackage="com.example.smarthomedashboard" />
+</manifest>

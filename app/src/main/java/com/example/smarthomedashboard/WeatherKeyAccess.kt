@@ -36,7 +36,7 @@ internal class WeatherKeyAccess(
 
     fun read(): Result = serialized {
         val key = readKey()
-        // Координаты не являются fallback для секрета. Их bridge независим от ошибки ключа,
+        // Координаты сохраняются отдельно от ключа: ошибка чтения ключа не должна мешать их переносу,
         // чтобы экран мог показать реальные параметры, не назначая другой ключ.
         val configuration = legacy.prepareConfiguration()
         Result(key.status, key.value, configuration, key.secureStatus)
@@ -198,7 +198,7 @@ internal class PreferenceWeatherLegacy(
     } catch (_: SecurityException) { false }
 }
 
-/** Только закрытый legacy bridge S4b: в S4e эти личные defaults должны быть удалены из бинарника. */
+/** Новая установка не содержит местоположения; сохранённые координаты читаются из настроек. */
 internal object LegacyWeatherCoordinateDefaults {
     fun latitude(): String = ""
     fun longitude(): String = ""
