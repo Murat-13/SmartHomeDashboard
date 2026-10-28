@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /**
  * Координаты плиток — пиксели свободного размещения на панели MainActivity.
- * Размеры повторяют createSensorView/getButtonSize, отступы — findFreeSpot.
+ * Общие размеры и границы используются и панелью, и поиском свободного места.
  */
 internal object TilePlacement {
     const val WIDGET_WIDTH = 220
@@ -17,12 +17,32 @@ internal object TilePlacement {
     fun size(container: String, config: String): Size {
         val json = try { JSONObject(config) } catch (_: Exception) { JSONObject() }
         return if (container == "bottom_panel") {
-            val side = json.optInt("button_size", BUTTON_SIZE)
+            val side = json.optInt("button_size", BUTTON_SIZE).takeIf { it > 0 } ?: BUTTON_SIZE
             Size(side, side)
         } else {
-            Size(json.optInt("button_size", WIDGET_WIDTH), json.optInt("widget_height", WIDGET_HEIGHT))
+            Size(json.optInt("button_size", WIDGET_WIDTH).takeIf { it > 0 } ?: WIDGET_WIDTH,
+                json.optInt("widget_height", WIDGET_HEIGHT).takeIf { it > 0 } ?: WIDGET_HEIGHT)
         }
     }
+
+    /** Нижние 60 px, как прежде, оставляем за пределами свободного перемещения плиток. */
+    fun maxButtonSize(screenW: Int, screenH: Int): Int =
+        minOf(screenW.coerceAtLeast(1), (screenH - 60).coerceAtLeast(1))
+
+    /** Ограничиваем только отображение старых размеров; сохранённый config не изменяем. */
+    fun displaySize(container: String, config: String, screenW: Int, screenH: Int): Size {
+        val saved = size(container, config)
+        return if (container == "bottom_panel") {
+            val side = saved.width.coerceAtMost(maxButtonSize(screenW, screenH))
+            Size(side, side)
+        } else Size(saved.width.coerceAtMost(screenW.coerceAtLeast(1)),
+            saved.height.coerceAtMost((screenH - 60).coerceAtLeast(1)))
+    }
+
+    /** Общие границы для первого размещения и drag, в том числе при узком окне. */
+    fun position(x: Float, y: Float, width: Int, height: Int, screenW: Int, screenH: Int): Pair<Float, Float> =
+        x.coerceIn(0f, (screenW.toFloat() - width).coerceAtLeast(0f)) to
+            y.coerceIn(0f, (screenH.toFloat() - height - 60).coerceAtLeast(0f))
 
     /**
      * Отступ подсказки от нижнего края, чтобы она стояла над нижним рядом кнопок.
@@ -40,8 +60,10 @@ internal object TilePlacement {
     /** Первое место сверху слева, не перекрывающее плитки и кнопки режима редактирования. */
     fun findFreeSpot(tiles: List<TileEntity>, width: Int, height: Int, screenW: Int, screenH: Int): Pair<Int, Int> {
         val occupied = tiles.map { tile ->
-            val size = size(tile.container, tile.config)
-            intArrayOf(tile.x, tile.y, size.width, size.height)
+            // Занято именно отображаемое место, как при восстановлении панели.
+            val size = displaySize(tile.container, tile.config, screenW, screenH)
+            val (x, y) = position(tile.x.toFloat(), tile.y.toFloat(), size.width, size.height, screenW, screenH)
+            intArrayOf(x.toInt(), y.toInt(), size.width, size.height)
         } + listOf(
             // Кнопки «Настройки» и «+», которые видны, пока пользователь добавляет плитки.
             intArrayOf(screenW - BUTTON_SIZE - 20, screenH - BUTTON_SIZE - 80, BUTTON_SIZE, BUTTON_SIZE),

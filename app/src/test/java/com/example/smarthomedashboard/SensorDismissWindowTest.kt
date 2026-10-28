@@ -94,7 +94,8 @@ class SensorDismissWindowTest {
         val client = HomeAssistantWebSocket("http://localhost/test-only", "test-token", { _, _, _ -> }, {}, {})
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
-        set(activity, "webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
         invoke("refreshBottomPanel")
         controller.visible()
         advance(400)
@@ -108,7 +109,7 @@ class SensorDismissWindowTest {
 
     private fun view(id: String): View = panel.findViewWithTag(id)
     private fun card(): FrameLayout = view("a") as FrameLayout
-    private fun expandedView(): View? = get("expandedSensorView")
+    private fun expandedView(): View? = sensorSessionFixture(activity).current
     private fun content(): LinearLayout = card().findViewWithTag("sensor_text_container")
     private fun scroll(): HorizontalScrollView = (0 until content().childCount)
         .map { content().getChildAt(it) }.filterIsInstance<HorizontalScrollView>().single()

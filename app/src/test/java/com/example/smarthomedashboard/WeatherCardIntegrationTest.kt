@@ -158,7 +158,7 @@ class WeatherCardIntegrationTest {
     private fun expand(card: FrameLayout) {
         invoke("expandSensor", manager.loadTiles().single(), card)
         finishAnimation(card)
-        assertSame(card, ReflectionHelpers.getField<View>(activity, "expandedSensorView"))
+        assertSame(card, checkNotNull(sensorSessionFixture(activity).current))
         if (manager.loadTiles().single().type == "weather") {
             assertEquals(Gravity.TOP or Gravity.START, content(card).gravity)
             assertEquals(30, content(card).paddingLeft)
@@ -168,11 +168,11 @@ class WeatherCardIntegrationTest {
     private fun collapse(card: FrameLayout) {
         invoke("collapseSensor")
         finishAnimation(card)
-        assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
     }
 
     private fun tap(view: View) {
-        val throughWindow = ReflectionHelpers.getField<View?>(activity, "expandedSensorView") != null
+        val throughWindow = sensorSessionFixture(activity).current != null
         val location = IntArray(2)
         if (throughWindow) view.getLocationInWindow(location)
         val time = android.os.SystemClock.uptimeMillis()
@@ -258,11 +258,11 @@ class WeatherCardIntegrationTest {
         repeat(3) {
             tap(card)
             finishAnimation(card)
-            assertSame(card, ReflectionHelpers.getField<View>(activity, "expandedSensorView"))
+            assertSame(card, checkNotNull(sensorSessionFixture(activity).current))
             tap(card)
             finishAnimation(card)
             assertCompact(card, "20°C", "Моя погода")
-            assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+            assertNull(sensorSessionFixture(activity).current)
             assertEquals(2, card.childCount)
         }
     }
@@ -285,7 +285,7 @@ class WeatherCardIntegrationTest {
         expand(card)
         shadowOf(Looper.getMainLooper()).idleFor(30, TimeUnit.SECONDS)
         layout(card)
-        assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
         assertCompact(card, "20°C", "Моя погода")
     }
 
@@ -358,7 +358,8 @@ class WeatherCardIntegrationTest {
         HomeAssistantWebSocket::class.java.getDeclaredField("webSocket").apply {
             isAccessible = true; set(client, socket)
         }
-        set("webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        ReflectionHelpers.setField(owner, "webSocket", client)
         listOf(false, true).forEach { useYandex ->
             panel.removeAllViews()
             val card = open(useYandex = useYandex)

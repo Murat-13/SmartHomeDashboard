@@ -243,64 +243,70 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
     // ==================== СОХРАНЕНИЕ НАСТРОЕК ====================
 
     private fun saveSettings() {
-        tileId?.let { id ->
-            val tiles = tileManager.loadTiles().toMutableList()
-            val index = tiles.indexOfFirst { it.id == id }
-            if (index >= 0) {
-                val oldTile = tiles[index]
+        val tiles = tileManager.loadTiles().toMutableList()
+        val index = tiles.indexOfFirst { it.id == tileId }
+        if (index < 0) {
+            Toast.makeText(this, "Не удалось сохранить: плитка больше не существует.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val oldTile = tiles[index]
+        val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
+        val config = try {
+            JSONObject(oldTile.config)
+        } catch (_: org.json.JSONException) {
+            // Отказ до записи сохраняет исходный config и остальные параметры плитки.
+            Toast.makeText(this, "Не удалось прочитать настройки плитки. Изменения не сохранены.",
+                Toast.LENGTH_SHORT).show()
+            return
+        }
 
-                val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
-                val config = JSONObject(oldTile.config)
+        // Сохраняем свёрнутые конфиги
+        val collapsedArr = JSONArray()
+        collapsedConfigs.forEach { sc ->
+            collapsedArr.put(JSONObject().apply {
+                put("entity_id", sc.entityId)
+                put("display_name", sc.displayName)
+                put("decimals", sc.decimals)
+            })
+        }
+        config.put("collapsed_sensor_configs", collapsedArr)
 
-                // Сохраняем свёрнутые конфиги
-                val collapsedArr = JSONArray()
-                collapsedConfigs.forEach { sc ->
-                    collapsedArr.put(JSONObject().apply {
-                        put("entity_id", sc.entityId)
-                        put("display_name", sc.displayName)
-                        put("decimals", sc.decimals)
-                    })
-                }
-                config.put("collapsed_sensor_configs", collapsedArr)
+        // Сохраняем развёрнутые конфиги
+        val expandedArr = JSONArray()
+        expandedConfigs.forEach { sc ->
+            expandedArr.put(JSONObject().apply {
+                put("entity_id", sc.entityId)
+                put("display_name", sc.displayName)
+                put("decimals", sc.decimals)
+            })
+        }
+        config.put("expanded_sensor_configs", expandedArr)
 
-                // Сохраняем развёрнутые конфиги
-                val expandedArr = JSONArray()
-                expandedConfigs.forEach { sc ->
-                    expandedArr.put(JSONObject().apply {
-                        put("entity_id", sc.entityId)
-                        put("display_name", sc.displayName)
-                        put("decimals", sc.decimals)
-                    })
-                }
-                config.put("expanded_sensor_configs", expandedArr)
-
-                // Сохраняем правила цвета
-                val rulesArr = JSONArray()
-                colorRules.forEach { rule ->
-                    if (rule.entityId.isNotEmpty()) {
-                        rulesArr.put(JSONObject().apply {
-                            put("entity_id", rule.entityId)
-                            put("from", rule.from ?: "")
-                            put("to", rule.to ?: "")
-                            put("color_hex", rule.colorHex)
-                        })
-                    }
-                }
-
-                // Сохраняем плитку
-                tiles[index] = oldTile.copy(
-                    fontSize = fontSize,
-                    sourceType = oldTile.sourceType,
-                    config = config.toString(),
-                    colorRules = rulesArr.toString()
-                )
-
-                tileManager.saveTiles(tiles)
-                Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()
-                setResult(Activity.RESULT_OK)
-                finish()
+        // Сохраняем правила цвета
+        val rulesArr = JSONArray()
+        colorRules.forEach { rule ->
+            if (rule.entityId.isNotEmpty()) {
+                rulesArr.put(JSONObject().apply {
+                    put("entity_id", rule.entityId)
+                    put("from", rule.from ?: "")
+                    put("to", rule.to ?: "")
+                    put("color_hex", rule.colorHex)
+                })
             }
         }
+
+        // Сохраняем плитку
+        tiles[index] = oldTile.copy(
+            fontSize = fontSize,
+            sourceType = oldTile.sourceType,
+            config = config.toString(),
+            colorRules = rulesArr.toString()
+        )
+
+        tileManager.saveTiles(tiles)
+        Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()
+        setResult(Activity.RESULT_OK)
+        finish()
     }
 }
 

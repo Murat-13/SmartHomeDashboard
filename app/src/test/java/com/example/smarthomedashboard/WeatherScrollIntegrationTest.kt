@@ -123,7 +123,7 @@ class WeatherScrollIntegrationTest {
         layoutCards()
     }
     private fun tap(view: View) {
-        val throughWindow = ReflectionHelpers.getField<View?>(activity, "expandedSensorView") != null
+        val throughWindow = sensorSessionFixture(activity).current != null
         val location = IntArray(2)
         if (throughWindow) view.getLocationInWindow(location)
         val time = android.os.SystemClock.uptimeMillis()
@@ -157,6 +157,56 @@ class WeatherScrollIntegrationTest {
         else -> emptyList()
     }
     private fun prefs() = activity.getSharedPreferences("tiles_prefs", 0).all.toMap()
+
+    private fun countForecastSections(action: () -> Unit): Int {
+        var added = 0
+        content().setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
+            override fun onChildViewAdded(parent: View, child: View) {
+                if (child is HorizontalScrollView) added++
+            }
+            override fun onChildViewRemoved(parent: View, child: View) = Unit
+        })
+        try { action() } finally { content().setOnHierarchyChangeListener(null) }
+        return added
+    }
+
+    @Test fun oneFullHaEventBuildsDetailedForecastOnlyOnce() {
+        open()
+        position()
+        val before = prefs()
+        val sections = countForecastSections { update(25) }
+        assertEquals(1, sections)
+        layoutCards()
+        assertTrue(texts(content()).contains("25°C"))
+        assertEquals(listOf(160), scrolls().map { it.scrollX })
+        assertEquals(before, prefs())
+    }
+
+    private fun ordinarySensorEventBuildsOpenForecastOnlyOnce(y: Boolean) {
+        open(y)
+        position()
+        set("motionSensorId", "sensor.test_only")
+        val sections = countForecastSections {
+            invoke("updateTilesForEntity", "sensor.test_only", "12", JSONObject())
+        }
+        assertEquals(if (y) 2 else 1, sections)
+        layoutCards()
+        assertEquals(expectedPositions(), scrolls().map { it.scrollX })
+    }
+
+    @Test fun ordinarySensorEventBuildsHaForecastOnce() = ordinarySensorEventBuildsOpenForecastOnlyOnce(false)
+    @Test fun ordinarySensorEventBuildsYandexForecastOnce() = ordinarySensorEventBuildsOpenForecastOnlyOnce(true)
+
+    @Test fun partialForecastAndYandexCallbackStillBuildExactlyOnce() {
+        open()
+        assertEquals(1, countForecastSections {
+            invoke("updateForecastForEntity", "weather.home", attributes(20, 12).getJSONArray("forecast"))
+        })
+        open(true)
+        assertEquals(2, countForecastSections { update(28) })
+        layoutCards()
+        assertTrue(texts(content()).contains("28°C"))
+    }
 
     private fun clockDoesNotReplaceDetailedTree(y: Boolean) {
         open(y)
@@ -270,7 +320,7 @@ class WeatherScrollIntegrationTest {
             advance(400)
             old.forEach { layout(it) }
             assertTrue(old.all { it.scrollX == 0 })
-            assertSame(card("b"), get<View>("expandedSensorView"))
+            assertSame(card("b"), checkNotNull(sensorSessionFixture(activity).current))
             assertTrue(scrolls("b").all { it.scrollX == 0 })
         }
     }
@@ -337,9 +387,9 @@ class WeatherScrollIntegrationTest {
                 try { activity.dispatchTouchEvent(e) } finally { e.recycle() }
             }
             advance(15000)
-            assertSame(card(), get<View>("expandedSensorView"))
+            assertSame(card(), checkNotNull(sensorSessionFixture(activity).current))
             advance(16000)
-            assertNull(get<View?>("expandedSensorView"))
+            assertNull(sensorSessionFixture(activity).current)
             assertNotNull(card().findViewWithTag<TextView>("weather_temp"))
         }
     }
@@ -367,6 +417,6 @@ class WeatherScrollIntegrationTest {
         old.forEach { layout(it) }
         assertTrue(old.all { it.scrollX == 0 })
         advance(1000)
-        assertNull(get<View?>("expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
     }
 }

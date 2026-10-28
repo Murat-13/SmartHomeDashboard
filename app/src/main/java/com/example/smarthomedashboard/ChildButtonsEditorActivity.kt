@@ -114,7 +114,7 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
         }
 
         btnSave.setOnClickListener {
-            saveChildButtons()
+            if (!saveChildButtons()) return@setOnClickListener
             setResult(Activity.RESULT_OK)
             Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
             finish()
@@ -219,21 +219,27 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
         }
     }
 
-    private fun saveChildButtons() {
-        tileId?.let { id ->
-            val tiles = tileManager.loadTiles().toMutableList()
-            val index = tiles.indexOfFirst { it.id == id }
-            if (index >= 0) {
-                val oldTile = tiles[index]
-                try {
-                    val config = JSONObject(oldTile.config)
-                    group.writeTo(config)
-                    tiles[index] = oldTile.copy(config = config.toString())
-                    tileManager.saveTiles(tiles)
-                    changed = false
-                } catch (_: Exception) {}
-            }
+    private fun saveChildButtons(): Boolean {
+        val tiles = tileManager.loadTiles().toMutableList()
+        val index = tiles.indexOfFirst { it.id == tileId }
+        if (index < 0) {
+            Toast.makeText(this, "Не удалось сохранить: плитка больше не существует.", Toast.LENGTH_SHORT).show()
+            return false
         }
+        val oldTile = tiles[index]
+        val config = try {
+            JSONObject(oldTile.config)
+        } catch (_: org.json.JSONException) {
+            // Не заменяем повреждённые настройки пустыми: это уничтожило бы независимые поля.
+            Toast.makeText(this, "Не удалось прочитать настройки плитки. Изменения не сохранены.",
+                Toast.LENGTH_SHORT).show()
+            return false
+        }
+        group.writeTo(config)
+        tiles[index] = oldTile.copy(config = config.toString())
+        tileManager.saveTiles(tiles)
+        changed = false
+        return true
     }
 }
 

@@ -121,7 +121,8 @@ class ButtonStateIntegrationTest {
         val client = HomeAssistantWebSocket("http://localhost/test-only", "test-token", { _, _, _ -> }, {}, {})
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
-        set(activity, "webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
         invoke(activity, "refreshBottomPanel")
     }
 

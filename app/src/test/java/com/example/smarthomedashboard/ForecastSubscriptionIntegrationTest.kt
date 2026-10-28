@@ -86,7 +86,10 @@ class ForecastSubscriptionIntegrationTest {
     }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+        if (name == "webSocket") {
+            val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+            org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", value)
+        } else MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
     }
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }

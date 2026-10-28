@@ -21,6 +21,29 @@ class TilePlacementTest {
         return x < tile.x + size.width && x + width > tile.x && y < tile.y + size.height && y + height > tile.y
     }
 
+    @Test fun displaySizesClampWithoutChangingTheRequestedSizeContract() {
+        assertEquals(TilePlacement.Size(1140, 1140), TilePlacement.displaySize("bottom_panel",
+            """{"button_size":2147483647}""", w, h))
+        assertEquals(TilePlacement.Size(400, 300), TilePlacement.displaySize("grid",
+            """{"button_size":400,"widget_height":300}""", w, h))
+        assertEquals(TilePlacement.Size(100, 20), TilePlacement.displaySize("grid", "{}", 100, 80))
+        assertEquals(TilePlacement.Size(1, 1), TilePlacement.displaySize("bottom_panel", "{}", 0, 0))
+    }
+
+    @Test fun nonpositiveDimensionsArePixelFallbacksNotAndroidLayoutConstants() {
+        assertEquals(TilePlacement.Size(160, 160), TilePlacement.size("bottom_panel", """{"button_size":-1}"""))
+        assertEquals(TilePlacement.Size(220, 180), TilePlacement.size("grid", """{"button_size":0,"widget_height":-2}"""))
+        assertEquals(TilePlacement.Size(1, 2), TilePlacement.size("grid", """{"button_size":1,"widget_height":2}"""))
+    }
+
+    @Test fun positionsUseActualSizeAndNeverAnEmptyRange() {
+        assertEquals(1520f to 840f, TilePlacement.position(1700f, 1000f, 400, 300, w, h))
+        assertEquals(0f to 0f, TilePlacement.position(20f, -10f, Int.MAX_VALUE, Int.MAX_VALUE, 100, 80))
+        assertEquals(20f to 30f, TilePlacement.position(20f, 30f, 220, 180, w, h))
+        assertEquals(0f to 0f, TilePlacement.position(-10f, -20f, 160, 160, w, h))
+        assertEquals(1760f to 980f, TilePlacement.position(1760f, 980f, 160, 160, w, h))
+    }
+
     @Test fun emptyPanelStartsAtTopLeftMargin() {
         assertEquals(20 to 40, TilePlacement.findFreeSpot(emptyList(), 220, 180, w, h))
     }
@@ -31,6 +54,12 @@ class TilePlacementTest {
         assertEquals(TilePlacement.Size(160, 160), TilePlacement.size("bottom_panel", "{}"))
         assertEquals(TilePlacement.Size(240, 240), TilePlacement.size("bottom_panel", """{"button_size":240}"""))
         assertEquals(TilePlacement.Size(220, 180), TilePlacement.size("grid", "{broken"))
+    }
+
+    @Test fun freeSpotUsesVisibleSizeOfOversizedLegacyButton() {
+        val old = button(0, 0, Int.MAX_VALUE)
+        // На панели эта кнопка ограничена квадратом 1140 px; справа есть свободное место.
+        assertEquals(1140 to 40, TilePlacement.findFreeSpot(listOf(old), 220, 180, w, h))
     }
 
     @Test fun newTilesDoNotStackOnEachOther() {

@@ -252,8 +252,19 @@ class TileSettingsActivity : PinProtectedActivity() {
         // Поле размера доступно только кнопкам и группам. Скрытое значение
         // не должно менять сохранённый размер датчика, батареи, часов или погоды.
         if (type == "button" || type == "group") {
-            val buttonSize = etButtonSize.text.toString().toIntOrNull() ?: 160
-            existingConfig.put("button_size", buttonSize)
+            val input = etButtonSize.text.toString()
+            val buttonSize = if (input.isEmpty()) TilePlacement.BUTTON_SIZE else input.toIntOrNull()
+            // Старый чрезмерный размер не мешает изменить название: панель ограничит только View.
+            // Новое недопустимое значение нельзя записать даже вместе с другими полями формы.
+            val unchanged = oldTile != null && existingConfig.has("button_size") &&
+                input == existingConfig.optInt("button_size", TilePlacement.BUTTON_SIZE).toString()
+            val metrics = resources.displayMetrics
+            val maximum = TilePlacement.maxButtonSize(metrics.widthPixels, metrics.heightPixels)
+            if (!unchanged && (buttonSize == null || buttonSize !in 1..maximum)) {
+                etButtonSize.error = "Размер должен быть от 1 до $maximum px"
+                return false
+            }
+            if (!unchanged) existingConfig.put("button_size", buttonSize)
         }
 
         val config = existingConfig.toString()

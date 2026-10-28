@@ -304,10 +304,11 @@ class HomeAssistantWeatherDetailsRendererTest {
 
     @Test fun scrollTouchResetsExistingCollapseTimer() {
         var runs = 0
-        MainActivity::class.java.getDeclaredField("sensorCollapseRunnable").apply {
-            isAccessible = true
-            set(activity, Runnable { runs++ })
+        val session = sensorSessionFixture(activity)
+        val source = android.widget.FrameLayout(context).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(220, 180)
         }
+        session.expand(source, SensorExpansionSession.Bounds(220, 180, 0f, 0f)) { runs++ }
         val container = LinearLayout(context)
         invokeActivity(tile(), container)
         val scroll = container.getChildAt(3) as HorizontalScrollView
@@ -327,6 +328,7 @@ class HomeAssistantWeatherDetailsRendererTest {
         assertEquals(0, runs)
         shadowOf(Looper.getMainLooper()).idleFor(10, TimeUnit.SECONDS)
         assertEquals(1, runs)
+        session.clear()
     }
 
     @Test fun activityKeepsYandexBranchAndItsEarlyReturn() {

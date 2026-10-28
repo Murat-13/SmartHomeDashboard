@@ -104,7 +104,7 @@ class SensorTransitionIntegrationTest {
         layoutCards()
     }
     private fun tap(v: View) {
-        val throughWindow = ReflectionHelpers.getField<View?>(activity, "expandedSensorView") != null
+        val throughWindow = sensorSessionFixture(activity).current != null
         val location = IntArray(2)
         if (throughWindow) v.getLocationInWindow(location)
         val time = android.os.SystemClock.uptimeMillis()
@@ -125,12 +125,12 @@ class SensorTransitionIntegrationTest {
         }
     }
     private fun tap(id: String) = tap(card(id))
-    private fun expanded(): View? = get("expandedSensorView")
+    private fun expanded(): View? = sensorSessionFixture(activity).current
     private fun prefs() = activity.getSharedPreferences("tiles_prefs", 0).all.toMap()
 
     private fun animations(): List<ValueAnimator> {
         // Проверяем и исходный набор, и реестр по View, не меняя ожиданий поведения.
-        return when (val registry = get<Any>("sensorAnimations")) {
+        return when (val registry = ReflectionHelpers.getField<Any>(sensorSessionFixture(activity), "animations")) {
             is Map<*, *> -> registry.values.filterIsInstance<ValueAnimator>()
             is Collection<*> -> registry.filterIsInstance<ValueAnimator>()
             else -> error("Неизвестный реестр анимаций")

@@ -59,9 +59,14 @@ class PanelSessionIntegrationTest {
     private val dim by lazy { View(activity).apply { visibility = View.GONE } }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+        if (name == "webSocket") {
+            val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+            org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", value)
+        } else MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
     }
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun <T> get(name: String): T = if (name == "webSocket") {
+        ReflectionHelpers.getField(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], name)
+    } else ReflectionHelpers.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
@@ -73,10 +78,10 @@ class PanelSessionIntegrationTest {
         TileEntity(id, type, if (type == "group" || type == "button") "bottom_panel" else "grid",
             id, 20, 100, 1, 1, config = config)
 
-    private fun open(vararg tiles: TileEntity) {
+    private fun open(vararg tiles: TileEntity, viewportW: Int = 1920, viewportH: Int = 1200) {
         activity.setTheme(android.R.style.Theme_Material_Light_NoActionBar)
-        activity.resources.displayMetrics.widthPixels = 1920
-        activity.resources.displayMetrics.heightPixels = 1200
+        activity.resources.displayMetrics.widthPixels = viewportW
+        activity.resources.displayMetrics.heightPixels = viewportH
         manager.saveTiles(tiles.toList() + tile("anchor", "button", """{"entity_id":"switch.anchor"}"""))
         set("tileManager", manager)
         set("bottomPanel", panel)
@@ -122,8 +127,130 @@ class PanelSessionIntegrationTest {
         return (0 until c.childCount).map { (c.getChildAt(it) as TextView).text.toString() }
     }
     private fun assertNoExpansion() {
-        assertNull(get<View?>("expandedSensorView"))
-        assertNull(get<View?>("expandedSensorSource"))
+        assertNull(sensorSessionFixture(activity).current)
+        assertNull(sensorSessionFixture(activity).original)
+    }
+
+    @Test fun oversizedSavedButtonAndGroupUseVisibleSquareWithoutRewritingConfig() {
+        val tiles = listOf("button", "group").map { type ->
+            tile(type, type, """{"entity_id":"switch.test","entity_ids":["switch.test"],"button_size":2147483647,"extra":"kept"}""")
+                .copy(x = 1800, y = 1100)
+        }
+        open(*tiles.toTypedArray())
+        for (t in tiles) {
+            val button = panel.findViewWithTag<Button>(t.id)
+            assertEquals(1140, button.layoutParams.width)
+            assertEquals(1140, button.layoutParams.height)
+            assertEquals(780f, button.x, 0f)
+            assertEquals(0f, button.y, 0f)
+            assertEquals(t, manager.loadTiles().first { it.id == t.id })
+        }
+    }
+
+    @Test fun resizedSensorPositionUsesItsActualDimensions() {
+        val t = tile("wide", config = """{"button_size":400,"widget_height":300}""").copy(x = 1700, y = 1000)
+        open(t)
+        assertEquals(1520f, card("wide").x, 0f)
+        assertEquals(840f, card("wide").y, 0f)
+        assertEquals(t, manager.loadTiles().first { it.id == t.id })
+    }
+
+    @Test fun tinyViewportHasNoEmptyBoundsAndDoesNotWriteClampedSize() {
+        val t = tile("tiny", "clock")
+        open(t, viewportW = 100, viewportH = 80)
+        assertEquals(100, card("tiny").layoutParams.width)
+        assertEquals(20, card("tiny").layoutParams.height)
+        assertEquals(0f, card("tiny").x, 0f)
+        assertEquals(0f, card("tiny").y, 0f)
+        assertEquals(t, manager.loadTiles().first { it.id == t.id })
+    }
+
+    @Test fun nonpositiveSavedSizesUseExistingFallbackWithoutChangingJson() {
+        val tiles = listOf(0, -1, -2).map { size -> tile("invalid$size", "button", """{"button_size":$size}""") }
+        open(*tiles.toTypedArray())
+        for (t in tiles) {
+            assertEquals(160, panel.findViewWithTag<Button>(t.id).layoutParams.width)
+            assertEquals(t, manager.loadTiles().first { it.id == t.id })
+        }
+    }
+
+    @Test fun oversizedLegacyButtonCanBeDraggedAndOnlyItsPositionIsSaved() {
+        val t = tile("large", "button", """{"entity_id":"switch.test","button_size":9999,"extra":"kept"}""")
+        open(t)
+        set("isEditMode", true)
+        val button = panel.findViewWithTag<Button>("large")
+        fun event(action: Int, x: Float, y: Float) {
+            val e = MotionEvent.obtain(0, 1, action, x, y, 0)
+            try { button.dispatchTouchEvent(e) } finally { e.recycle() }
+        }
+        event(MotionEvent.ACTION_DOWN, 5f, 5f)
+        advance(600)
+        event(MotionEvent.ACTION_MOVE, 10000f, 10000f)
+        event(MotionEvent.ACTION_UP, 10000f, 10000f)
+        val saved = manager.loadTiles().first { it.id == t.id }
+        assertEquals(t.copy(x = 780, y = 0), saved)
+        assertEquals(780f, button.x, 0f)
+        assertEquals(0f, button.y, 0f)
+    }
+
+    @Test fun rebuildDisposesActiveResizeAndFreshCardStillSavesNormally() {
+        open(tile("clock", "clock"))
+        set("isEditMode", true)
+        invoke("refreshBottomPanel")
+        layoutCards()
+        val old = card("clock")
+        val oldHandle = (0 until old.childCount).map { old.getChildAt(it) }.filterIsInstance<ImageView>().single()
+        val listener = shadowOf(oldHandle).onTouchListener!!
+        fun event(view: View, action: Int, x: Float = 5f, y: Float = 5f) {
+            val e = MotionEvent.obtain(0, 1, action, x, y, 0)
+            try { view.dispatchTouchEvent(e) } finally { e.recycle() }
+        }
+        event(oldHandle, MotionEvent.ACTION_DOWN)
+        event(oldHandle, MotionEvent.ACTION_MOVE, 85f, 65f)
+        val before = activity.getSharedPreferences("tiles_prefs", 0).all
+        invoke("refreshBottomPanel")
+        layoutCards()
+        val stale = MotionEvent.obtain(0, 1, MotionEvent.ACTION_UP, 85f, 65f, 0)
+        try { listener.onTouch(oldHandle, stale) } finally { stale.recycle() }
+        assertEquals(before, activity.getSharedPreferences("tiles_prefs", 0).all)
+        assertEquals(220, old.layoutParams.width)
+        assertFalse(get<Boolean>("isResizing"))
+        assertNull(shadowOf(oldHandle).onTouchListener)
+        assertEquals(1, get<List<SensorResizeHandler>>("resizeHandlers").size)
+        val fresh = card("clock")
+        val handle = (0 until fresh.childCount).map { fresh.getChildAt(it) }.filterIsInstance<ImageView>().single()
+        event(handle, MotionEvent.ACTION_DOWN)
+        event(handle, MotionEvent.ACTION_MOVE, 45f, 35f)
+        event(handle, MotionEvent.ACTION_UP)
+        val saved = JSONObject(manager.loadTiles().first { it.id == "clock" }.config)
+        assertEquals(260, saved.getInt("button_size"))
+        assertEquals(210, saved.getInt("widget_height"))
+        assertFalse(get<Boolean>("isResizing"))
+    }
+
+    @Test fun destroyDuringResizeRollsBackAndDisposesAllHandlers() {
+        open(tile("clock", "clock"))
+        val old = card("clock")
+        val handle = (0 until old.childCount).map { old.getChildAt(it) }.filterIsInstance<ImageView>().single()
+        val listener = shadowOf(handle).onTouchListener!!
+        fun event(action: Int, x: Float, y: Float) {
+            val e = MotionEvent.obtain(0, 1, action, x, y, 0)
+            try { listener.onTouch(handle, e) } finally { e.recycle() }
+        }
+        event(MotionEvent.ACTION_DOWN, 5f, 5f)
+        event(MotionEvent.ACTION_MOVE, 85f, 65f)
+        val before = activity.getSharedPreferences("tiles_prefs", 0).all
+        prepareLifecycleCallbacks()
+        invoke("onDestroy")
+        event(MotionEvent.ACTION_UP, 85f, 65f)
+        invoke("clearPanelInteractions")
+        advance(1000)
+        assertEquals(before, activity.getSharedPreferences("tiles_prefs", 0).all)
+        assertEquals(220, old.layoutParams.width)
+        assertEquals(180, old.layoutParams.height)
+        assertNull(shadowOf(handle).onTouchListener)
+        assertTrue(get<List<SensorResizeHandler>>("resizeHandlers").isEmpty())
+        assertFalse(get<Boolean>("isResizing"))
     }
 
     @Test fun rebuildClearsExpandedCardSoAnotherCardOpensOnFirstTap() {
@@ -136,7 +263,7 @@ class PanelSessionIntegrationTest {
         assertNull(old.parent)
         tap("second")
         advance()
-        assertSame(card("second"), get<View>("expandedSensorView"))
+        assertSame(card("second"), checkNotNull(sensorSessionFixture(activity).current))
     }
 
     @Test fun deletedExpandedTileDoesNotKeepStaleReferencesOrTimer() {
@@ -145,10 +272,10 @@ class PanelSessionIntegrationTest {
         manager.deleteTile("first")
         invoke("collapseSensor")
         assertNoExpansion()
-        assertNull(get<Runnable?>("sensorCollapseRunnable"))
+        assertNull(ReflectionHelpers.getField<Runnable?>(sensorSessionFixture(activity), "collapseTask"))
         tap("second")
         advance()
-        assertSame(card("second"), get<View>("expandedSensorView"))
+        assertSame(card("second"), checkNotNull(sensorSessionFixture(activity).current))
     }
 
     @Test fun rebuildImmediatelyUsesKnownSensorBatteryWeatherAndButtonValues() {
@@ -190,12 +317,12 @@ class PanelSessionIntegrationTest {
         tap("second")
         advance(1000)
         assertEquals(oldWidthAfterCleanup, old.layoutParams.width)
-        assertSame(card("second"), get<View>("expandedSensorView"))
+        assertSame(card("second"), checkNotNull(sensorSessionFixture(activity).current))
         // Новый таймер ещё не истёк, старый уже должен был бы сработать.
         advance(28000)
         invoke("resetSensorCollapseTimer")
         advance(2000)
-        assertSame(card("second"), get<View>("expandedSensorView"))
+        assertSame(card("second"), checkNotNull(sensorSessionFixture(activity).current))
     }
 
     @Test fun oldCollapseAnimationCannotReattachTouchListenerAfterRebuild() {
@@ -263,7 +390,7 @@ class PanelSessionIntegrationTest {
         assertEquals(180, card.layoutParams.height)
         tap("first")
         advance()
-        assertSame(card, get<View>("expandedSensorView"))
+        assertSame(card, checkNotNull(sensorSessionFixture(activity).current))
         advance(31000)
         assertNoExpansion()
         assertEquals(180, card.layoutParams.height)
@@ -335,7 +462,7 @@ class PanelSessionIntegrationTest {
         layoutCards()
         tap("first")
         advance(1200)
-        assertSame(card("first"), get<View>("expandedSensorView"))
+        assertSame(card("first"), checkNotNull(sensorSessionFixture(activity).current))
         assertTrue(get<List<Button>>("expandedChildButtons").isEmpty())
         assertEquals(View.GONE, dim.visibility)
     }
@@ -446,4 +573,45 @@ class PanelSessionIntegrationTest {
         invoke("onPause")
     }
 
+
+    @Test fun clearingAddressesCannotRestartThePreviousClient() {
+        open(tile("sensor"))
+        val status = TextView(activity).apply { id = R.id.tvHaLiveStatus }
+        (panel.parent as FrameLayout).addView(status)
+        prepareLifecycleCallbacks()
+        invoke("onStart")
+        // Некорректный адрес исключает сетевое подключение; статус наблюдаем как открытый экран.
+        invoke("connectWithHaToken", "http://[", "", "ARTIFICIAL-TOKEN")
+        val old = get<HomeAssistantWebSocket>("webSocket")
+        val error: (String) -> Unit = ReflectionHelpers.getField(old, "onError")
+        error("Неверный токен HA")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Неверный токен HA", status.text.toString())
+        repeat(2) { invoke("connectWithHaToken", "", "", "ARTIFICIAL-TOKEN") }
+        assertNull(get<HomeAssistantWebSocket?>("webSocket"))
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        assertNull(owner.getWebSocket())
+        assertFalse(ReflectionHelpers.getField<Boolean>(old, "running"))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Ошибка: укажите адрес и токен Home Assistant", status.text.toString())
+        val message = status.text.toString()
+        error("late error from removed client")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(message, status.text.toString())
+        invoke("onStop")
+    }
+
+    @Test fun rendererCanRestoreRetainedStateWithoutReplayingEntityEvents() {
+        open(tile("sensor"))
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        owner.onEntityStateChanged("sensor.test", "42", JSONObject().put("unit_of_measurement", "W"))
+        owner.updateGroupState("group.test", "light.test", "on")
+        owner.setEditMode(true)
+        invoke("restorePanelState", owner.uiState.value)
+        assertEquals("42", get<Map<String, String>>("singleStates")["sensor.test"])
+        assertEquals("W", get<Map<String, JSONObject>>("entityAttributes")["sensor.test"]?.optString("unit_of_measurement"))
+        assertEquals("on", get<Map<String, Map<String, String>>>("groupStates")["group.test"]?.get("light.test"))
+        assertTrue(get<Boolean>("isEditMode"))
+        assertEquals("42", owner.uiState.value.singleStates["sensor.test"])
+    }
 }

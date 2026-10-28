@@ -86,7 +86,8 @@ class PressCancelIntegrationTest {
         val client = HomeAssistantWebSocket("http://localhost/test-only", "test-token", { _, _, _ -> }, {}, {})
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
-        set(activity, "webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
         invoke("refreshBottomPanel")
         controller.visible()
         // Завершаем начальный StateListAnimator темы до снимка свойств жеста.
@@ -130,7 +131,7 @@ class PressCancelIntegrationTest {
         assertTrue(calls().isEmpty())
         assertNull(get<String?>("expandedGroupId"))
         assertTrue(get<List<Button>>("expandedChildButtons").isEmpty())
-        assertNull(get<View?>("expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
         assertNull(shadowOf(activity).nextStartedActivity)
     }
 
@@ -228,7 +229,7 @@ class PressCancelIntegrationTest {
         send(v, MotionEvent.ACTION_UP)
         assertNoAction()
         tap(v)
-        assertSame(v, get<View>("expandedSensorView"))
+        assertSame(v, checkNotNull(sensorSessionFixture(activity).current))
     }
 
     @Test fun normalButtonNativeCancelDoesNotSendCommandsAndNextTapWorks() {
@@ -304,6 +305,29 @@ class PressCancelIntegrationTest {
         assertEquals(original, visual(old))
         assertNull(shadowOf(old).onTouchListener)
         assertNoAction()
+    }
+
+    @Test fun rebuildDuringActiveEditDragDisposesAllKindsWithoutSaving() {
+        open(edit = true)
+        val old = listOf("group", "sensor", "button").map(::view)
+        val originals = old.map(::visual)
+        val before = prefs()
+        old.forEach { send(it, MotionEvent.ACTION_DOWN) }
+        advance(600)
+        old.forEach { send(it, MotionEvent.ACTION_MOVE, 65f, 75f) }
+        invoke("refreshBottomPanel")
+        advance(1500)
+        old.forEachIndexed { index, v ->
+            assertEquals(originals[index], visual(v))
+            assertNull(shadowOf(v).onTouchListener)
+            send(v, MotionEvent.ACTION_UP, 65f, 75f)
+        }
+        assertEquals(before, prefs())
+        assertNoAction()
+        tap(view("sensor"))
+        awaitPinGate(activity)
+        assertEquals(TileSettingsActivity::class.java.name,
+            shadowOf(activity).nextStartedActivity.component!!.className)
     }
 
     @Test fun backgroundCancelAlreadyRemovesEditModeLongPressAndNewDownStillWorks() {

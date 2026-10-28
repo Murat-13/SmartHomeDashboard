@@ -108,7 +108,10 @@ class HaTokenConsumerIntegrationTest {
         allowSettingsTestAccess(activity)
         attachWeatherSettingsFields(activity)
     }
-    private fun <T> field(target: Any, name: String): T = ReflectionHelpers.getField(target, name)
+    private fun <T> field(target: Any, name: String): T =
+        if (target is MainActivity && name == "webSocket") {
+            ReflectionHelpers.getField(androidx.lifecycle.ViewModelProvider(target)[MainViewModel::class.java], name)
+        } else ReflectionHelpers.getField(target, name)
 
     private class Peer(private val accept: Boolean = true) : WebSocketListener() {
         val messages = CopyOnWriteArrayList<JSONObject>()

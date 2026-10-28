@@ -74,7 +74,9 @@ class HaStateApplicationIntegrationTest {
     private fun set(name: String, value: Any?) {
         MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
     }
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun <T> get(name: String): T = if (name == "webSocket") {
+        ReflectionHelpers.getField(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], name)
+    } else ReflectionHelpers.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)

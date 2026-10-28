@@ -305,7 +305,7 @@ class SensorCardFactoryTest {
         val clock = create(tile(type = "clock"))
         event(clock, MotionEvent.ACTION_DOWN, 10f, 10f)
         event(clock, MotionEvent.ACTION_UP, 10f, 10f)
-        assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
     }
 
     @Test fun resizeTouchKeepsTextScalingAndPersistsMeasuredSize() {
@@ -368,7 +368,8 @@ class SensorCardFactoryTest {
         HomeAssistantWebSocket::class.java.getDeclaredField("webSocket").apply {
             isAccessible = true; set(client, socket)
         }
-        set("webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        ReflectionHelpers.setField(owner, "webSocket", client)
         tiles.forEach { create(it) }
         shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
         assertTrue(socket.messages.isEmpty())

@@ -138,7 +138,8 @@ class TileButtonFactoryTest {
         )
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
-        set(activity, "webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
         return socket
     }
 

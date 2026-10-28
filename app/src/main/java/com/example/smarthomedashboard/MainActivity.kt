@@ -15,7 +15,6 @@ import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.*
 import android.graphics.drawable.GradientDrawable
-import android.animation.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
 import androidx.core.content.res.ResourcesCompat
@@ -24,7 +23,10 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -34,7 +36,6 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
 import android.util.Log
-import android.util.TypedValue
 import android.graphics.Typeface
 
 class MainActivity : AppCompatActivity() {
@@ -51,7 +52,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tileManager: TileManager
     private lateinit var yandexWeatherManager: YandexWeatherManager
     private var mqttRemovalMigration: MqttRemovalMigration? = null
-    private var webSocket: HomeAssistantWebSocket? = null
+    // Соединением владеет ViewModel; экран не хранит отдельную копию ссылки.
+    private val webSocket: HomeAssistantWebSocket? get() = viewModel.getWebSocket()
 
     private var tempUnit = "C"
     private var motionSensorId: String? = null
@@ -60,15 +62,19 @@ class MainActivity : AppCompatActivity() {
     private val idleHandler = Handler(Looper.getMainLooper())
     private val idleRunnable = Runnable { dimScreen() }
 
-    // ==================== СОСТОЯНИЯ ====================
+    // ==================== СОСТОЯНИЯ & VIEWMODEL ====================
+    private val viewModel: MainViewModel by lazy {
+        androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java]
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
     private var collapseChildrenRunnable: Runnable? = null
 
+    // Кеши отрисовки: входящими состояниями HA владеет сохраняемый ViewModel.
     private val groupStates = mutableMapOf<String, MutableMap<String, String>>()
     private val singleStates = mutableMapOf<String, String>()
     private val entityAttributes = mutableMapOf<String, JSONObject>()
-    // Наличие ключа означает отдельное forecast-обновление; null — прогноз недоступен.
     private val syntheticForecasts = mutableMapOf<String, JSONArray?>()
     private var isEditMode = false
 
@@ -78,16 +84,11 @@ class MainActivity : AppCompatActivity() {
     private var expandedSourceButton: Button? = null
     private var expandedTile: TileEntity? = null
 
-    private var expandedSensorView: View? = null
-    private var expandedSensorSource: View? = null
-    private var sensorCollapseRunnable: Runnable? = null
-    private val sensorAnimations = mutableMapOf<View, ValueAnimator>()
+    private val sensorExpansion = SensorExpansionSession(handler)
+    private val expandedSensorView: View? get() = sensorExpansion.current
     private val weatherForecastScroll = WeatherForecastScrollState()
-    private var savedOriginalWidth = 0
-    private var savedOriginalHeight = 0
-    private var savedOriginalX = 0f
-    private var savedOriginalY = 0f
     private var isResizing = false
+    private val resizeHandlers = mutableListOf<SensorResizeHandler>()
     private val sensorTouchSlop by lazy { android.view.ViewConfiguration.get(this).scaledTouchSlop }
     private var sensorWindowGesture: SensorWindowGesture? = null
     private var consumeSensorWindowGesture = false
@@ -109,8 +110,6 @@ class MainActivity : AppCompatActivity() {
     // ==================== КОНСТАНТЫ ====================
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
-        private const val DEFAULT_WIDGET_W = 220
-        private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
         private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
@@ -138,9 +137,28 @@ class MainActivity : AppCompatActivity() {
 
         createStarterTilesOnFirstLaunch()
 
+        restorePanelState(viewModel.uiState.value)
         setupBottomPanel()
         setupWebSocket()
         showWelcomeOnFirstLaunch()
+    }
+
+    private var uiStateJob: Job? = null
+
+    override fun onStart() {
+        super.onStart()
+        restorePanelState(viewModel.uiState.value)
+        uiStateJob = lifecycleScope.launch {
+            viewModel.uiState.map { it.statusMessage }.distinctUntilChanged().collect { status ->
+                status?.let { setHaStatus(it) }
+            }
+        }
+    }
+
+    override fun onStop() {
+        uiStateJob?.cancel()
+        uiStateJob = null
+        super.onStop()
     }
 
     override fun onResume() {
@@ -213,8 +231,7 @@ class MainActivity : AppCompatActivity() {
         clockHandler.removeCallbacks(clockRunnable)
         haTokenRequest++
         haGeneration++
-        webSocket?.disconnect()
-        webSocket = null
+        viewModel.detachUi()
     }
 
     // ==================== БЕЗОПАСНОСТЬ И PIN-КОД ====================
@@ -362,6 +379,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterEditMode() {
         isEditMode = true
+        viewModel.setEditMode(true)
         // Пользователь нашёл редактирование: подсказка «как войти» больше не нужна.
         onboardingPrefs().edit { putBoolean(UserHints.PREF_EDIT_MODE_FOUND, true) }
         refreshBottomPanel()
@@ -370,6 +388,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun exitEditMode() {
         isEditMode = false
+        viewModel.setEditMode(false)
         refreshBottomPanel()
     }
 
@@ -402,8 +421,7 @@ class MainActivity : AppCompatActivity() {
         // Сенсоры
         tileManager.getTilesByContainer("grid").forEach { tile ->
             val card = createSensorView(tile)
-            card.x = tile.x.toFloat().coerceIn(0f, (screenW - DEFAULT_WIDGET_W).toFloat())
-            card.y = tile.y.toFloat().coerceIn(0f, (screenH - DEFAULT_WIDGET_H - 60).toFloat())
+            placeTile(card, tile.x.toFloat(), tile.y.toFloat(), card.layoutParams.width, card.layoutParams.height)
             bottomPanel.addView(card)
         }
 
@@ -412,8 +430,7 @@ class MainActivity : AppCompatActivity() {
             val btn = createTileButton(tile)
             val sz = getButtonSize(tile)
             btn.layoutParams = FrameLayout.LayoutParams(sz, sz)
-            btn.x = tile.x.toFloat().coerceIn(0f, (screenW - sz).toFloat())
-            btn.y = tile.y.toFloat().coerceIn(0f, (screenH - sz - 60).toFloat())
+            placeTile(btn, tile.x.toFloat(), tile.y.toFloat(), sz, sz)
             bottomPanel.addView(btn)
         }
 
@@ -440,24 +457,20 @@ class MainActivity : AppCompatActivity() {
         updatePanelHint()
     }
 
-    private fun getButtonSize(tile: TileEntity): Int {
-        return try {
-            JSONObject(tile.config).optInt("button_size", DEFAULT_BUTTON_SIZE)
-        } catch (_: Exception) {
-            DEFAULT_BUTTON_SIZE
-        }
+    private fun getButtonSize(tile: TileEntity): Int =
+        TilePlacement.displaySize("bottom_panel", tile.config, screenW, screenH).width
+
+    private fun placeTile(view: View, x: Float, y: Float, width: Int = view.width, height: Int = view.height) {
+        val (safeX, safeY) = TilePlacement.position(x, y, width, height, screenW, screenH)
+        view.x = safeX
+        view.y = safeY
     }
 
 
 // ==================== СЕНСОР (ВИДЖЕТ) ====================
 
     private fun createSensorView(tile: TileEntity): View {
-        val savedWidth = try {
-            JSONObject(tile.config).optInt("button_size", DEFAULT_WIDGET_W)
-        } catch (_: Exception) { DEFAULT_WIDGET_W }
-        val savedHeight = try {
-            JSONObject(tile.config).optInt("widget_height", (DEFAULT_WIDGET_W * 0.82).toInt())
-        } catch (_: Exception) { (DEFAULT_WIDGET_W * 0.82).toInt() }
+        val (savedWidth, savedHeight) = TilePlacement.displaySize("grid", tile.config, screenW, screenH)
 
         val card = SensorCardFactory.createBase(this, tile.id, tile.type, savedWidth, savedHeight)
         if (tile.type == "battery") {
@@ -472,120 +485,38 @@ class MainActivity : AppCompatActivity() {
         // Перетаскивание и раскрытие
         setupSensorTouch(card, tile)
 
-        // Снимок берём для каждого жеста: предыдущий resize мог уже изменить размеры.
-        var resizeStartX = 0f
-        var resizeStartY = 0f
-        var originalWidth = savedWidth
-        var originalHeight = savedHeight
-        var originalX = 0f
-        var originalY = 0f
-        var resizeActive = false
-        val textScales = when (tile.type) {
-            "clock" -> listOf("clock_text" to 0.4f, "clock_date" to 0.15f)
-            "weather" -> listOf("weather_icon" to 0.35f, "weather_temp" to 0.25f, "weather_desc" to 0.12f)
-            else -> emptyList()
-        }
-        var originalTextSizes = emptyList<Pair<TextView, Float>>()
-
-        fun applyResize(width: Int, height: Int) {
-            card.layoutParams.width = width
-            card.layoutParams.height = height
-            textScales.forEach { (tag, scale) ->
-                card.findViewWithTag<TextView>(tag)?.setTextSize(TypedValue.COMPLEX_UNIT_PX, height * scale)
-            }
-            // Существующий layout-listener батареи пересчитает заполнение по новой ширине.
-            card.requestLayout()
-        }
-
-        fun restoreResize() {
-            applyResize(originalWidth, originalHeight)
-            card.x = originalX
-            card.y = originalY
-            originalTextSizes.forEach { (view, size) ->
-                view.setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
-            }
-        }
-
-        resizeHandle.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    isResizing = true
-                    resizeActive = true
-                    resizeStartX = event.rawX
-                    resizeStartY = event.rawY
-                    originalWidth = card.layoutParams.width
-                    originalHeight = card.layoutParams.height
-                    originalX = card.x
-                    originalY = card.y
-                    originalTextSizes = textScales.mapNotNull { (tag, _) ->
-                        card.findViewWithTag<TextView>(tag)?.let { it to it.textSize }
-                    }
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!resizeActive) return@setOnTouchListener true
-                    // У края места может быть меньше минимума. Сохраняем минимум 120 px,
-                    // не передавая в coerceIn пустой диапазон и не перемещая карточку.
-                    val maxW = (screenW - card.x.toInt() - 20).coerceAtLeast(120)
-                    val maxH = (screenH - card.y.toInt() - 80).coerceAtLeast(120)
-                    // layout может ещё не выполниться после предыдущего MOVE.
-                    val newW = (card.layoutParams.width + event.rawX - resizeStartX).toInt().coerceIn(120, maxW)
-                    val newH = (card.layoutParams.height + event.rawY - resizeStartY).toInt().coerceIn(120, maxH)
-                    applyResize(newW, newH)
-                    resizeStartX = event.rawX
-                    resizeStartY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    isResizing = false
-                    if (!resizeActive) return@setOnTouchListener true
-                    resizeActive = false
-                    // Меняем только размеры актуальной плитки, сохраняя остальные поля.
-                    val tiles = tileManager.loadTiles().toMutableList()
-                    val idx = tiles.indexOfFirst { it.id == tile.id }
-                    if (idx < 0) {
-                        restoreResize()
-                        originalTextSizes = emptyList()
-                        return@setOnTouchListener true
-                    }
-                    val currentTile = tiles[idx]
-                    val config = try {
-                        JSONObject(currentTile.config)
-                    } catch (_: org.json.JSONException) {
-                        restoreResize()
-                        originalTextSizes = emptyList()
-                        Toast.makeText(this, "Не удалось сохранить размер: повреждены настройки плитки", Toast.LENGTH_SHORT).show()
-                        return@setOnTouchListener true
-                    }
-                    config.put("button_size", card.layoutParams.width)
-                    config.put("widget_height", card.layoutParams.height)
-                    tiles[idx] = currentTile.copy(config = config.toString())
-                    tileManager.saveTiles(tiles)
-                    originalTextSizes = emptyList()
-                    true
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    isResizing = false
-                    if (resizeActive) restoreResize()
-                    resizeActive = false
-                    originalTextSizes = emptyList()
-                    true
-                }
-                else -> false
-            }
-        }
+        resizeHandlers += SensorResizeHandler(
+            card, resizeHandle, tile.type, screenW, screenH,
+            onResizingChanged = { isResizing = it },
+            saveSize = { width, height -> saveSensorSize(tile.id, width, height) }
+        )
 
         return card
+    }
+
+    private fun saveSensorSize(tileId: String, width: Int, height: Int): Boolean {
+        // Читаем актуальную плитку на UP, не сохраняя старую копию из начала жеста.
+        val tiles = tileManager.loadTiles().toMutableList()
+        val idx = tiles.indexOfFirst { it.id == tileId }
+        if (idx < 0) return false
+        val currentTile = tiles[idx]
+        val config = try {
+            JSONObject(currentTile.config)
+        } catch (_: org.json.JSONException) {
+            Toast.makeText(this, "Не удалось сохранить размер: повреждены настройки плитки", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        config.put("button_size", width)
+        config.put("widget_height", height)
+        tiles[idx] = currentTile.copy(config = config.toString())
+        tileManager.saveTiles(tiles)
+        return true
     }
 
     // ==================== РАСКРЫТИЕ СЕНСОРА ====================
 
     private fun expandSensor(tile: TileEntity, source: View) {
-        // Сохраняем исходные размеры и позицию
-        savedOriginalWidth = source.layoutParams.width
-        savedOriginalHeight = source.layoutParams.height
-        savedOriginalX = source.x
-        savedOriginalY = source.y
+        val original = SensorExpansionSession.Bounds.of(source)
 
         val idsToShow = getExpandedSensorIds(tile)
 
@@ -613,59 +544,22 @@ class MainActivity : AppCompatActivity() {
         val neededH = container.measuredHeight + 60
 
         // Вычисляем целевую позицию (стараемся центрировать относительно исходной точки)
-        var targetX = savedOriginalX - (neededW - savedOriginalWidth) / 2f
-        var targetY = savedOriginalY - (neededH - savedOriginalHeight) / 2f
+        var targetX = original.x - (neededW - original.width) / 2f
+        var targetY = original.y - (neededH - original.height) / 2f
         
-        // Корректируем, чтобы не выходило за края экрана (отступ 10dp)
+        // Сохраняем прежние отступы от краёв экрана в px.
         if (targetX < 10f) targetX = 10f
         if (targetX + neededW > screenW - 10) targetX = (screenW - neededW - 10).toFloat()
         if (targetY < 10f) targetY = 10f
         if (targetY + neededH > screenH - 70) targetY = (screenH - neededH - 70).toFloat()
 
-        // Поднимаем виджет на передний план
-        source.bringToFront()
-        source.elevation = 20f
-
-        // Анимируем размер и позицию одновременно
-        val startW = source.layoutParams.width
-        val startH = source.layoutParams.height
-        val startX = source.x
-        val startY = source.y
-
-        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 300
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { animation ->
-                val fraction = animation.animatedFraction
-                source.layoutParams.width = (startW + (neededW - startW) * fraction).toInt()
-                source.layoutParams.height = (startH + (neededH - startH) * fraction).toInt()
-                source.x = startX + (targetX - startX) * fraction
-                source.y = startY + (targetY - startY) * fraction
-                source.requestLayout()
-            }
-        }
-        startSensorAnimation(source, animator)
-
-        // Сохраняем ссылку для сворачивания
-        expandedSensorView = source
-        expandedSensorSource = source
-
-        // Закрывающий тап распознаётся только диспетчером окна; здесь остаётся прокрутка детей.
-        source.setOnTouchListener(null)
-
-        // Автосворачивание через 30 секунд
-        sensorCollapseRunnable = Runnable { collapseSensor() }
-        handler.postDelayed(sensorCollapseRunnable!!, 30000L)
+        sensorExpansion.expand(source,
+            SensorExpansionSession.Bounds(neededW, neededH, targetX, targetY), ::collapseSensor)
     }
 
     // ==================== СВОРАЧИВАНИЕ СЕНСОРА ====================
 
-    private fun resetSensorCollapseTimer() {
-        sensorCollapseRunnable?.let {
-            handler.removeCallbacks(it)
-            handler.postDelayed(it, 30000L)
-        }
-    }
+    private fun resetSensorCollapseTimer() = sensorExpansion.touch()
 
     private fun collapseSensor() {
         val source = expandedSensorView ?: return
@@ -676,61 +570,27 @@ class MainActivity : AppCompatActivity() {
             clearSensorExpansion()
             return
         }
-        // Следующее раскрытие может заменить общие поля до конца этих 250 ms.
-        val targetWidth = savedOriginalWidth
-        val targetHeight = savedOriginalHeight
-        val targetX = savedOriginalX
-        val targetY = savedOriginalY
+        val target = checkNotNull(sensorExpansion.original)
         val idsToShow = getCollapsedSensorIds(tile)
 
         val container = source.findViewWithTag<LinearLayout>("sensor_text_container")
         if (container != null) {
             if (tile.type == "weather") {
                 // В начале сворачивания высота View ещё развёрнутая; шрифт нужен для исходной высоты.
-                SensorCardFactory.buildCollapsedWeatherContent(this, container, targetHeight)
+                SensorCardFactory.buildCollapsedWeatherContent(this, container, target.height)
             } else {
                 buildSensorContent(tile, idsToShow, false, container)
             }
         }
 
-        // Возвращаем elevation на исходный уровень
-        source.elevation = 8f
-
-        // Анимируем сжатие до исходного размера и позиции
-        val startW = source.layoutParams.width
-        val startH = source.layoutParams.height
-        val startX = source.x
-        val startY = source.y
-
-        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 250
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { animation ->
-                val fraction = animation.animatedFraction
-                source.layoutParams.width = (startW + (targetWidth - startW) * fraction).toInt()
-                source.layoutParams.height = (startH + (targetHeight - startH) * fraction).toInt()
-                source.x = startX + (targetX - startX) * fraction
-                source.y = startY + (targetY - startY) * fraction
-                source.requestLayout()
-            }
-            addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator) {
-                    // Только актуальный переход вправе подключить ввод живой карточки.
-                    if (sensorAnimations[source] === animation && source.parent === bottomPanel) {
-                        tileManager.getAllTiles().find { it.id == tile.id }?.let {
-                            setupSensorTouch(source, it)
-                        }
-                    }
+        sensorExpansion.collapse { view ->
+            // Только живое дерево с актуальной плиткой снова получает ввод.
+            if (view.parent === bottomPanel) {
+                tileManager.getAllTiles().find { it.id == tile.id }?.let {
+                    setupSensorTouch(view, it)
                 }
-            })
+            }
         }
-        startSensorAnimation(source, animator)
-
-        // Сбрасываем состояние
-        expandedSensorView = null
-        expandedSensorSource = null
-        sensorCollapseRunnable?.let { handler.removeCallbacks(it) }
-        sensorCollapseRunnable = null
         if (tile.type == "weather") {
             // Только после сброса режима раскрытия, иначе updateWeatherViews снова построит прогноз.
             updateWeatherViews()
@@ -740,108 +600,44 @@ class MainActivity : AppCompatActivity() {
     // ==================== ОБРАБОТЧИК КАСАНИЙ СЕНСОРА ====================
 
     private fun setupSensorTouch(card: View, tile: TileEntity) {
-        var dragRunnable: Runnable? = null
-        var startX = 0f; var startY = 0f
-        var viewStartX = 0f; var viewStartY = 0f
-        var isDragging = false
+        val editDrag = bindEditDrag(card, tile.id)
+        var startX = 0f
+        var startY = 0f
         var hasMoved = false
-
         var gestureActive = false
-        var viewStartAlpha = card.alpha
-        var viewStartElevation = card.elevation
 
         card.setOnTouchListener { view, event ->
             if (isResizing) return@setOnTouchListener true
-
+            if (isEditMode) return@setOnTouchListener editDrag.onTouch(event)
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    dragRunnable?.let { handler.removeCallbacks(it) }
-                    dragRunnable = null
                     gestureActive = true
-                    viewStartAlpha = view.alpha
-                    viewStartElevation = view.elevation
                     hasMoved = false
-                    startX = event.rawX; startY = event.rawY
-                    viewStartX = view.x; viewStartY = view.y
-                    isDragging = false
-                    if (isEditMode) {
-                        dragRunnable = Runnable {
-                            if (!gestureActive) return@Runnable
-                            isDragging = true
-                            view.alpha = 0.6f
-                            view.elevation = 20f
-                        }
-                        dragRunnable?.let { handler.postDelayed(it, 500L) }
-                    }
+                    startX = event.rawX
+                    startY = event.rawY
                     true
                 }
-
                 MotionEvent.ACTION_MOVE -> {
                     if (!gestureActive) return@setOnTouchListener true
                     if (kotlin.math.abs(event.rawX - startX) > 10 ||
-                        kotlin.math.abs(event.rawY - startY) > 10
-                    ) {
-                        hasMoved = true
-                        dragRunnable?.let { handler.removeCallbacks(it) }
-                    }
-                    if (isEditMode && isDragging) {
-                        view.x = (viewStartX + event.rawX - startX)
-                            .coerceIn(0f, (screenW - view.width).toFloat())
-                        view.y = (viewStartY + event.rawY - startY)
-                            .coerceIn(0f, (screenH - view.height - 60).toFloat())
-                    }
+                        kotlin.math.abs(event.rawY - startY) > 10) hasMoved = true
                     true
                 }
-
                 MotionEvent.ACTION_UP -> {
                     if (!gestureActive) return@setOnTouchListener true
                     gestureActive = false
                     view.performClick()
-                    dragRunnable?.let { handler.removeCallbacks(it) }
-                    dragRunnable = null
-
-                    when {
-                        // Перетаскивание в режиме редактирования
-                        isEditMode && isDragging && hasMoved -> {
-                            view.alpha = 1.0f; view.elevation = 8f
-                            savePosition(tile.id, view.x.toInt(), view.y.toInt())
-                        }
-                        // Тап в режиме редактирования → настройки
-                        isEditMode && !hasMoved -> openTileSettings(tile.id)
-                        // Тап в обычном режиме
-                        !isEditMode && !hasMoved -> {
-                            if (tile.type == "clock") {
-                                // Для часов раскрытие не требуется
-                                return@setOnTouchListener true
-                            }
-                            // Если другой виджет уже раскрыт — только сворачиваем его
-                            if (expandedSensorView != null && expandedSensorView != view) {
-                                collapseSensor()
-                            } else {
-                                // Иначе раскрываем/сворачиваем этот виджет
-                                expandSensor(tile, view)
-                            }
-                        }
+                    if (!hasMoved && tile.type != "clock") {
+                        if (expandedSensorView != null && expandedSensorView != view) collapseSensor()
+                        else expandSensor(tile, view)
                     }
                     true
                 }
-
                 MotionEvent.ACTION_CANCEL -> {
-                    dragRunnable?.let { handler.removeCallbacks(it) }
-                    dragRunnable = null
-                    // Отмена не сохраняет жест: возвращаем его геометрию и фактический вид.
-                    if (gestureActive) {
-                        view.x = viewStartX
-                        view.y = viewStartY
-                        view.alpha = viewStartAlpha
-                        view.elevation = viewStartElevation
-                    }
                     gestureActive = false
-                    isDragging = false
                     hasMoved = false
                     true
                 }
-
                 else -> false
             }
         }
@@ -905,96 +701,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupGroupTouch(tile: TileEntity, button: Button) {
+        val editDrag = bindEditDrag(button, tile.id)
         var pressRunnable: Runnable? = null
-        var startX = 0f; var startY = 0f
-        var hasMoved = false; var isDragging = false
-        var viewStartX = 0f; var viewStartY = 0f
-
+        var startX = 0f
+        var startY = 0f
+        var hasMoved = false
         var gestureActive = false
-        var viewStartAlpha = button.alpha
-        var viewStartElevation = button.elevation
 
         button.setOnTouchListener { view, event ->
+            if (isEditMode) return@setOnTouchListener editDrag.onTouch(event)
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     pressRunnable?.let { handler.removeCallbacks(it) }
-                    pressRunnable = null
                     gestureActive = true
-                    viewStartAlpha = view.alpha
-                    viewStartElevation = view.elevation
-                    hasMoved = false; isDragging = false
-                    startX = event.rawX; startY = event.rawY
-                    viewStartX = view.x; viewStartY = view.y
-
-                    if (isEditMode) {
-                        pressRunnable = Runnable {
-                            if (!gestureActive) return@Runnable
-                            isDragging = true
-                            view.alpha = 0.6f; view.elevation = 20f
-                        }
-                        pressRunnable?.let { handler.postDelayed(it, 500L) }
-                    } else {
-                        pressRunnable = Runnable {
-                            if (!gestureActive) return@Runnable
-                            if (expandedGroupId == tile.id) collapseChildButtons()
-                            else expandChildButtons(tile, view as Button)
-                        }
-                        pressRunnable?.let { handler.postDelayed(it, 1000L) }
-                    }
+                    hasMoved = false
+                    startX = event.rawX
+                    startY = event.rawY
+                    pressRunnable = Runnable {
+                        if (!gestureActive) return@Runnable
+                        if (expandedGroupId == tile.id) collapseChildButtons()
+                        else expandChildButtons(tile, view as Button)
+                    }.also { handler.postDelayed(it, 1000L) }
                     true
                 }
-
                 MotionEvent.ACTION_MOVE -> {
                     if (!gestureActive) return@setOnTouchListener true
                     if (kotlin.math.abs(event.rawX - startX) > 10 ||
-                        kotlin.math.abs(event.rawY - startY) > 10
-                    ) {
+                        kotlin.math.abs(event.rawY - startY) > 10) {
                         hasMoved = true
                         pressRunnable?.let { handler.removeCallbacks(it) }
                     }
-                    if (isEditMode && isDragging) {
-                        view.x = (viewStartX + event.rawX - startX)
-                            .coerceIn(0f, (screenW - view.width).toFloat())
-                        view.y = (viewStartY + event.rawY - startY)
-                            .coerceIn(0f, (screenH - view.height - 60).toFloat())
-                    }
                     true
                 }
-
                 MotionEvent.ACTION_UP -> {
                     if (!gestureActive) return@setOnTouchListener true
                     gestureActive = false
                     view.performClick()
                     pressRunnable?.let { handler.removeCallbacks(it) }
                     pressRunnable = null
-
-                    if (isEditMode && isDragging && hasMoved) {
-                        view.alpha = 1.0f; view.elevation = 8f
-                        savePosition(tile.id, view.x.toInt(), view.y.toInt())
-                    } else if (isEditMode && !hasMoved) {
-                        openTileSettings(tile.id)
-                    } else if (!isEditMode && !hasMoved && expandedGroupId != tile.id) {
-                        toggleGroup(tile.id)
-                    }
+                    if (!hasMoved && expandedGroupId != tile.id) toggleGroup(tile.id)
                     true
                 }
-
                 MotionEvent.ACTION_CANCEL -> {
                     pressRunnable?.let { handler.removeCallbacks(it) }
                     pressRunnable = null
-                    // Отмена не сохраняет жест: возвращаем его геометрию и фактический вид.
-                    if (gestureActive) {
-                        view.x = viewStartX
-                        view.y = viewStartY
-                        view.alpha = viewStartAlpha
-                        view.elevation = viewStartElevation
-                    }
                     gestureActive = false
-                    isDragging = false
                     hasMoved = false
                     true
                 }
-
                 else -> false
             }
         }
@@ -1013,97 +767,30 @@ class MainActivity : AppCompatActivity() {
                     val domain = eid.substringBefore(".")
                     val current = singleStates[eid] ?: "off"
                     val target = if (current == "on") "turn_off" else "turn_on"
-                    webSocket?.callService(domain, target, eid)
+                    viewModel.callService(domain, target, eid)
                     val newState = if (current == "on") "off" else "on"
                     singleStates[eid] = newState
+                    viewModel.setOptimisticState(eid, newState)
                     button.background?.setTint(if (newState == "on") activeColor else inactiveColor)
                 }
             }
         }
 
-        var dragRunnable: Runnable? = null
-        var startX = 0f; var startY = 0f
-        var viewStartX = 0f; var viewStartY = 0f
-        var isDragging = false; var hasMoved = false
-
-        var gestureActive = false
-        var viewStartAlpha = button.alpha
-        var viewStartElevation = button.elevation
-
-        button.setOnTouchListener { view, event ->
-            if (!isEditMode) return@setOnTouchListener false
-
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    dragRunnable?.let { handler.removeCallbacks(it) }
-                    dragRunnable = null
-                    gestureActive = true
-                    viewStartAlpha = view.alpha
-                    viewStartElevation = view.elevation
-                    hasMoved = false
-                    startX = event.rawX; startY = event.rawY
-                    viewStartX = view.x; viewStartY = view.y
-                    isDragging = false
-                    dragRunnable = Runnable {
-                        if (!gestureActive) return@Runnable
-                        isDragging = true
-                        view.alpha = 0.6f; view.elevation = 20f
-                    }
-                    dragRunnable?.let { handler.postDelayed(it, 500L) }
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    if (!gestureActive) return@setOnTouchListener true
-                    if (kotlin.math.abs(event.rawX - startX) > 10 ||
-                        kotlin.math.abs(event.rawY - startY) > 10
-                    ) {
-                        hasMoved = true
-                        dragRunnable?.let { handler.removeCallbacks(it) }
-                    }
-                    if (isDragging) {
-                        view.x = (viewStartX + event.rawX - startX)
-                            .coerceIn(0f, (screenW - view.width).toFloat())
-                        view.y = (viewStartY + event.rawY - startY)
-                            .coerceIn(0f, (screenH - view.height - 60).toFloat())
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP -> {
-                    if (!gestureActive) return@setOnTouchListener true
-                    gestureActive = false
-                    view.performClick()
-                    dragRunnable?.let { handler.removeCallbacks(it) }
-                    dragRunnable = null
-                    if (isDragging && hasMoved) {
-                        view.alpha = 1.0f; view.elevation = 8f
-                        savePosition(tile.id, view.x.toInt(), view.y.toInt())
-                    } else if (!hasMoved) {
-                        openTileSettings(tile.id)
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_CANCEL -> {
-                    dragRunnable?.let { handler.removeCallbacks(it) }
-                    dragRunnable = null
-                    // Отмена не сохраняет жест: возвращаем его геометрию и фактический вид.
-                    if (gestureActive) {
-                        view.x = viewStartX
-                        view.y = viewStartY
-                        view.alpha = viewStartAlpha
-                        view.elevation = viewStartElevation
-                    }
-                    gestureActive = false
-                    isDragging = false
-                    hasMoved = false
-                    true
-                }
-
-                else -> false
-            }
+        val editDrag = bindEditDrag(button, tile.id)
+        button.setOnTouchListener { _, event ->
+            if (isEditMode) editDrag.onTouch(event) else false
         }
+    }
+
+    // Повторное подключение после сворачивания заменяет обработчик той же View.
+    private val editDragHandlers = mutableMapOf<View, TileEditDragHandler>()
+
+    private fun bindEditDrag(view: View, tileId: String): TileEditDragHandler {
+        editDragHandlers.remove(view)?.dispose()
+        return TileEditDragHandler(view, handler, screenW, screenH,
+            onTap = { openTileSettings(tileId) },
+            onDrop = { x, y -> savePosition(tileId, x, y) }
+        ).also { editDragHandlers[view] = it }
     }
 
     private fun savePosition(id: String, x: Int, y: Int) {
@@ -1210,7 +897,7 @@ class MainActivity : AppCompatActivity() {
                     val d = eid.substringBefore(".")
                     val c = groupStates[tile.id]?.get(eid) ?: "off"
                     val t = if (c == "on") "turn_off" else "turn_on"
-                    webSocket?.callService(d, t, eid)
+                    viewModel.callService(d, t, eid)
                     val n = if (c == "on") "off" else "on"
                     background?.setTint(if (n == "on") "#8033CC33".toColorInt() else "#424242".toColorInt())
                     updateGroupState(tile.id, eid, n)
@@ -1263,43 +950,10 @@ class MainActivity : AppCompatActivity() {
         collapseChildButtons()
     }
 
-    private fun startSensorAnimation(source: View, animator: ValueAnimator) {
-        // На одной View кадры пишет только один переход. cancel вызывает onAnimationEnd,
-        // поэтому сначала обезвреживаем старые callbacks; обратный ход идёт от текущей геометрии.
-        sensorAnimations.remove(source)?.let {
-            it.removeAllListeners()
-            it.removeAllUpdateListeners()
-            it.cancel()
-        }
-        sensorAnimations[source] = animator
-        animator.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                if (sensorAnimations[source] === animator) sensorAnimations.remove(source)
-            }
-        })
-        animator.start()
-    }
-
     private fun clearSensorExpansion() {
         cancelSensorWindowGesture()
         weatherForecastScroll.clear()
-        sensorCollapseRunnable?.let { handler.removeCallbacks(it) }
-        sensorCollapseRunnable = null
-        // cancel вызывает onAnimationEnd: сначала убираем callbacks старого дерева.
-        sensorAnimations.values.toList().forEach {
-            it.removeAllListeners()
-            it.removeAllUpdateListeners()
-            it.cancel()
-        }
-        sensorAnimations.clear()
-        expandedSensorView?.setOnTouchListener(null)
-        expandedSensorSource?.setOnTouchListener(null)
-        expandedSensorView = null
-        expandedSensorSource = null
-        savedOriginalWidth = 0
-        savedOriginalHeight = 0
-        savedOriginalX = 0f
-        savedOriginalY = 0f
+        sensorExpansion.clear()
     }
 
     private fun clearPanelInteractions() {
@@ -1308,6 +962,10 @@ class MainActivity : AppCompatActivity() {
         longPressRunnable = null
         collapseChildrenRunnable = null
         clearSensorExpansion()
+        resizeHandlers.forEach { it.dispose() }
+        resizeHandlers.clear()
+        editDragHandlers.values.forEach { it.dispose() }
+        editDragHandlers.clear()
         isResizing = false
 
         // Список раскрытых кнопок уже пуст при анимированном закрытии, поэтому
@@ -1342,8 +1000,9 @@ class MainActivity : AppCompatActivity() {
     // ==================== ГРУППЫ ====================
 
     private fun updateGroupState(gid: String, eid: String, st: String) {
-        if (!groupStates.containsKey(gid)) groupStates[gid] = mutableMapOf()
-        groupStates[gid]?.put(eid, st)
+        val groupMap = groupStates.getOrPut(gid) { mutableMapOf() }
+        groupMap[eid] = st
+        viewModel.updateGroupState(gid, eid, st)
         updateGroupButtonAppearance(gid)
     }
 
@@ -1377,7 +1036,7 @@ class MainActivity : AppCompatActivity() {
         val group = groupForAction(tile) ?: return
         val ts = if (getGroupState(gid)) "turn_off" else "turn_on"
         for (eid in group.entityIds) {
-            webSocket?.callService(eid.substringBefore("."), ts, eid)
+            viewModel.callService(eid.substringBefore("."), ts, eid)
         }
     }
 
@@ -1531,36 +1190,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (useYandex) {
-                    v.findViewWithTag<TextView>("weather_temp")?.text = "${yandexWeatherManager.currentTemp}°C"
-                    v.findViewWithTag<TextView>("weather_icon")?.text = yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState)
-                    v.findViewWithTag<TextView>("weather_desc")?.text = yandexWeatherManager.translateCondition(yandexWeatherManager.currentState)
+                    CompactWeatherRenderer.renderYandex(v, yandexWeatherManager.currentTemp,
+                        yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState),
+                        yandexWeatherManager.translateCondition(yandexWeatherManager.currentState))
                 } else {
-                    val entityId = WeatherEntityResolver.resolve(tile.config)
-
-                    val state = singleStates[entityId]?.lowercase() ?: "unknown"
-                    val attrs = entityAttributes[entityId]
-                    val temp = if (entityId.startsWith("weather.")) {
-                        if (attrs != null && attrs.has("temperature")) {
-                            attrs.opt("temperature")?.toString() ?: "—"
-                        } else "—"
-                    } else {
-                        singleStates[entityId] ?: "—"
-                    }
-                    
-                    v.findViewWithTag<TextView>("weather_temp")?.text = if (temp != "—") "$temp°C" else temp
-                    
-                    val icon = when {
-                        state.contains("sunny") || state.contains("clear") -> "☀️"
-                        state.contains("partlycloudy") -> "⛅"
-                        state.contains("cloudy") -> "☁️"
-                        state.contains("rain") || state.contains("pouring") -> "🌧️"
-                        state.contains("snow") -> "❄️"
-                        state.contains("lightning") || state.contains("thunder") -> "⚡"
-                        state.contains("fog") || state.contains("mist") -> "🌫️"
-                        else -> "🌡️"
-                    }
-                    v.findViewWithTag<TextView>("weather_icon")?.text = icon
-                    v.findViewWithTag<TextView>("weather_desc")?.text = tile.title
+                    CompactWeatherRenderer.renderHomeAssistant(v, tile, singleStates::get, entityAttributes::get)
                 }
             }
         }
@@ -1612,12 +1246,8 @@ class MainActivity : AppCompatActivity() {
 
                 // Погодное дерево обновляется отдельно, обычные строки не должны его перестраивать.
                 val container = child.findViewWithTag<LinearLayout>("sensor_text_container")
-                if (container != null && tile.type != "clock") {
-                    if (tile.type == "weather") {
-                        if (isExpanded) buildWeatherDetailedContent(tile, container)
-                    } else {
-                        buildSensorContent(tile, idsToShow, isExpanded, container)
-                    }
+                if (container != null && tile.type != "clock" && tile.type != "weather") {
+                    buildSensorContent(tile, idsToShow, isExpanded, container)
                 }
 
                 if (tile.type == "clock") {
@@ -1709,35 +1339,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTilesForEntity(eid: String, st: String, attrs: JSONObject? = null) {
-        // Это полный HA-снимок: unknown/unavailable — настоящие состояния.
-        singleStates[eid] = st
-        val complete = copyAttributes(attrs)
-        if (complete.has("forecast")) {
-            // Явный HA-forecast новее частичного и далее живёт как обычный HA-атрибут.
-            syntheticForecasts.remove(eid)
-        } else if (syntheticForecasts.containsKey(eid)) {
-            complete.put("forecast", syntheticForecasts[eid] ?: JSONArray())
-        }
-        entityAttributes[eid] = complete
+        viewModel.onEntityStateChanged(eid, st, attrs)
+        renderEntityState(eid, st)
+    }
+
+    private fun restorePanelState(state: MainUiState) {
+        singleStates.clear()
+        singleStates.putAll(state.singleStates)
+        entityAttributes.clear()
+        entityAttributes.putAll(state.entityAttributes)
+        syntheticForecasts.clear()
+        syntheticForecasts.putAll(state.syntheticForecasts)
+        groupStates.clear()
+        state.groupStates.forEach { (id, states) -> groupStates[id] = states.toMutableMap() }
+        isEditMode = state.isEditMode
+    }
+
+    private fun renderEntityState(eid: String, st: String) {
+        applyEntitySnapshot(eid)
 
         // Состояние храним для всех сущностей: плитка, добавленная позже, сразу покажет значение.
         // А перерисовка нужна только для тех, которые читает панель; HA шлёт события всего дома.
         if (!isShownOnPanel(eid)) return
 
-        if (attrs != null && attrs.length() > 0) {
-            
-            // Если пришли новые атрибуты (например, прогноз), и этот виджет сейчас раскрыт — обновим его
-            if (expandedSensorView != null && (expandedTile?.id == eid || eid.startsWith("weather."))) {
-                val tag = expandedSensorView?.tag as? String
-                val tile = tileManager.getAllTiles().find { it.id == tag }
-                if (tile != null && tile.type == "weather") {
-                    val container = expandedSensorView?.findViewWithTag<LinearLayout>("sensor_text_container")
-                    if (container != null) {
-                        buildWeatherDetailedContent(tile, container)
-                    }
-                }
-            }
-        }
+        // Полное обновление погоды выполняется один раз ниже через updateWeatherViews.
 
         if (eid == motionSensorId) {
             if (st == "on" || st == "true" || st == "playing") {
@@ -1747,14 +1372,12 @@ class MainActivity : AppCompatActivity() {
 
         // Цвет определяется фактическим источником кнопки независимо от домена HA.
         updateSingleButtonColor(eid)
-        if (eid.startsWith("weather.")) {
-            updateWeatherViews()
-        } else {
+        if (!eid.startsWith("weather.")) {
             // На плитке может быть любая сущность (binary_sensor, input_number, climate),
             // а не только sensor.*: посторонние события уже отсеяны выше.
             updateSensorDisplay()
-            updateWeatherViews()
         }
+        updateWeatherViews()
 
         tileManager.getAllTiles().filter { it.type == "group" }.forEach { t ->
             val result = TileButtonConfig.group(t.config)
@@ -1764,19 +1387,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun copyAttributes(source: JSONObject?): JSONObject {
-        val copy = JSONObject()
-        source?.let { json -> json.keys().forEach { key -> copy.put(key, json.get(key)) } }
-        return copy
+    private fun updateForecastForEntity(eid: String, forecast: JSONArray?) {
+        viewModel.onForecastChanged(eid, forecast)
+        renderForecastState(eid)
     }
 
-    private fun updateForecastForEntity(eid: String, forecast: JSONArray?) {
-        syntheticForecasts[eid] = forecast
-        val combined = copyAttributes(entityAttributes[eid])
-        // Пустой массив также блокирует старые forecast_daily/hourly в renderer.
-        // Исходные HA-атрибуты и реальное состояние при этом не меняются.
-        combined.put("forecast", forecast ?: JSONArray())
-        entityAttributes[eid] = combined
+    private fun applyEntitySnapshot(eid: String) {
+        val state = viewModel.uiState.value
+        state.singleStates[eid]?.let { singleStates[eid] = it }
+        state.entityAttributes[eid]?.let { entityAttributes[eid] = it }
+        if (state.syntheticForecasts.containsKey(eid)) {
+            syntheticForecasts[eid] = state.syntheticForecasts[eid]
+        } else {
+            syntheticForecasts.remove(eid)
+        }
+    }
+
+    private fun renderForecastState(eid: String) {
+        applyEntitySnapshot(eid)
         updateWeatherViews()
     }
 
@@ -1789,6 +1417,7 @@ class MainActivity : AppCompatActivity() {
     private var haConfiguration: List<String>? = null
     private var haGeneration = 0
 
+    // Единственное применение статуса к экрану; обновления приходят из StateFlow только между start/stop.
     private fun setHaStatus(status: String) {
         findViewById<TextView>(R.id.tvHaLiveStatus).text = status
         getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
@@ -1806,13 +1435,15 @@ class MainActivity : AppCompatActivity() {
         val local = prefs.getString("ha_local_host", "").orEmpty().trim()
         val remote = prefs.getString("ha_remote_host", "").orEmpty().trim()
         val request = ++haTokenRequest
+        if (connectedTokenRevision == -1L && viewModel.getWebSocket() != null) {
+            connectedTokenRevision = viewModel.tokenRevision
+        }
         if (connectedTokenRevision != HaTokenAccess.revision) {
             haGeneration++
-            webSocket?.disconnect()
-            webSocket = null
+            viewModel.disconnectWebSocket()
             haConfiguration = null
         }
-        if (webSocket == null) setHaStatus("Чтение токена HA...")
+        if (webSocket == null) viewModel.publishStatus("Чтение токена HA...")
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { tokens().read() }
             if (request != haTokenRequest || isFinishing || isDestroyed || !HaTokenAccess.isCurrent(result)) return@launch
@@ -1820,10 +1451,9 @@ class MainActivity : AppCompatActivity() {
                 prefs.getString("ha_remote_host", "").orEmpty().trim() != remote) return@launch
             if (result.status != HaTokenAccess.Status.READY) {
                 haGeneration++
-                webSocket?.disconnect()
-                webSocket = null
+                viewModel.disconnectWebSocket()
                 haConfiguration = null
-                setHaStatus(result.message)
+                viewModel.publishStatus(result.message)
                 return@launch
             }
             connectWithHaToken(local, remote, result.value.orEmpty().trim())
@@ -1833,47 +1463,45 @@ class MainActivity : AppCompatActivity() {
     private fun connectWithHaToken(local: String, remote: String, token: String) {
         connectedTokenRevision = HaTokenAccess.revision
         val tokenRevision = connectedTokenRevision
+        viewModel.tokenRevision = tokenRevision
         val configuration = listOf(local, remote, token)
         if (haConfiguration == configuration && webSocket != null) {
             // connect() restarts a stopped client and leaves active/backoff connections alone.
-            webSocket?.connect()
+            viewModel.resumeWebSocket()
             return
         }
         haConfiguration = configuration
         val generation = ++haGeneration
-        webSocket?.disconnect()
-        webSocket = null
         val hosts = listOf(local, remote).filter { it.isNotEmpty() }.distinct()
         if (token.isEmpty() || hosts.isEmpty()) {
-            setHaStatus("Ошибка: укажите адрес и токен Home Assistant")
+            viewModel.disconnectWebSocket()
+            viewModel.publishStatus("Ошибка: укажите адрес и токен Home Assistant")
             return
         }
-        webSocket = HomeAssistantWebSocket(
+        viewModel.connectWebSocket(
             host = hosts.first(),
             token = token,
             alternateHosts = hosts.drop(1),
-            onStateChanged = { entity, state, attributes ->
-                if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) updateTilesForEntity(entity, state, attributes)
+            onStateChangedCallback = { entity, state, _ ->
+                if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) renderEntityState(entity, state)
             },
-            onForecastChanged = { entity, forecast ->
-                if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) updateForecastForEntity(entity, forecast)
+            onForecastChangedCallback = { entity, _ ->
+                if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) renderForecastState(entity)
             },
-            onConnected = {
+            onConnectedCallback = {
                 if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) {
-                    val active = webSocket?.getHost().orEmpty()
+                    val active = viewModel.getWebSocket()?.getHost().orEmpty()
                     val network = if (local.isNotEmpty() && active == local) "Локальная сеть" else "Интернет"
-                    setHaStatus("$network ($active)")
+                    viewModel.publishStatus("$network ($active)")
                     Toast.makeText(this, "Подключено: $network", Toast.LENGTH_SHORT).show()
                     subscribeToNeededEntities()
-                    webSocket?.getEntities()
+                    viewModel.getEntities()
                 }
             },
-            onDisconnected = {},
-            onEntitiesList = { if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) cacheEntities(it) },
-            onError = { if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) setHaStatus("Ошибка: $it") },
-            onStatus = { if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) setHaStatus(it) }
+            onEntitiesListCallback = {
+                if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) cacheEntities(it)
+            }
         )
-        webSocket?.connect()
     }
 
     private fun cacheEntities(e: List<HaEntity>) {
@@ -1884,47 +1512,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun subscribeToNeededEntities() {
-        val ids = mutableSetOf<String>()
-        val weatherIds = mutableSetOf<String>()
-        
         val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
-        motionSensorId?.let { ids.add(it) }
-        tileManager.getAllTiles().forEach { t ->
-            if (t.type == "weather" && !useYandex) {
-                val source = WeatherEntityResolver.resolve(t.config)
-                if (source.startsWith("weather.")) weatherIds.add(source)
-            }
-            if (t.type == "button" || t.type == "group") {
-                // Повреждённый список не должен давать частичный набор источников для подписок.
-                val result = TileButtonConfig.subscriptionIds(t.config)
-                if (result is ButtonConfigResult.Valid) {
-                    result.value.forEach { eid ->
-                        ids.add(eid)
-                    }
-                }
-                return@forEach
-            }
-            try {
-                val c = JSONObject(t.config)
-                val eid = c.optString("entity_id", "").takeIf { it.isNotEmpty() }
-                if (eid != null) {
-                    ids.add(eid)
-                }
-                
-                c.optJSONArray("entity_ids")?.let {
-                    for (i in 0 until it.length()) {
-                        val subEid = it.getString(i)
-                        ids.add(subEid)
-                    }
-                }
-            } catch (_: Exception) {}
-        }
-        
-        
-        webSocket?.subscribeEntities(ids.toList())
-
+        val plan = PanelSubscriptionPlan.create(tileManager.getAllTiles(), motionSensorId, useYandex)
+        viewModel.subscribeEntities(plan.entityIds)
         // Передаём весь актуальный набор, включая пустой при выборе Яндекса.
-        webSocket?.syncForecastSubscriptions(weatherIds)
+        viewModel.syncForecastSubscriptions(plan.forecastIds)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
