@@ -14,6 +14,7 @@ class MainViewModel : ViewModel() {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     internal val devices = DashboardDeviceState()
+    internal val commands = DashboardDeviceCommands(devices, ::callService, ::publishDevices)
 
     private var webSocket: HomeAssistantWebSocket? = null
 

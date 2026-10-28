@@ -786,12 +786,7 @@ class MainActivity : AppCompatActivity() {
             if (!isEditMode) {
                 val eid = buttonEntityId(tile, reportError = true)
                 if (eid != null) {
-                    val domain = eid.substringBefore(".")
-                    val current = singleStates[eid] ?: "off"
-                    val target = if (current == "on") "turn_off" else "turn_on"
-                    viewModel.callService(domain, target, eid)
-                    val newState = if (current == "on") "off" else "on"
-                    viewModel.setOptimisticState(eid, newState)
+                    val newState = viewModel.commands.toggleSingle(eid)
                     button.background?.setTint(if (newState == "on") activeColor else inactiveColor)
                 }
             }
@@ -915,13 +910,9 @@ class MainActivity : AppCompatActivity() {
                 setTextColor("#FFFFFF".toColorInt()); textSize = 14f
                 gravity = Gravity.CENTER; isAllCaps = false
                 setOnClickListener {
-                    val d = eid.substringBefore(".")
-                    val c = groupStates[tile.id]?.get(eid) ?: "off"
-                    val t = if (c == "on") "turn_off" else "turn_on"
-                    viewModel.callService(d, t, eid)
-                    val n = if (c == "on") "off" else "on"
+                    val n = viewModel.commands.toggleMember(tile.id, eid)
                     background?.setTint(if (n == "on") "#8033CC33".toColorInt() else "#424242".toColorInt())
-                    updateGroupState(tile.id, eid, n)
+                    updateGroupButtonAppearance(tile.id)
                     resetCollapseTimer()
                 }
             }
@@ -1044,10 +1035,7 @@ class MainActivity : AppCompatActivity() {
         // Ни одна команда не отправляется до успешной проверки текущего состава.
         val tile = tileManager.getAllTiles().find { it.id == gid && it.type == "group" } ?: return
         val group = groupForAction(tile) ?: return
-        val ts = if (getGroupState(gid)) "turn_off" else "turn_on"
-        for (eid in group.entityIds) {
-            viewModel.callService(eid.substringBefore("."), ts, eid)
-        }
+        viewModel.commands.toggleGroup(gid, group.entityIds)
     }
 
     // ==================== ОБЫЧНЫЕ КНОПКИ ====================
