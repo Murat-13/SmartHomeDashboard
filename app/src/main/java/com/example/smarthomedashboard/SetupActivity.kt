@@ -35,6 +35,8 @@ class SetupActivity : AppCompatActivity() {
         btnSkip = findViewById(R.id.btnSkip)
         tvStatus = findViewById(R.id.tvStatus)
         tvHaTokenStatus = findViewById(R.id.tvHaTokenStatus)
+        findViewById<TextView>(R.id.tvSetupAddressHint).text = UserHints.SETUP_ADDRESS
+        findViewById<TextView>(R.id.tvSetupTokenHint).text = UserHints.SETUP_TOKEN
         prepareTokenInput()
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         etLocalHost.setText(prefs.getString("ha_local_host", ""))

@@ -143,6 +143,7 @@ class SettingsActivity : PinProtectedActivity() {
 
         btnExport.setOnClickListener { exportConfig() }
         btnImport.setOnClickListener { importConfig() }
+        findViewById<Button>(R.id.btnHelp).setOnClickListener { UserHints.showWelcome(this) }
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
             finish()

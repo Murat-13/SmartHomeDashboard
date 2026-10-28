@@ -60,6 +60,15 @@
                 android:background="#2A2A2A"
                 android:entries="@array/tile_types" />
 
+            <!-- Что делает выбранный тип и какие устройства выбирать -->
+            <TextView
+                android:id="@+id/tvTileTypeHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#9E9E9E"
+                android:textSize="14sp" />
+
             <!-- Размер кнопки -->
             <TextView
                 android:id="@+id/tvButtonSizeLabel"

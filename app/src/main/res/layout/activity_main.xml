@@ -28,6 +28,27 @@
         android:textSize="12sp"
         android:maxLines="2" />
 
+    <!-- Подсказка: как войти в редактирование и что в нём можно. Не перехватывает касания. -->
+    <TextView
+        android:id="@+id/tvPanelHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:background="#CC000000"
+        android:clickable="false"
+        android:focusable="false"
+        android:gravity="center"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:visibility="gone" />
+
     <!-- Затемнение -->
     <View
         android:id="@+id/dimOverlay"

@@ -43,20 +43,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bottomPanel: FrameLayout
     private lateinit var overlayContainer: FrameLayout
     private lateinit var dimOverlay: View
+    private var panelHint: TextView? = null
 
     // ==================== ДАННЫЕ ====================
     private lateinit var tileManager: TileManager
     private lateinit var yandexWeatherManager: YandexWeatherManager
     private var mqttRemovalMigration: MqttRemovalMigration? = null
     private var webSocket: HomeAssistantWebSocket? = null
-
-    private var pzemVoltage = "—"
-    private var pzemCurrent = "—"
-    private var pzemPower = "—"
-    private var pzemEnergy = "—"
-    private var pzemFrequency = "—"
-    private var gridOnline = true
-    private var techRoomTemp = "—"
 
     private var tempUnit = "C"
     private var motionSensorId: String? = null
@@ -117,15 +110,9 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_WIDGET_W = 220
         private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
-        // Источники блока when в updateTilesForEntity: напряжение задаёт фон плитки «Сеть».
-        private val PZEM_ENTITY_IDS = listOf(
-            "sensor.pzem_energy_monitor_pzem_voltage",
-            "sensor.pzem_energy_monitor_pzem_power",
-            "sensor.pzem_energy_monitor_pzem_current",
-            "sensor.pzem_energy_monitor_pzem_energy",
-            "sensor.pzem_energy_monitor_pzem_frequency",
-            "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"
-        )
+        private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
+        private const val PREF_WELCOME_SHOWN = "welcome_shown"
+        private const val PREF_EDIT_MODE_FOUND = "edit_mode_found"
     }
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
@@ -138,19 +125,17 @@ class MainActivity : AppCompatActivity() {
         overlayContainer = findViewById(R.id.overlayContainer)
         dimOverlay = findViewById(R.id.dimOverlay)
         dimOverlay.setOnClickListener { collapseAll() }
+        panelHint = findViewById(R.id.tvPanelHint)
 
         tileManager = TileManager(this)
         yandexWeatherManager = YandexWeatherManager(this)
         yandexWeatherManager.loadFromCache()
 
-        // Создаём плитки по умолчанию, если их нет
-        if (tileManager.getAllTiles().isEmpty()) {
-            createDefaultGridTiles()
-            createDefaultButtonTiles()
-        }
+        createStarterTilesOnFirstLaunch()
 
         setupBottomPanel()
         setupWebSocket()
+        showWelcomeOnFirstLaunch()
     }
 
     override fun onResume() {
@@ -225,34 +210,6 @@ class MainActivity : AppCompatActivity() {
         haGeneration++
         webSocket?.disconnect()
         webSocket = null
-    }
-
-    // ==================== ПОИСК СВОБОДНОГО МЕСТА ====================
-
-    private fun findFreeSpot(width: Int, height: Int): Pair<Int, Int> {
-        val step = 20
-        var y = 40
-        while (y + height < screenH - 100) {
-            var x = 20
-            while (x + width < screenW - 20) {
-                if (isSpotFree(x, y, width, height)) return Pair(x, y)
-                x += step
-            }
-            y += step
-        }
-        return Pair(20, screenH - height - 80)
-    }
-
-    private fun isSpotFree(x: Int, y: Int, width: Int, height: Int): Boolean {
-        for (i in 0 until bottomPanel.childCount) {
-            val child = bottomPanel.getChildAt(i)
-            if (child == dimOverlay) continue
-            if (child.isVisible &&
-                x < child.x + child.width && x + width > child.x &&
-                y < child.y + child.height && y + height > child.y
-            ) return false
-        }
-        return true
     }
 
     // ==================== БЕЗОПАСНОСТЬ И PIN-КОД ====================
@@ -400,6 +357,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterEditMode() {
         isEditMode = true
+        // Пользователь нашёл редактирование: подсказка «как войти» больше не нужна.
+        onboardingPrefs().edit { putBoolean(PREF_EDIT_MODE_FOUND, true) }
         refreshBottomPanel()
         Toast.makeText(this, "Режим редактирования", Toast.LENGTH_SHORT).show()
     }
@@ -433,11 +392,7 @@ class MainActivity : AppCompatActivity() {
         clearPanelInteractions()
         bottomPanel.removeAllViews()
 
-        var tiles = tileManager.getTilesByContainer("bottom_panel")
-        if (tiles.isEmpty()) {
-            createDefaultButtonTiles()
-            tiles = tileManager.getTilesByContainer("bottom_panel")
-        }
+        val tiles = tileManager.getTilesByContainer("bottom_panel")
 
         // Сенсоры
         tileManager.getTilesByContainer("grid").forEach { tile ->
@@ -477,6 +432,7 @@ class MainActivity : AppCompatActivity() {
         // Используем уже полученные значения, не ожидая следующего события или тика часов.
         updateSensorDisplay()
         updateClockViews()
+        updatePanelHint()
     }
 
     private fun getButtonSize(tile: TileEntity): Int {
@@ -1437,39 +1393,52 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== СОЗДАНИЕ ПО УМОЛЧАНИЮ ====================
+    // ==================== ПЕРВЫЙ ЗАПУСК ====================
 
-    private fun createDefaultGridTiles() {
-        lifecycleScope.launch {
-            val (x1, y1) = findFreeSpot(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
-            tileManager.addTile(
-                TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
-                    "⚡ Сеть", x1, y1, 1, 1,
-                    config = """{"button_size":$DEFAULT_WIDGET_W}""")
-            )
-            val (x2, y2) = findFreeSpot(DEFAULT_WIDGET_W, DEFAULT_WIDGET_H)
-            tileManager.addTile(
-                TileEntity(UUID.randomUUID().toString(), "sensor", "grid",
-                    "🌡️ Температура", x2, y2, 1, 1,
-                    config = """{"button_size":$DEFAULT_WIDGET_W}""")
-            )
+    private fun onboardingPrefs() = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+
+    /**
+     * На чистой установке создаём часы и погоду: им не нужны личные датчики.
+     * Только один раз: удалённые пользователем плитки не возвращаются. Уже настроенная
+     * панель прежней версии не меняется, а подсказки для новичка ей не показываются.
+     */
+    private fun createStarterTilesOnFirstLaunch() {
+        val prefs = onboardingPrefs()
+        if (prefs.getBoolean(PREF_STARTER_TILES_DONE, false)) return
+        if (tileManager.loadTiles().isEmpty()) {
+            val tiles = mutableListOf<TileEntity>()
+            for ((type, title) in listOf("clock" to "Часы", "weather" to "Погода")) {
+                val (x, y) = TilePlacement.findFreeSpot(
+                    tiles, TilePlacement.WIDGET_WIDTH, TilePlacement.WIDGET_HEIGHT, screenW, screenH
+                )
+                tiles += TileEntity(UUID.randomUUID().toString(), type, "grid", title, x, y, 1, 1)
+            }
+            tileManager.saveTiles(tiles)
+        } else {
+            prefs.edit {
+                putBoolean(PREF_WELCOME_SHOWN, true)
+                putBoolean(PREF_EDIT_MODE_FOUND, true)
+            }
         }
+        prefs.edit { putBoolean(PREF_STARTER_TILES_DONE, true) }
     }
 
-    private fun createDefaultButtonTiles() {
-        val sh = resources.displayMetrics.heightPixels
-        lifecycleScope.launch {
-            tileManager.addTile(
-                TileEntity(UUID.randomUUID().toString(), "button", "bottom_panel",
-                    "💡 Свет", 20, sh - DEFAULT_BUTTON_SIZE - 90, 1, 1,
-                    config = """{"entity_id":"switch.sonoff_100288c9c3_1","button_size":160}""")
-            )
-            tileManager.addTile(
-                TileEntity(UUID.randomUUID().toString(), "button", "bottom_panel",
-                    "🔥 Бойлер", 200, sh - DEFAULT_BUTTON_SIZE - 90, 1, 1,
-                    config = """{"entity_id":"switch.boiler","button_size":160}""")
-            )
+    private fun showWelcomeOnFirstLaunch() {
+        val prefs = onboardingPrefs()
+        if (prefs.getBoolean(PREF_WELCOME_SHOWN, false)) return
+        prefs.edit { putBoolean(PREF_WELCOME_SHOWN, true) }
+        UserHints.showWelcome(this)
+    }
+
+    private fun updatePanelHint() {
+        val hint = panelHint ?: return
+        val text = when {
+            isEditMode -> UserHints.EDIT_MODE
+            !onboardingPrefs().getBoolean(PREF_EDIT_MODE_FOUND, false) -> UserHints.HOW_TO_EDIT
+            else -> null
         }
+        hint.text = text.orEmpty()
+        hint.isVisible = text != null
     }
 
     // ==================== ДАННЫЕ С ДАТЧИКОВ ====================
@@ -1576,12 +1545,6 @@ class MainActivity : AppCompatActivity() {
             ::resetSensorCollapseTimer
         )
     }
-    private fun updatePzemWidget() {
-        updateSensorDisplay()
-    }
-    private fun updateTemperatureWidget() {
-        updateSensorDisplay()
-    }
 
     private fun updateSensorDisplay() {
         val sensorTiles = tileManager.getTilesByContainer("grid")
@@ -1625,7 +1588,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateNormalSensorWidget(tile: TileEntity, child: FrameLayout) {
-        SensorBackgroundRenderer.render(tile, child, singleStates::get) { pzemVoltage }
+        SensorBackgroundRenderer.render(tile, child, singleStates::get)
     }
 
     /**
@@ -1682,14 +1645,6 @@ class MainActivity : AppCompatActivity() {
         return SensorValueFormatter.formatSensorValue(value, decimals, unit, tempUnit)
     }
 
-    private fun formatFloat(v: String, d: Int, eid: String? = null): String {
-        return formatSensorValue(v, d, eid)
-    }
-
-    private fun updateGridStatus() {
-        gridOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
-    }
-
     private var panelEntityTiles: List<TileEntity>? = null
     private var panelEntityMotionSensor: String? = null
     private var panelEntityIds: Set<String> = emptySet()
@@ -1698,7 +1653,7 @@ class MainActivity : AppCompatActivity() {
         // TileManager возвращает тот же список, пока плитки не менялись.
         val tiles = tileManager.getAllTiles()
         if (tiles !== panelEntityTiles || motionSensorId != panelEntityMotionSensor) {
-            panelEntityIds = PanelEntityIds.collect(tiles, PZEM_ENTITY_IDS + listOfNotNull(motionSensorId))
+            panelEntityIds = PanelEntityIds.collect(tiles, listOfNotNull(motionSensorId))
             panelEntityTiles = tiles
             panelEntityMotionSensor = motionSensorId
         }
@@ -1742,31 +1697,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        when (eid) {
-            "sensor.pzem_energy_monitor_pzem_voltage" -> {
-                pzemVoltage = formatFloat(st, 0, eid); updateGridStatus(); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_power" -> {
-                pzemPower = formatFloat(st, 0, eid); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_current" -> {
-                pzemCurrent = formatFloat(st, 2, eid); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_energy" -> {
-                pzemEnergy = formatFloat(st, 2, eid); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_pzem_frequency" -> {
-                pzemFrequency = formatFloat(st, 1, eid); updatePzemWidget()
-            }
-            "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" -> {
-                techRoomTemp = formatFloat(st, 1, eid); updateTemperatureWidget()
-            }
-        }
-
         // Цвет определяется фактическим источником кнопки независимо от домена HA.
         updateSingleButtonColor(eid)
-        if (eid.startsWith("weather.")) updateWeatherViews()
-        if (eid.startsWith("sensor.")) {
+        if (eid.startsWith("weather.")) {
+            updateWeatherViews()
+        } else {
+            // На плитке может быть любая сущность (binary_sensor, input_number, climate),
+            // а не только sensor.*: посторонние события уже отсеяны выше.
             updateSensorDisplay()
             updateWeatherViews()
         }
@@ -1935,16 +1872,6 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
         }
         
-        if (tileManager.getAllTiles().any { it.title == "⚡ Сеть" }) {
-            ids.add("sensor.pzem_energy_monitor_pzem_voltage")
-            ids.add("sensor.pzem_energy_monitor_pzem_power")
-            ids.add("sensor.pzem_energy_monitor_pzem_current")
-            ids.add("sensor.pzem_energy_monitor_pzem_energy")
-            ids.add("sensor.pzem_energy_monitor_pzem_frequency")
-        }
-        if (tileManager.getAllTiles().any { it.title == "🌡️ Температура" }) {
-            ids.add("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
-        }
         
         webSocket?.subscribeEntities(ids.toList())
 

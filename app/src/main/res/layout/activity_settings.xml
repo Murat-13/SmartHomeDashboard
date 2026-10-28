@@ -335,6 +335,14 @@
                     android:backgroundTint="#FF9800" />
             </LinearLayout>
 
+            <Button
+                android:id="@+id/btnHelp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Как пользоваться"
+                android:backgroundTint="#616161" />
+
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"

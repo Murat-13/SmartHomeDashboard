@@ -67,6 +67,7 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         spinnerType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                findViewById<TextView>(R.id.tvTileTypeHint)?.text = UserHints.tileType(typeAt(position))
                 val isGroup = position == 2 && tileId != null
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 // Показываем размер кнопки только для кнопок и групп
@@ -189,15 +190,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             return false
         }
 
-        val type = when (spinnerType.selectedItemPosition) {
-            0 -> "sensor"
-            1 -> "button"
-            2 -> "group"
-            3 -> "battery"
-            4 -> "clock"
-            5 -> "weather"
-            else -> "sensor"
-        }
+        val type = typeAt(spinnerType.selectedItemPosition)
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
@@ -267,6 +260,17 @@ class TileSettingsActivity : PinProtectedActivity() {
             }
         }
         return true
+    }
+
+    /** Порядок совпадает с массивом R.array.tile_types. */
+    private fun typeAt(position: Int): String = when (position) {
+        0 -> "sensor"
+        1 -> "button"
+        2 -> "group"
+        3 -> "battery"
+        4 -> "clock"
+        5 -> "weather"
+        else -> "sensor"
     }
 
     private fun newTile(type: String, container: String, title: String, config: String): TileEntity {

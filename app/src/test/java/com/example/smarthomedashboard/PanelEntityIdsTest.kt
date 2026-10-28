@@ -34,15 +34,14 @@ class PanelEntityIdsTest {
         assertFalse("sensor.unrelated" in ids)
     }
 
-    @Test fun includesResolverDefaults() {
+    @Test fun includesWeatherDefaultButNothingFromTitles() {
         val ids = PanelEntityIds.collect(listOf(
             tile("weather", config = "{}"),
             tile("sensor", title = "⚡ Сеть"),
             tile("sensor", title = "Температура котла")
         ), emptyList())
         assertTrue("weather.home" in ids)
-        assertTrue("sensor.pzem_energy_monitor_pzem_frequency" in ids)
-        assertTrue("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia" in ids)
+        assertFalse(ids.any { it.contains("pzem") })
     }
 
     @Test fun brokenOrMissingJsonDoesNotThrow() {

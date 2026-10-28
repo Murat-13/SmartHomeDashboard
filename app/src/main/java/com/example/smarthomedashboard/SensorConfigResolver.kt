@@ -4,6 +4,10 @@ import com.example.smarthomedashboard.data.TileEntity
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Какие датчики показывает плитка. Источник — только настройки самой плитки:
+ * ни название, ни зашитые в код entity_id не влияют на результат.
+ */
 internal object SensorConfigResolver {
     fun getCollapsedSensorIds(tile: TileEntity): List<String> {
         try {
@@ -25,16 +29,7 @@ internal object SensorConfigResolver {
                 return ids
             }
         } catch (_: Exception) {}
-        // По умолчанию (ищем по вхождению слова)
-        val title = tile.title.lowercase()
-        return when {
-            title.contains("сеть") -> listOf(
-                "sensor.pzem_energy_monitor_pzem_voltage",
-                "sensor.pzem_energy_monitor_pzem_power"
-            )
-            title.contains("температура") -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
-            else -> emptyList()
-        }
+        return emptyList()
     }
 
     fun getExpandedSensorIds(tile: TileEntity): List<String> {
@@ -57,25 +52,19 @@ internal object SensorConfigResolver {
                 return ids
             }
         } catch (_: Exception) {}
-        // По умолчанию
-        val title = tile.title.lowercase()
-        return when {
-            title.contains("сеть") -> listOf(
-                "sensor.pzem_energy_monitor_pzem_voltage",
-                "sensor.pzem_energy_monitor_pzem_power",
-                "sensor.pzem_energy_monitor_pzem_current",
-                "sensor.pzem_energy_monitor_pzem_frequency",
-                "sensor.pzem_energy_monitor_pzem_energy"
-            )
-            title.contains("температура") -> listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia")
-            else -> emptyList()
-        }
+        // Раскрытая плитка не бывает пустой: без отдельного выбора показывает свёрнутый набор.
+        return getCollapsedSensorIds(tile)
     }
 
     fun loadSensorConfigs(tile: TileEntity, isExpanded: Boolean): List<SensorConfig> {
+        val own = loadSensorConfigs(tile, if (isExpanded) "expanded_sensor_configs" else "collapsed_sensor_configs")
+        // Строки, взятые из свёрнутого вида, сохраняют свои названия и точность.
+        return if (isExpanded && own.isEmpty()) loadSensorConfigs(tile, "collapsed_sensor_configs") else own
+    }
+
+    private fun loadSensorConfigs(tile: TileEntity, key: String): List<SensorConfig> {
         try {
             val config = JSONObject(tile.config)
-            val key = if (isExpanded) "expanded_sensor_configs" else "collapsed_sensor_configs"
             val arr = config.optJSONArray(key)
             if (arr != null && arr.length() > 0) {
                 val list = mutableListOf<SensorConfig>()

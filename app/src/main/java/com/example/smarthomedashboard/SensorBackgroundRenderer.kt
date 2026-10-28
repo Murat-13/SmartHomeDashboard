@@ -9,8 +9,7 @@ internal object SensorBackgroundRenderer {
     fun render(
         tile: TileEntity,
         child: FrameLayout,
-        stateProvider: (String) -> String?,
-        voltageProvider: () -> String
+        stateProvider: (String) -> String?
     ) {
         // Применяем правила цвета (колонки От и До)
         var finalColor: String? = null
@@ -35,19 +34,8 @@ internal object SensorBackgroundRenderer {
                 }
             }
 
-            if (finalColor != null) {
-                child.setBackgroundColor(finalColor.toColorInt())
-            } else {
-                // Стандартная логика для сети или дефолтный фон
-                if (tile.title.lowercase().contains("сеть")) {
-                    val isOnline = (voltageProvider().toFloatOrNull() ?: 0f) > 10f
-                    child.setBackgroundColor(
-                        if (isOnline) "#8033CC33".toColorInt() else "#80FF3333".toColorInt()
-                    )
-                } else {
-                    child.setBackgroundColor("#80333333".toColorInt())
-                }
-            }
+            // Без сработавшего правила фон одинаковый для всех плиток, независимо от названия.
+            child.setBackgroundColor((finalColor ?: "#80333333").toColorInt())
         } catch (_: Exception) {
             child.setBackgroundColor("#80333333".toColorInt())
         }
