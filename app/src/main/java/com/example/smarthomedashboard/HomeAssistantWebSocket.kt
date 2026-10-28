@@ -204,9 +204,7 @@ class HomeAssistantWebSocket(
                     if (entityId.isEmpty()) continue
                     val attrs = obj.optJSONObject("attributes") ?: JSONObject()
                     if (obj.has("state")) onStateChanged(entityId, obj.optString("state"), attrs)
-                    entities.add(HaEntity(entityId,
-                        attrs.optString("friendly_name", obj.optString("name", entityId)),
-                        entityId.substringBefore(".")))
+                    entities.add(HaEntity(entityId, displayName(entityId, obj, attrs), entityId.substringBefore(".")))
                 }
                 onEntitiesList?.invoke(entities)
             }
@@ -383,6 +381,17 @@ class HomeAssistantWebSocket(
         webSocket = null
         forecastSubscriptions.clear()
     }
+}
+
+/**
+ * Понятное имя сущности для списков выбора. get_states отдаёт friendly_name в атрибутах, а реестр
+ * сущностей — name (заданное пользователем, чаще всего null) и original_name от интеграции.
+ * JSON null нельзя читать через optString: он становится строкой «null».
+ */
+internal fun displayName(entityId: String, entry: JSONObject, attributes: JSONObject): String {
+    fun text(json: JSONObject, key: String): String? =
+        if (json.isNull(key)) null else json.optString(key).takeIf { it.isNotBlank() }
+    return text(attributes, "friendly_name") ?: text(entry, "name") ?: text(entry, "original_name") ?: entityId
 }
 
 data class HaEntity(
