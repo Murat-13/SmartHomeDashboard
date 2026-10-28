@@ -94,7 +94,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         btnClearSensors.setOnClickListener { clearSelectedSensors() }
 
         btnAdvanced.setOnClickListener {
-            if (tileId == null) saveTileWithoutFinish()
+            if (tileId == null && !saveTileWithoutFinish()) return@setOnClickListener
             tileId?.let { id ->
                 val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
                 intent.putExtra("tile_id", id)
@@ -180,11 +180,13 @@ class TileSettingsActivity : PinProtectedActivity() {
         updateSelectedSensorsText()
     }
 
-    private fun saveTileWithoutFinish() {
+    /** Возвращает false, если ввод некорректен и ничего не сохранено. */
+    private fun saveTileWithoutFinish(): Boolean {
         val title = etTitle.text.toString().trim()
         if (title.isEmpty()) {
+            etTitle.error = "Введите название"
             Toast.makeText(this, "Введите название", Toast.LENGTH_SHORT).show()
-            return
+            return false
         }
 
         val type = when (spinnerType.selectedItemPosition) {
@@ -202,10 +204,6 @@ class TileSettingsActivity : PinProtectedActivity() {
             "clock", "sensor", "battery", "weather" -> "grid"
             else -> "grid"
         }
-
-        val tiles = tileManager.getTilesByContainer(container)
-        val position = tiles.size
-        val spanCount = if (container == "grid") 4 else 6
 
         var oldTile: TileEntity? = null
         val existingConfig = if (tileId != null) {
@@ -258,17 +256,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             container = container,
             title = title,
             config = config
-        ) ?: TileEntity(
-            id = tileId ?: UUID.randomUUID().toString(),
-            type = type,
-            container = container,
-            title = title,
-            x = position % spanCount,
-            y = position / spanCount,
-            width = 1,
-            height = 1,
-            config = config
-        )
+        ) ?: newTile(type, container, title, config)
 
         lifecycleScope.launch {
             if (tileId == null) {
@@ -278,10 +266,32 @@ class TileSettingsActivity : PinProtectedActivity() {
                 tileManager.updateTile(tile)
             }
         }
+        return true
+    }
+
+    private fun newTile(type: String, container: String, title: String, config: String): TileEntity {
+        // x/y — пиксели панели, а не номер ячейки: иначе все новые плитки ложатся в угол.
+        val size = TilePlacement.size(container, config)
+        val metrics = resources.displayMetrics
+        val (x, y) = TilePlacement.findFreeSpot(
+            tileManager.getAllTiles(), size.width, size.height, metrics.widthPixels, metrics.heightPixels
+        )
+        return TileEntity(
+            id = tileId ?: UUID.randomUUID().toString(),
+            type = type,
+            container = container,
+            title = title,
+            x = x,
+            y = y,
+            width = 1,
+            height = 1,
+            config = config
+        )
     }
 
     private fun saveTile() {
-        saveTileWithoutFinish()
+        // При ошибке остаёмся на экране: введённые данные не должны пропадать молча.
+        if (!saveTileWithoutFinish()) return
         Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
         setResult(Activity.RESULT_OK)
         finish()

@@ -185,6 +185,44 @@ class TileSettingsActivityTest {
         assertEquals("sensor.new", JSONObject(created.config).getString("entity_id"))
     }
 
+    @Test fun newTilesArePlacedInFreePanelPixelsInsteadOfStackingInCorner() {
+        manager.saveTiles(listOf(tile().copy(id = "other", x = 20, y = 40, config = "{}")))
+        val created = mutableListOf<TileEntity>()
+        repeat(2) { n ->
+            val activity = open(tileId = null)
+            activity.resources.displayMetrics.widthPixels = 1920
+            activity.resources.displayMetrics.heightPixels = 1200
+            get<EditText>(activity, "etTitle").setText("New $n")
+            invoke(activity, "saveTile")
+            shadowOf(Looper.getMainLooper()).idle()
+            created += manager.loadTiles().single { it.title == "New $n" }
+        }
+        val all = manager.loadTiles()
+        // Раньше x/y были номером ячейки (0..3, 0..1) и плитки ложились друг на друга.
+        for (tile in created) {
+            for (other in all.filter { it.id != tile.id }) {
+                val a = TilePlacement.size(tile.container, tile.config)
+                val b = TilePlacement.size(other.container, other.config)
+                assertFalse("${tile.title} перекрывает ${other.title}",
+                    tile.x < other.x + b.width && tile.x + a.width > other.x &&
+                        tile.y < other.y + b.height && tile.y + a.height > other.y)
+            }
+        }
+    }
+
+    @Test fun emptyTitleKeepsScreenOpenAndSavesNothing() {
+        manager.saveTiles(emptyList())
+        val activity = open(tileId = null)
+        get<EditText>(activity, "etTitle").setText("   ")
+        choose(activity, listOf("sensor.new"))
+        invoke(activity, "saveTile")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse("Экран не должен закрываться с несохранённым вводом", activity.isFinishing)
+        assertEquals("Введите название", get<EditText>(activity, "etTitle").error?.toString())
+        assertTrue(manager.loadTiles().isEmpty())
+        assertEquals(listOf("sensor.new"), get<List<String>>(activity, "selectedSensors"))
+    }
+
     @Test fun newTileIdSavedBeforeAdvancedScreenSurvivesRestorationWithoutDuplicate() {
         manager.saveTiles(emptyList())
         val activity = open(tileId = null)
