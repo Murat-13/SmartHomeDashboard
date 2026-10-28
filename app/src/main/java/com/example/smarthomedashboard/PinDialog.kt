@@ -45,7 +45,7 @@ internal class PinDialog(
         input.filters = arrayOf(android.text.InputFilter.LengthFilter(256))
         input.isSaveEnabled = false
         input.isSaveFromParentEnabled = false
-        input.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        input.excludeFromAutofill()
         val progress =
             ProgressBar(context).apply {
                 tag = "pinVerificationProgress"

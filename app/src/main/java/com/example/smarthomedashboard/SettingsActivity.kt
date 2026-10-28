@@ -97,7 +97,7 @@ class SettingsActivity : PinProtectedActivity() {
         etAdminPin.text.clear()
         etAdminPin.isSaveEnabled=false
         etAdminPin.isSaveFromParentEnabled=false
-        etAdminPin.importantForAutofill=android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        etAdminPin.excludeFromAutofill()
         etAdminPin.isFocusable=false
         etAdminPin.hint="Управление PIN и восстановлением"
         etAdminPin.setOnClickListener { PinSecurityUi.manage(this) }
