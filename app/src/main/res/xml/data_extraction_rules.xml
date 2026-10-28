@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <!-- Исключение нужно и для облака, и для прямого переноса между устройствами.
+         Плитки из tiles_prefs.xml остаются доступны для резервирования. -->
+    <cloud-backup>
+        <exclude domain="sharedpref" path="dashboard_prefs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="dashboard_prefs.xml" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,120 @@
+<resources>
+    <string name="app_name">SmartHomeDashboard</string>
+    <string name="btn_light">💡 Свет</string>
+    <string name="btn_boiler">🔥 Бойлер</string>
+    <string name="btn_heater">❄️ Обогрев</string>
+    <string name="btn_pump">💧 Насос</string>
+    <string name="settings">Настройки</string>
+    <string name="widget_default_title">Widget</string>
+    <string name="widget_default_value">0</string>
+    <string name="pin_dialog_title">Введите PIN-код для доступа к настройкам</string>
+    <string name="pin_hint">******</string>
+    <string name="cancel">Отмена</string>
+    <string name="ok">OK</string>
+    <string name="settings_title">Настройки</string>
+    <string name="expand_timeout_label">Время показа увеличенного виджета</string>
+    <string name="default_timeout">10 сек</string>
+    <string name="timeout_range_hint">от 3 до 30 секунд</string>
+    <string name="timeout_sec">%d сек</string>
+    <string name="widget_network_title">⚡ Сеть</string>
+    <string name="current_label">Ток: %s A</string>
+    <string name="power_label">Мощность: %s W</string>
+    <string name="frequency_label">Частота: %s Hz</string>
+    <string name="energy_label">Энергия: %s kWh</string>
+    <string name="mqtt_settings_title">MQTT Настройки</string>
+    <string name="mqtt_ip_label">IP-адрес MQTT брокера</string>
+    <string name="mqtt_port_label">Порт</string>
+    <string name="mqtt_username_label">Логин</string>
+    <string name="mqtt_password_label">Пароль</string>
+    <string name="save">Сохранить</string>
+    <string name="ha_host_label">Адрес Home Assistant</string>
+    <string name="ha_host_hint"></string>
+    <string name="ha_token_label">Токен доступа (обязательно)</string>
+    <string name="ha_token_hint">Введите токен долгосрочного доступа</string>
+    <string name="connect">Подключиться</string>
+    <string name="local_host_label">Локальный адрес (необязательно)</string>
+    <string name="local_host_hint"></string>
+    <string name="remote_host_label">Внешний адрес (необязательно, если указан локальный)</string>
+    <string name="remote_host_hint">https://ha.example.invalid</string>
+    <string name="fill_fields">Укажите токен и хотя бы один адрес: локальный или внешний</string>
+    <string name="checking_local">Проверяю локальную сеть…</string>
+    <string name="local_available">✅ Локальная сеть доступна</string>
+    <string name="trying_remote">⚠️ Локальная сеть недоступна, пробую интернет…</string>
+    <string name="local_unavailable">❌ Локальная сеть недоступна, внешний адрес не указан</string>
+    <string name="connecting_to">Подключение к %s…</string>
+    <string name="connected">✅ Подключено!</string>
+    <string name="connection_failed">❌ Не удалось подключиться</string>
+    <string name="voltage_format">%s V</string>
+    <string name="power_format">%s W</string>
+    <string name="temperature_format">%s°C</string>
+    <string name="placeholder_voltage">— V</string>
+    <string name="placeholder_power">— W</string>
+    <string name="mqtt_host_hint"></string>
+    <string name="mqtt_port_hint">1883</string>
+    <string name="mqtt_username_hint"></string>
+    <string name="mqtt_password_hint">••••••••</string>
+
+    <!-- Типы плиток -->
+    <string-array name="tile_types">
+        <item>Сенсор (отображение данных)</item>
+        <item>Кнопка (управление)</item>
+        <item>Группа (контейнер)</item>
+        <item>Батарея (SOC %)</item>
+        <item>Часы</item>
+        <item>Погода</item>
+    </string-array>
+
+    <!-- Настройки плитки -->
+    <string name="tile_settings_title">Настройка плитки</string>
+    <string name="tile_title_label">Название</string>
+    <string name="tile_title_hint">⚡ Сеть</string>
+    <string name="tile_type_label">Тип плитки</string>
+    <string name="sensors_label">Датчики</string>
+    <string name="select_sensors">Выбрать датчики</string>
+    <string name="none_selected">Не выбрано</string>
+    <string name="delete">Удалить</string>
+
+    <!-- Новые строки -->
+    <string name="loading_devices">Загрузка устройств…</string>
+    <string name="server_unavailable">Сервер недоступен</string>
+    <string name="token_not_set">Токен HA не настроен</string>
+    <string name="skip">Пропустить</string>
+    <string name="advanced_settings">Расширенные настройки</string>
+    <string name="theme_label">Тема оформления</string>
+    <string name="temp_unit_label">Единицы температуры</string>
+    <string name="unit_celsius">Цельсий (°C)</string>
+    <string name="unit_fahrenheit">Фаренгейт (°F)</string>
+
+    <!-- Опции темы -->
+    <string-array name="theme_options">
+        <item>Как в системе</item>
+        <item>Светлая</item>
+        <item>Тёмная</item>
+    </string-array>
+    <string-array name="data_source_options">
+        <item>Auto (WebSocket)</item>
+        <item>MQTT</item>
+    </string-array>
+    <string-array name="operators">
+        <item>&gt;</item>
+        <item>&lt;</item>
+        <item>==</item>
+        <item>!=</item>
+        <item>&gt;=</item>
+        <item>&lt;=</item>
+    </string-array>
+    <!-- Расширенные настройки -->
+    <string name="widget_icon">Иконка виджета</string>
+    <string name="select_icon">Выбрать иконку</string>
+    <string name="upload">Загрузить</string>
+    <string name="font_size_sp">Размер шрифта (sp)</string>
+    <string name="collapsed_sensors">Датчики в свёрнутом виде</string>
+    <string name="expanded_sensors">Датчики в развёрнутом виде</string>
+    <string name="tap_to_select">Нажмите, чтобы выбрать</string>
+    <string name="color_conditions">Условия смены цвета</string>
+    <string name="add_condition">+ Добавить условие</string>
+    <string name="data_source">Источник данных</string>
+    <string name="minus">-</string>
+    <string name="plus">+</string>
+    <string name="default_font_size">16</string>
+</resources>

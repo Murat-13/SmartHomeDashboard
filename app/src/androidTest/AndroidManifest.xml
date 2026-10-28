@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation
+        android:name="com.example.smarthomedashboard.SecretStorePlatformInstrumentation"
+        android:targetPackage="com.example.smarthomedashboard" />
+<instrumentation android:name="com.example.smarthomedashboard.PinPlatformInstrumentation" android:targetPackage="com.example.smarthomedashboard" /><instrumentation android:name="com.example.smarthomedashboard.PinUpgradeInstrumentation" android:targetPackage="com.example.smarthomedashboard" /></manifest>

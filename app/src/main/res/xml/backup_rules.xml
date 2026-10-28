@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Временно исключаем смешанные настройки целиком: в них ещё есть открытые секреты.
+         tiles_prefs.xml и остальные данные сохраняют стандартное участие в backup. -->
+    <exclude domain="sharedpref" path="dashboard_prefs.xml" />
+</full-backup-content>

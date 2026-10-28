@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- User-approved HTTP support for user-configured local Home Assistant addresses.
+         Android domain-config cannot express CIDR ranges.
+         HTTPS/WSS retain normal system certificate verification. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
