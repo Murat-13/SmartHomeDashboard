@@ -46,9 +46,9 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
 
         loadChildButtons()
 
-        adapter = ChildButtonAdapter(childItems) { position, newName ->
+        adapter = ChildButtonAdapter(childItems, onNameChanged = { position, newName ->
             childItems[position].name = newName
-        }
+        })
         rvChildButtons.layoutManager = LinearLayoutManager(this)
         rvChildButtons.adapter = adapter
 
@@ -70,6 +70,12 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
 
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}
             override fun isLongPressDragEnabled(): Boolean = true
+
+            override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                super.clearView(recyclerView, viewHolder)
+                // После перетаскивания номера строк должны соответствовать новому порядку.
+                recyclerView.post { adapter.notifyItemRangeChanged(0, childItems.size) }
+            }
         })
         itemTouchHelper.attachToRecyclerView(rvChildButtons)
 
@@ -117,9 +123,10 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
                     val entityIds = JSONArray()
                     val names = JSONArray()
 
-                    childItems.forEach { item ->
+                    childItems.forEachIndexed { index, item ->
                         entityIds.put(item.entityId)
-                        names.put(item.name)
+                        // Пустое имя заменяем номером итоговой позиции, как и при создании группы.
+                        names.put(item.name.trim().ifEmpty { (index + 1).toString() })
                     }
 
                     config.put("entity_ids", entityIds)
@@ -140,26 +147,36 @@ data class ChildButtonData(
 
 class ChildButtonAdapter(
     private val items: MutableList<ChildButtonData>,
-    private val onNameChanged: (Int, String) -> Unit
+    private val onNameChanged: (Int, String) -> Unit,
+    // В JVM-тестах нет ресурсов приложения: строку можно собрать программно с теми же id.
+    private val createItemView: (ViewGroup) -> View = { parent ->
+        LayoutInflater.from(parent.context).inflate(R.layout.item_child_button_editor, parent, false)
+    }
 ) : RecyclerView.Adapter<ChildButtonAdapter.ViewHolder>() {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_child_button_editor, parent, false)
-        return ViewHolder(view)
+        return ViewHolder(createItemView(parent))
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = items[position]
         holder.tvOrder.text = "${position + 1}"
         holder.tvEntityId.text = item.entityId
+        // Программная запись текста не должна писать имя в другую строку переиспользованного holder.
+        holder.nameWatcher?.let { holder.etName.removeTextChangedListener(it) }
         holder.etName.setText(item.name)
-
-        holder.etName.setOnFocusChangeListener { _, hasFocus ->
-            if (!hasFocus) {
-                onNameChanged(position, holder.etName.text.toString().trim().ifEmpty { (position + 1).toString() })
+        // Имя сохраняем при каждом изменении: «Сохранить» не забирает фокус у поля.
+        // Позицию берём в момент ввода: после перетаскивания строка не перерисовывается.
+        holder.nameWatcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val current = holder.bindingAdapterPosition
+                if (current != RecyclerView.NO_POSITION && current < items.size) {
+                    onNameChanged(current, s?.toString().orEmpty())
+                }
             }
-        }
+        }.also { holder.etName.addTextChangedListener(it) }
 
         holder.ivDrag.setOnTouchListener { _, _ ->
             // Drag handle — ItemTouchHelper обрабатывает
@@ -174,5 +191,6 @@ class ChildButtonAdapter(
         val tvEntityId: TextView = view.findViewById(R.id.tvChildEntityId)
         val etName: EditText = view.findViewById(R.id.etChildName)
         val ivDrag: ImageView = view.findViewById(R.id.ivDragHandle)
+        var nameWatcher: android.text.TextWatcher? = null
     }
 }
