@@ -45,10 +45,26 @@ class MqttRemovalMigrationTest {
             .putString("mqtt_password_transfer_phase", "verified")
             .putString("mqtt_host", "mqtt.example.invalid").putInt("mqtt_port", 1883)
             .putString("mqtt_username", "FAKE-USER").putString("unrelated", "kept").commit())
-        assertEquals(SecretStore.Status.SUCCESS, store.write(SecretStore.Slot.HA_TOKEN, "FAKE-HA"))
-        assertEquals(SecretStore.Status.SUCCESS, store.write(SecretStore.Slot.WEATHER_KEY, "FAKE-WEATHER"))
-        // Historical slot: production no longer writes new values here after removal.
-        assertEquals(SecretStore.Status.SUCCESS, store.write(SecretStore.Slot.MQTT_PASSWORD, "FAKE-RETIRED"))
+        // Historical format is constructed independently of current slot enum values/order.
+        // This catches accidental changes to bit 2, format/key versions and AAD.
+        val header = java.nio.ByteBuffer.allocate(16)
+            .putInt(0x53485353).putInt(1).putInt(1).putInt(7).array()
+        val payload = java.io.ByteArrayOutputStream().also { bytes ->
+            java.io.DataOutputStream(bytes).use { output ->
+                for (value in listOf("FAKE-HA", "FAKE-RETIRED", "FAKE-WEATHER")) {
+                    val encoded = value.toByteArray(Charsets.UTF_8)
+                    output.writeInt(encoded.size)
+                    output.write(encoded)
+                }
+            }
+        }.toByteArray()
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, keys.create())
+        cipher.updateAAD("SmartHomeDashboard/network-secrets".toByteArray(Charsets.UTF_8) + header)
+        val encrypted = cipher.doFinal(payload)
+        payload.fill(0)
+        file.bytes = header + cipher.iv + java.nio.ByteBuffer.allocate(4).putInt(encrypted.size).array() + encrypted
+        assertEquals("FAKE-RETIRED", store.read(SecretStore.Slot.MQTT_PASSWORD).value)
     }
     private fun assertPreserved() {
         assertEquals("FAKE-HA", store.read(SecretStore.Slot.HA_TOKEN).value)
