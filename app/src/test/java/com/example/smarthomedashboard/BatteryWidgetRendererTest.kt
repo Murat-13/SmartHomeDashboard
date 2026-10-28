@@ -64,14 +64,14 @@ class BatteryWidgetRendererTest {
 
     @Suppress("UNCHECKED_CAST")
     private fun invokeActivity(tile: TileEntity, card: FrameLayout) {
-        MainActivity::class.java.getDeclaredField("singleStates").apply {
+        ArchitectureTestAccess.field("singleStates").apply {
             isAccessible = true
             val target = get(activity) as MutableMap<String, String>
             target.clear()
             target.putAll(states)
         }
         try {
-            MainActivity::class.java.getDeclaredMethod("updateBatteryWidget",
+            ArchitectureTestAccess.method(activity, "updateBatteryWidget",
                 TileEntity::class.java, FrameLayout::class.java).apply {
                 isAccessible = true
                 invoke(activity, tile, card)

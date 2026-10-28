@@ -47,19 +47,19 @@ class SensorContentRendererTest {
     @Suppress("UNCHECKED_CAST")
     private fun invokeActivity(tile: TileEntity, ids: List<String>, expanded: Boolean, container: LinearLayout) {
         for ((name, values) in listOf("entityAttributes" to attributes, "singleStates" to states)) {
-            MainActivity::class.java.getDeclaredField(name).apply {
+            ArchitectureTestAccess.field(name).apply {
                 isAccessible = true
                 val target = get(activity) as MutableMap<String, Any>
                 target.clear()
                 target.putAll(values)
             }
         }
-        MainActivity::class.java.getDeclaredField("tempUnit").apply {
+        ArchitectureTestAccess.field("tempUnit").apply {
             isAccessible = true
             set(activity, targetTemperature)
         }
         try {
-            MainActivity::class.java.getDeclaredMethod("buildSensorContent", TileEntity::class.java,
+            ArchitectureTestAccess.method(activity, "buildSensorContent", TileEntity::class.java,
                 List::class.java, Boolean::class.javaPrimitiveType, LinearLayout::class.java).apply {
                 isAccessible = true
                 invoke(activity, tile, ids, expanded, container)

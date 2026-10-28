@@ -41,7 +41,7 @@ class SensorExpansionSessionTest {
             left -= step
         }
     }
-    private fun animations() = ReflectionHelpers.getField<Map<View, ValueAnimator>>(session, "animations")
+    private fun animations() = ArchitectureTestAccess.getField<Map<View, ValueAnimator>>(session, "animations")
 
     @Test fun closeKeepsOwnSnapshotWhileAnotherCardOpens() {
         val a = view()
@@ -131,4 +131,4 @@ class SensorExpansionSessionTest {
 
 // Фикстуры читают нового владельца; старые assertions состояния/геометрии не меняются.
 internal fun sensorSessionFixture(activity: MainActivity): SensorExpansionSession =
-    ReflectionHelpers.getField(activity, "sensorExpansion")
+    ArchitectureTestAccess.getField(activity, "sensorExpansion")

@@ -49,10 +49,10 @@ class SensorDismissWindowTest {
             // Этот сокет не открывает соединений.
         }
     }
-    private fun set(target: Any, name: String, value: Any?) = ReflectionHelpers.setField(target, name, value)
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun set(target: Any, name: String, value: Any?) = ArchitectureTestAccess.setField(target, name, value)
+    private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
-        MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(activity).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
     } catch (e: InvocationTargetException) { throw e.targetException }
 
@@ -84,8 +84,8 @@ class SensorDismissWindowTest {
         root.addView(panel)
         root.addView(dim, FrameLayout.LayoutParams(-1, -1))
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         get<MutableMap<String, String>>("singleStates").putAll(mapOf("weather.home" to "sunny", "sensor.temp" to "12.5"))
         get<MutableMap<String, JSONObject>>("entityAttributes")["weather.home"] = JSONObject()
             .put("temperature", 20).put("forecast", JSONArray().apply {
@@ -95,7 +95,7 @@ class SensorDismissWindowTest {
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
-        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         invoke("refreshBottomPanel")
         controller.visible()
         advance(400)
@@ -384,7 +384,7 @@ class SensorDismissWindowTest {
             (get(activity) as androidx.fragment.app.FragmentController).attachHost(null)
         }
         (activity.lifecycle as LifecycleRegistry).currentState = Lifecycle.State.CREATED
-        ReflectionHelpers.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry").currentState = Lifecycle.State.CREATED
+        ArchitectureTestAccess.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry").currentState = Lifecycle.State.CREATED
         controller.destroy()
         send(MotionEvent.ACTION_UP, point(view("button")))
         advance(31000)

@@ -190,13 +190,13 @@ class TileSettingsActivityTest {
         main.resources.displayMetrics.heightPixels = 1200
         val panel = android.widget.FrameLayout(main)
         val set = { name: String, value: Any ->
-            org.robolectric.util.ReflectionHelpers.setField(main, name, value)
+            ArchitectureTestAccess.setField(main, name, value)
         }
         set("tileManager", TileManager(main))
         set("bottomPanel", panel)
         set("dimOverlay", android.view.View(main))
         set("yandexWeatherManager", YandexWeatherManager(main))
-        MainActivity::class.java.getDeclaredMethod("refreshBottomPanel").apply {
+        ArchitectureTestAccess.method(main, "refreshBottomPanel").apply {
             isAccessible = true
             invoke(main)
         }

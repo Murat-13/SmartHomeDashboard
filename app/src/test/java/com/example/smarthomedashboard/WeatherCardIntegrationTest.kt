@@ -47,15 +47,12 @@ class WeatherCardIntegrationTest {
     private val yandex by lazy { YandexWeatherManager(activity) }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply {
-            isAccessible = true
-            set(activity, value)
-        }
+        ArchitectureTestAccess.setField(activity, name, value)
     }
 
     private fun invoke(name: String, vararg args: Any?): Any? {
         try {
-            return MainActivity::class.java.declaredMethods.single {
+            return ArchitectureTestAccess.methods(activity).single {
                 it.name == name && it.parameterTypes.size == args.size
             }.apply { isAccessible = true }.invoke(activity, *args)
         } catch (error: InvocationTargetException) {
@@ -359,7 +356,7 @@ class WeatherCardIntegrationTest {
             isAccessible = true; set(client, socket)
         }
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
-        ReflectionHelpers.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         listOf(false, true).forEach { useYandex ->
             panel.removeAllViews()
             val card = open(useYandex = useYandex)
@@ -395,7 +392,7 @@ class WeatherCardIntegrationTest {
             assertEquals(if (index == 0) listOf("11:00", "❄️", "-1°")
                 else listOf("Прогноз временно недоступен\n(Проверьте атрибуты в HA)"), textValues(row))
             assertEquals(before, attrs.toString())
-            val cache = ReflectionHelpers.getField<Map<String, JSONObject>>(activity, "entityAttributes")
+            val cache = ArchitectureTestAccess.getField<Map<String, JSONObject>>(activity, "entityAttributes")
             assertSame(bad, cache.getValue("weather.home").get("forecast"))
             collapse(card)
             assertCompact(card, "-3°C", "Моя погода", "❄️")

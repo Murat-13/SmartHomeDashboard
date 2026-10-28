@@ -12,7 +12,7 @@ import org.robolectric.annotation.Config
 class SensorConfigResolverTest {
     // These cases first passed against the original methods before extraction.
     // Also check that Activity wrappers keep the same tile and mode.
-    private val activity by lazy { MainActivity() }
+    private val activity by lazy { org.robolectric.Robolectric.buildActivity(MainActivity::class.java).get() }
 
     private fun tile(config: String = "{}", legacy: String = "[]", title: String = "Other") =
         TileEntity("tile-id", "sensor", "grid", title, 1, 2, 100, 80,
@@ -20,7 +20,7 @@ class SensorConfigResolverTest {
 
     @Suppress("UNCHECKED_CAST")
     private fun ids(tile: TileEntity, expanded: Boolean): List<String> {
-        val method = MainActivity::class.java.getDeclaredMethod(
+        val method = ArchitectureTestAccess.method(activity,
             if (expanded) "getExpandedSensorIds" else "getCollapsedSensorIds", TileEntity::class.java)
         method.isAccessible = true
         val before = tile.copy()
@@ -33,7 +33,7 @@ class SensorConfigResolverTest {
 
     @Suppress("UNCHECKED_CAST")
     private fun configs(tile: TileEntity, expanded: Boolean): List<SensorConfig> {
-        val method = MainActivity::class.java.getDeclaredMethod(
+        val method = ArchitectureTestAccess.method(activity,
             "loadSensorConfigs", TileEntity::class.java, Boolean::class.javaPrimitiveType)
         method.isAccessible = true
         val before = tile.copy()

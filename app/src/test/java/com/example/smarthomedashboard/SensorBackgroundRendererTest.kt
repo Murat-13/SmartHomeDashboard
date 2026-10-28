@@ -45,14 +45,14 @@ class SensorBackgroundRendererTest {
     // Те же проверки выполняются до переноса на исходном методе, затем на его делегировании.
     @Suppress("UNCHECKED_CAST")
     private fun render(tile: TileEntity, card: FrameLayout) {
-        MainActivity::class.java.getDeclaredField("singleStates").apply {
+        ArchitectureTestAccess.field("singleStates").apply {
             isAccessible = true
             (get(activity) as MutableMap<String, String>).apply {
                 clear()
                 putAll(states)
             }
         }
-        MainActivity::class.java.getDeclaredMethod(
+        ArchitectureTestAccess.method(activity,
             "updateNormalSensorWidget", TileEntity::class.java, FrameLayout::class.java
         ).apply {
             isAccessible = true

@@ -88,11 +88,11 @@ class ButtonStateIntegrationTest {
     }
 
     private fun set(target: Any, name: String, value: Any?) {
-        target.javaClass.getDeclaredField(name).apply { isAccessible = true; set(target, value) }
+        ArchitectureTestAccess.setField(target, name, value)
     }
 
     private fun invoke(target: Any, name: String, vararg args: Any?): Any? = try {
-        target.javaClass.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(target).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(target, *args)
     } catch (error: InvocationTargetException) {
         throw error.targetException
@@ -115,20 +115,20 @@ class ButtonStateIntegrationTest {
         root.addView(dim)
         activity.window.setContentView(root)
         // XML AppCompat здесь не загружается; findViewById работает с программным деревом окна.
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         set(activity, "dimOverlay", dim)
         val client = HomeAssistantWebSocket("http://localhost/test-only", "test-token", { _, _, _ -> }, {}, {})
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
-        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         invoke(activity, "refreshBottomPanel")
     }
 
     private fun view(id: String): Button = panel.findViewWithTag(id)
     private fun color(id: String): Int {
-        val filter = ReflectionHelpers.getField<PorterDuffColorFilter>(view(id).background, "mTintFilter")
+        val filter = ArchitectureTestAccess.getField<PorterDuffColorFilter>(view(id).background, "mTintFilter")
         return shadowOf(filter).color
     }
     private fun event(eid: String, state: String) {
@@ -214,7 +214,7 @@ class ButtonStateIntegrationTest {
         listOf("{}", """{"entity_ids":[]}""", "{broken", """{"entity_ids":["switch.a",null]}""").forEach { config ->
             val tile = manager.loadTiles().single().copy(config = config)
             manager.updateTile(tile)
-            ReflectionHelpers.getField<MutableMap<String, MutableMap<String, String>>>(activity, "groupStates")["group"] =
+            ArchitectureTestAccess.getField<MutableMap<String, MutableMap<String, String>>>(activity, "groupStates")["group"] =
                 mutableMapOf("switch.a" to "on")
             returned()
             assertEquals(0xFF424242.toInt(), color("group"))
@@ -284,10 +284,10 @@ class ButtonStateIntegrationTest {
         send(view("group"), MotionEvent.ACTION_DOWN)
         shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
         send(view("group"), MotionEvent.ACTION_UP)
-        assertEquals("group", ReflectionHelpers.getField<String>(activity, "expandedGroupId"))
-        val children = ReflectionHelpers.getField<List<Button>>(activity, "expandedChildButtons")
+        assertEquals("group", ArchitectureTestAccess.getField<String>(activity, "expandedGroupId"))
+        val children = ArchitectureTestAccess.getField<List<Button>>(activity, "expandedChildButtons")
         assertEquals(listOf("switch.b", "light.a"), children.map { it.tag })
-        val tint = ReflectionHelpers.getField<PorterDuffColorFilter>(children[1].background, "mTintFilter")
+        val tint = ArchitectureTestAccess.getField<PorterDuffColorFilter>(children[1].background, "mTintFilter")
         assertEquals(0x8033CC33.toInt(), shadowOf(tint).color)
         assertTrue(calls().isEmpty())
         children[1].performClick()

@@ -41,20 +41,20 @@ class HaStatusLifecycleTest {
         activity.window.setContentView(FrameLayout(activity).apply {
             addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         })
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         return activity
     }
 
     private fun lifecycle(activity: MainActivity, method: String) {
-        MainActivity::class.java.getDeclaredMethod(method).apply { isAccessible = true }.invoke(activity)
+        ArchitectureTestAccess.method(activity, method).apply { isAccessible = true }.invoke(activity)
         shadowOf(Looper.getMainLooper()).idle()
     }
     private fun text(activity: MainActivity) =
         activity.findViewById<TextView>(R.id.tvHaLiveStatus).text.toString()
 
     private fun client(activity: MainActivity): HomeAssistantWebSocket? =
-        MainActivity::class.java.getDeclaredMethod("getWebSocket").apply {
+        ArchitectureTestAccess.method(activity, "getWebSocket").apply {
             isAccessible = true
         }.invoke(activity) as HomeAssistantWebSocket?
 
@@ -67,10 +67,10 @@ class HaStatusLifecycleTest {
         val owner = ViewModelProvider(activity)[MainViewModel::class.java]
         assertNull(client(activity))
         val first = artificialClient()
-        ReflectionHelpers.setField(owner, "webSocket", first)
+        ArchitectureTestAccess.setField(owner, "webSocket", first)
         assertSame(first, client(activity))
         val second = artificialClient()
-        ReflectionHelpers.setField(owner, "webSocket", second)
+        ArchitectureTestAccess.setField(owner, "webSocket", second)
         assertSame(second, client(activity))
         owner.disconnectWebSocket()
         assertNull(client(activity))
@@ -80,9 +80,9 @@ class HaStatusLifecycleTest {
         val old = screen()
         val owner = ViewModelProvider(old)[MainViewModel::class.java]
         val existing = artificialClient()
-        ReflectionHelpers.setField(owner, "webSocket", existing)
+        ArchitectureTestAccess.setField(owner, "webSocket", existing)
         val next = screen()
-        ReflectionHelpers.setField(next, "viewModel\$delegate", lazy { owner })
+        ArchitectureTestAccess.setField(next, "viewModel\$delegate", lazy { owner })
         assertSame(existing, client(next))
         assertSame(existing, client(old))
         owner.disconnectWebSocket()
@@ -120,11 +120,45 @@ class HaStatusLifecycleTest {
         lifecycle(old, "onStop")
         val next = screen()
         // Общий ViewModel имитирует сохранённого владельца при recreation.
-        ReflectionHelpers.setField(next, "viewModel\$delegate", lazy { owner })
+        ArchitectureTestAccess.setField(next, "viewModel\$delegate", lazy { owner })
         owner.publishStatus("Повторное подключение")
         lifecycle(next, "onStart")
         assertEquals("Повторное подключение", text(next))
         assertEquals("Ожидание", text(old))
         lifecycle(next, "onStop")
+    }
+
+    @Test fun destroyingScreenReleasesCallbacksWhileRetainedDataReachesReplacement() {
+        val old = screen()
+        val owner = ViewModelProvider(old)[MainViewModel::class.java]
+        ArchitectureTestAccess.method(old, "connectWithHaToken", String::class.java,
+            String::class.java, String::class.java).apply { isAccessible = true }
+            .invoke(old, "http://[", "", "ARTIFICIAL-TOKEN")
+        val socket = requireNotNull(owner.getWebSocket())
+        ArchitectureTestAccess.getField<LifecycleRegistry>(old, "mFragmentLifecycleRegistry")
+            .currentState = Lifecycle.State.CREATED
+        lifecycle(old, "onDestroy")
+        for (name in listOf("stateCallback", "forecastCallback", "connectedCallback", "entitiesCallback")) {
+            assertNull(ArchitectureTestAccess.getField<Any?>(owner, name))
+        }
+        // При отсутствии UI входящее событие обновляет данные, не обращаясь к старым Views.
+        val event: (String, String, org.json.JSONObject) -> Unit =
+            ArchitectureTestAccess.getField(socket, "onStateChanged")
+        event("light.retained", "on", org.json.JSONObject().put("friendly_name", "Retained"))
+        val next = screen()
+        ArchitectureTestAccess.setField(next, "viewModel\$delegate", lazy { owner })
+        val states = ArchitectureTestAccess.getField<Map<String, String>>(next, "singleStates")
+        assertSame(owner.devices.singleStates, states)
+        assertEquals("on", states["light.retained"])
+        assertEquals("Retained", owner.devices.entityAttributes["light.retained"]?.getString("friendly_name"))
+        lifecycle(next, "onStart")
+        owner.publishStatus("Переподключение")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Переподключение", text(next))
+        lifecycle(next, "onStop")
+        ArchitectureTestAccess.getField<LifecycleRegistry>(next, "mFragmentLifecycleRegistry")
+            .currentState = Lifecycle.State.CREATED
+        lifecycle(next, "onDestroy")
+        owner.disconnectWebSocket()
     }
 }

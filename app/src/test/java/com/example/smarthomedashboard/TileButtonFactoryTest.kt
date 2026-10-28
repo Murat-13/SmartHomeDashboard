@@ -96,15 +96,15 @@ class TileButtonFactoryTest {
     ) = TileEntity(id, type, "bottom_panel", title, 0, 0, 1, 1, config = config)
 
     private fun set(target: Any, name: String, value: Any?) {
-        target.javaClass.getDeclaredField(name).apply { isAccessible = true; set(target, value) }
+        ArchitectureTestAccess.setField(target, name, value)
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun syncStates() {
-        (ReflectionHelpers.getField<Any>(activity, "singleStates") as MutableMap<String, String>).apply {
+        (ArchitectureTestAccess.getField<Any>(activity, "singleStates") as MutableMap<String, String>).apply {
             clear(); putAll(states)
         }
-        (ReflectionHelpers.getField<Any>(activity, "groupStates") as
+        (ArchitectureTestAccess.getField<Any>(activity, "groupStates") as
             MutableMap<String, MutableMap<String, String>>).apply {
             clear(); putAll(groups)
         }
@@ -118,7 +118,7 @@ class TileButtonFactoryTest {
         set(activity, "tileManager", manager)
         syncStates()
         return try {
-            MainActivity::class.java.getDeclaredMethod("createTileButton", TileEntity::class.java).apply {
+            ArchitectureTestAccess.method(activity, "createTileButton", TileEntity::class.java).apply {
                 isAccessible = true
             }.invoke(activity, tile) as Button
         } catch (error: InvocationTargetException) {
@@ -127,7 +127,7 @@ class TileButtonFactoryTest {
     }
 
     private fun tint(button: Button): Int {
-        val filter = ReflectionHelpers.getField<PorterDuffColorFilter>(button.background, "mTintFilter")
+        val filter = ArchitectureTestAccess.getField<PorterDuffColorFilter>(button.background, "mTintFilter")
         return shadowOf(filter).color
     }
 
@@ -139,7 +139,7 @@ class TileButtonFactoryTest {
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
-        org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         return socket
     }
 
@@ -298,12 +298,12 @@ class TileButtonFactoryTest {
         create(tile(type = "group", id = "group", config = """{"entity_ids":["switch.first"]}"""))
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue(socket.messages.isEmpty())
-        assertEquals("on", ReflectionHelpers.getField<Map<String, String>>(activity, "singleStates")["switch.test"])
+        assertEquals("on", ArchitectureTestAccess.getField<Map<String, String>>(activity, "singleStates")["switch.test"])
         assertEquals("off", groups["group"]?.get("switch.first"))
     }
 
     private fun invoke(name: String, vararg args: Any?) {
-        val method = MainActivity::class.java.declaredMethods.single {
+        val method = ArchitectureTestAccess.methods(activity).single {
             it.name == name && it.parameterTypes.size == args.size
         }
         try {
@@ -366,7 +366,7 @@ class TileButtonFactoryTest {
             event.recycle()
         }
         assertTrue(socket.messages.isEmpty())
-        assertNull(ReflectionHelpers.getField<String?>(activity, "expandedGroupId"))
+        assertNull(ArchitectureTestAccess.getField<String?>(activity, "expandedGroupId"))
     }
 
     @Test fun badGroupMemberPreventsAllCommandsIncludingEarlierValidMembers() {
@@ -491,8 +491,8 @@ class TileButtonFactoryTest {
         val button = create(group)
         set(activity, "expandedGroupId", "already-open")
         invoke("expandChildButtons", group, button)
-        assertEquals("already-open", ReflectionHelpers.getField<String>(activity, "expandedGroupId"))
-        assertTrue(ReflectionHelpers.getField<List<Button>>(activity, "expandedChildButtons").isEmpty())
+        assertEquals("already-open", ArchitectureTestAccess.getField<String>(activity, "expandedGroupId"))
+        assertTrue(ArchitectureTestAccess.getField<List<Button>>(activity, "expandedChildButtons").isEmpty())
         assertTrue(socket.messages.isEmpty())
         assertEquals("Не удалось прочитать конфигурацию плитки. Откройте настройки.",
             org.robolectric.shadows.ShadowToast.getTextOfLatestToast())
