@@ -302,6 +302,26 @@
                 android:textColor="#BBBBBB"
                 android:buttonTint="#4CAF50" />
 
+            <!-- Применяется сразу, без «Сохранить»: это системная настройка Android. -->
+            <CheckBox
+                android:id="@+id/cbHomeScreen"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Открывать панель автоматически (главный экран)"
+                android:textColor="#BBBBBB"
+                android:buttonTint="#4CAF50" />
+
+            <TextView
+                android:id="@+id/tvHomeScreenStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="32dp"
+                android:minHeight="48dp"
+                android:gravity="center_vertical"
+                android:textColor="#9E9E9E"
+                android:textSize="14sp" />
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
