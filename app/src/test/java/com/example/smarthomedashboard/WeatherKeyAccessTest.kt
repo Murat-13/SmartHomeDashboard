@@ -261,6 +261,7 @@ class WeatherKeyAccessTest {
             assertNull(legacy.value)
         } finally { pool.shutdownNow() }
     }
+    // The retired slot is seeded only to verify compatibility with existing containers.
     @Test fun realJcaSharedContainerPreservesHaAndMqttSlots() {
         val store = weatherTestStore()
         assertEquals(SecretStore.Status.SUCCESS, store.write(SecretStore.Slot.HA_TOKEN, "FAKE-HA"))

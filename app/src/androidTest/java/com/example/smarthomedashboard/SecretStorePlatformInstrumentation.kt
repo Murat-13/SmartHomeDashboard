@@ -138,40 +138,21 @@ class SecretStorePlatformInstrumentation : Instrumentation() {
             check(testPrefs.getString("yandex_last_temp", null) == "FAKE-CACHE")
             check(tokens.read().value == "FAKE-PLATFORM-NEW")
             check(store().read(SecretStore.Slot.MQTT_PASSWORD).value == "FAKE-UNRELATED-MQTT")
-            step = "mqtt-dormant-bridge"
-            // Только случайные test prefs/контейнер: MQTT-клиент и connect не создаём.
-            check(store().delete(SecretStore.Slot.MQTT_PASSWORD) == SecretStore.Status.SUCCESS)
-            check(testPrefs.edit().putString("mqtt_password", "  FAKE-MQTT-LEGACY  ")
-                .putString("mqtt_host", "").putInt("mqtt_port", 0)
-                .putString("mqtt_username", "  ").commit())
-            val mqtt = MqttCredentialAccess(object : MqttPasswordSlot {
-                override fun read() = store().read(SecretStore.Slot.MQTT_PASSWORD)
-                override fun write(value: String) = store().write(SecretStore.Slot.MQTT_PASSWORD, value)
-            }, PreferenceMqttLegacy({ testPrefs }, { "mqtt.example.invalid" }, { "FAKE-USER" }, { "FAKE-MQTT-DEFAULT" }),
+            step = "retired-mqtt-removal"
+            check(testPrefs.edit().putString("mqtt_password", "FAKE-RETIRED-OPEN")
+                .putString("mqtt_password_transfer_phase", "verified")
+                .putString("mqtt_host", "mqtt.example.invalid").putInt("mqtt_port", 1883)
+                .putString("mqtt_username", "FAKE-RETIRED-USER").commit())
+            val removal = MqttRemovalMigration(testPrefs,
+                { store().delete(SecretStore.Slot.MQTT_PASSWORD) },
                 { check(Looper.myLooper() != Looper.getMainLooper()) })
-            val firstMqtt = mqtt.read()
-            check(firstMqtt.status == MqttCredentialAccess.Status.READY && firstMqtt.value == "  FAKE-MQTT-LEGACY  ")
-            val mqttConfiguration = checkNotNull(firstMqtt.configuration)
-            check(mqttConfiguration.host == "" && mqttConfiguration.port == 0 && mqttConfiguration.username == "  ")
-            check(!testPrefs.contains("mqtt_password") && !testPrefs.contains("mqtt_password_transfer_phase"))
-            check(mqtt.save("FAKE-MQTT-NEW", mqttConfiguration, firstMqtt.revision).status == MqttCredentialAccess.Status.READY)
-            check(mqtt.read().value == "FAKE-MQTT-NEW")
+            check(removal.run())
+            check(MqttRemovalMigration.KEYS.none(testPrefs::contains))
+            check(store().read(SecretStore.Slot.MQTT_PASSWORD).status == SecretStore.Status.ABSENT)
             check(tokens.read().value == "FAKE-PLATFORM-NEW")
             check(store().read(SecretStore.Slot.WEATHER_KEY).value == "")
             check(testPrefs.getString("yandex_last_temp", null) == "FAKE-CACHE")
-            step = "mqtt-missing-and-empty"
-            check(store().delete(SecretStore.Slot.MQTT_PASSWORD) == SecretStore.Status.SUCCESS)
-            check(testPrefs.edit().remove("mqtt_host").remove("mqtt_port").remove("mqtt_username").commit())
-            check(mqtt.read().value == "FAKE-MQTT-DEFAULT")
-            check(!testPrefs.contains("mqtt_password"))
-            check(testPrefs.getString("mqtt_host", null) == "mqtt.example.invalid")
-            check(testPrefs.getInt("mqtt_port", 0) == 1883)
-            check(store().delete(SecretStore.Slot.MQTT_PASSWORD) == SecretStore.Status.SUCCESS)
-            check(testPrefs.edit().putString("mqtt_password", "").commit())
-            check(mqtt.read().value == "")
-            check(!testPrefs.contains("mqtt_password") && !testPrefs.contains("mqtt_password_transfer_phase"))
-            check(tokens.read().value == "FAKE-PLATFORM-NEW")
-            check(store().read(SecretStore.Slot.WEATHER_KEY).value == "")
+            check(removal.run())
             val migrated = base.readBytes()
             step = "lost-test-key"
             keyStore.deleteEntry(alias)
@@ -184,8 +165,11 @@ class SecretStorePlatformInstrumentation : Instrumentation() {
             check(weather.read().status == WeatherKeyAccess.Status.SECURE_ERROR)
             check(weather.save("FAKE-NO-RECOVERY", emptyConfiguration, WeatherKeyAccess.revision).status == WeatherKeyAccess.Status.SECURE_ERROR)
             check(!keyStore.containsAlias(alias) && migrated.contentEquals(base.readBytes()))
-            check(mqtt.read().status == MqttCredentialAccess.Status.SECURE_ERROR)
-            check(mqtt.save("FAKE-NO-RECOVERY", mqttConfiguration, MqttCredentialAccess.revision).status == MqttCredentialAccess.Status.SECURE_ERROR)
+            check(testPrefs.edit().remove(MqttRemovalMigration.COMPLETED)
+                .putString("mqtt_password", "FAKE-RETIRED-RETRY").commit())
+            check(!removal.run())
+            check(!testPrefs.contains("mqtt_password"))
+            check(!testPrefs.getBoolean(MqttRemovalMigration.COMPLETED, false))
             check(!keyStore.containsAlias(alias) && migrated.contentEquals(base.readBytes()))
             passed = true
         } catch (_: AssertionError) {

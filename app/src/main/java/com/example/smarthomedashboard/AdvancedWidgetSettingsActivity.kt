@@ -36,7 +36,6 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
     private lateinit var rvCollapsedSensors: RecyclerView
     private lateinit var rvExpandedSensors: RecyclerView
     private lateinit var etFontSize: EditText
-    private lateinit var spinnerDataSource: Spinner
     private lateinit var rvColorRules: RecyclerView
 
     // Адаптеры
@@ -65,7 +64,6 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
         rvExpandedSensors = findViewById(R.id.rvExpandedSensors)
         rvColorRules = findViewById(R.id.rvColorRules)
         etFontSize = findViewById(R.id.etFontSize)
-        spinnerDataSource = findViewById(R.id.spinnerDataSource)
 
         findViewById<Toolbar>(R.id.toolbar).setNavigationOnClickListener {
             finish()
@@ -85,7 +83,6 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
         etFontSize.setText(tile.fontSize.toString())
 
         // Источник данных
-        spinnerDataSource.setSelection(if (tile.sourceType == "mqtt") 1 else 0)
 
         // Загружаем конфигурации датчиков из JSON
         try {
@@ -253,7 +250,6 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
                 val oldTile = tiles[index]
 
                 val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
-                val sourceType = if (spinnerDataSource.selectedItemPosition == 1) "mqtt" else "auto"
                 val config = JSONObject(oldTile.config)
 
                 // Сохраняем свёрнутые конфиги
@@ -294,7 +290,7 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
                 // Сохраняем плитку
                 tiles[index] = oldTile.copy(
                     fontSize = fontSize,
-                    sourceType = sourceType,
+                    sourceType = oldTile.sourceType,
                     config = config.toString(),
                     colorRules = rulesArr.toString()
                 )

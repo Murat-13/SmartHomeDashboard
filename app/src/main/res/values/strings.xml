@@ -21,11 +21,6 @@
     <string name="power_label">Мощность: %s W</string>
     <string name="frequency_label">Частота: %s Hz</string>
     <string name="energy_label">Энергия: %s kWh</string>
-    <string name="mqtt_settings_title">MQTT Настройки</string>
-    <string name="mqtt_ip_label">IP-адрес MQTT брокера</string>
-    <string name="mqtt_port_label">Порт</string>
-    <string name="mqtt_username_label">Логин</string>
-    <string name="mqtt_password_label">Пароль</string>
     <string name="save">Сохранить</string>
     <string name="ha_host_label">Адрес Home Assistant</string>
     <string name="ha_host_hint"></string>
@@ -49,10 +44,6 @@
     <string name="temperature_format">%s°C</string>
     <string name="placeholder_voltage">— V</string>
     <string name="placeholder_power">— W</string>
-    <string name="mqtt_host_hint"></string>
-    <string name="mqtt_port_hint">1883</string>
-    <string name="mqtt_username_hint"></string>
-    <string name="mqtt_password_hint">••••••••</string>
 
     <!-- Типы плиток -->
     <string-array name="tile_types">
@@ -91,10 +82,6 @@
         <item>Светлая</item>
         <item>Тёмная</item>
     </string-array>
-    <string-array name="data_source_options">
-        <item>Auto (WebSocket)</item>
-        <item>MQTT</item>
-    </string-array>
     <string-array name="operators">
         <item>&gt;</item>
         <item>&lt;</item>
@@ -113,7 +100,6 @@
     <string name="tap_to_select">Нажмите, чтобы выбрать</string>
     <string name="color_conditions">Условия смены цвета</string>
     <string name="add_condition">+ Добавить условие</string>
-    <string name="data_source">Источник данных</string>
     <string name="minus">-</string>
     <string name="plus">+</string>
     <string name="default_font_size">16</string>
