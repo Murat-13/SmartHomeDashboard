@@ -244,7 +244,11 @@ class WeatherCardIntegrationTest {
         assertCompact(card, "-2°C", "Снег", "❄️")
         yandex.currentTemp = "9"
         yandex.currentState = "clear"
+        // Посторонний датчик не перерисовывает панель; новые данные Яндекса приходят
+        // через onWeatherUpdated -> updateWeatherViews, как в fetchWeather.
         sensor()
+        assertCompact(card, "-2°C", "Снег", "❄️")
+        invoke("updateWeatherViews")
         assertCompact(card, "9°C", "Ясно")
     }
 

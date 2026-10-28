@@ -117,6 +117,15 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_WIDGET_W = 220
         private const val DEFAULT_WIDGET_H = 180
         private const val DEFAULT_BUTTON_SIZE = 160
+        // Источники блока when в updateTilesForEntity: напряжение задаёт фон плитки «Сеть».
+        private val PZEM_ENTITY_IDS = listOf(
+            "sensor.pzem_energy_monitor_pzem_voltage",
+            "sensor.pzem_energy_monitor_pzem_power",
+            "sensor.pzem_energy_monitor_pzem_current",
+            "sensor.pzem_energy_monitor_pzem_energy",
+            "sensor.pzem_energy_monitor_pzem_frequency",
+            "sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"
+        )
     }
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
@@ -1681,6 +1690,21 @@ class MainActivity : AppCompatActivity() {
         gridOnline = (pzemVoltage.toFloatOrNull() ?: 0f) > 10f
     }
 
+    private var panelEntityTiles: List<TileEntity>? = null
+    private var panelEntityMotionSensor: String? = null
+    private var panelEntityIds: Set<String> = emptySet()
+
+    private fun isShownOnPanel(eid: String): Boolean {
+        // TileManager возвращает тот же список, пока плитки не менялись.
+        val tiles = tileManager.getAllTiles()
+        if (tiles !== panelEntityTiles || motionSensorId != panelEntityMotionSensor) {
+            panelEntityIds = PanelEntityIds.collect(tiles, PZEM_ENTITY_IDS + listOfNotNull(motionSensorId))
+            panelEntityTiles = tiles
+            panelEntityMotionSensor = motionSensorId
+        }
+        return eid in panelEntityIds
+    }
+
     private fun updateTilesForEntity(eid: String, st: String, attrs: JSONObject? = null) {
         // Это полный HA-снимок: unknown/unavailable — настоящие состояния.
         singleStates[eid] = st
@@ -1692,6 +1716,10 @@ class MainActivity : AppCompatActivity() {
             complete.put("forecast", syntheticForecasts[eid] ?: JSONArray())
         }
         entityAttributes[eid] = complete
+
+        // Состояние храним для всех сущностей: плитка, добавленная позже, сразу покажет значение.
+        // А перерисовка нужна только для тех, которые читает панель; HA шлёт события всего дома.
+        if (!isShownOnPanel(eid)) return
 
         if (attrs != null && attrs.length() > 0) {
             
