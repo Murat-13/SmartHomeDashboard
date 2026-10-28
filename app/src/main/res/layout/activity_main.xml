@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#1A1A1A">
@@ -28,26 +29,43 @@
         android:textSize="12sp"
         android:maxLines="2" />
 
-    <!-- Подсказка: как войти в редактирование и что в нём можно. Не перехватывает касания. -->
-    <TextView
-        android:id="@+id/tvPanelHint"
+    <!-- Подсказка: как войти в редактирование и что в нём можно. Текст не перехватывает
+         касания панели; нажимается только крестик. -->
+    <LinearLayout
+        android:id="@+id/panelHint"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="12dp"
         android:layout_marginStart="24dp"
         android:layout_marginEnd="24dp"
-        android:background="#CC000000"
-        android:clickable="false"
-        android:focusable="false"
-        android:gravity="center"
+        android:background="@drawable/bg_hint"
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
         android:paddingStart="16dp"
-        android:paddingTop="8dp"
-        android:paddingEnd="16dp"
-        android:paddingBottom="8dp"
-        android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:visibility="gone" />
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvPanelHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:maxWidth="720dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <ImageButton
+            android:id="@+id/btnPanelHintClose"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Закрыть подсказку"
+            android:src="@drawable/ic_close"
+            app:tint="#B3FFFFFF" />
+    </LinearLayout>
 
     <!-- Затемнение -->
     <View

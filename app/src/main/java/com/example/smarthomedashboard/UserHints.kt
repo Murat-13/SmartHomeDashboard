@@ -2,6 +2,9 @@ package com.example.smarthomedashboard
 
 import android.app.AlertDialog
 import android.content.Context
+import android.view.View
+import androidx.core.content.edit
+import com.google.android.material.snackbar.Snackbar
 
 /** Тексты подсказок для нового пользователя. Собраны в одном месте, чтобы их было просто править. */
 internal object UserHints {
@@ -31,8 +34,61 @@ internal object UserHints {
         • нажатие на плитку датчика или погоды показывает подробности.
 
         Чтобы никто случайно не изменил панель, задайте PIN в настройках.
-        Эта справка всегда доступна: «⚙» → «Как пользоваться».
+        Подсказки на экране закрываются крестиком. Вернуть их и снова открыть эту справку можно в «⚙» → «Подсказки и справка».
     """.trimIndent()
+
+    /** Подсказки, которые пользователь может скрыть крестиком. */
+    enum class Hint(internal val key: String) {
+        HOW_TO_EDIT("hint_hidden_how_to_edit"),
+        EDIT_MODE("hint_hidden_edit_mode"),
+        TILE_TYPE("hint_hidden_tile_type")
+    }
+
+    /** Пользователь уже входил в редактирование: подсказка «как войти» ему не нужна. */
+    const val PREF_EDIT_MODE_FOUND = "edit_mode_found"
+
+    private fun prefs(context: Context) = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
+
+    fun isHidden(context: Context, hint: Hint) = prefs(context).getBoolean(hint.key, false)
+
+    fun setHidden(context: Context, hint: Hint, hidden: Boolean) {
+        prefs(context).edit { putBoolean(hint.key, hidden) }
+    }
+
+    /** Есть ли что возвращать: скрытые крестиком или уже ненужная подсказка новичка. */
+    fun canRestore(context: Context): Boolean {
+        val prefs = prefs(context)
+        return Hint.entries.any { prefs.getBoolean(it.key, false) } || prefs.getBoolean(PREF_EDIT_MODE_FOUND, false)
+    }
+
+    /** Возвращает все подсказки, включая «как войти в редактирование». */
+    fun restoreAll(context: Context) {
+        prefs(context).edit {
+            Hint.entries.forEach { remove(it.key) }
+            putBoolean(PREF_EDIT_MODE_FOUND, false)
+        }
+    }
+
+    /**
+     * Скрывает подсказку и предлагает отмену, как принято в Material: случайное нажатие
+     * не должно заставлять искать настройку возврата.
+     */
+    fun hideWithUndo(anchor: View, hint: Hint, refresh: () -> Unit) {
+        val context = anchor.context
+        setHidden(context, hint, true)
+        refresh()
+        undoNotice(anchor, HIDDEN_NOTICE) {
+            setHidden(context, hint, false)
+            refresh()
+        }
+    }
+
+    const val HIDDEN_NOTICE = "Подсказка скрыта. Вернуть: «⚙» → «Подсказки и справка»"
+
+    // В JVM-тестах нет ресурсов Material для Snackbar: тест подменяет показ и сам нажимает «Отменить».
+    internal var undoNotice: (anchor: View, message: String, undo: () -> Unit) -> Unit = { anchor, message, undo ->
+        Snackbar.make(anchor, message, Snackbar.LENGTH_LONG).setAction("Отменить") { undo() }.show()
+    }
 
     const val SETUP_ADDRESS = "Адрес в домашней сети, например http://192.168.1.10:8123 или " +
         "http://homeassistant.local:8123. Внешний адрес нужен, если панель будет подключаться через " +

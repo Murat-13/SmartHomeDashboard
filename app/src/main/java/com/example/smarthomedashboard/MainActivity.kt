@@ -43,7 +43,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bottomPanel: FrameLayout
     private lateinit var overlayContainer: FrameLayout
     private lateinit var dimOverlay: View
-    private var panelHint: TextView? = null
+    private var panelHint: View? = null
+    private var panelHintText: TextView? = null
+    private var shownPanelHint: UserHints.Hint? = null
 
     // ==================== ДАННЫЕ ====================
     private lateinit var tileManager: TileManager
@@ -112,7 +114,6 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_BUTTON_SIZE = 160
         private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
-        private const val PREF_EDIT_MODE_FOUND = "edit_mode_found"
     }
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
@@ -125,7 +126,7 @@ class MainActivity : AppCompatActivity() {
         overlayContainer = findViewById(R.id.overlayContainer)
         dimOverlay = findViewById(R.id.dimOverlay)
         dimOverlay.setOnClickListener { collapseAll() }
-        panelHint = findViewById(R.id.tvPanelHint)
+        setupPanelHint(findViewById(R.id.panelHint), findViewById(R.id.tvPanelHint), findViewById(R.id.btnPanelHintClose))
 
         tileManager = TileManager(this)
         yandexWeatherManager = YandexWeatherManager(this)
@@ -358,7 +359,7 @@ class MainActivity : AppCompatActivity() {
     private fun enterEditMode() {
         isEditMode = true
         // Пользователь нашёл редактирование: подсказка «как войти» больше не нужна.
-        onboardingPrefs().edit { putBoolean(PREF_EDIT_MODE_FOUND, true) }
+        onboardingPrefs().edit { putBoolean(UserHints.PREF_EDIT_MODE_FOUND, true) }
         refreshBottomPanel()
         Toast.makeText(this, "Режим редактирования", Toast.LENGTH_SHORT).show()
     }
@@ -1417,7 +1418,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             prefs.edit {
                 putBoolean(PREF_WELCOME_SHOWN, true)
-                putBoolean(PREF_EDIT_MODE_FOUND, true)
+                putBoolean(UserHints.PREF_EDIT_MODE_FOUND, true)
             }
         }
         prefs.edit { putBoolean(PREF_STARTER_TILES_DONE, true) }
@@ -1430,15 +1431,29 @@ class MainActivity : AppCompatActivity() {
         UserHints.showWelcome(this)
     }
 
-    private fun updatePanelHint() {
-        val hint = panelHint ?: return
-        val text = when {
-            isEditMode -> UserHints.EDIT_MODE
-            !onboardingPrefs().getBoolean(PREF_EDIT_MODE_FOUND, false) -> UserHints.HOW_TO_EDIT
-            else -> null
+    private fun setupPanelHint(container: View, text: TextView, close: View) {
+        panelHint = container
+        panelHintText = text
+        close.setOnClickListener {
+            val shown = shownPanelHint ?: return@setOnClickListener
+            UserHints.hideWithUndo(container, shown, ::updatePanelHint)
         }
-        hint.text = text.orEmpty()
-        hint.isVisible = text != null
+    }
+
+    private fun updatePanelHint() {
+        val container = panelHint ?: return
+        val hint = when {
+            isEditMode -> UserHints.Hint.EDIT_MODE
+            !onboardingPrefs().getBoolean(UserHints.PREF_EDIT_MODE_FOUND, false) -> UserHints.Hint.HOW_TO_EDIT
+            else -> null
+        }?.takeUnless { UserHints.isHidden(this, it) }
+        shownPanelHint = hint
+        panelHintText?.text = when (hint) {
+            UserHints.Hint.EDIT_MODE -> UserHints.EDIT_MODE
+            UserHints.Hint.HOW_TO_EDIT -> UserHints.HOW_TO_EDIT
+            else -> ""
+        }
+        container.isVisible = hint != null
     }
 
     // ==================== ДАННЫЕ С ДАТЧИКОВ ====================

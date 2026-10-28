@@ -61,13 +61,36 @@
                 android:entries="@array/tile_types" />
 
             <!-- Что делает выбранный тип и какие устройства выбирать -->
-            <TextView
-                android:id="@+id/tvTileTypeHint"
+            <LinearLayout
+                android:id="@+id/tileTypeHint"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:textColor="#9E9E9E"
-                android:textSize="14sp" />
+                android:background="@drawable/bg_hint"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="0dp">
+
+                <TextView
+                    android:id="@+id/tvTileTypeHint"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp"
+                    android:textColor="#BDBDBD"
+                    android:textSize="14sp" />
+
+                <ImageButton
+                    android:id="@+id/btnTileTypeHintClose"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Закрыть подсказку"
+                    android:src="@drawable/ic_close"
+                    app:tint="#99FFFFFF" />
+            </LinearLayout>
 
             <!-- Размер кнопки -->
             <TextView

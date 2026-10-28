@@ -65,9 +65,18 @@ class TileSettingsActivity : PinProtectedActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         spinnerType.adapter = adapter
 
+        val typeHint = findViewById<View>(R.id.tileTypeHint)
+        fun updateTypeHint() {
+            findViewById<TextView>(R.id.tvTileTypeHint).text = UserHints.tileType(typeAt(spinnerType.selectedItemPosition))
+            typeHint.visibility = if (UserHints.isHidden(this, UserHints.Hint.TILE_TYPE)) View.GONE else View.VISIBLE
+        }
+        findViewById<View>(R.id.btnTileTypeHintClose).setOnClickListener {
+            UserHints.hideWithUndo(typeHint, UserHints.Hint.TILE_TYPE, ::updateTypeHint)
+        }
+
         spinnerType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                findViewById<TextView>(R.id.tvTileTypeHint)?.text = UserHints.tileType(typeAt(position))
+                updateTypeHint()
                 val isGroup = position == 2 && tileId != null
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 // Показываем размер кнопки только для кнопок и групп

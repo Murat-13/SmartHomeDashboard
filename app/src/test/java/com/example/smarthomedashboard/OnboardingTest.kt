@@ -31,7 +31,17 @@ class OnboardingTest {
     }
     private val manager by lazy { TileManager(activity) }
     private val panel by lazy { FrameLayout(activity) }
-    private val hint by lazy { TextView(activity).apply { id = R.id.tvPanelHint; visibility = View.GONE } }
+    private val hintText by lazy { TextView(activity).apply { id = R.id.tvPanelHint } }
+    private val hintClose by lazy { android.widget.ImageButton(activity).apply { id = R.id.btnPanelHintClose } }
+    // Та же структура, что в activity_main.xml: текст и крестик в одной плашке.
+    private val hint by lazy {
+        android.widget.LinearLayout(activity).apply {
+            id = R.id.panelHint
+            visibility = View.GONE
+            addView(hintText)
+            addView(hintClose)
+        }
+    }
     private val prefs get() = activity.getSharedPreferences("dashboard_prefs", 0)
 
     private fun set(name: String, value: Any?) {
@@ -44,11 +54,23 @@ class OnboardingTest {
         throw error.targetException
     }
 
+    private val notices = mutableListOf<Pair<String, () -> Unit>>()
+    private val defaultNotice = UserHints.undoNotice
+
+    @org.junit.Before fun recordUndoNotices() {
+        UserHints.undoNotice = { _, message, undo -> notices += message to undo }
+    }
+
+    @org.junit.After fun restoreUndoNotices() {
+        UserHints.undoNotice = defaultNotice
+    }
+
     private fun attachPanel() {
         set("tileManager", manager)
         set("bottomPanel", panel)
         set("dimOverlay", View(activity))
-        set("panelHint", hint)
+        MainActivity::class.java.getDeclaredMethod("setupPanelHint", View::class.java, TextView::class.java,
+            View::class.java).apply { isAccessible = true }.invoke(activity, hint, hintText, hintClose)
         set("yandexWeatherManager", YandexWeatherManager(activity))
         val root = FrameLayout(activity)
         root.addView(panel)
@@ -104,12 +126,12 @@ class OnboardingTest {
         invoke("createStarterTilesOnFirstLaunch")
         invoke("refreshBottomPanel")
         assertEquals(View.VISIBLE, hint.visibility)
-        assertEquals(UserHints.HOW_TO_EDIT, hint.text.toString())
+        assertEquals(UserHints.HOW_TO_EDIT, hintText.text.toString())
 
         set("pinAccess", null)
         invoke("enterEditMode")
         assertEquals(View.VISIBLE, hint.visibility)
-        assertEquals(UserHints.EDIT_MODE, hint.text.toString())
+        assertEquals(UserHints.EDIT_MODE, hintText.text.toString())
 
         invoke("exitEditMode")
         assertEquals("После первого входа подсказка больше не нужна", View.GONE, hint.visibility)
@@ -127,6 +149,74 @@ class OnboardingTest {
         ShadowAlertDialog.reset()
         invoke("showWelcomeOnFirstLaunch")
         assertNull(ShadowAlertDialog.getLatestAlertDialog())
+    }
+
+    @Test fun closeButtonHidesOnlyTheShownHintAndItStaysHidden() {
+        attachPanel()
+        invoke("createStarterTilesOnFirstLaunch")
+        invoke("refreshBottomPanel")
+        hintClose.performClick()
+        assertEquals(View.GONE, hint.visibility)
+        assertTrue(UserHints.isHidden(activity, UserHints.Hint.HOW_TO_EDIT))
+        assertEquals(UserHints.HIDDEN_NOTICE, notices.single().first)
+        invoke("refreshBottomPanel")
+        assertEquals("Скрытая подсказка не возвращается сама", View.GONE, hint.visibility)
+
+        // Пояснение режима редактирования — отдельная подсказка, свой крестик.
+        set("pinAccess", null)
+        invoke("enterEditMode")
+        assertEquals(View.VISIBLE, hint.visibility)
+        assertEquals(UserHints.EDIT_MODE, hintText.text.toString())
+        hintClose.performClick()
+        assertEquals(View.GONE, hint.visibility)
+        assertTrue(UserHints.isHidden(activity, UserHints.Hint.EDIT_MODE))
+        invoke("exitEditMode")
+        invoke("enterEditMode")
+        assertEquals(View.GONE, hint.visibility)
+    }
+
+    @Test fun undoRightAfterClosingBringsHintBack() {
+        attachPanel()
+        invoke("createStarterTilesOnFirstLaunch")
+        invoke("refreshBottomPanel")
+        hintClose.performClick()
+        assertEquals(View.GONE, hint.visibility)
+        // Кнопка «Отменить» в Snackbar на случай случайного нажатия крестика.
+        notices.single().second()
+        assertEquals(View.VISIBLE, hint.visibility)
+        assertEquals(UserHints.HOW_TO_EDIT, hintText.text.toString())
+        assertFalse(UserHints.isHidden(activity, UserHints.Hint.HOW_TO_EDIT))
+    }
+
+    @Test fun restoreFromSettingsBringsBackHintsIncludingHowToEdit() {
+        attachPanel()
+        invoke("createStarterTilesOnFirstLaunch")
+        set("pinAccess", null)
+        invoke("enterEditMode")
+        hintClose.performClick()
+        invoke("exitEditMode")
+        UserHints.setHidden(activity, UserHints.Hint.TILE_TYPE, true)
+        assertEquals(View.GONE, hint.visibility)
+        assertTrue(UserHints.canRestore(activity))
+
+        UserHints.restoreAll(activity)
+        assertFalse(UserHints.canRestore(activity))
+        UserHints.Hint.entries.forEach { assertFalse(it.name, UserHints.isHidden(activity, it)) }
+        // Так MainActivity.onResume возвращает панель после настроек.
+        invoke("refreshBottomPanel")
+        assertEquals(View.VISIBLE, hint.visibility)
+        assertEquals(UserHints.HOW_TO_EDIT, hintText.text.toString())
+    }
+
+    @Test fun existingUserCanBringBackBeginnerHints() {
+        attachPanel()
+        manager.saveTiles(listOf(TileEntity("mine", "clock", "grid", "Часы", 20, 40, 1, 1)))
+        invoke("createStarterTilesOnFirstLaunch")
+        // На существующей панели подсказка новичка скрыта, но её можно вернуть.
+        assertTrue(UserHints.canRestore(activity))
+        UserHints.restoreAll(activity)
+        invoke("refreshBottomPanel")
+        assertEquals(View.VISIBLE, hint.visibility)
     }
 
     @Test fun everyTileTypeHasDescription() {

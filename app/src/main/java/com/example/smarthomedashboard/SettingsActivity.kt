@@ -144,10 +144,21 @@ class SettingsActivity : PinProtectedActivity() {
         btnExport.setOnClickListener { exportConfig() }
         btnImport.setOnClickListener { importConfig() }
         findViewById<Button>(R.id.btnHelp).setOnClickListener { UserHints.showWelcome(this) }
+        findViewById<Button>(R.id.btnRestoreHints).setOnClickListener {
+            UserHints.restoreAll(this)
+            updateRestoreHintsButton()
+            Toast.makeText(this, "Подсказки снова будут показываться", Toast.LENGTH_SHORT).show()
+        }
+        updateRestoreHintsButton()
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
             finish()
         }
+    }
+
+    private fun updateRestoreHintsButton() {
+        // Кнопка активна, только когда есть что возвращать.
+        findViewById<Button>(R.id.btnRestoreHints).isEnabled = UserHints.canRestore(this)
     }
 
     private fun prepareTransportWarning() {
