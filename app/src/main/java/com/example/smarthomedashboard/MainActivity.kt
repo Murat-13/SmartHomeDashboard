@@ -121,13 +121,9 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
 
-    @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
+        setupPanelWindow()
         setContentView(R.layout.activity_main)
         bottomPanel = findViewById(R.id.bottomPanel)
         overlayContainer = findViewById(R.id.overlayContainer)
@@ -183,6 +179,19 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         clockHandler.removeCallbacks(clockRunnable)
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setupPanelWindow() {
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            WindowManager.LayoutParams.FLAG_FULLSCREEN
+        )
+        // Панель висит на стене: экран не гаснет, пока она на переднем плане.
+        // Флаг действует только для видимого окна, поэтому WAKE_LOCK не нужен.
+        // Экономию даёт затемнение по датчику движения (dimScreen), а не отключение экрана:
+        // так панель мгновенно просыпается по событию движения из HA.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     private fun checkKioskMode() {
