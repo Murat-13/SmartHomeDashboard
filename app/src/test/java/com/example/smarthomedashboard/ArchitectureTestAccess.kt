@@ -30,7 +30,8 @@ internal object ArchitectureTestAccess {
 
     fun <T> getField(target: Any, name: String): T {
         if (target is MainActivity && name in setOf("singleStates", "groupStates", "entityAttributes", "syntheticForecasts")) {
-            val owner = androidx.lifecycle.ViewModelProvider(target)[MainViewModel::class.java]
+            val owner = MainActivity::class.java.getDeclaredMethod("getViewModel")
+                .apply { isAccessible = true }.invoke(target) as MainViewModel
             return ReflectionHelpers.getField(owner.devices, name)
         }
         val receiver = if (target is MainActivity && name in panelFields) panel(target) else target

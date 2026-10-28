@@ -127,4 +127,38 @@ class HaStatusLifecycleTest {
         assertEquals("Ожидание", text(old))
         lifecycle(next, "onStop")
     }
+
+    @Test fun destroyingScreenReleasesCallbacksWhileRetainedDataReachesReplacement() {
+        val old = screen()
+        val owner = ViewModelProvider(old)[MainViewModel::class.java]
+        ArchitectureTestAccess.method(old, "connectWithHaToken", String::class.java,
+            String::class.java, String::class.java).apply { isAccessible = true }
+            .invoke(old, "http://[", "", "ARTIFICIAL-TOKEN")
+        val socket = requireNotNull(owner.getWebSocket())
+        ArchitectureTestAccess.getField<LifecycleRegistry>(old, "mFragmentLifecycleRegistry")
+            .currentState = Lifecycle.State.CREATED
+        lifecycle(old, "onDestroy")
+        for (name in listOf("stateCallback", "forecastCallback", "connectedCallback", "entitiesCallback")) {
+            assertNull(ArchitectureTestAccess.getField<Any?>(owner, name))
+        }
+        // При отсутствии UI входящее событие обновляет данные, не обращаясь к старым Views.
+        val event: (String, String, org.json.JSONObject) -> Unit =
+            ArchitectureTestAccess.getField(socket, "onStateChanged")
+        event("light.retained", "on", org.json.JSONObject().put("friendly_name", "Retained"))
+        val next = screen()
+        ArchitectureTestAccess.setField(next, "viewModel\$delegate", lazy { owner })
+        val states = ArchitectureTestAccess.getField<Map<String, String>>(next, "singleStates")
+        assertSame(owner.devices.singleStates, states)
+        assertEquals("on", states["light.retained"])
+        assertEquals("Retained", owner.devices.entityAttributes["light.retained"]?.getString("friendly_name"))
+        lifecycle(next, "onStart")
+        owner.publishStatus("Переподключение")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Переподключение", text(next))
+        lifecycle(next, "onStop")
+        ArchitectureTestAccess.getField<LifecycleRegistry>(next, "mFragmentLifecycleRegistry")
+            .currentState = Lifecycle.State.CREATED
+        lifecycle(next, "onDestroy")
+        owner.disconnectWebSocket()
+    }
 }

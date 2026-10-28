@@ -29,7 +29,7 @@ class DashboardDeviceCommandsTest {
         assertEquals(listOf("custom", "light", "custom"), sent.map { it.first })
         assertTrue(sent.all { it.second == "turn_off" })
         assertEquals("on", state.singleStates["light.last"])
-        assertEquals(0, changes)
+        assertEquals(1, changes) // Опубликован актуальный состав, реальные состояния не переключены.
     }
 
     @Test fun childOptimismDoesNotOverwriteRealSingleEntityState() {

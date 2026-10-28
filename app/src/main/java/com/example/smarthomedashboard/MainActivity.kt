@@ -1,24 +1,17 @@
 package com.example.smarthomedashboard
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.view.animation.DecelerateInterpolator
 import android.widget.*
-import android.graphics.drawable.GradientDrawable
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
-import androidx.core.content.res.ResourcesCompat
-import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileEntity
@@ -29,26 +22,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.util.UUID
-import org.json.JSONArray
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.Date
 import android.util.Log
-import android.graphics.Typeface
 
 class MainActivity : AppCompatActivity() {
 
-    // ==================== UI ====================
     private lateinit var bottomPanel: FrameLayout
-    private lateinit var overlayContainer: FrameLayout
     private lateinit var dimOverlay: View
     private var panelHint: View? = null
     private var panelHintText: TextView? = null
     private var shownPanelHint: UserHints.Hint? = null
 
-    // ==================== ДАННЫЕ ====================
     private lateinit var tileManager: TileManager
     private lateinit var yandexWeatherManager: YandexWeatherManager
     private var mqttRemovalMigration: MqttRemovalMigration? = null
@@ -62,7 +46,6 @@ class MainActivity : AppCompatActivity() {
     private val idleHandler = Handler(Looper.getMainLooper())
     private val idleRunnable = Runnable { dimScreen() }
 
-    // ==================== СОСТОЯНИЯ & VIEWMODEL ====================
     private val viewModel: MainViewModel by lazy {
         androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java]
     }
@@ -100,10 +83,8 @@ class MainActivity : AppCompatActivity() {
     private val screenW by lazy { resources.displayMetrics.widthPixels }
     private val screenH by lazy { resources.displayMetrics.heightPixels }
 
-    // ==================== КОНСТАНТЫ ====================
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
-        private const val DEFAULT_BUTTON_SIZE = 160
         private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
         internal const val WEATHER_REFRESH_MS = 60 * 60 * 1000L
@@ -113,15 +94,12 @@ class MainActivity : AppCompatActivity() {
             private set
     }
 
-    // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         isAlive = true
         setupPanelWindow()
         setContentView(R.layout.activity_main)
         bottomPanel = findViewById(R.id.bottomPanel)
-        overlayContainer = findViewById(R.id.overlayContainer)
         dimOverlay = findViewById(R.id.dimOverlay)
         dimOverlay.setOnClickListener { panelController.collapseAll() }
         setupPanelHint(findViewById(R.id.panelHint), findViewById(R.id.tvPanelHint), findViewById(R.id.btnPanelHintClose))
@@ -168,7 +146,7 @@ class MainActivity : AppCompatActivity() {
                 (mqttRemovalMigration ?: MqttRemovalMigration.create(applicationContext).also { mqttRemovalMigration = it }).run()
             }
         }
-        
+
         // Сразу и далее раз в час: панель может неделями не уходить с экрана.
         clockHandler.removeCallbacks(weatherRefreshRunnable)
         clockHandler.post(weatherRefreshRunnable)
@@ -182,7 +160,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         pendingPin?.cancel()
-        pendingPin=null
+        pendingPin = null
         haTokenRequest++
         super.onPause()
         clockHandler.removeCallbacks(clockRunnable)
@@ -199,7 +177,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshYandexWeather() {
-        // Bridge выполняет только локальный IO. Сетевой запрос по-прежнему разрешён лишь выбранному Яндексу.
+        // Локальный доступ к ключу не запускает запрос, если Яндекс не выбран источником погоды.
         yandexWeatherManager.fetchWeather(lifecycleScope, object : YandexWeatherManager.WeatherCallback {
             override fun onWeatherUpdated() {
                 runOnUiThread { panelController.updateWeatherViews() }
@@ -249,21 +227,17 @@ class MainActivity : AppCompatActivity() {
         viewModel.detachUi()
     }
 
-    // ==================== БЕЗОПАСНОСТЬ И PIN-КОД ====================
-
     /**
      * Выполняет действие только после проверки PIN-кода (если он установлен).
      * Поддерживает "сессию": если верный PIN был введен недавно, повторный запрос не выводится.
      */
     private var pinAccess: PinAccess? = null
-    private var pendingPin: kotlinx.coroutines.Job? = null
+    private var pendingPin: Job? = null
     private fun openWithPinCheck(action: () -> Unit) {
-        if(pendingPin?.isActive==true)return
-        val access=pinAccess ?: AndroidPinAccess.create(this).also {pinAccess=it}
-        pendingPin=PinSecurityUi.authorize(this, action,access=access)
+        if (pendingPin?.isActive == true) return
+        val access = pinAccess ?: AndroidPinAccess.create(this).also { pinAccess = it }
+        pendingPin = PinSecurityUi.authorize(this, action, access = access)
     }
-
-    // ==================== РЕЖИМ РЕДАКТИРОВАНИЯ ====================
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -276,8 +250,6 @@ class MainActivity : AppCompatActivity() {
         resetIdleTimer()
         return panelController.dispatchTouch(event) ?: super.dispatchTouchEvent(event)
     }
-
-
 
     private fun enterEditMode() {
         isEditMode = true
@@ -301,8 +273,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== ОТРИСОВКА ВСЕГО ====================
-
     private fun refreshBottomPanel() = panelController.refreshBottomPanel()
 
     private fun readPanelPreferences() {
@@ -316,87 +286,7 @@ class MainActivity : AppCompatActivity() {
         refreshBottomPanel()
     }
 
-
-
-
-
-
-
-
-// ==================== СЕНСОР (ВИДЖЕТ) ====================
-
-
-
-
-
-    // ==================== РАСКРЫТИЕ СЕНСОРА ====================
-
-
-
-    // ==================== СВОРАЧИВАНИЕ СЕНСОРА ====================
-
-
-
-
-
-    // ==================== ОБРАБОТЧИК КАСАНИЙ СЕНСОРА ====================
-
-
-
-    // ==================== КНОПКИ ====================
-
-
-
-
-
-
-
-
-
-
-
-
-
     // Повторное подключение после сворачивания заменяет обработчик той же View.
-
-
-
-
-
-
-
-
-
-
-    // ==================== ВЫЕЗЖАНИЕ ДОЧЕРНИХ ====================
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // ==================== ГРУППЫ ====================
-
-
-
-
-
-
-
-
-
-    // ==================== ОБЫЧНЫЕ КНОПКИ ====================
-
-
-
-    // ==================== ПЕРВЫЙ ЗАПУСК ====================
 
     private fun onboardingPrefs() = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
 
@@ -487,8 +377,6 @@ class MainActivity : AppCompatActivity() {
         return panelButtons().filter { it.y + buttonHeight(it) / 2f > half }.minByOrNull { it.y }
     }
 
-    // ==================== ДАННЫЕ С ДАТЧИКОВ ====================
-
     private val clockHandler = Handler(Looper.getMainLooper())
     private val clockRunnable = object : Runnable {
         override fun run() {
@@ -497,68 +385,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    /**
-     * Возвращает список entity_id для свёрнутого режима.
-     * Если ничего не выбрано — возвращает стандартный набор.
-     */
-
-
-    /**
-     * Возвращает список entity_id для развёрнутого режима.
-     */
-
-
-    /**
-     * Собирает текст виджета из заголовка и значений датчиков
-     * с учётом пользовательских названий и точности.
-     */
-    /**
-     * Строит содержимое виджета: заголовок + строки параметров.
-     * Название параметра слева, значение справа, выровнены по самой длинной строке.
-     */
-
-
-    /**
-     * Загружает конфигурации датчиков из TileEntity.
-     */
-
-
     /**
      * Форматирует значение датчика с заданной точностью и конвертирует температуру, если нужно.
      */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // ==================== WEBSOCKET ====================
 
     private var haConfiguration: List<String>? = null
     private var haGeneration = 0
@@ -672,8 +501,6 @@ class MainActivity : AppCompatActivity() {
             subscribeToNeededEntities()
         }
     }
-
-    // ==================== ЭНЕРГОСБЕРЕЖЕНИЕ ====================
 
     private fun resetIdleTimer() {
         idleHandler.removeCallbacks(idleRunnable)

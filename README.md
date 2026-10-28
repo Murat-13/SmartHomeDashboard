@@ -52,3 +52,8 @@ Workflow [`android-ci.yml`](.github/workflows/android-ci.yml) запускает
 pull request и при каждом push в `main`: юнит-тесты, сборка debug-APK и сборка
 инструментальных тестов. Если что-то упало, отчёты тестов прикладываются
 к запуску как артефакт `test-reports`.
+
+## Архитектура
+
+Границы Activity, ViewModel, контроллеров панели и виджетов, жизненный цикл,
+поток HA-событий и проверки описаны в [docs/architecture.md](docs/architecture.md).

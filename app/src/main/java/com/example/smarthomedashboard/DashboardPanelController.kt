@@ -2,43 +2,22 @@ package com.example.smarthomedashboard
 
 import android.content.ContextWrapper
 
-import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.Intent
-import android.graphics.Color
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.*
-import android.graphics.drawable.GradientDrawable
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.edit
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
-import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.util.UUID
 import org.json.JSONArray
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.Date
-import android.util.Log
-import android.graphics.Typeface
 
 /** Дерево панели и его обработчики. Живёт ровно столько же, сколько экран. */
 internal class DashboardPanelController(
@@ -63,8 +42,6 @@ internal class DashboardPanelController(
     private val bottomPanel get() = host.panel
     private val dimOverlay get() = host.dim
     private val tileManager get() = host.tiles
-    private val yandexWeatherManager get() = host.weather
-    private val tempUnit get() = host.temperatureUnit
     private val motionSensorId get() = host.motionEntity
     private val screenW by lazy { resources.displayMetrics.widthPixels }
     private val screenH by lazy { resources.displayMetrics.heightPixels }
@@ -77,11 +54,7 @@ internal class DashboardPanelController(
     // Только представления данных владельца: отдельных копий в Activity нет.
     private val groupStates get() = viewModel.devices.groupStates
     private val singleStates get() = viewModel.devices.singleStates
-    private val entityAttributes get() = viewModel.devices.entityAttributes
-    private val syntheticForecasts get() = viewModel.devices.syntheticForecasts
-    private var isEditMode: Boolean
-        get() = viewModel.uiState.value.isEditMode
-        set(value) { viewModel.setEditMode(value) }
+    private val isEditMode get() = viewModel.uiState.value.isEditMode
 
     private val expandedChildButtons = mutableListOf<Button>()
     private val closingChildButtons = mutableSetOf<Button>()
@@ -105,7 +78,6 @@ internal class DashboardPanelController(
             android.view.ViewConfiguration.get(activity).scaledTouchSlop
         )
     }
-
 
     private val editDragHandlers = mutableMapOf<View, TileEditDragHandler>()
 
@@ -131,7 +103,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun findViewAt(x: Float, y: Float): View? {
+    private fun findViewAt(x: Float, y: Float): View? {
         for (i in bottomPanel.childCount - 1 downTo 0) {
             val child = bottomPanel.getChildAt(i)
             if (child.isVisible &&
@@ -189,16 +161,16 @@ internal class DashboardPanelController(
         host.updateHint()
     }
 
-    fun getButtonSize(tile: TileEntity): Int =
+    private fun getButtonSize(tile: TileEntity): Int =
         TilePlacement.displaySize("bottom_panel", tile.config, screenW, screenH).width
 
-    fun placeTile(view: View, x: Float, y: Float, width: Int = view.width, height: Int = view.height) {
+    private fun placeTile(view: View, x: Float, y: Float, width: Int = view.width, height: Int = view.height) {
         val (safeX, safeY) = TilePlacement.position(x, y, width, height, screenW, screenH)
         view.x = safeX
         view.y = safeY
     }
 
-    fun createSensorView(tile: TileEntity): View {
+    private fun createSensorView(tile: TileEntity): View {
         val (savedWidth, savedHeight) = TilePlacement.displaySize("grid", tile.config, screenW, screenH)
 
         val card = SensorCardFactory.createBase(activity, tile.id, tile.type, savedWidth, savedHeight)
@@ -223,7 +195,7 @@ internal class DashboardPanelController(
         return card
     }
 
-    fun saveSensorSize(tileId: String, width: Int, height: Int): Boolean {
+    private fun saveSensorSize(tileId: String, width: Int, height: Int): Boolean {
         // Читаем актуальную плитку на UP, не сохраняя старую копию из начала жеста.
         val tiles = tileManager.loadTiles().toMutableList()
         val idx = tiles.indexOfFirst { it.id == tileId }
@@ -242,7 +214,7 @@ internal class DashboardPanelController(
         return true
     }
 
-    fun expandSensor(tile: TileEntity, source: View) {
+    private fun expandSensor(tile: TileEntity, source: View) {
         val original = SensorExpansionSession.Bounds.of(source)
 
         val idsToShow = contentController.getExpandedSensorIds(tile)
@@ -266,14 +238,14 @@ internal class DashboardPanelController(
             View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST)
         )
-        
+
         val neededW = container.measuredWidth + 60
         val neededH = container.measuredHeight + 60
 
         // Вычисляем целевую позицию (стараемся центрировать относительно исходной точки)
         var targetX = original.x - (neededW - original.width) / 2f
         var targetY = original.y - (neededH - original.height) / 2f
-        
+
         // Сохраняем прежние отступы от краёв экрана в px.
         if (targetX < 10f) targetX = 10f
         if (targetX + neededW > screenW - 10) targetX = (screenW - neededW - 10).toFloat()
@@ -284,9 +256,9 @@ internal class DashboardPanelController(
             SensorExpansionSession.Bounds(neededW, neededH, targetX, targetY), ::collapseSensor)
     }
 
-    fun resetSensorCollapseTimer() = sensorExpansion.touch()
+    private fun resetSensorCollapseTimer() = sensorExpansion.touch()
 
-    fun collapseSensor() {
+    private fun collapseSensor() {
         val source = expandedSensorView ?: return
         sensorWindowInput.clear()
         weatherForecastScroll.clear()
@@ -322,7 +294,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun setupSensorTouch(card: View, tile: TileEntity) {
+    private fun setupSensorTouch(card: View, tile: TileEntity) {
         val editDrag = bindEditDrag(card, tile.id)
         var startX = 0f
         var startY = 0f
@@ -366,7 +338,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun createTileButton(tile: TileEntity): Button {
+    private fun createTileButton(tile: TileEntity): Button {
         val sz = getButtonSize(tile)
         val on = "#8033CC33".toColorInt()
         val off = "#424242".toColorInt()
@@ -387,7 +359,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun buttonEntityId(tile: TileEntity, reportError: Boolean = false): String? {
+    private fun buttonEntityId(tile: TileEntity, reportError: Boolean = false): String? {
         return when (val result = TileButtonConfig.entityId(tile.config)) {
             is ButtonConfigResult.Valid -> result.value.also {
                 if (it == null && reportError) {
@@ -401,7 +373,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun groupForAction(tile: TileEntity): TileButtonConfig.Group? {
+    private fun groupForAction(tile: TileEntity): TileButtonConfig.Group? {
         return when (val result = TileButtonConfig.group(tile.config)) {
             is ButtonConfigResult.Valid -> {
                 if (result.value.entityIds.isEmpty()) {
@@ -416,12 +388,12 @@ internal class DashboardPanelController(
         }
     }
 
-    fun showButtonConfigError() {
+    private fun showButtonConfigError() {
         Toast.makeText(activity, "Не удалось прочитать конфигурацию плитки. Откройте настройки.",
             Toast.LENGTH_SHORT).show()
     }
 
-    fun setupGroupTouch(tile: TileEntity, button: Button) {
+    private fun setupGroupTouch(tile: TileEntity, button: Button) {
         val editDrag = bindEditDrag(button, tile.id)
         var pressRunnable: Runnable? = null
         var startX = 0f
@@ -475,7 +447,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun setupButtonTouch(
+    private fun setupButtonTouch(
         tile: TileEntity,
         button: Button,
         activeColor: Int,
@@ -497,7 +469,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun bindEditDrag(view: View, tileId: String): TileEditDragHandler {
+    private fun bindEditDrag(view: View, tileId: String): TileEditDragHandler {
         editDragHandlers.remove(view)?.dispose()
         return TileEditDragHandler(view, handler, screenW, screenH,
             onTap = { host.editTile(tileId) },
@@ -505,7 +477,7 @@ internal class DashboardPanelController(
         ).also { editDragHandlers[view] = it }
     }
 
-    fun savePosition(id: String, x: Int, y: Int) {
+    private fun savePosition(id: String, x: Int, y: Int) {
         val tiles = tileManager.loadTiles().toMutableList()
         val idx = tiles.indexOfFirst { it.id == id }
         if (idx >= 0) {
@@ -546,7 +518,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun expandChildButtons(tile: TileEntity, src: Button) {
+    private fun expandChildButtons(tile: TileEntity, src: Button) {
         // Проверяем весь список до изменения интерфейса и создания обработчиков дочерних кнопок.
         val group = groupForAction(tile) ?: return
         val ids = group.entityIds
@@ -623,13 +595,13 @@ internal class DashboardPanelController(
         resetCollapseTimer()
     }
 
-    fun resetCollapseTimer() {
+    private fun resetCollapseTimer() {
         collapseChildrenRunnable?.let { handler.removeCallbacks(it) }
         collapseChildrenRunnable = Runnable { collapseChildButtons() }
         handler.postDelayed(collapseChildrenRunnable!!, 10000L)
     }
 
-    fun collapseChildButtons() {
+    private fun collapseChildButtons() {
         expandedGroupId = null; expandedSourceButton = null; expandedTile = null
         val rt = findViewById<FrameLayout>(android.R.id.content)
         expandedChildButtons.forEachIndexed { i, b ->
@@ -650,7 +622,7 @@ internal class DashboardPanelController(
         collapseChildButtons()
     }
 
-    fun clearSensorExpansion() {
+    private fun clearSensorExpansion() {
         sensorWindowInput.clear()
         weatherForecastScroll.clear()
         sensorExpansion.clear()
@@ -697,19 +669,19 @@ internal class DashboardPanelController(
         }
     }
 
-    fun updateGroupState(gid: String, eid: String, st: String) {
+    private fun updateGroupState(gid: String, eid: String, st: String) {
         viewModel.updateGroupState(gid, eid, st)
         updateGroupButtonAppearance(gid)
     }
 
-    fun getGroupState(gid: String): Boolean {
+    private fun getGroupState(gid: String): Boolean {
         val tile = tileManager.getAllTiles().find { it.id == gid && it.type == "group" } ?: return false
         val result = TileButtonConfig.group(tile.config)
         if (result !is ButtonConfigResult.Valid) return false
         return viewModel.groupIsOn(gid, result.value.entityIds)
     }
 
-    fun updateGroupButtonAppearance(gid: String) {
+    private fun updateGroupButtonAppearance(gid: String) {
         val c = if (getGroupState(gid)) "#8033CC33".toColorInt() else "#424242".toColorInt()
         for (i in 0 until bottomPanel.childCount) {
             val ch = bottomPanel.getChildAt(i)
@@ -717,14 +689,14 @@ internal class DashboardPanelController(
         }
     }
 
-    fun toggleGroup(gid: String) {
+    private fun toggleGroup(gid: String) {
         // Ни одна команда не отправляется до успешной проверки текущего состава.
         val tile = tileManager.getAllTiles().find { it.id == gid && it.type == "group" } ?: return
         val group = groupForAction(tile) ?: return
         viewModel.commands.toggleGroup(gid, group.entityIds)
     }
 
-    fun updateSingleButtonColor(eid: String) {
+    private fun updateSingleButtonColor(eid: String) {
         val c = if (singleStates[eid] == "on") "#8033CC33".toColorInt() else "#424242".toColorInt()
         for (i in 0 until bottomPanel.childCount) {
             val ch = bottomPanel.getChildAt(i)
@@ -739,33 +711,7 @@ internal class DashboardPanelController(
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    fun isShownOnPanel(eid: String): Boolean {
+    private fun isShownOnPanel(eid: String): Boolean {
         // TileManager возвращает тот же список, пока плитки не менялись.
         val tiles = tileManager.getAllTiles()
         if (tiles !== panelEntityTiles || motionSensorId != panelEntityMotionSensor) {
@@ -776,7 +722,7 @@ internal class DashboardPanelController(
         return eid in panelEntityIds
     }
 
-    fun updateTilesForEntity(eid: String, st: String, attrs: JSONObject? = null) {
+    private fun updateTilesForEntity(eid: String, st: String, attrs: JSONObject? = null) {
         viewModel.onEntityStateChanged(eid, st, attrs)
         renderEntityState(eid, st)
     }
@@ -812,7 +758,7 @@ internal class DashboardPanelController(
         }
     }
 
-    fun updateForecastForEntity(eid: String, forecast: JSONArray?) {
+    private fun updateForecastForEntity(eid: String, forecast: JSONArray?) {
         viewModel.onForecastChanged(eid, forecast)
         renderForecastState(eid)
     }
@@ -820,7 +766,6 @@ internal class DashboardPanelController(
     fun renderForecastState(eid: String) {
         contentController.updateWeatherViews()
     }
-
 
     fun updateClockViews() = contentController.updateClockViews()
     fun updateWeatherViews() = contentController.updateWeatherViews()

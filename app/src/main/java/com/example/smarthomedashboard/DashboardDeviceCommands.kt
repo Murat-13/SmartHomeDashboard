@@ -23,7 +23,9 @@ internal class DashboardDeviceCommands(
     }
 
     fun toggleGroup(group: String, ids: List<String>) {
+        val before = state.groupStates[group]?.toMap()
         val target = if (state.groupIsOn(group, ids)) "turn_off" else "turn_on"
+        if (before != state.groupStates[group]) changed()
         // Порядок и дубликаты сохранены: прежняя панель отправляла одну команду каждому элементу списка.
         ids.forEach { id -> send(id.substringBefore("."), target, id) }
     }

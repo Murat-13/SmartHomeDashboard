@@ -2,43 +2,14 @@ package com.example.smarthomedashboard
 
 import android.content.ContextWrapper
 
-import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.Intent
-import android.graphics.Color
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
-import android.view.animation.DecelerateInterpolator
 import android.widget.*
-import android.graphics.drawable.GradientDrawable
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.edit
-import androidx.core.content.res.ResourcesCompat
-import androidx.core.graphics.toColorInt
-import androidx.core.view.isVisible
-import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.util.UUID
-import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
-import android.util.Log
-import android.graphics.Typeface
 
 /** Обновление содержимого карточек. Не запускает сеть и не управляет жизненным циклом Activity. */
 internal class DashboardContentController(
