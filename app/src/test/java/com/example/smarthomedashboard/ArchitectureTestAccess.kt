@@ -34,7 +34,7 @@ internal object ArchitectureTestAccess {
             return ReflectionHelpers.getField(owner.devices, name)
         }
         val receiver = if (target is MainActivity && name in panelFields) panel(target) else target
-        if ((target is MainActivity && name == "isEditMode") || name in setOf("expandedSensorView", "sensorWindowInput")) {
+        if ((target is MainActivity && name == "isEditMode") || name in setOf("expandedSensorView", "sensorWindowInput", "weatherForecastScroll")) {
             val getter = if (name == "isEditMode") name else "get" + name.replaceFirstChar { it.uppercaseChar() }
             @Suppress("UNCHECKED_CAST")
             return receiver.javaClass.getDeclaredMethod(getter).apply { isAccessible = true }.invoke(receiver) as T
@@ -56,9 +56,15 @@ internal object ArchitectureTestAccess {
         val result = own.map { Method(target, it) }
         if (target !is MainActivity) return result
         val controller = panel(target)
-        return result + controller.javaClass.declaredMethods.filter { candidate ->
+        val panelMethods = controller.javaClass.declaredMethods.toList()
+        val content = controller.javaClass.getDeclaredMethod("getContentController")
+            .apply { isAccessible = true }.invoke(controller)
+        val inherited = own + panelMethods
+        return result + panelMethods.filter { candidate ->
             own.none { it.name == candidate.name && it.parameterTypes.size == candidate.parameterTypes.size }
-        }.map { Method(controller, it) }
+        }.map { Method(controller, it) } + content.javaClass.declaredMethods.filter { candidate ->
+            inherited.none { it.name == candidate.name && it.parameterTypes.size == candidate.parameterTypes.size }
+        }.map { Method(content, it) }
     }
 
     fun method(target: Any, name: String, vararg types: Class<*>?): Method = methods(target).single {

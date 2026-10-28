@@ -46,14 +46,10 @@ internal class DashboardPanelController(
     private val viewModel: MainViewModel,
     private val host: Host
 ) : ContextWrapper(activity) {
-    interface Host {
-        val panel: FrameLayout
+    interface Host : DashboardContentController.Sources {
         val dim: View
         val hasPanel: Boolean
         val hasDim: Boolean
-        val tiles: TileManager
-        val weather: YandexWeatherManager
-        val temperatureUnit: String
         val motionEntity: String?
         fun readPreferences()
         fun updateHint()
@@ -95,7 +91,10 @@ internal class DashboardPanelController(
 
     private val sensorExpansion = SensorExpansionSession(handler)
     private val expandedSensorView: View? get() = sensorExpansion.current
-    private val weatherForecastScroll = WeatherForecastScrollState()
+    private val contentController by lazy {
+        DashboardContentController(activity, viewModel.devices, host, { expandedSensorView }, ::resetSensorCollapseTimer)
+    }
+    private val weatherForecastScroll get() = contentController.weatherForecastScroll
     private var isResizing = false
     private val resizeHandlers = mutableListOf<SensorResizeHandler>()
     private val sensorWindowInput by lazy {
@@ -185,8 +184,8 @@ internal class DashboardPanelController(
         }
 
         // Используем уже полученные значения, не ожидая следующего события или тика часов.
-        updateSensorDisplay()
-        updateClockViews()
+        contentController.updateSensorDisplay()
+        contentController.updateClockViews()
         host.updateHint()
     }
 
@@ -205,7 +204,7 @@ internal class DashboardPanelController(
         val card = SensorCardFactory.createBase(activity, tile.id, tile.type, savedWidth, savedHeight)
         if (tile.type == "battery") {
             // Устанавливаем заполнение из уже известных состояний, не дожидаясь нового события HA.
-            updateBatteryWidget(tile, card)
+            contentController.updateBatteryWidget(tile, card)
         }
         val views = SensorCardFactory.addContent(
             activity, card, tile.type, tile.title, tile.fontSize, savedHeight, isEditMode
@@ -246,15 +245,15 @@ internal class DashboardPanelController(
     fun expandSensor(tile: TileEntity, source: View) {
         val original = SensorExpansionSession.Bounds.of(source)
 
-        val idsToShow = getExpandedSensorIds(tile)
+        val idsToShow = contentController.getExpandedSensorIds(tile)
 
         // Обновляем содержимое виджета (табличный вид)
         val container = source.findViewWithTag<LinearLayout>("sensor_text_container")
         if (container != null) {
             if (tile.type == "weather") {
-                buildWeatherDetailedContent(tile, container)
+                contentController.buildWeatherDetailedContent(tile, container)
             } else {
-                buildSensorContent(tile, idsToShow, true, container)
+                contentController.buildSensorContent(tile, idsToShow, true, container)
             }
         }
 
@@ -297,7 +296,7 @@ internal class DashboardPanelController(
             return
         }
         val target = checkNotNull(sensorExpansion.original)
-        val idsToShow = getCollapsedSensorIds(tile)
+        val idsToShow = contentController.getCollapsedSensorIds(tile)
 
         val container = source.findViewWithTag<LinearLayout>("sensor_text_container")
         if (container != null) {
@@ -305,7 +304,7 @@ internal class DashboardPanelController(
                 // В начале сворачивания высота View ещё развёрнутая; шрифт нужен для исходной высоты.
                 SensorCardFactory.buildCollapsedWeatherContent(activity, container, target.height)
             } else {
-                buildSensorContent(tile, idsToShow, false, container)
+                contentController.buildSensorContent(tile, idsToShow, false, container)
             }
         }
 
@@ -319,7 +318,7 @@ internal class DashboardPanelController(
         }
         if (tile.type == "weather") {
             // Только после сброса режима раскрытия, иначе updateWeatherViews снова построит прогноз.
-            updateWeatherViews()
+            contentController.updateWeatherViews()
         }
     }
 
@@ -740,149 +739,31 @@ internal class DashboardPanelController(
         }
     }
 
-    fun updateClockViews() {
-        val now = Date()
-        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
-        val date = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
-        for (i in 0 until bottomPanel.childCount) {
-            val v = bottomPanel.getChildAt(i)
-            v.findViewWithTag<TextView>("clock_text")?.text = time
-            v.findViewWithTag<TextView>("clock_date")?.text = date
-        }
-        // Тик часов не приносит новых данных подробного прогноза.
-        updateWeatherViews(refreshExpanded = false)
-    }
 
-    fun updateWeatherViews() {
-        updateWeatherViews(refreshExpanded = true)
-    }
 
-    fun updateWeatherViews(refreshExpanded: Boolean) {
-        val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
 
-        for (i in 0 until bottomPanel.childCount) {
-            val v = bottomPanel.getChildAt(i)
-            val tag = v.tag as? String ?: continue
-            val tile = tileManager.getAllTiles().find { it.id == tag } ?: continue
-            if (tile.type == "weather") {
-                val container = v.findViewWithTag<LinearLayout>("sensor_text_container")
-                if (container != null && expandedSensorView == v) {
-                    if (refreshExpanded) buildWeatherDetailedContent(tile, container)
-                    continue
-                }
 
-                if (useYandex) {
-                    CompactWeatherRenderer.renderYandex(v, yandexWeatherManager.currentTemp,
-                        yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState),
-                        yandexWeatherManager.translateCondition(yandexWeatherManager.currentState))
-                } else {
-                    CompactWeatherRenderer.renderHomeAssistant(v, tile, singleStates::get, entityAttributes::get)
-                }
-            }
-        }
-    }
 
-    fun buildWeatherDetailedContent(tile: TileEntity, container: LinearLayout) {
-        val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
-        val source = if (useYandex) "yandex" else "ha:${WeatherEntityResolver.resolve(tile.config)}"
-        weatherForecastScroll.rebuild(container, tile.id, source) {
-            if (useYandex) {
-                buildYandexWeatherDetailedContent(tile, container)
-            } else {
-                HomeAssistantWeatherDetailsRenderer.render(
-                    activity,
-                    tile,
-                    container,
-                    entityAttributes::get,
-                    singleStates::get,
-                    ::resetSensorCollapseTimer
-                )
-            }
-        }
-    }
 
-    fun buildYandexWeatherDetailedContent(tile: TileEntity, container: LinearLayout) {
-        YandexWeatherDetailsRenderer.render(
-            activity,
-            container,
-            yandexWeatherManager,
-            ::resetSensorCollapseTimer
-        )
-    }
 
-    fun updateSensorDisplay() {
-        val sensorTiles = tileManager.getTilesByContainer("grid")
-        for (i in 0 until bottomPanel.childCount) {
-            val child = bottomPanel.getChildAt(i)
-            val tag = child.tag as? String ?: continue
-            val tile = sensorTiles.find { it.id == tag } ?: continue
 
-            if (child is FrameLayout) {
-                val isExpanded = (expandedSensorView == child)
 
-                val idsToShow = if (isExpanded) {
-                    getExpandedSensorIds(tile)
-                } else {
-                    getCollapsedSensorIds(tile)
-                }
 
-                // Погодное дерево обновляется отдельно, обычные строки не должны его перестраивать.
-                val container = child.findViewWithTag<LinearLayout>("sensor_text_container")
-                if (container != null && tile.type != "clock" && tile.type != "weather") {
-                    buildSensorContent(tile, idsToShow, isExpanded, container)
-                }
 
-                if (tile.type == "clock") {
-                    updateClockViews()
-                } else if (tile.type == "battery") {
-                    updateBatteryWidget(tile, child)
-                } else {
-                    updateNormalSensorWidget(tile, child)
-                }
-            }
-        }
-    }
 
-    fun updateBatteryWidget(tile: TileEntity, view: FrameLayout) {
-        BatteryWidgetRenderer.render(tile, view, singleStates::get)
-    }
 
-    fun updateNormalSensorWidget(tile: TileEntity, child: FrameLayout) {
-        SensorBackgroundRenderer.render(tile, child, singleStates::get)
-    }
 
-    fun getCollapsedSensorIds(tile: TileEntity): List<String> {
-        return SensorConfigResolver.getCollapsedSensorIds(tile)
-    }
 
-    fun getExpandedSensorIds(tile: TileEntity): List<String> {
-        return SensorConfigResolver.getExpandedSensorIds(tile)
-    }
 
-    fun buildSensorContent(tile: TileEntity, entityIds: List<String>, isExpanded: Boolean, container: LinearLayout) {
-        SensorContentRenderer.render(
-            tile,
-            entityIds,
-            isExpanded,
-            container,
-            ::loadSensorConfigs,
-            singleStates::get,
-            ::formatSensorValue
-        )
-    }
 
-    fun loadSensorConfigs(tile: TileEntity, isExpanded: Boolean): List<SensorConfig> {
-        return SensorConfigResolver.loadSensorConfigs(tile, isExpanded)
-    }
 
-    fun formatSensorValue(value: String, decimals: Int, entityId: String? = null): String {
-        val unit = if (entityId != null) {
-            entityAttributes[entityId]?.optString("unit_of_measurement") ?: ""
-        } else {
-            ""
-        }
-        return SensorValueFormatter.formatSensorValue(value, decimals, unit, tempUnit)
-    }
+
+
+
+
+
+
+
 
     fun isShownOnPanel(eid: String): Boolean {
         // TileManager возвращает тот же список, пока плитки не менялись.
@@ -919,9 +800,9 @@ internal class DashboardPanelController(
         if (!eid.startsWith("weather.")) {
             // На плитке может быть любая сущность (binary_sensor, input_number, climate),
             // а не только sensor.*: посторонние события уже отсеяны выше.
-            updateSensorDisplay()
+            contentController.updateSensorDisplay()
         }
-        updateWeatherViews()
+        contentController.updateWeatherViews()
 
         tileManager.getAllTiles().filter { it.type == "group" }.forEach { t ->
             val result = TileButtonConfig.group(t.config)
@@ -937,10 +818,10 @@ internal class DashboardPanelController(
     }
 
     fun renderForecastState(eid: String) {
-        updateWeatherViews()
+        contentController.updateWeatherViews()
     }
 
-    fun formatFloat(v: String, d: Int): String {
-        return SensorValueFormatter.formatFloat(v, d)
-    }
+
+    fun updateClockViews() = contentController.updateClockViews()
+    fun updateWeatherViews() = contentController.updateWeatherViews()
 }
