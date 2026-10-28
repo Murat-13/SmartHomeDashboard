@@ -12,7 +12,7 @@ import org.robolectric.annotation.Config
 class SensorConfigResolverTest {
     // These cases first passed against the original methods before extraction.
     // Also check that Activity wrappers keep the same tile and mode.
-    private val activity by lazy { MainActivity() }
+    private val activity by lazy { org.robolectric.Robolectric.buildActivity(MainActivity::class.java).get() }
 
     private fun tile(config: String = "{}", legacy: String = "[]", title: String = "Other") =
         TileEntity("tile-id", "sensor", "grid", title, 1, 2, 100, 80,
@@ -20,7 +20,7 @@ class SensorConfigResolverTest {
 
     @Suppress("UNCHECKED_CAST")
     private fun ids(tile: TileEntity, expanded: Boolean): List<String> {
-        val method = MainActivity::class.java.getDeclaredMethod(
+        val method = ArchitectureTestAccess.method(activity,
             if (expanded) "getExpandedSensorIds" else "getCollapsedSensorIds", TileEntity::class.java)
         method.isAccessible = true
         val before = tile.copy()
@@ -33,7 +33,7 @@ class SensorConfigResolverTest {
 
     @Suppress("UNCHECKED_CAST")
     private fun configs(tile: TileEntity, expanded: Boolean): List<SensorConfig> {
-        val method = MainActivity::class.java.getDeclaredMethod(
+        val method = ArchitectureTestAccess.method(activity,
             "loadSensorConfigs", TileEntity::class.java, Boolean::class.javaPrimitiveType)
         method.isAccessible = true
         val before = tile.copy()
@@ -79,45 +79,38 @@ class SensorConfigResolverTest {
         }
     }
 
-    @Test fun networkFallbackHasExactOrderForEachMode() {
-        val tile = tile(title = "⚡ СеТь")
-        assertEquals(listOf("sensor.pzem_energy_monitor_pzem_voltage",
-            "sensor.pzem_energy_monitor_pzem_power"), ids(tile, false))
-        assertEquals(listOf("sensor.pzem_energy_monitor_pzem_voltage",
-            "sensor.pzem_energy_monitor_pzem_power", "sensor.pzem_energy_monitor_pzem_current",
-            "sensor.pzem_energy_monitor_pzem_frequency", "sensor.pzem_energy_monitor_pzem_energy"),
-            ids(tile, true))
-    }
-
-    @Test fun temperatureFallbackMatchesTitleSubstringInBothModes() {
-        for (expanded in listOf(false, true)) {
-            assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"),
-                ids(tile(title = "Датчик ТЕМПЕРАТУРА комнаты"), expanded))
+    @Test fun titleNeverSelectsSensors() {
+        // Раньше «Сеть» и «Температура» в названии подставляли личные PZEM-датчики.
+        for (title in listOf("⚡ СеТь", "Датчик ТЕМПЕРАТУРА комнаты", "Температура и Сеть", "Other", "")) {
+            for (expanded in listOf(false, true)) {
+                assertEquals(title, emptyList<String>(), ids(tile(title = title), expanded))
+            }
         }
     }
 
-    @Test fun unknownAndEmptyTitlesHaveNoFallback() {
-        for (expanded in listOf(false, true)) {
-            assertEquals(emptyList<String>(), ids(tile(), expanded))
-            assertEquals(emptyList<String>(), ids(tile(title = ""), expanded))
-        }
+    @Test fun expandedWithoutOwnSelectionShowsCollapsedSensorsWithTheirSettings() {
+        val tile = tile("""{"collapsed_sensor_configs":[{"entity_id":"sensor.v","display_name":"Напряжение","decimals":1},
+            {"entity_id":"sensor.p","display_name":"Мощность"}],"expanded_sensor_configs":[]}""")
+        assertEquals(listOf("sensor.v", "sensor.p"), ids(tile, true))
+        assertEquals(listOf(SensorConfig("sensor.v", "Напряжение", 1), SensorConfig("sensor.p", "Мощность", 0)),
+            configs(tile, true))
+        // Старое поле свёрнутого вида тоже подходит.
+        assertEquals(listOf("sensor.legacy"), ids(tile(legacy = """["sensor.legacy"]"""), true))
     }
 
-    @Test fun networkTitleTakesPriorityOverTemperatureSubstring() {
-        val tile = tile(title = "Температура и Сеть")
-        assertEquals(listOf("sensor.pzem_energy_monitor_pzem_voltage",
-            "sensor.pzem_energy_monitor_pzem_power"), ids(tile, false))
-        assertEquals(listOf("sensor.pzem_energy_monitor_pzem_voltage",
-            "sensor.pzem_energy_monitor_pzem_power", "sensor.pzem_energy_monitor_pzem_current",
-            "sensor.pzem_energy_monitor_pzem_frequency", "sensor.pzem_energy_monitor_pzem_energy"),
-            ids(tile, true))
+    @Test fun ownExpandedSelectionStillWins() {
+        val tile = tile("""{"collapsed_sensor_configs":[{"entity_id":"sensor.c","display_name":"C"}],
+            "expanded_sensor_configs":[{"entity_id":"sensor.e","display_name":"E"}]}""")
+        assertEquals(listOf("sensor.e"), ids(tile, true))
+        assertEquals(listOf(SensorConfig("sensor.e", "E", 0)), configs(tile, true))
+        assertEquals(listOf(SensorConfig("sensor.c", "C", 0)), configs(tile, false))
     }
 
-    @Test fun emptyLegacyArraysFallBackInBothModes() {
+    @Test fun emptyArraysEverywhereGiveEmptyTile() {
         val tile = tile("""{"collapsed_sensor_configs":[],"expanded_sensor_configs":[],"entity_ids":[]}""",
             title = "Температура")
         for (expanded in listOf(false, true)) {
-            assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"), ids(tile, expanded))
+            assertEquals(emptyList<String>(), ids(tile, expanded))
         }
     }
 
@@ -140,42 +133,43 @@ class SensorConfigResolverTest {
     @Test fun malformedConfigSkipsEvenValidLegacyCollapsedIds() {
         for (expanded in listOf(false, true)) {
             val tile = tile("{", """["sensor.old"]""", "Температура")
-            assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"), ids(tile, expanded))
+            assertEquals(emptyList<String>(), ids(tile, expanded))
             assertEquals(emptyList<SensorConfig>(), configs(tile, expanded))
         }
     }
 
     @Test fun invalidNewElementDiscardsPartialListAndSkipsLegacy() {
-        for (expanded in listOf(false, true)) {
-            for (array in listOf(
-                """[{"entity_id":"sensor.valid"},42]""",
-                """[{"entity_id":"sensor.valid"},null]""",
-                """[{"entity_id":"sensor.valid"},"bad"]""")) {
-                val tile = withNew(expanded, array, "Температура")
-                assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"), ids(tile, expanded))
-                assertEquals(emptyList<SensorConfig>(), configs(tile, expanded))
-            }
+        for (array in listOf(
+            """[{"entity_id":"sensor.valid"},42]""",
+            """[{"entity_id":"sensor.valid"},null]""",
+            """[{"entity_id":"sensor.valid"},"bad"]""")) {
+            val collapsed = withNew(false, array, "Температура")
+            assertEquals(emptyList<String>(), ids(collapsed, false))
+            assertEquals(emptyList<SensorConfig>(), configs(collapsed, false))
+            // Некорректный раскрытый список не даёт частичного результата: показываем свёрнутый набор.
+            val expanded = withNew(true, array, "Температура")
+            assertEquals(listOf("sensor.old"), ids(expanded, true))
+            assertEquals(emptyList<SensorConfig>(), configs(expanded, true))
         }
     }
 
     @Test fun missingRequiredEntityIdDiscardsPartialListAndSkipsLegacy() {
-        for (expanded in listOf(false, true)) {
-            val tile = withNew(expanded, """[{"entity_id":"sensor.valid"},{}]""", "Температура")
-            assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"), ids(tile, expanded))
-            assertEquals(emptyList<SensorConfig>(), configs(tile, expanded))
-        }
+        val collapsed = withNew(false, """[{"entity_id":"sensor.valid"},{}]""", "Температура")
+        assertEquals(emptyList<String>(), ids(collapsed, false))
+        assertEquals(emptyList<SensorConfig>(), configs(collapsed, false))
+        val expanded = withNew(true, """[{"entity_id":"sensor.valid"},{}]""", "Температура")
+        assertEquals(listOf("sensor.old"), ids(expanded, true))
+        assertEquals(emptyList<SensorConfig>(), configs(expanded, true))
     }
 
-    @Test fun malformedCollapsedLegacyJsonUsesTitleFallback() {
-        assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"),
-            ids(tile(legacy = "{", title = "Температура"), false))
+    @Test fun malformedCollapsedLegacyJsonGivesEmptyTile() {
+        assertEquals(emptyList<String>(), ids(tile(legacy = "{", title = "Температура"), false))
     }
 
-    @Test fun wrongTypeLegacyArraysUseTitleFallback() {
+    @Test fun wrongTypeLegacyArraysGiveEmptyTile() {
         for (legacy in listOf("{}", "\"bad\"", "42", "null")) {
-            assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"),
-                ids(tile(legacy = legacy, title = "Температура"), false))
-            assertEquals(listOf("sensor.pzem_energy_monitor_temperatura_tekhpomeshcheniia"),
+            assertEquals(emptyList<String>(), ids(tile(legacy = legacy, title = "Температура"), false))
+            assertEquals(emptyList<String>(),
                 ids(tile("""{"entity_ids":$legacy}""", title = "Температура"), true))
         }
     }

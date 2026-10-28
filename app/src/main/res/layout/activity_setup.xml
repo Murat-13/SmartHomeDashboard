@@ -19,7 +19,24 @@
             android:textColor="#FFFFFF"
             android:textSize="28sp"
             android:textStyle="bold"
-            android:layout_marginBottom="32dp" />
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Подключите панель к вашему Home Assistant"
+            android:textColor="#CCCCCC"
+            android:textSize="16sp"
+            android:gravity="center"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:id="@+id/tvSetupAddressHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#9E9E9E"
+            android:textSize="14sp"
+            android:layout_marginBottom="16dp" />
 
         <!-- Локальный адрес -->
         <TextView
@@ -75,6 +92,14 @@
             android:layout_marginBottom="8dp" />
 
         <TextView
+            android:id="@+id/tvSetupTokenHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#9E9E9E"
+            android:textSize="14sp"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
             android:id="@+id/tvHaTokenStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -92,7 +117,7 @@
             android:inputType="textPassword"
             android:saveEnabled="false"
             android:importantForAutofill="no"
-            android:hint="Новый токен; пусто — оставить сохранённый" />
+            android:hint="Вставьте токен доступа" />
 
         <Button
             android:id="@+id/btnConnect"

@@ -49,10 +49,10 @@ class PressCancelIntegrationTest {
         }
     }
 
-    private fun set(target: Any, name: String, value: Any?) = ReflectionHelpers.setField(target, name, value)
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun set(target: Any, name: String, value: Any?) = ArchitectureTestAccess.setField(target, name, value)
+    private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
-        MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(activity).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
     } catch (error: InvocationTargetException) { throw error.targetException }
 
@@ -81,12 +81,13 @@ class PressCancelIntegrationTest {
         root.addView(panel)
         root.addView(dim)
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         val client = HomeAssistantWebSocket("http://localhost/test-only", "test-token", { _, _, _ -> }, {}, {})
         set(client, "authenticated", true)
         set(client, "webSocket", socket)
-        set(activity, "webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         invoke("refreshBottomPanel")
         controller.visible()
         // Завершаем начальный StateListAnimator темы до снимка свойств жеста.
@@ -130,7 +131,7 @@ class PressCancelIntegrationTest {
         assertTrue(calls().isEmpty())
         assertNull(get<String?>("expandedGroupId"))
         assertTrue(get<List<Button>>("expandedChildButtons").isEmpty())
-        assertNull(get<View?>("expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
         assertNull(shadowOf(activity).nextStartedActivity)
     }
 
@@ -228,7 +229,7 @@ class PressCancelIntegrationTest {
         send(v, MotionEvent.ACTION_UP)
         assertNoAction()
         tap(v)
-        assertSame(v, get<View>("expandedSensorView"))
+        assertSame(v, checkNotNull(sensorSessionFixture(activity).current))
     }
 
     @Test fun normalButtonNativeCancelDoesNotSendCommandsAndNextTapWorks() {
@@ -298,12 +299,35 @@ class PressCancelIntegrationTest {
             (get(activity) as androidx.fragment.app.FragmentController).attachHost(null)
         }
         (activity.lifecycle as LifecycleRegistry).currentState = Lifecycle.State.CREATED
-        ReflectionHelpers.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry").currentState = Lifecycle.State.CREATED
+        ArchitectureTestAccess.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry").currentState = Lifecycle.State.CREATED
         controller.destroy()
         advance(1500)
         assertEquals(original, visual(old))
         assertNull(shadowOf(old).onTouchListener)
         assertNoAction()
+    }
+
+    @Test fun rebuildDuringActiveEditDragDisposesAllKindsWithoutSaving() {
+        open(edit = true)
+        val old = listOf("group", "sensor", "button").map(::view)
+        val originals = old.map(::visual)
+        val before = prefs()
+        old.forEach { send(it, MotionEvent.ACTION_DOWN) }
+        advance(600)
+        old.forEach { send(it, MotionEvent.ACTION_MOVE, 65f, 75f) }
+        invoke("refreshBottomPanel")
+        advance(1500)
+        old.forEachIndexed { index, v ->
+            assertEquals(originals[index], visual(v))
+            assertNull(shadowOf(v).onTouchListener)
+            send(v, MotionEvent.ACTION_UP, 65f, 75f)
+        }
+        assertEquals(before, prefs())
+        assertNoAction()
+        tap(view("sensor"))
+        awaitPinGate(activity)
+        assertEquals(TileSettingsActivity::class.java.name,
+            shadowOf(activity).nextStartedActivity.component!!.className)
     }
 
     @Test fun backgroundCancelAlreadyRemovesEditModeLongPressAndNewDownStillWorks() {

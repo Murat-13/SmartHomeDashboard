@@ -65,10 +65,24 @@ class TileSettingsActivity : PinProtectedActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         spinnerType.adapter = adapter
 
+        val typeHint = findViewById<View>(R.id.tileTypeHint)
+        fun updateTypeHint() {
+            findViewById<TextView>(R.id.tvTileTypeHint).text = UserHints.tileType(typeAt(spinnerType.selectedItemPosition))
+            typeHint.visibility = if (UserHints.isHidden(this, UserHints.Hint.TILE_TYPE)) View.GONE else View.VISIBLE
+        }
+        findViewById<View>(R.id.btnTileTypeHintClose).setOnClickListener {
+            UserHints.hideWithUndo(typeHint, UserHints.Hint.TILE_TYPE, refresh = ::updateTypeHint)
+        }
+
         spinnerType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val isGroup = position == 2 && tileId != null
+                updateTypeHint()
+                // У группы устройства и имена кнопок редактируются в одном месте — на экране устройств группы.
+                val isGroup = position == 2
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
+                btnSelectSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
+                btnClearSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
+                updateSelectedSensorsText()
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
@@ -94,7 +108,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         btnClearSensors.setOnClickListener { clearSelectedSensors() }
 
         btnAdvanced.setOnClickListener {
-            if (tileId == null) saveTileWithoutFinish()
+            if (tileId == null && !saveTileWithoutFinish()) return@setOnClickListener
             tileId?.let { id ->
                 val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
                 intent.putExtra("tile_id", id)
@@ -103,6 +117,10 @@ class TileSettingsActivity : PinProtectedActivity() {
         }
 
         btnEditChildren.setOnClickListener {
+            // Экран устройств работает со сохранённой группой: новую или только что ставшую
+            // группой плитку сначала сохраняем.
+            val savedType = tileId?.let { id -> tileManager.loadTiles().find { it.id == id }?.type }
+            if (savedType != "group" && !saveTileWithoutFinish()) return@setOnClickListener
             tileId?.let { id ->
                 val intent = Intent(this, ChildButtonsEditorActivity::class.java)
                 intent.putExtra("tile_id", id)
@@ -180,32 +198,22 @@ class TileSettingsActivity : PinProtectedActivity() {
         updateSelectedSensorsText()
     }
 
-    private fun saveTileWithoutFinish() {
+    /** Возвращает false, если ввод некорректен и ничего не сохранено. */
+    private fun saveTileWithoutFinish(): Boolean {
         val title = etTitle.text.toString().trim()
         if (title.isEmpty()) {
+            etTitle.error = "Введите название"
             Toast.makeText(this, "Введите название", Toast.LENGTH_SHORT).show()
-            return
+            return false
         }
 
-        val type = when (spinnerType.selectedItemPosition) {
-            0 -> "sensor"
-            1 -> "button"
-            2 -> "group"
-            3 -> "battery"
-            4 -> "clock"
-            5 -> "weather"
-            else -> "sensor"
-        }
+        val type = typeAt(spinnerType.selectedItemPosition)
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
             "clock", "sensor", "battery", "weather" -> "grid"
             else -> "grid"
         }
-
-        val tiles = tileManager.getTilesByContainer(container)
-        val position = tiles.size
-        val spanCount = if (container == "grid") 4 else 6
 
         var oldTile: TileEntity? = null
         val existingConfig = if (tileId != null) {
@@ -229,25 +237,34 @@ class TileSettingsActivity : PinProtectedActivity() {
             } else if (selectedSensors.size == 1 && type != "group") {
                 existingConfig.put("entity_id", selectedSensors.first())
                 existingConfig.remove("entity_ids")
+            } else if (type == "group") {
+                // Имя кнопки едет вместе со своим устройством: удаление или перестановка
+                // не сдвигают имена. Новые устройства получают номер кнопки.
+                val previous = GroupChildren.fromConfig(existingConfig).items.associate { it.entityId to it.name }
+                GroupChildren(selectedSensors.mapTo(mutableListOf()) { ChildButtonData(it, previous[it].orEmpty()) })
+                    .writeTo(existingConfig)
             } else {
-                // Управление группой читает массив даже при единственном устройстве.
                 existingConfig.put("entity_ids", JSONArray(selectedSensors))
                 existingConfig.remove("entity_id")
-                if (type == "group" && !existingConfig.has("child_names")) {
-                    val names = JSONArray()
-                    selectedSensors.forEachIndexed { index, _ ->
-                        names.put((index + 1).toString())
-                    }
-                    existingConfig.put("child_names", names)
-                }
             }
         }
 
         // Поле размера доступно только кнопкам и группам. Скрытое значение
         // не должно менять сохранённый размер датчика, батареи, часов или погоды.
         if (type == "button" || type == "group") {
-            val buttonSize = etButtonSize.text.toString().toIntOrNull() ?: 160
-            existingConfig.put("button_size", buttonSize)
+            val input = etButtonSize.text.toString()
+            val buttonSize = if (input.isEmpty()) TilePlacement.BUTTON_SIZE else input.toIntOrNull()
+            // Старый чрезмерный размер не мешает изменить название: панель ограничит только View.
+            // Новое недопустимое значение нельзя записать даже вместе с другими полями формы.
+            val unchanged = oldTile != null && existingConfig.has("button_size") &&
+                input == existingConfig.optInt("button_size", TilePlacement.BUTTON_SIZE).toString()
+            val metrics = resources.displayMetrics
+            val maximum = TilePlacement.maxButtonSize(metrics.widthPixels, metrics.heightPixels)
+            if (!unchanged && (buttonSize == null || buttonSize !in 1..maximum)) {
+                etButtonSize.error = "Размер должен быть от 1 до $maximum px"
+                return false
+            }
+            if (!unchanged) existingConfig.put("button_size", buttonSize)
         }
 
         val config = existingConfig.toString()
@@ -258,17 +275,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             container = container,
             title = title,
             config = config
-        ) ?: TileEntity(
-            id = tileId ?: UUID.randomUUID().toString(),
-            type = type,
-            container = container,
-            title = title,
-            x = position % spanCount,
-            y = position / spanCount,
-            width = 1,
-            height = 1,
-            config = config
-        )
+        ) ?: newTile(type, container, title, config)
 
         lifecycleScope.launch {
             if (tileId == null) {
@@ -278,10 +285,43 @@ class TileSettingsActivity : PinProtectedActivity() {
                 tileManager.updateTile(tile)
             }
         }
+        return true
+    }
+
+    /** Порядок совпадает с массивом R.array.tile_types. */
+    private fun typeAt(position: Int): String = when (position) {
+        0 -> "sensor"
+        1 -> "button"
+        2 -> "group"
+        3 -> "battery"
+        4 -> "clock"
+        5 -> "weather"
+        else -> "sensor"
+    }
+
+    private fun newTile(type: String, container: String, title: String, config: String): TileEntity {
+        // x/y — пиксели панели, а не номер ячейки: иначе все новые плитки ложатся в угол.
+        val size = TilePlacement.size(container, config)
+        val metrics = resources.displayMetrics
+        val (x, y) = TilePlacement.findFreeSpot(
+            tileManager.getAllTiles(), size.width, size.height, metrics.widthPixels, metrics.heightPixels
+        )
+        return TileEntity(
+            id = tileId ?: UUID.randomUUID().toString(),
+            type = type,
+            container = container,
+            title = title,
+            x = x,
+            y = y,
+            width = 1,
+            height = 1,
+            config = config
+        )
     }
 
     private fun saveTile() {
-        saveTileWithoutFinish()
+        // При ошибке остаёмся на экране: введённые данные не должны пропадать молча.
+        if (!saveTileWithoutFinish()) return
         Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
         setResult(Activity.RESULT_OK)
         finish()
@@ -299,11 +339,23 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     private fun updateSelectedSensorsText() {
-        tvSelectedSensors.text = if (selectedSensors.isEmpty()) {
-            getString(R.string.none_selected)
-        } else {
-            "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
+        val isGroup = typeAt(spinnerType.selectedItemPosition) == "group"
+        tvSelectedSensors.text = when {
+            isGroup && selectedSensors.isEmpty() -> "В группе пока нет устройств"
+            isGroup -> "Устройств в группе: ${selectedSensors.size}"
+            selectedSensors.isEmpty() -> getString(R.string.none_selected)
+            else -> "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
         }
+    }
+
+    /** После экрана устройств группы источник правды — сохранённая плитка, а не старый выбор этого экрана. */
+    private fun reloadGroupDevices() {
+        val tile = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } } ?: return
+        val ids = try { GroupChildren.fromConfig(JSONObject(tile.config)).items.map { it.entityId } } catch (_: Exception) { return }
+        selectedSensors.clear()
+        selectedSensors.addAll(ids)
+        sensorSelectionChanged = false
+        updateSelectedSensorsText()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -317,6 +369,11 @@ class TileSettingsActivity : PinProtectedActivity() {
                 selectedSensors.addAll(it)
                 updateSelectedSensorsText()
             }
+        }
+        if (requestCode == REQUEST_EDIT_CHILDREN && resultCode == Activity.RESULT_OK) {
+            reloadGroupDevices()
+            // Устройства уже сохранены: панель должна обновиться, даже если здесь нажмут «назад».
+            setResult(Activity.RESULT_OK)
         }
         if (requestCode == REQUEST_ADVANCED_SETTINGS) {
             setResult(Activity.RESULT_OK)

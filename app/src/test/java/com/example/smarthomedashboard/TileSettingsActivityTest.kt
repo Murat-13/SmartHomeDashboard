@@ -28,7 +28,7 @@ import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowResources
 import org.robolectric.util.ReflectionHelpers.ClassParameter
 
-// В текущей конфигурации JVM нет APK ресурсов приложения. Подменяем только строку сводки выбора;
+// Фикстура строит Views программно и подменяет строку сводки выбора;
 // callbacks Activity, сохранение через lifecycleScope и TileManager остаются настоящими.
 @Implements(Resources::class)
 class SelectionResources : ShadowResources() {
@@ -70,8 +70,8 @@ class TileSettingsActivityTest {
         val currentId = savedInstanceState?.getString("tile_settings_tile_id") ?: tileId
         val activity = Robolectric.buildActivity(TileSettingsActivity::class.java,
             Intent(context, TileSettingsActivity::class.java).putExtra("tile_id", currentId)).get()
-        // Выполняем восстановление SavedStateRegistry без AppCompat.onCreate: APK ресурсов
-        // нет, но настоящий onSaveInstanceState требует восстановленный реестр компонента.
+        // Не запускаем весь экран через onCreate: для настоящего onSaveInstanceState
+        // достаточно восстановить реестр компонента в программной фикстуре.
         androidx.activity.ComponentActivity::class.java.declaredFields.single {
             it.type == androidx.savedstate.SavedStateRegistryController::class.java
         }.apply {
@@ -158,6 +158,74 @@ class TileSettingsActivityTest {
         }
     }
 
+    @Test fun newInvalidButtonSizesCannotBeSavedOrPartiallyChangeTile() {
+        for (value in listOf("0", "-1", "99999", "2147483648")) {
+            val old = tile().copy(type = "button", container = "bottom_panel")
+            manager.saveTiles(listOf(old))
+            val activity = open()
+            get<EditText>(activity, "etTitle").setText("Must not be saved")
+            get<EditText>(activity, "etButtonSize").setText(value)
+            invoke(activity, "saveTile")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(activity.isFinishing)
+            assertNotNull(get<EditText>(activity, "etButtonSize").error)
+            assertEquals(old, manager.loadTiles().single())
+        }
+    }
+
+    @Test
+    @Config(shadows = [SelectionResources::class, PanelSessionResources::class])
+    fun rejectedOversizedSaveCanReturnToPanelWithOriginalTile() {
+        val old = tile().copy(type = "button", container = "bottom_panel")
+        manager.saveTiles(listOf(old))
+        val settings = open()
+        get<EditText>(settings, "etButtonSize").setText("99999")
+        invoke(settings, "saveTile")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(old, manager.loadTiles().single())
+
+        val main = Robolectric.buildActivity(MainActivity::class.java).get()
+        main.setTheme(android.R.style.Theme_Material_Light_NoActionBar)
+        main.resources.displayMetrics.widthPixels = 1920
+        main.resources.displayMetrics.heightPixels = 1200
+        val panel = android.widget.FrameLayout(main)
+        val set = { name: String, value: Any ->
+            ArchitectureTestAccess.setField(main, name, value)
+        }
+        set("tileManager", TileManager(main))
+        set("bottomPanel", panel)
+        set("dimOverlay", android.view.View(main))
+        set("yandexWeatherManager", YandexWeatherManager(main))
+        ArchitectureTestAccess.method(main, "refreshBottomPanel").apply {
+            isAccessible = true
+            invoke(main)
+        }
+        assertEquals(160, panel.findViewWithTag<android.widget.Button>(old.id).layoutParams.width)
+        assertEquals(old, manager.loadTiles().single())
+    }
+
+    @Test fun boundarySizeCanBeSavedAndUnchangedLegacyFormatIsPreserved() {
+        val old = tile("""{"entity_id":"switch.test","button_size":"240","extra":"kept"}""")
+            .copy(type = "button", container = "bottom_panel")
+        manager.saveTiles(listOf(old))
+        val same = open()
+        assertEquals("240", JSONObject(save(same).config).get("button_size"))
+        val changed = open()
+        val metrics = changed.resources.displayMetrics
+        val maximum = TilePlacement.maxButtonSize(metrics.widthPixels, metrics.heightPixels)
+        get<EditText>(changed, "etButtonSize").setText(maximum.toString())
+        assertEquals(maximum, JSONObject(save(changed).config).getInt("button_size"))
+    }
+
+    @Test fun unchangedOversizedLegacySizeDoesNotBlockSavingOtherFields() {
+        val old = tile("""{"entity_id":"switch.test","button_size":99999,"extra":"kept"}""")
+            .copy(type = "button", container = "bottom_panel")
+        manager.saveTiles(listOf(old))
+        val activity = open()
+        get<EditText>(activity, "etTitle").setText("Renamed")
+        assertEquals(old.copy(title = "Renamed"), save(activity))
+    }
+
     @Test fun editableButtonAndGroupSizeIsStillSaved() {
         for (type in listOf("button", "group")) {
             manager.saveTiles(listOf(tile().copy(type = type, container = "bottom_panel")))
@@ -183,6 +251,55 @@ class TileSettingsActivityTest {
         val created = tiles.first { it.id != "other" }
         assertEquals("New", created.title)
         assertEquals("sensor.new", JSONObject(created.config).getString("entity_id"))
+    }
+
+    @Test fun newTilesArePlacedInFreePanelPixelsInsteadOfStackingInCorner() {
+        manager.saveTiles(listOf(tile().copy(id = "other", x = 20, y = 40, config = "{}")))
+        val created = mutableListOf<TileEntity>()
+        repeat(2) { n ->
+            val activity = open(tileId = null)
+            activity.resources.displayMetrics.widthPixels = 1920
+            activity.resources.displayMetrics.heightPixels = 1200
+            get<EditText>(activity, "etTitle").setText("New $n")
+            invoke(activity, "saveTile")
+            shadowOf(Looper.getMainLooper()).idle()
+            created += manager.loadTiles().single { it.title == "New $n" }
+        }
+        val all = manager.loadTiles()
+        // Раньше x/y были номером ячейки (0..3, 0..1) и плитки ложились друг на друга.
+        for (tile in created) {
+            for (other in all.filter { it.id != tile.id }) {
+                val a = TilePlacement.size(tile.container, tile.config)
+                val b = TilePlacement.size(other.container, other.config)
+                assertFalse("${tile.title} перекрывает ${other.title}",
+                    tile.x < other.x + b.width && tile.x + a.width > other.x &&
+                        tile.y < other.y + b.height && tile.y + a.height > other.y)
+            }
+        }
+    }
+
+    @Test fun changingGroupSelectionKeepsEachNameWithItsDevice() {
+        manager.saveTiles(listOf(tile("""{"entity_ids":["light.a","light.b","light.c"],
+            "child_names":["Кухня","Коридор","Ванная"]}""").copy(type = "group", container = "bottom_panel")))
+        val activity = open()
+        // Раньше имена оставались на прежних позициях: «Ванная» становилась именем нового устройства.
+        choose(activity, listOf("light.a", "light.c", "light.new"))
+        val config = JSONObject(save(activity).config)
+        assertEquals("""["light.a","light.c","light.new"]""", config.getJSONArray("entity_ids").toString())
+        assertEquals("""["Кухня","Ванная","3"]""", config.getJSONArray("child_names").toString())
+    }
+
+    @Test fun emptyTitleKeepsScreenOpenAndSavesNothing() {
+        manager.saveTiles(emptyList())
+        val activity = open(tileId = null)
+        get<EditText>(activity, "etTitle").setText("   ")
+        choose(activity, listOf("sensor.new"))
+        invoke(activity, "saveTile")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse("Экран не должен закрываться с несохранённым вводом", activity.isFinishing)
+        assertEquals("Введите название", get<EditText>(activity, "etTitle").error?.toString())
+        assertTrue(manager.loadTiles().isEmpty())
+        assertEquals(listOf("sensor.new"), get<List<String>>(activity, "selectedSensors"))
     }
 
     @Test fun newTileIdSavedBeforeAdvancedScreenSurvivesRestorationWithoutDuplicate() {
@@ -416,19 +533,21 @@ class TileSettingsActivityTest {
         val json = JSONObject(save(activity).config)
         assertFalse(json.has("entity_id"))
         assertEquals("""["switch.new"]""", json.getJSONArray("entity_ids").toString())
-        assertEquals("""["First","Second"]""", json.getJSONArray("child_names").toString())
+        // Имя принадлежит устройству: новое устройство не наследует чужое имя, и имён столько же, сколько кнопок.
+        assertEquals("""["1"]""", json.getJSONArray("child_names").toString())
     }
 
-    @Test fun groupMultipleSelectionKeepsExistingChildNamesAndOrder() {
+    @Test fun groupMultipleSelectionKeepsNamesOfRemainingDevicesInNewOrder() {
         val old = tile("""{"entity_ids":["switch.old1","switch.old2"],
             "child_names":["First","Second"],"button_size":160}""")
             .copy(type = "group", container = "bottom_panel")
         manager.saveTiles(listOf(old))
         val activity = open()
-        choose(activity, listOf("switch.new2", "switch.new1"))
+        choose(activity, listOf("switch.old2", "switch.new1"))
         val json = JSONObject(save(activity).config)
-        assertEquals("""["switch.new2","switch.new1"]""", json.getJSONArray("entity_ids").toString())
-        assertEquals("""["First","Second"]""", json.getJSONArray("child_names").toString())
+        assertEquals("""["switch.old2","switch.new1"]""", json.getJSONArray("entity_ids").toString())
+        assertEquals("""["Second","2"]""", json.getJSONArray("child_names").toString())
+        assertEquals(160, json.getInt("button_size"))
     }
 
     @Test fun confirmedEmptyPickerChoiceDoesNotRestoreOldSourceAfterSaveAndReload() {

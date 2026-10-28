@@ -60,6 +60,39 @@
                 android:background="#2A2A2A"
                 android:entries="@array/tile_types" />
 
+            <!-- Что делает выбранный тип и какие устройства выбирать -->
+            <LinearLayout
+                android:id="@+id/tileTypeHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_hint"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="4dp">
+
+                <TextView
+                    android:id="@+id/tvTileTypeHint"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_gravity="center_vertical"
+                    android:paddingTop="12dp"
+                    android:paddingBottom="12dp"
+                    android:textColor="#BDBDBD"
+                    android:textSize="14sp" />
+
+                <ImageButton
+                    android:id="@+id/btnTileTypeHintClose"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_gravity="top"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Закрыть подсказку"
+                    android:src="@drawable/ic_close"
+                    app:tint="#99FFFFFF" />
+            </LinearLayout>
+
             <!-- Размер кнопки -->
             <TextView
                 android:id="@+id/tvButtonSizeLabel"
@@ -127,7 +160,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:layout_marginTop="8dp"
-                android:text="Редактировать группу"
+                android:text="Устройства и имена кнопок"
                 android:backgroundTint="#FF9800"
                 android:visibility="gone" />
 

@@ -26,7 +26,9 @@ class HomeAssistantWebSocket(
     // обработчик прогноза и не использует unknown как признак частичного обновления.
     private val onForecastChanged: (entityId: String, forecast: JSONArray?) -> Unit = { entityId, forecast ->
         onStateChanged(entityId, "unknown", JSONObject().put("forecast", forecast ?: JSONObject.NULL))
-    }
+    },
+    // Пока работаем через запасной адрес, так часто проверяем, не вернулся ли основной (локальный).
+    private val primaryProbeIntervalMs: Long = TimeUnit.MINUTES.toMillis(5)
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -58,6 +60,8 @@ class HomeAssistantWebSocket(
     private val tokenRejectedHosts = mutableSetOf<String>()
     private var reconnectTask: Runnable? = null
     private var timeoutTask: Runnable? = null
+    private var probeTask: Runnable? = null
+    private var probeSocket: WebSocket? = null
 
     fun getHost(): String = hosts.getOrElse(endpointIndex) { host }
 
@@ -79,6 +83,7 @@ class HomeAssistantWebSocket(
     private fun openConnection() {
         if (!running) return
         reconnectTask = null
+        cancelPrimaryProbe()
         val id = ++generation
         authenticated = false
         authSent = false
@@ -129,6 +134,7 @@ class HomeAssistantWebSocket(
 
     private fun fail(message: String, permanent: Boolean = false, tokenRejected: Boolean = false) {
         if (!running) return
+        cancelPrimaryProbe()
         // Invalidate first: cancel() can itself cause onFailure.
         generation++
         timeoutTask?.let { handler.removeCallbacks(it) }
@@ -186,6 +192,7 @@ class HomeAssistantWebSocket(
                 ensureForecasts()
                 if (entitiesRequested) requestEntities()
                 onConnected()
+                schedulePrimaryProbe()
             }
             "result" -> if (authenticated) {
                 forecastSubscriptions[json.optInt("id")]?.let {
@@ -204,9 +211,7 @@ class HomeAssistantWebSocket(
                     if (entityId.isEmpty()) continue
                     val attrs = obj.optJSONObject("attributes") ?: JSONObject()
                     if (obj.has("state")) onStateChanged(entityId, obj.optString("state"), attrs)
-                    entities.add(HaEntity(entityId,
-                        attrs.optString("friendly_name", obj.optString("name", entityId)),
-                        entityId.substringBefore(".")))
+                    entities.add(HaEntity(entityId, displayName(entityId, obj, attrs), entityId.substringBefore(".")))
                 }
                 onEntitiesList?.invoke(entities)
             }
@@ -371,8 +376,78 @@ class HomeAssistantWebSocket(
         if (authenticated && webSocket?.send(message.toString()) != true) fail("Ошибка отправки: соединение потеряно")
     }
 
+    /**
+     * Панель стоит дома: после перехода на внешний адрес возвращаемся на локальный, как только он снова
+     * отвечает. Пробное соединение не авторизуется: достаточно приглашения auth_required от HA.
+     * Текущее соединение закрывается только после успешной проверки.
+     */
+    private fun schedulePrimaryProbe() {
+        cancelPrimaryProbe()
+        if (!autoReconnect || !authenticated || endpointIndex == 0 || hosts.size < 2) return
+        val id = generation
+        probeTask = Runnable { probePrimary(id) }.also { handler.postDelayed(it, primaryProbeIntervalMs) }
+    }
+
+    private fun probePrimary(id: Int) {
+        probeTask = null
+        if (!running || generation != id || !authenticated || endpointIndex == 0) return
+        val request = try {
+            Request.Builder().url(HomeAssistantAddress.webSocketUrl(hosts[0])).build()
+        } catch (_: IllegalArgumentException) { return }
+        var answered = false
+        val timeout = Runnable { if (!answered) { cancelPrimaryProbe(); schedulePrimaryProbe() } }
+        handler.postDelayed(timeout, 10_000L)
+        probeSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!text.contains("auth_required")) return
+                handler.post {
+                    if (answered || probeSocket !== webSocket) return@post
+                    answered = true
+                    handler.removeCallbacks(timeout)
+                    switchToPrimary(id)
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                handler.post {
+                    if (answered || probeSocket !== webSocket) return@post
+                    answered = true
+                    handler.removeCallbacks(timeout)
+                    probeSocket = null
+                    // Локальный адрес пока недоступен: остаёмся на запасном и проверим позже.
+                    if (running && generation == id) schedulePrimaryProbe()
+                }
+            }
+        })
+    }
+
+    private fun switchToPrimary(id: Int) {
+        cancelPrimaryProbe()
+        if (!running || generation != id || endpointIndex == 0) return
+        onStatus("Локальный адрес снова доступен: переключение")
+        // Как в fail(): сначала инвалидируем поколение, чтобы callbacks старого сокета не сработали.
+        generation++
+        timeoutTask?.let { handler.removeCallbacks(it) }
+        timeoutTask = null
+        webSocket?.cancel()
+        webSocket = null
+        authenticated = false
+        forecastSubscriptions.clear()
+        endpointIndex = 0
+        failures = 0
+        openConnection()
+    }
+
+    private fun cancelPrimaryProbe() {
+        probeTask?.let { handler.removeCallbacks(it) }
+        probeTask = null
+        probeSocket?.cancel()
+        probeSocket = null
+    }
+
     fun disconnect() = onMain {
         running = false
+        cancelPrimaryProbe()
         generation++
         reconnectTask?.let { handler.removeCallbacks(it) }
         timeoutTask?.let { handler.removeCallbacks(it) }
@@ -383,6 +458,17 @@ class HomeAssistantWebSocket(
         webSocket = null
         forecastSubscriptions.clear()
     }
+}
+
+/**
+ * Понятное имя сущности для списков выбора. get_states отдаёт friendly_name в атрибутах, а реестр
+ * сущностей — name (заданное пользователем, чаще всего null) и original_name от интеграции.
+ * JSON null нельзя читать через optString: он становится строкой «null».
+ */
+internal fun displayName(entityId: String, entry: JSONObject, attributes: JSONObject): String {
+    fun text(json: JSONObject, key: String): String? =
+        if (json.isNull(key)) null else json.optString(key).takeIf { it.isNotBlank() }
+    return text(attributes, "friendly_name") ?: text(entry, "name") ?: text(entry, "original_name") ?: entityId
 }
 
 data class HaEntity(

@@ -1,9 +1,5 @@
 <resources>
     <string name="app_name">SmartHomeDashboard</string>
-    <string name="btn_light">💡 Свет</string>
-    <string name="btn_boiler">🔥 Бойлер</string>
-    <string name="btn_heater">❄️ Обогрев</string>
-    <string name="btn_pump">💧 Насос</string>
     <string name="settings">Настройки</string>
     <string name="widget_default_title">Widget</string>
     <string name="widget_default_value">0</string>
@@ -16,11 +12,6 @@
     <string name="default_timeout">10 сек</string>
     <string name="timeout_range_hint">от 3 до 30 секунд</string>
     <string name="timeout_sec">%d сек</string>
-    <string name="widget_network_title">⚡ Сеть</string>
-    <string name="current_label">Ток: %s A</string>
-    <string name="power_label">Мощность: %s W</string>
-    <string name="frequency_label">Частота: %s Hz</string>
-    <string name="energy_label">Энергия: %s kWh</string>
     <string name="save">Сохранить</string>
     <string name="ha_host_label">Адрес Home Assistant</string>
     <string name="ha_host_hint"></string>
@@ -28,7 +19,7 @@
     <string name="ha_token_hint">Введите токен долгосрочного доступа</string>
     <string name="connect">Подключиться</string>
     <string name="local_host_label">Локальный адрес (необязательно)</string>
-    <string name="local_host_hint"></string>
+    <string name="local_host_hint">http://192.168.1.10:8123</string>
     <string name="remote_host_label">Внешний адрес (необязательно, если указан локальный)</string>
     <string name="remote_host_hint">https://ha.example.invalid</string>
     <string name="fill_fields">Укажите токен и хотя бы один адрес: локальный или внешний</string>
@@ -39,11 +30,6 @@
     <string name="connecting_to">Подключение к %s…</string>
     <string name="connected">✅ Подключено!</string>
     <string name="connection_failed">❌ Не удалось подключиться</string>
-    <string name="voltage_format">%s V</string>
-    <string name="power_format">%s W</string>
-    <string name="temperature_format">%s°C</string>
-    <string name="placeholder_voltage">— V</string>
-    <string name="placeholder_power">— W</string>
 
     <!-- Типы плиток -->
     <string-array name="tile_types">
@@ -58,7 +44,7 @@
     <!-- Настройки плитки -->
     <string name="tile_settings_title">Настройка плитки</string>
     <string name="tile_title_label">Название</string>
-    <string name="tile_title_hint">⚡ Сеть</string>
+    <string name="tile_title_hint">Например: Гостиная</string>
     <string name="tile_type_label">Тип плитки</string>
     <string name="sensors_label">Датчики</string>
     <string name="select_sensors">Выбрать датчики</string>

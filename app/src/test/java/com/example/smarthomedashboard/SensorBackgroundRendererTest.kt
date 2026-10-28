@@ -18,7 +18,6 @@ import org.robolectric.annotation.Config
 class SensorBackgroundRendererTest {
     private val activity by lazy { Robolectric.buildActivity(MainActivity::class.java).get() }
     private val states = linkedMapOf<String, String>()
-    private var voltage = "230"
 
     private fun tile(rules: String = "[]", title: String = "Датчики", type: String = "sensor") =
         TileEntity("tile", type, "grid", title, 0, 0, 1, 1, colorRules = rules)
@@ -46,18 +45,14 @@ class SensorBackgroundRendererTest {
     // Те же проверки выполняются до переноса на исходном методе, затем на его делегировании.
     @Suppress("UNCHECKED_CAST")
     private fun render(tile: TileEntity, card: FrameLayout) {
-        MainActivity::class.java.getDeclaredField("singleStates").apply {
+        ArchitectureTestAccess.field("singleStates").apply {
             isAccessible = true
             (get(activity) as MutableMap<String, String>).apply {
                 clear()
                 putAll(states)
             }
         }
-        MainActivity::class.java.getDeclaredField("pzemVoltage").apply {
-            isAccessible = true
-            set(activity, voltage)
-        }
-        MainActivity::class.java.getDeclaredMethod(
+        ArchitectureTestAccess.method(activity,
             "updateNormalSensorWidget", TileEntity::class.java, FrameLayout::class.java
         ).apply {
             isAccessible = true
@@ -162,35 +157,17 @@ class SensorBackgroundRendererTest {
         assertColor(0x80333333, tile(rules(rule(from = "30", color = "invalid"))))
     }
 
-    @Test fun networkBelowAtAndAboveThreshold() {
-        val tile = tile(title = "Сеть")
-        voltage = "9.99"
-        assertColor(0x80FF3333, tile)
-        voltage = "10"
-        assertColor(0x80FF3333, tile)
-        voltage = "10.01"
-        assertColor(0x8033CC33, tile)
+    @Test fun titleDoesNotChangeBackground() {
+        // Раньше плитка со словом «сеть» красилась по личному PZEM-датчику напряжения.
+        states["sensor.pzem_energy_monitor_pzem_voltage"] = "230"
+        for (title in listOf("Сеть", "ЭлектроСЕТЬ дома", "Электричество")) {
+            assertColor(0x80333333, tile(title = title))
+        }
     }
 
-    @Test fun networkNonnumericVoltageUsesOfflineBackground() {
-        voltage = "—"
-        assertColor(0x80FF3333, tile(title = "Сеть"))
-        voltage = "230 В"
-        assertColor(0x80FF3333, tile(title = "Сеть"))
-    }
-
-    @Test fun networkTitleUsesCaseInsensitiveSubstring() {
-        assertColor(0x8033CC33, tile(title = "ЭлектроСЕТЬ дома"))
-        assertColor(0x80333333, tile(title = "Электричество"))
-    }
-
-    @Test fun userRuleOverridesBothNetworkBackgrounds() {
+    @Test fun userRuleColorsAnyTitle() {
         states["sensor.value"] = "15"
-        val tile = tile(rules(rule()), "Сеть")
-        voltage = "0"
-        assertColor(0x802196F3, tile)
-        voltage = "230"
-        assertColor(0x802196F3, tile)
+        assertColor(0x802196F3, tile(rules(rule()), "Сеть"))
     }
 
     @Test fun repeatedUpdateReturnsToDefaultWhenMatchEnds() {
@@ -203,16 +180,13 @@ class SensorBackgroundRendererTest {
         assertColor(0x80333333, tile(), card)
     }
 
-    @Test fun repeatedUpdateReturnsToCurrentNetworkBackground() {
+    @Test fun repeatedUpdateOnAnyTitleReturnsToDefault() {
         val card = card()
         val tile = tile(rules(rule()), "Сеть")
         states["sensor.value"] = "15"
         assertColor(0x802196F3, tile, card)
         states.clear()
-        voltage = "0"
-        assertColor(0x80FF3333, tile, card)
-        voltage = "230"
-        assertColor(0x8033CC33, tile, card)
+        assertColor(0x80333333, tile, card)
     }
 
     @Test fun twoTilesKeepIndependentBackgrounds() {

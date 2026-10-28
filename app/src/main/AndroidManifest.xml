@@ -3,7 +3,6 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
@@ -29,9 +28,26 @@
             android:name=".SetupActivity"
             android:exported="false" />
 
+        <!-- Режим «главный экран»: включается в настройках (HomeScreenMode). Тогда Android сам открывает
+             панель после перезагрузки, по кнопке «Домой» и после падения. -->
+        <activity-alias
+            android:name=".HomeLauncher"
+            android:enabled="false"
+            android:exported="true"
+            android:targetActivity=".SplashActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Одна панель на устройство: запуск с рабочего стола и как главного экрана не создаёт
+             вторую копию с ещё одним соединением с HA. -->
         <activity
             android:name=".MainActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:launchMode="singleTask" />
 
         <activity
             android:name=".SettingsActivity"

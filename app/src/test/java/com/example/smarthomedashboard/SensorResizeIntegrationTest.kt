@@ -40,14 +40,11 @@ class SensorResizeIntegrationTest {
     private val panel by lazy { FrameLayout(activity) }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply {
-            isAccessible = true
-            set(activity, value)
-        }
+        ArchitectureTestAccess.setField(activity, name, value)
     }
 
     private fun create(tile: TileEntity): FrameLayout = try {
-        MainActivity::class.java.getDeclaredMethod("createSensorView", TileEntity::class.java)
+        ArchitectureTestAccess.method(activity, "createSensorView", TileEntity::class.java)
             .apply { isAccessible = true }.invoke(activity, tile) as FrameLayout
     } catch (error: InvocationTargetException) {
         throw error.targetException
@@ -94,7 +91,7 @@ class SensorResizeIntegrationTest {
     }
 
     private fun prefs() = activity.getSharedPreferences("tiles_prefs", 0).all.toMap()
-    private fun assertIdle() = assertFalse(ReflectionHelpers.getField<Boolean>(activity, "isResizing"))
+    private fun assertIdle() = assertFalse(ArchitectureTestAccess.getField<Boolean>(activity, "isResizing"))
     private fun assertOriginal(card: FrameLayout) {
         layout(card)
         assertEquals(220, card.width)
@@ -102,6 +99,67 @@ class SensorResizeIntegrationTest {
         assertEquals(20f, card.x, 0f)
         assertEquals(30f, card.y, 0f)
         assertIdle()
+    }
+
+    private fun clearInteractions() {
+        ArchitectureTestAccess.method(activity, "clearPanelInteractions").apply {
+            isAccessible = true
+            invoke(activity)
+        }
+    }
+
+    @Test fun cleanupDuringResizeRollsBackAndLateUpCannotSaveOldCard() {
+        val card = open()
+        val before = prefs()
+        start(card)
+        clearInteractions()
+        send(handle(card), MotionEvent.ACTION_UP)
+        assertOriginal(card)
+        assertEquals(before, prefs())
+        assertNull(shadowOf(handle(card)).onTouchListener)
+        clearInteractions()
+        assertEquals(before, prefs())
+    }
+
+    @Test fun oldResizeListenerCannotChangeNewPanelOrItsSettings() {
+        val old = open()
+        start(old)
+        val oldHandle = handle(old)
+        val oldListener = shadowOf(oldHandle).onTouchListener!!
+        clearInteractions()
+        panel.removeAllViews()
+        val fresh = open(tile(config = """{"button_size":260,"widget_height":200,"custom":"fresh"}"""))
+        val before = prefs()
+        fun stale(action: Int) {
+            val event = MotionEvent.obtain(0, 1, action, 100f, 100f, 0)
+            try { oldListener.onTouch(oldHandle, event) } finally { event.recycle() }
+        }
+        stale(MotionEvent.ACTION_UP)
+        stale(MotionEvent.ACTION_DOWN)
+        stale(MotionEvent.ACTION_MOVE)
+        stale(MotionEvent.ACTION_UP)
+        assertEquals(before, prefs())
+        assertEquals(260, fresh.layoutParams.width)
+        assertEquals(200, fresh.layoutParams.height)
+        assertIdle()
+    }
+
+    @Test fun cleanupRestoresWeatherTextAndBatteryFillWithoutWriting() {
+        for (type in listOf("weather", "battery")) {
+            panel.removeAllViews()
+            ArchitectureTestAccess.getField<MutableMap<String, String>>(activity, "singleStates")["sensor.soc"] = "50"
+            val card = open(tile(type))
+            shadowOf(Looper.getMainLooper()).idleFor(600, TimeUnit.MILLISECONDS)
+            val textSize = card.findViewWithTag<TextView>("weather_temp")?.textSize
+            val before = prefs()
+            start(card)
+            clearInteractions()
+            send(handle(card), MotionEvent.ACTION_UP)
+            assertOriginal(card)
+            if (type == "weather") assertEquals(textSize, card.findViewWithTag<TextView>("weather_temp").textSize)
+            else assertEquals(110, card.findViewWithTag<View>("battery_progress_fill").layoutParams.width)
+            assertEquals(before, prefs())
+        }
     }
 
     @Test fun upPersistsDimensionsAndIndependentSettings() {
@@ -220,7 +278,7 @@ class SensorResizeIntegrationTest {
     }
 
     @Test fun batteryFillFollowsMoveCancelAndSuccessfulUp() {
-        val states = ReflectionHelpers.getField<MutableMap<String, String>>(activity, "singleStates")
+        val states = ArchitectureTestAccess.getField<MutableMap<String, String>>(activity, "singleStates")
         states["sensor.soc"] = "50"
         val card = open(tile("battery"))
         shadowOf(Looper.getMainLooper()).idleFor(600, TimeUnit.MILLISECONDS)
@@ -284,7 +342,7 @@ class SensorResizeIntegrationTest {
     }
 
     @Test fun batteryRollbackAfterCurrentConfigBecomesCorruptKeepsKnownFill() {
-        ReflectionHelpers.getField<MutableMap<String, String>>(activity, "singleStates")["sensor.soc"] = "50"
+        ArchitectureTestAccess.getField<MutableMap<String, String>>(activity, "singleStates")["sensor.soc"] = "50"
         val card = open(tile("battery"))
         shadowOf(Looper.getMainLooper()).idleFor(600, TimeUnit.MILLISECONDS)
         start(card)

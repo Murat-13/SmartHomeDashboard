@@ -34,10 +34,10 @@ class SensorTransitionIntegrationTest {
 
     private data class Bounds(val width: Int, val height: Int, val x: Float, val y: Float)
 
-    private fun set(name: String, value: Any?) = ReflectionHelpers.setField(activity, name, value)
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun set(name: String, value: Any?) = ArchitectureTestAccess.setField(activity, name, value)
+    private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
-        MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(activity).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
     } catch (error: InvocationTargetException) {
         throw error.targetException
@@ -73,8 +73,8 @@ class SensorTransitionIntegrationTest {
         root.addView(panel)
         root.addView(dim)
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         get<MutableMap<String, String>>("singleStates").putAll(mapOf("sensor.temp" to "12.5", "weather.home" to "sunny"))
         get<MutableMap<String, JSONObject>>("entityAttributes")["weather.home"] =
             JSONObject("""{"temperature":20,"forecast":[{"time":"09:00","temperature":18}]}""")
@@ -104,7 +104,7 @@ class SensorTransitionIntegrationTest {
         layoutCards()
     }
     private fun tap(v: View) {
-        val throughWindow = ReflectionHelpers.getField<View?>(activity, "expandedSensorView") != null
+        val throughWindow = sensorSessionFixture(activity).current != null
         val location = IntArray(2)
         if (throughWindow) v.getLocationInWindow(location)
         val time = android.os.SystemClock.uptimeMillis()
@@ -125,12 +125,12 @@ class SensorTransitionIntegrationTest {
         }
     }
     private fun tap(id: String) = tap(card(id))
-    private fun expanded(): View? = get("expandedSensorView")
+    private fun expanded(): View? = sensorSessionFixture(activity).current
     private fun prefs() = activity.getSharedPreferences("tiles_prefs", 0).all.toMap()
 
     private fun animations(): List<ValueAnimator> {
         // Проверяем и исходный набор, и реестр по View, не меняя ожиданий поведения.
-        return when (val registry = get<Any>("sensorAnimations")) {
+        return when (val registry = ArchitectureTestAccess.getField<Any>(sensorSessionFixture(activity), "animations")) {
             is Map<*, *> -> registry.values.filterIsInstance<ValueAnimator>()
             is Collection<*> -> registry.filterIsInstance<ValueAnimator>()
             else -> error("Неизвестный реестр анимаций")

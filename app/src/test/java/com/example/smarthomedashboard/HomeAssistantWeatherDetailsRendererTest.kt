@@ -47,7 +47,7 @@ class HomeAssistantWeatherDetailsRendererTest {
     @Suppress("UNCHECKED_CAST")
     private fun invokeActivity(tile: TileEntity, container: LinearLayout) {
         for ((name, values) in listOf("entityAttributes" to attributes, "singleStates" to states)) {
-            MainActivity::class.java.getDeclaredField(name).apply {
+            ArchitectureTestAccess.field(name).apply {
                 isAccessible = true
                 val target = get(activity) as MutableMap<String, Any>
                 target.clear()
@@ -55,7 +55,7 @@ class HomeAssistantWeatherDetailsRendererTest {
             }
         }
         try {
-            MainActivity::class.java.getDeclaredMethod("buildWeatherDetailedContent",
+            ArchitectureTestAccess.method(activity, "buildWeatherDetailedContent",
                 TileEntity::class.java, LinearLayout::class.java).apply {
                 isAccessible = true
                 invoke(activity, tile, container)
@@ -304,10 +304,11 @@ class HomeAssistantWeatherDetailsRendererTest {
 
     @Test fun scrollTouchResetsExistingCollapseTimer() {
         var runs = 0
-        MainActivity::class.java.getDeclaredField("sensorCollapseRunnable").apply {
-            isAccessible = true
-            set(activity, Runnable { runs++ })
+        val session = sensorSessionFixture(activity)
+        val source = android.widget.FrameLayout(context).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(220, 180)
         }
+        session.expand(source, SensorExpansionSession.Bounds(220, 180, 0f, 0f)) { runs++ }
         val container = LinearLayout(context)
         invokeActivity(tile(), container)
         val scroll = container.getChildAt(3) as HorizontalScrollView
@@ -327,11 +328,12 @@ class HomeAssistantWeatherDetailsRendererTest {
         assertEquals(0, runs)
         shadowOf(Looper.getMainLooper()).idleFor(10, TimeUnit.SECONDS)
         assertEquals(1, runs)
+        session.clear()
     }
 
     @Test fun activityKeepsYandexBranchAndItsEarlyReturn() {
         val manager = YandexWeatherManager(context).apply { currentTemp = "11"; currentState = "clear" }
-        MainActivity::class.java.getDeclaredField("yandexWeatherManager").apply {
+        ArchitectureTestAccess.field("yandexWeatherManager").apply {
             isAccessible = true
             set(activity, manager)
         }

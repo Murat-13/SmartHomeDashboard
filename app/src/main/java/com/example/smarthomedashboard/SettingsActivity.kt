@@ -97,7 +97,7 @@ class SettingsActivity : PinProtectedActivity() {
         etAdminPin.text.clear()
         etAdminPin.isSaveEnabled=false
         etAdminPin.isSaveFromParentEnabled=false
-        etAdminPin.importantForAutofill=android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        etAdminPin.excludeFromAutofill()
         etAdminPin.isFocusable=false
         etAdminPin.hint="Управление PIN и восстановлением"
         etAdminPin.setOnClickListener { PinSecurityUi.manage(this) }
@@ -143,10 +143,58 @@ class SettingsActivity : PinProtectedActivity() {
 
         btnExport.setOnClickListener { exportConfig() }
         btnImport.setOnClickListener { importConfig() }
+        findViewById<Button>(R.id.btnHelp).setOnClickListener { UserHints.showWelcome(this) }
+        findViewById<Button>(R.id.btnRestoreHints).setOnClickListener {
+            UserHints.restoreAll(this)
+            updateRestoreHintsButton()
+        setupHomeScreenMode()
+            Toast.makeText(this, "Подсказки снова будут показываться", Toast.LENGTH_SHORT).show()
+        }
+        updateRestoreHintsButton()
+        setupHomeScreenMode()
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
             finish()
         }
+    }
+
+    private fun setupHomeScreenMode() {
+        findViewById<CheckBox>(R.id.cbHomeScreen).setOnCheckedChangeListener { _, checked ->
+            HomeScreenMode.setEnabled(this, checked)
+            if (checked && !HomeScreenMode.isDefaultHome(this)) {
+                Toast.makeText(this, "Выберите SmartHomeDashboard главным экраном", Toast.LENGTH_LONG).show()
+                HomeScreenMode.openHomeSettings(this)
+            }
+            updateHomeScreenStatus()
+        }
+        findViewById<TextView>(R.id.tvHomeScreenStatus).setOnClickListener {
+            if (HomeScreenMode.isEnabled(this) && !HomeScreenMode.isDefaultHome(this)) HomeScreenMode.openHomeSettings(this)
+        }
+        updateHomeScreenStatus()
+    }
+
+    /** Состояние может измениться в системных настройках, поэтому перечитываем его при возврате. */
+    private fun updateHomeScreenStatus() {
+        val checkBox = findViewById<CheckBox>(R.id.cbHomeScreen) ?: return
+        val enabled = HomeScreenMode.isEnabled(this)
+        if (checkBox.isChecked != enabled) {
+            // Программная синхронизация не должна снова открывать системный выбор.
+            checkBox.setOnCheckedChangeListener(null)
+            checkBox.isChecked = enabled
+            setupHomeScreenMode()
+            return
+        }
+        findViewById<TextView>(R.id.tvHomeScreenStatus).text = when {
+            !enabled -> "После перезагрузки планшета и по кнопке «Домой» будет открываться панель. " +
+                "Android попросит выбрать её главным экраном."
+            HomeScreenMode.isDefaultHome(this) -> "Готово: панель — главный экран. Чтобы вернуть обычный рабочий стол, снимите отметку."
+            else -> "Осталось выбрать SmartHomeDashboard главным экраном — нажмите здесь."
+        }
+    }
+
+    private fun updateRestoreHintsButton() {
+        // Кнопка активна, только когда есть что возвращать.
+        findViewById<Button>(R.id.btnRestoreHints).isEnabled = UserHints.canRestore(this)
     }
 
     private fun prepareTransportWarning() {
@@ -320,6 +368,8 @@ class SettingsActivity : PinProtectedActivity() {
     override fun onResume() {
         super.onResume()
         if(::etAdminPin.isInitialized)etAdminPin.text.clear()
+        // Возврат из системного выбора главного экрана: показываем актуальное состояние.
+        if (::etAdminPin.isInitialized) updateHomeScreenStatus()
         if (::tvHaTokenStatus.isInitialized) {
             btnSave.isEnabled = true
             etHaToken.isEnabled = true

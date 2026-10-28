@@ -47,15 +47,12 @@ class WeatherCardIntegrationTest {
     private val yandex by lazy { YandexWeatherManager(activity) }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply {
-            isAccessible = true
-            set(activity, value)
-        }
+        ArchitectureTestAccess.setField(activity, name, value)
     }
 
     private fun invoke(name: String, vararg args: Any?): Any? {
         try {
-            return MainActivity::class.java.declaredMethods.single {
+            return ArchitectureTestAccess.methods(activity).single {
                 it.name == name && it.parameterTypes.size == args.size
             }.apply { isAccessible = true }.invoke(activity, *args)
         } catch (error: InvocationTargetException) {
@@ -158,7 +155,7 @@ class WeatherCardIntegrationTest {
     private fun expand(card: FrameLayout) {
         invoke("expandSensor", manager.loadTiles().single(), card)
         finishAnimation(card)
-        assertSame(card, ReflectionHelpers.getField<View>(activity, "expandedSensorView"))
+        assertSame(card, checkNotNull(sensorSessionFixture(activity).current))
         if (manager.loadTiles().single().type == "weather") {
             assertEquals(Gravity.TOP or Gravity.START, content(card).gravity)
             assertEquals(30, content(card).paddingLeft)
@@ -168,11 +165,11 @@ class WeatherCardIntegrationTest {
     private fun collapse(card: FrameLayout) {
         invoke("collapseSensor")
         finishAnimation(card)
-        assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
     }
 
     private fun tap(view: View) {
-        val throughWindow = ReflectionHelpers.getField<View?>(activity, "expandedSensorView") != null
+        val throughWindow = sensorSessionFixture(activity).current != null
         val location = IntArray(2)
         if (throughWindow) view.getLocationInWindow(location)
         val time = android.os.SystemClock.uptimeMillis()
@@ -244,7 +241,11 @@ class WeatherCardIntegrationTest {
         assertCompact(card, "-2°C", "Снег", "❄️")
         yandex.currentTemp = "9"
         yandex.currentState = "clear"
+        // Посторонний датчик не перерисовывает панель; новые данные Яндекса приходят
+        // через onWeatherUpdated -> updateWeatherViews, как в fetchWeather.
         sensor()
+        assertCompact(card, "-2°C", "Снег", "❄️")
+        invoke("updateWeatherViews")
         assertCompact(card, "9°C", "Ясно")
     }
 
@@ -254,11 +255,11 @@ class WeatherCardIntegrationTest {
         repeat(3) {
             tap(card)
             finishAnimation(card)
-            assertSame(card, ReflectionHelpers.getField<View>(activity, "expandedSensorView"))
+            assertSame(card, checkNotNull(sensorSessionFixture(activity).current))
             tap(card)
             finishAnimation(card)
             assertCompact(card, "20°C", "Моя погода")
-            assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+            assertNull(sensorSessionFixture(activity).current)
             assertEquals(2, card.childCount)
         }
     }
@@ -281,7 +282,7 @@ class WeatherCardIntegrationTest {
         expand(card)
         shadowOf(Looper.getMainLooper()).idleFor(30, TimeUnit.SECONDS)
         layout(card)
-        assertNull(ReflectionHelpers.getField<View?>(activity, "expandedSensorView"))
+        assertNull(sensorSessionFixture(activity).current)
         assertCompact(card, "20°C", "Моя погода")
     }
 
@@ -354,7 +355,8 @@ class WeatherCardIntegrationTest {
         HomeAssistantWebSocket::class.java.getDeclaredField("webSocket").apply {
             isAccessible = true; set(client, socket)
         }
-        set("webSocket", client)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         listOf(false, true).forEach { useYandex ->
             panel.removeAllViews()
             val card = open(useYandex = useYandex)
@@ -390,7 +392,7 @@ class WeatherCardIntegrationTest {
             assertEquals(if (index == 0) listOf("11:00", "❄️", "-1°")
                 else listOf("Прогноз временно недоступен\n(Проверьте атрибуты в HA)"), textValues(row))
             assertEquals(before, attrs.toString())
-            val cache = ReflectionHelpers.getField<Map<String, JSONObject>>(activity, "entityAttributes")
+            val cache = ArchitectureTestAccess.getField<Map<String, JSONObject>>(activity, "entityAttributes")
             assertSame(bad, cache.getValue("weather.home").get("forecast"))
             collapse(card)
             assertCompact(card, "-3°C", "Моя погода", "❄️")

@@ -14,6 +14,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** До Android 8 автозаполнения нет, а прямой вызов setImportantForAutofill падает с NoSuchMethodError. */
+internal fun View.excludeFromAutofill() {
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    }
+}
+
 internal object PinSecurityUi {
     val session = PinSession { android.os.SystemClock.elapsedRealtime() }
 
@@ -73,7 +80,7 @@ internal object PinSecurityUi {
                 else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             isSaveEnabled = false
             isSaveFromParentEnabled = false
-            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+            excludeFromAutofill()
             filters = arrayOf(android.text.InputFilter.LengthFilter(if (numeric) 6 else 256))
         }
 
@@ -234,7 +241,7 @@ internal object PinSecurityUi {
                 setPadding(32, 24, 32, 24)
                 isSaveEnabled = false
                 isSaveFromParentEnabled = false
-                importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+                excludeFromAutofill()
             }
         code.fill(' ')
         val dialog =

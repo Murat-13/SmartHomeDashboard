@@ -86,10 +86,13 @@ class ForecastSubscriptionIntegrationTest {
     }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+        if (name == "webSocket") {
+            val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+            ArchitectureTestAccess.setField(owner, "webSocket", value)
+        } else ArchitectureTestAccess.setField(activity, name, value)
     }
     private fun invoke(name: String, vararg args: Any?): Any? = try {
-        MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
+        ArchitectureTestAccess.methods(activity).single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
     } catch (error: InvocationTargetException) {
         throw error.targetException
@@ -205,7 +208,7 @@ class ForecastSubscriptionIntegrationTest {
         flush()
         assertEquals(before, forecastUpdates().size)
         assertSame(currentTop, container.getChildAt(0))
-        assertFalse(ReflectionHelpers.getField<Map<String, JSONObject>>(activity, "entityAttributes")["weather.a"]?.has("forecast") == true)
+        assertFalse(ArchitectureTestAccess.getField<Map<String, JSONObject>>(activity, "entityAttributes")["weather.a"]?.has("forecast") == true)
         assertEquals(listOf("weather.a", "weather.b"), peer.requests().map { it.getString("entity_id") })
     }
 

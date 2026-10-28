@@ -36,6 +36,7 @@ class SensorPickerActivity : PinProtectedActivity() {
     private lateinit var adapter: SensorListAdapter
 
     private val selectedSensors = mutableSetOf<String>()
+    private var singleChoice = false
     private var allEntities = listOf<HaEntity>()
 
     private var webSocket: HomeAssistantWebSocket? = null
@@ -58,16 +59,24 @@ class SensorPickerActivity : PinProtectedActivity() {
 
         val preSelected = intent.getStringArrayListExtra("selected_sensors") ?: arrayListOf()
         selectedSensors.addAll(preSelected)
+        singleChoice = intent.getBooleanExtra(EXTRA_SINGLE_CHOICE, false)
+        if (singleChoice) {
+            // Замена одного устройства: нажатие сразу возвращает выбор, «Сохранить» не нужна.
+            // Заголовок задан в разметке Toolbar и перебивает заголовок Activity: меняем сам Toolbar.
+            toolbar.title = "Выберите устройство"
+            btnSave.visibility = View.GONE
+        }
 
         setupRecyclerView()
         setupSearch()
         loadCachedOrFetch()
 
-        btnSave.setOnClickListener {
-            val intent = Intent().putStringArrayListExtra("selected_sensors", ArrayList(selectedSensors))
-            setResult(Activity.RESULT_OK, intent)
-            finish()
-        }
+        btnSave.setOnClickListener { finishWith(ArrayList(selectedSensors)) }
+    }
+
+    private fun finishWith(selected: ArrayList<String>) {
+        setResult(Activity.RESULT_OK, Intent().putStringArrayListExtra("selected_sensors", selected))
+        finish()
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
@@ -109,6 +118,11 @@ class SensorPickerActivity : PinProtectedActivity() {
     private fun setupRecyclerView() {
         rvSensors.layoutManager = LinearLayoutManager(this)
         adapter = SensorListAdapter { entity, isChecked ->
+            if (singleChoice) {
+                // Любое нажатие выбирает это устройство, в том числе повторное нажатие на текущее.
+                finishWith(arrayListOf(entity.entityId))
+                return@SensorListAdapter
+            }
             if (isChecked) selectedSensors.add(entity.entityId) else selectedSensors.remove(entity.entityId)
         }
         rvSensors.adapter = adapter
@@ -192,6 +206,11 @@ class SensorPickerActivity : PinProtectedActivity() {
         tokenRequest++
         super.onDestroy()
         webSocket?.disconnect()
+    }
+
+    companion object {
+        /** Выбор ровно одного устройства: результат — список из одного entity_id. */
+        const val EXTRA_SINGLE_CHOICE = "single_choice"
     }
 }
 
