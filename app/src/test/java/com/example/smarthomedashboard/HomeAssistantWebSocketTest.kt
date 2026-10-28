@@ -116,6 +116,62 @@ class HomeAssistantWebSocketTest {
         assertEquals(1, second.requestCount)
     }
 
+    private fun probingClient(local: String, remote: String, onConnected: () -> Unit) =
+        HomeAssistantWebSocket(local, "test-token", { _, _, _ -> }, onConnected, {}, alternateHosts = listOf(remote),
+            primaryProbeIntervalMs = 1_000L).also { clients.add(it) }
+
+    @Test fun returnsToLocalAddressWhenItIsBackWithoutAuthenticatingProbe() {
+        val probe = Peer()
+        val localPeer = Peer()
+        val remotePeer = Peer()
+        // Локальный сначала недоступен, затем отвечает на пробу и на настоящее подключение.
+        val local = MockWebServer().also { servers.add(it) }
+        local.enqueue(MockResponse().setResponseCode(503))
+        local.enqueue(MockResponse().withWebSocketUpgrade(probe))
+        local.enqueue(MockResponse().withWebSocketUpgrade(localPeer))
+        local.start()
+        val remote = server(remotePeer)
+        var connections = 0
+        val client = probingClient(local.url("/").toString(), remote.url("/").toString()) { connections++ }
+        client.subscribeEntities(listOf("light.test"))
+        client.connect()
+        await { connections == 1 }
+        assertEquals(remote.url("/").toString(), client.getHost())
+
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
+        await { connections == 2 }
+        assertEquals(local.url("/").toString(), client.getHost())
+        // Проба не отправляет токен: достаточно приглашения auth_required.
+        assertTrue(probe.received.isEmpty())
+        // После переключения подписки восстанавливаются на локальном адресе.
+        await { localPeer.received.any { it.optString("type") == "subscribe_events" } }
+        assertEquals(1, remote.requestCount)
+    }
+
+    @Test fun staysOnRemoteWhileLocalIsDownAndChecksAgainLater() {
+        val localPeer = Peer()
+        val local = MockWebServer().also { servers.add(it) }
+        repeat(2) { local.enqueue(MockResponse().setResponseCode(503)) }
+        local.enqueue(MockResponse().withWebSocketUpgrade(Peer()))
+        local.enqueue(MockResponse().withWebSocketUpgrade(localPeer))
+        local.start()
+        val remote = server(Peer())
+        var connections = 0
+        val client = probingClient(local.url("/").toString(), remote.url("/").toString()) { connections++ }
+        client.connect()
+        await { connections == 1 }
+
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
+        await { local.requestCount == 2 }
+        // Неудачная проба не разрывает работающее соединение.
+        assertEquals(remote.url("/").toString(), client.getHost())
+        assertEquals(1, connections)
+
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
+        await { connections == 2 }
+        assertEquals(local.url("/").toString(), client.getHost())
+    }
+
     @Test fun unavailableLocalFallsBackToRemote() {
         val remote = Peer()
         val server = server(remote)
