@@ -94,10 +94,9 @@ class HaTokenConsumerIntegrationTest {
     }
     private fun settings(): SettingsActivity = Robolectric.buildActivity(SettingsActivity::class.java).get().also { activity ->
         live(activity)
-        listOf("etHaLocalHost", "etHaRemoteHost", "etHaToken", "etMqttHost", "etMqttPort",
-            "etMqttUsername", "etMqttPassword", "etAdminPin", "etPinSessionMinutes", "etScreenTimeout",
+        listOf("etHaLocalHost", "etHaRemoteHost", "etHaToken",
+            "etAdminPin", "etPinSessionMinutes", "etScreenTimeout",
             "etYandexApiKey", "etYandexLat", "etYandexLon").forEach { set(activity, it, EditText(activity)) }
-        field<EditText>(activity, "etMqttHost").setText("test.example.invalid")
         set(activity, "tvHaTokenStatus", TextView(activity))
         set(activity, "btnSave", Button(activity))
         set(activity, "rgTempUnit", RadioGroup(activity))
@@ -106,7 +105,7 @@ class HaTokenConsumerIntegrationTest {
         set(activity, "cbKioskMode", CheckBox(activity))
         set(activity, "cbUseYandexWeather", CheckBox(activity))
         invoke(activity, "prepareTokenInput")
-        attachMqttSettingsFields(activity)
+        allowSettingsTestAccess(activity)
         attachWeatherSettingsFields(activity)
     }
     private fun <T> field(target: Any, name: String): T = ReflectionHelpers.getField(target, name)

@@ -318,7 +318,8 @@ class PanelSessionIntegrationTest {
         activity.getSharedPreferences("dashboard_prefs", 0).edit().putString("temp_unit", "F").commit()
         // Токен загружается асинхронно; отсутствие токена не требует сети и не мешает rebuild.
         set("haTokens", haTokenTestAccess(activity))
-        set("mqttCredentials", mqttTestAccess(activity))
+        set("mqttRemovalMigration", MqttRemovalMigration(
+            activity.getSharedPreferences("dashboard_prefs", 0), { SecretStore.Status.ABSENT }, {}))
         ReflectionHelpers.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
         (panel.parent as FrameLayout).addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         invoke("onResume")
@@ -424,7 +425,8 @@ class PanelSessionIntegrationTest {
         val tokens = haTokenTestAccess(activity)
         weatherWorker { tokens.replace("FAKE-RESUME-TOKEN") }
         set("haTokens", tokens)
-        set("mqttCredentials", mqttTestAccess(activity))
+        set("mqttRemovalMigration", MqttRemovalMigration(
+            activity.getSharedPreferences("dashboard_prefs", 0), { SecretStore.Status.ABSENT }, {}))
         ReflectionHelpers.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
         (panel.parent as FrameLayout).addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         val socket = HomeAssistantWebSocket("http://localhost:1", "FAKE-RESUME-TOKEN", { _, _, _ -> }, {}, {})

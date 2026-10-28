@@ -37,9 +37,6 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.cardview:cardview:1.0.0")
 
-    // MQTT
-    implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
-
     // WebSocket
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

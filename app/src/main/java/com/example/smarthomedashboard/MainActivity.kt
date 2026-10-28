@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity() {
     // ==================== ДАННЫЕ ====================
     private lateinit var tileManager: TileManager
     private lateinit var yandexWeatherManager: YandexWeatherManager
-    private var mqttCredentials: MqttCredentialAccess? = null
+    private var mqttRemovalMigration: MqttRemovalMigration? = null
     private var webSocket: HomeAssistantWebSocket? = null
 
     private var pzemVoltage = "—"
@@ -152,10 +152,10 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         if (!::tileManager.isInitialized) return
         refreshBottomPanel()
-        // Переносим сохранённый пароль локально; запуск панели не должен включать MQTT-подключение.
+        // Удаляем устаревшие данные подключения без доступа к сети и без блокировки UI.
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
-                (mqttCredentials ?: MqttCredentialAccess.create(applicationContext).also { mqttCredentials = it }).read()
+                (mqttRemovalMigration ?: MqttRemovalMigration.create(applicationContext).also { mqttRemovalMigration = it }).run()
             }
         }
         

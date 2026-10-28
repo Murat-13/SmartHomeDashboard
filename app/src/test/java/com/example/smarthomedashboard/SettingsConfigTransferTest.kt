@@ -37,7 +37,7 @@ class SettingsConfigTransferTest {
             setTheme(android.R.style.Theme_Material_Light_NoActionBar)
         }
     }
-    private val forbidden = listOf("mqtt_username", "mqtt_password", "ha_token", "yandex_api_key",
+    private val forbidden = listOf("mqtt_host", "mqtt_port", "mqtt_username", "mqtt_password", "ha_token", "yandex_api_key",
         "admin_pin", "pin_verifier", "last_auth_time", "secret_store", "future_token")
     private fun seed() {
         prefs.edit().clear().putString("mqtt_host", "broker.example.invalid").putInt("mqtt_port", 1883)
@@ -97,12 +97,10 @@ class SettingsConfigTransferTest {
         val oldTiles = tiles.all.toMap()
         val text = export()
         val json = JSONObject(text)
-        assertEquals(setOf("mqtt_host", "mqtt_port", "pin_session_minutes", "screen_timeout_minutes",
+        assertEquals(setOf("pin_session_minutes", "screen_timeout_minutes",
             "motion_sensor_id", "app_theme", "kiosk_mode", "tiles_json"), json.keys().asSequence().toSet())
         for (key in forbidden) assertFalse(key, json.has(key))
         assertFalse(text.contains("FAKE-"))
-        assertEquals("broker.example.invalid", json.getString("mqtt_host"))
-        assertEquals(1883, json.getInt("mqtt_port"))
         assertEquals(17, json.getInt("pin_session_minutes"))
         assertEquals(9, json.getInt("screen_timeout_minutes"))
         assertEquals("binary_sensor.test_motion", json.getString("motion_sensor_id"))
@@ -180,8 +178,8 @@ class SettingsConfigTransferTest {
         val secretsBefore = prefs.all.toMap()
         import(exported)
         assertSecrets(secretsBefore)
-        assertEquals("broker.example.invalid", prefs.getString("mqtt_host", ""))
-        assertEquals(1883, prefs.getInt("mqtt_port", 0))
+        assertEquals("changed.example.invalid", prefs.getString("mqtt_host", ""))
+        assertEquals(2883, prefs.getInt("mqtt_port", 0))
         assertEquals(17, prefs.getInt("pin_session_minutes", 0))
         assertEquals(9, prefs.getInt("screen_timeout_minutes", 0))
         assertEquals("binary_sensor.test_motion", prefs.getString("motion_sensor_id", ""))
@@ -204,13 +202,13 @@ class SettingsConfigTransferTest {
     @Test fun wrongSupportedFieldTypesDoNotApplyEarlierValidFields() {
         seed()
         for ((key, value) in listOf(
-            "mqtt_host" to 42, "mqtt_port" to "wrong", "pin_session_minutes" to JSONObject.NULL,
+            "pin_session_minutes" to JSONObject.NULL,
             "screen_timeout_minutes" to 1.5, "motion_sensor_id" to JSONArray(),
             "app_theme" to false, "kiosk_mode" to "true", "tiles_json" to JSONArray()
         )) {
             val before = prefs.all.toMap()
             val oldTiles = tiles.all.toMap()
-            import(JSONObject().put("mqtt_host", "new.example.invalid").put("app_theme", "light").put(key, value).toString())
+            import(JSONObject().put("motion_sensor_id", "binary_sensor.new").put("app_theme", "light").put(key, value).toString())
             assertEquals(key, before, prefs.all)
             assertEquals(key, oldTiles, tiles.all)
         }
@@ -221,7 +219,7 @@ class SettingsConfigTransferTest {
         for (text in listOf("broken", "{}", "[null]", "[42]", "[{}]")) {
             val before = prefs.all.toMap()
             val oldTiles = tiles.all.toMap()
-            import(JSONObject().put("mqtt_port", 2883).put("tiles_json", text).toString())
+            import(JSONObject().put("screen_timeout_minutes", 3).put("tiles_json", text).toString())
             assertEquals(before, prefs.all)
             assertEquals(oldTiles, tiles.all)
         }
@@ -230,7 +228,7 @@ class SettingsConfigTransferTest {
     @Test fun trailingGarbageAndWrongRootAreRejectedBeforeWriting() {
         seed()
         for (text in listOf("""{"mqtt_port":2883} FAKE-TRAILING""", "[]", "null",
-            JSONObject().put("mqtt_port", 2883).put("tiles_json", "[] trailing").toString())) {
+            JSONObject().put("screen_timeout_minutes", 3).put("tiles_json", "[] trailing").toString())) {
             val before = prefs.all.toMap()
             val oldTiles = tiles.all.toMap()
             import(text)
@@ -280,7 +278,7 @@ class SettingsConfigTransferTest {
         seed()
         val before = prefs.all.toMap()
         val oldTiles = tiles.all.toMap()
-        import("""{"app_theme":"light","mqtt_port":2147483648}""")
+        import("""{"app_theme":"light","screen_timeout_minutes":2147483648}""")
         assertEquals(before, prefs.all)
         assertEquals(oldTiles, tiles.all)
     }
@@ -315,4 +313,20 @@ class SettingsConfigTransferTest {
         assertEquals(before, prefs.all)
         assertEquals(oldTiles, tiles.all)
     }
+    @Test fun legacyMqttFieldsAreIgnoredWithoutCreatingPreferences() {
+        prefs.edit().clear().commit()
+        import("""{"mqtt_host":"mqtt.example.invalid","mqtt_port":1883,"mqtt_username":"FAKE-OLD-LOGIN","mqtt_password":"FAKE-OLD-PASSWORD","mqtt_password_transfer_phase":"verified","app_theme":"light"}""")
+        assertTrue(MqttRemovalMigration.KEYS.none(prefs::contains))
+        assertFalse(prefs.contains(MqttRemovalMigration.COMPLETED))
+        assertEquals("light", prefs.getString("app_theme", null))
+        assertTrue(ShadowToast.getTextOfLatestToast().toString().contains("пропущ"))
+    }
+
+    @Test fun unsupportedLegacyMqttTypesAreIgnoredWithoutAValidationError() {
+        prefs.edit().clear().commit()
+        import("""{"mqtt_host":{},"mqtt_port":"unused","mqtt_username":[],"app_theme":"dark"}""")
+        assertTrue(MqttRemovalMigration.KEYS.none(prefs::contains))
+        assertEquals("dark", prefs.getString("app_theme", null))
+    }
+
 }

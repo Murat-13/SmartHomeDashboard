@@ -34,17 +34,6 @@ class SettingsActivity : PinProtectedActivity() {
     private var tokenRequest = 0
     private fun tokens() = haTokens ?: HaTokenAccess.create(this).also { haTokens = it }
     private lateinit var tvHaConnectionStatus: TextView
-    private lateinit var etMqttHost: EditText
-    private lateinit var etMqttPort: EditText
-    private lateinit var etMqttUsername: EditText
-    private lateinit var etMqttPassword: EditText
-    private lateinit var tvMqttPasswordStatus: TextView
-    private var mqttCredentials: MqttCredentialAccess? = null
-    private fun mqttAccess() = mqttCredentials ?: MqttCredentialAccess.create(this).also { mqttCredentials = it }
-    private var mqttRequest = 0
-    private var mqttRevision = -1L
-    private var mqttLoading = false
-    private var mqttConfigurationLoaded = false
     private lateinit var etAdminPin: EditText
     private lateinit var etPinSessionMinutes: EditText
     private lateinit var etScreenTimeout: EditText
@@ -79,11 +68,6 @@ class SettingsActivity : PinProtectedActivity() {
         etHaToken = findViewById(R.id.etHaToken)
         tvHaTokenStatus = findViewById(R.id.tvHaTokenStatus)
         tvHaConnectionStatus = findViewById(R.id.tvHaConnectionStatus)
-        etMqttHost = findViewById(R.id.etMqttHost)
-        etMqttPort = findViewById(R.id.etMqttPort)
-        etMqttUsername = findViewById(R.id.etMqttUsername)
-        etMqttPassword = findViewById(R.id.etMqttPassword)
-        tvMqttPasswordStatus = findViewById(R.id.tvMqttPasswordStatus)
         etAdminPin = findViewById(R.id.etAdminPin)
         etPinSessionMinutes = findViewById(R.id.etPinSessionMinutes)
         etScreenTimeout = findViewById(R.id.etScreenTimeout)
@@ -110,8 +94,6 @@ class SettingsActivity : PinProtectedActivity() {
         prepareTokenInput()
         loadHaTokenStatus()
         tvHaConnectionStatus.text = "Статус: ${prefs.getString("ha_connection_status", "Не подключено")}"
-        prepareMqttInput()
-        loadMqttConfiguration()
         etAdminPin.text.clear()
         etAdminPin.isSaveEnabled=false
         etAdminPin.isSaveFromParentEnabled=false
@@ -182,46 +164,6 @@ class SettingsActivity : PinProtectedActivity() {
         etHaLocalHost.addTextChangedListener(watcher);etHaRemoteHost.addTextChangedListener(watcher);update()
     }
 
-    private fun prepareMqttInput() {
-        etMqttPassword.isSaveEnabled = false
-        etMqttPassword.isSaveFromParentEnabled = false
-        etMqttPassword.importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-        etMqttPassword.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-        etMqttPassword.text.clear()
-    }
-
-    private fun setMqttPending(pending: Boolean) {
-        mqttLoading = pending
-        etMqttPassword.isEnabled = !pending
-        etMqttHost.isEnabled = !pending
-        etMqttPort.isEnabled = !pending
-        etMqttUsername.isEnabled = !pending
-    }
-
-    private fun loadMqttConfiguration() {
-        val request = ++mqttRequest
-        setMqttPending(true)
-        tvMqttPasswordStatus.text = "Проверка пароля MQTT..."
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { mqttAccess().read() }
-            if (request != mqttRequest || isFinishing || isDestroyed) return@launch
-            setMqttPending(false)
-            if (!MqttCredentialAccess.isCurrent(result) ||
-                mqttConfigurationLoaded && result.revision != mqttRevision) {
-                tvMqttPasswordStatus.text = "Настройки MQTT изменились. Откройте экран повторно"
-                return@launch
-            }
-            mqttRevision = result.revision
-            tvMqttPasswordStatus.text = result.message
-            if (!mqttConfigurationLoaded && result.configuration != null) {
-                etMqttHost.setText(result.configuration.host)
-                etMqttPort.setText(result.configuration.port.toString())
-                etMqttUsername.setText(result.configuration.username)
-                mqttConfigurationLoaded = true
-            }
-        }
-    }
-
     private fun prepareWeatherInput() {
         etYandexApiKey.isSaveEnabled = false
         etYandexApiKey.isSaveFromParentEnabled = false
@@ -242,7 +184,6 @@ class SettingsActivity : PinProtectedActivity() {
         etHaLocalHost.isEnabled = !pending
         etHaRemoteHost.isEnabled = !pending
         setWeatherPending(pending)
-        setMqttPending(pending)
     }
 
     private fun loadWeatherConfiguration() {
@@ -272,10 +213,6 @@ class SettingsActivity : PinProtectedActivity() {
 
     private fun saveCurrentSettings() {
         if(!isPinAccessAllowed())return
-        if (mqttLoading || !mqttConfigurationLoaded) {
-            tvMqttPasswordStatus.text = "Дождитесь чтения настроек MQTT"
-            return
-        }
         if (weatherLoading || !weatherConfigurationLoaded) {
             tvYandexKeyStatus.text = "Дождитесь чтения корректных настроек Яндекса"
             return
@@ -294,12 +231,6 @@ class SettingsActivity : PinProtectedActivity() {
         val haRemote = etHaRemoteHost.text.toString().trim()
         val haToken = etHaToken.text.toString().trim()
 
-        val host = etMqttHost.text.toString()
-        val port = etMqttPort.text.toString().toIntOrNull() ?: 1883
-        val username = etMqttUsername.text.toString()
-        val password = etMqttPassword.text.toString().takeIf { it.isNotEmpty() }
-        val expectedMqttRevision = mqttRevision
-        val mqttConfiguration = MqttCredentialAccess.Configuration(host, port, username)
         val sessionMinutes = etPinSessionMinutes.text.toString().toIntOrNull()
         if(sessionMinutes==null || sessionMinutes<5){
             etPinSessionMinutes.error="Минимальное время повторного запроса — 5 минут"
@@ -342,20 +273,7 @@ class SettingsActivity : PinProtectedActivity() {
                 return@launch
             }
             weatherRevision = weather.revision
-            val mqtt = withContext(Dispatchers.IO) {
-                mqttAccess().save(password, mqttConfiguration, expectedMqttRevision)
-            }
-            if (request != tokenRequest || isFinishing || isDestroyed || !isPinAccessAllowed()) return@launch
             setSavePending(false)
-            if (!mqtt.usable || !MqttCredentialAccess.isCurrent(mqtt) ||
-                !WeatherKeyAccess.isCurrent(weather) || !HaTokenAccess.isCurrent(result)) {
-                if (mqtt.status != MqttCredentialAccess.Status.STALE && MqttCredentialAccess.isCurrent(mqtt)) {
-                    mqttRevision = mqtt.revision
-                }
-                tvMqttPasswordStatus.text = if (MqttCredentialAccess.isCurrent(mqtt)) mqtt.message else "Настройки MQTT изменились. Откройте экран повторно"
-                return@launch
-            }
-            mqttRevision = mqtt.revision
             prefs.edit {
                 putString("ha_local_host", haLocal)
                 putString("ha_remote_host", haRemote)
@@ -368,8 +286,6 @@ class SettingsActivity : PinProtectedActivity() {
 
             etHaToken.text.clear()
             etYandexApiKey.text.clear()
-            etMqttPassword.text.clear()
-            tvMqttPasswordStatus.text = mqtt.message
             tvYandexKeyStatus.text = weather.message
             tvHaTokenStatus.text = result.message
             Toast.makeText(this@SettingsActivity, "Настройки сохранены", Toast.LENGTH_SHORT).show()
@@ -398,7 +314,6 @@ class SettingsActivity : PinProtectedActivity() {
     override fun onPause() {
         tokenRequest++
         weatherRequest++
-        mqttRequest++
         super.onPause()
     }
 
@@ -413,13 +328,11 @@ class SettingsActivity : PinProtectedActivity() {
             loadHaTokenStatus()
         }
         if (::tvYandexKeyStatus.isInitialized) loadWeatherConfiguration()
-        if (::tvMqttPasswordStatus.isInitialized) loadMqttConfiguration()
     }
 
     override fun onDestroy() {
         tokenRequest++
         weatherRequest++
-        mqttRequest++
         super.onDestroy()
     }
 
@@ -581,10 +494,10 @@ class SettingsActivity : PinProtectedActivity() {
     companion object {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
         private val CONFIG_STRING_DEFAULTS = linkedMapOf(
-            "mqtt_host" to "", "motion_sensor_id" to "", "app_theme" to "system"
+            "motion_sensor_id" to "", "app_theme" to "system"
         )
         private val CONFIG_INT_DEFAULTS = linkedMapOf(
-            "mqtt_port" to 1883, "pin_session_minutes" to 60, "screen_timeout_minutes" to 5
+            "pin_session_minutes" to 60, "screen_timeout_minutes" to 5
         )
         private val CONFIG_ALLOWED_KEYS = CONFIG_STRING_DEFAULTS.keys + CONFIG_INT_DEFAULTS.keys +
             setOf("kiosk_mode", "tiles_json")

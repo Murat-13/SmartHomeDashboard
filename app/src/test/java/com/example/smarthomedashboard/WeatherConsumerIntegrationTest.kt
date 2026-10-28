@@ -34,11 +34,10 @@ class WeatherConsumerIntegrationTest {
         Robolectric.buildActivity(SettingsActivity::class.java).get().also { activity ->
             weatherLive(activity)
             set(activity, "haTokens", haTokenTestAccess(activity))
-            listOf("etHaLocalHost", "etHaRemoteHost", "etHaToken", "etMqttHost", "etMqttPort",
-                "etMqttUsername", "etMqttPassword", "etAdminPin", "etPinSessionMinutes", "etScreenTimeout").forEach {
+            listOf("etHaLocalHost", "etHaRemoteHost", "etHaToken",
+                "etAdminPin", "etPinSessionMinutes", "etScreenTimeout").forEach {
                 set(activity, it, EditText(activity))
             }
-            get<EditText>(activity, "etMqttHost").setText("mqtt.example.invalid")
             set(activity, "tvHaTokenStatus", TextView(activity))
             set(activity, "btnSave", Button(activity))
             set(activity, "rgTempUnit", RadioGroup(activity))
@@ -46,7 +45,7 @@ class WeatherConsumerIntegrationTest {
                 android.R.layout.simple_spinner_item, listOf("system", "light", "dark")) })
             set(activity, "cbKioskMode", CheckBox(activity))
             weatherInvoke(activity, "prepareTokenInput")
-            attachMqttSettingsFields(activity)
+            allowSettingsTestAccess(activity)
             attachWeatherSettingsFields(activity, keyAccess)
         }
     private fun seed(key: String = "FAKE-WEATHER") {
@@ -373,5 +372,17 @@ class WeatherConsumerIntegrationTest {
             weatherAwait { get<OkHttpClient>(manager, "client").dispatcher.runningCallsCount() == 0 }
             assertFalse(prefs.contains("yandex_last_temp"))
         } finally { release.countDown(); scope.cancel(); manager.cancelPendingRequests() }
+    }
+    @Test fun sessionDurationBelowFiveMinutesCannotBeSaved() {
+        val activity=settings()
+        val input=get<EditText>(activity,"etPinSessionMinutes")
+        val before=prefs.all.toMap()
+        for(value in listOf("0","4","-1","")) {
+            input.setText(value)
+            weatherInvoke(activity,"saveCurrentSettings")
+            assertNotNull(input.error)
+            assertEquals(before,prefs.all)
+            assertFalse(activity.isFinishing)
+        }
     }
 }
