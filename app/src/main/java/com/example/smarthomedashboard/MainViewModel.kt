@@ -13,6 +13,8 @@ class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
+    internal val devices = DashboardDeviceState()
+
     private var webSocket: HomeAssistantWebSocket? = null
 
     internal var tokenRevision = -1L
@@ -141,60 +143,29 @@ class MainViewModel : ViewModel() {
     fun getWebSocket(): HomeAssistantWebSocket? = webSocket
 
     fun onEntityStateChanged(eid: String, st: String, attrs: JSONObject? = null) {
-        _uiState.update { current ->
-            val updatedSingle = current.singleStates.toMutableMap()
-            updatedSingle[eid] = st
-
-            val updatedForecasts = current.syntheticForecasts.toMutableMap()
-            val completeAttrs = copyAttributes(attrs)
-
-            if (completeAttrs.has("forecast")) {
-                updatedForecasts.remove(eid)
-            } else if (updatedForecasts.containsKey(eid)) {
-                completeAttrs.put("forecast", updatedForecasts[eid] ?: JSONArray())
-            }
-
-            val updatedAttrs = current.entityAttributes.toMutableMap()
-            updatedAttrs[eid] = completeAttrs
-
-            val updatedGroups = current.groupStates.mapValues { (_, states) ->
-                if (eid in states) states + (eid to st) else states
-            }
-
-            current.copy(
-                singleStates = updatedSingle,
-                groupStates = updatedGroups,
-                syntheticForecasts = updatedForecasts,
-                entityAttributes = updatedAttrs
-            )
-        }
+        devices.entityChanged(eid, st, attrs)
+        publishDevices()
     }
 
     fun updateGroupState(groupId: String, entityId: String, state: String) {
-        _uiState.update { current ->
-            val updatedGroups = current.groupStates.toMutableMap()
-            val groupMap = updatedGroups[groupId]?.toMutableMap() ?: mutableMapOf()
-            groupMap[entityId] = state
-            updatedGroups[groupId] = groupMap
-            current.copy(groupStates = updatedGroups)
-        }
+        devices.updateGroup(groupId, entityId, state)
+        publishDevices()
+    }
+
+    internal fun groupIsOn(groupId: String, ids: List<String>): Boolean {
+        val before = devices.groupStates[groupId]?.toMap()
+        val active = devices.groupIsOn(groupId, ids)
+        if (before != devices.groupStates[groupId]) publishDevices()
+        return active
     }
 
     fun onForecastChanged(eid: String, forecast: JSONArray?) {
-        _uiState.update { current ->
-            val updatedForecasts = current.syntheticForecasts.toMutableMap()
-            updatedForecasts[eid] = forecast
+        devices.forecastChanged(eid, forecast)
+        publishDevices()
+    }
 
-            val updatedAttrs = current.entityAttributes.toMutableMap()
-            val combined = copyAttributes(updatedAttrs[eid])
-            combined.put("forecast", forecast ?: JSONArray())
-            updatedAttrs[eid] = combined
-
-            current.copy(
-                syntheticForecasts = updatedForecasts,
-                entityAttributes = updatedAttrs
-            )
-        }
+    private fun publishDevices() {
+        _uiState.update { devices.snapshot(it) }
     }
 
     fun setEditMode(enabled: Boolean) {
@@ -202,17 +173,12 @@ class MainViewModel : ViewModel() {
     }
 
     fun setOptimisticState(entityId: String, state: String) {
-        _uiState.update { it.copy(singleStates = it.singleStates + (entityId to state)) }
+        devices.singleStates[entityId] = state
+        publishDevices()
     }
 
     fun toggleEditMode() {
         _uiState.update { it.copy(isEditMode = !it.isEditMode) }
-    }
-
-    private fun copyAttributes(source: JSONObject?): JSONObject {
-        val copy = JSONObject()
-        source?.let { json -> json.keys().forEach { key -> copy.put(key, json.get(key)) } }
-        return copy
     }
 
     override fun onCleared() {

@@ -34,8 +34,8 @@ class SensorTransitionIntegrationTest {
 
     private data class Bounds(val width: Int, val height: Int, val x: Float, val y: Float)
 
-    private fun set(name: String, value: Any?) = ReflectionHelpers.setField(activity, name, value)
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun set(name: String, value: Any?) = ArchitectureTestAccess.setField(activity, name, value)
+    private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
@@ -73,8 +73,8 @@ class SensorTransitionIntegrationTest {
         root.addView(panel)
         root.addView(dim)
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         get<MutableMap<String, String>>("singleStates").putAll(mapOf("sensor.temp" to "12.5", "weather.home" to "sunny"))
         get<MutableMap<String, JSONObject>>("entityAttributes")["weather.home"] =
             JSONObject("""{"temperature":20,"forecast":[{"time":"09:00","temperature":18}]}""")
@@ -130,7 +130,7 @@ class SensorTransitionIntegrationTest {
 
     private fun animations(): List<ValueAnimator> {
         // Проверяем и исходный набор, и реестр по View, не меняя ожиданий поведения.
-        return when (val registry = ReflectionHelpers.getField<Any>(sensorSessionFixture(activity), "animations")) {
+        return when (val registry = ArchitectureTestAccess.getField<Any>(sensorSessionFixture(activity), "animations")) {
             is Map<*, *> -> registry.values.filterIsInstance<ValueAnimator>()
             is Collection<*> -> registry.filterIsInstance<ValueAnimator>()
             else -> error("Неизвестный реестр анимаций")

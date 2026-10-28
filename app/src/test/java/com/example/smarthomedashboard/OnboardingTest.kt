@@ -45,7 +45,7 @@ class OnboardingTest {
     private val prefs get() = activity.getSharedPreferences("dashboard_prefs", 0)
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+        ArchitectureTestAccess.setField(activity, name, value)
     }
     private fun invoke(name: String): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.isEmpty() }
@@ -81,8 +81,8 @@ class OnboardingTest {
         root.addView(hint)
         root.addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
     }
 
     @Test fun cleanInstallGetsOnlyClockAndWeatherWithoutPersonalDevices() {

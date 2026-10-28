@@ -71,12 +71,14 @@ class MainActivity : AppCompatActivity() {
     private var longPressRunnable: Runnable? = null
     private var collapseChildrenRunnable: Runnable? = null
 
-    // Кеши отрисовки: входящими состояниями HA владеет сохраняемый ViewModel.
-    private val groupStates = mutableMapOf<String, MutableMap<String, String>>()
-    private val singleStates = mutableMapOf<String, String>()
-    private val entityAttributes = mutableMapOf<String, JSONObject>()
-    private val syntheticForecasts = mutableMapOf<String, JSONArray?>()
-    private var isEditMode = false
+    // Только представления данных владельца: отдельных копий в Activity нет.
+    private val groupStates get() = viewModel.devices.groupStates
+    private val singleStates get() = viewModel.devices.singleStates
+    private val entityAttributes get() = viewModel.devices.entityAttributes
+    private val syntheticForecasts get() = viewModel.devices.syntheticForecasts
+    private var isEditMode: Boolean
+        get() = viewModel.uiState.value.isEditMode
+        set(value) { viewModel.setEditMode(value) }
 
     private val expandedChildButtons = mutableListOf<Button>()
     private val closingChildButtons = mutableSetOf<Button>()
@@ -143,7 +145,6 @@ class MainActivity : AppCompatActivity() {
 
         createStarterTilesOnFirstLaunch()
 
-        restorePanelState(viewModel.uiState.value)
         setupBottomPanel()
         setupWebSocket()
         showWelcomeOnFirstLaunch()
@@ -153,7 +154,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        restorePanelState(viewModel.uiState.value)
         uiStateJob = lifecycleScope.launch {
             viewModel.uiState.map { it.statusMessage }.distinctUntilChanged().collect { status ->
                 status?.let { setHaStatus(it) }
@@ -403,7 +403,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterEditMode() {
         isEditMode = true
-        viewModel.setEditMode(true)
         // Пользователь нашёл редактирование: подсказка «как войти» больше не нужна.
         onboardingPrefs().edit { putBoolean(UserHints.PREF_EDIT_MODE_FOUND, true) }
         refreshBottomPanel()
@@ -412,7 +411,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun exitEditMode() {
         isEditMode = false
-        viewModel.setEditMode(false)
         refreshBottomPanel()
     }
 
@@ -793,7 +791,6 @@ class MainActivity : AppCompatActivity() {
                     val target = if (current == "on") "turn_off" else "turn_on"
                     viewModel.callService(domain, target, eid)
                     val newState = if (current == "on") "off" else "on"
-                    singleStates[eid] = newState
                     viewModel.setOptimisticState(eid, newState)
                     button.background?.setTint(if (newState == "on") activeColor else inactiveColor)
                 }
@@ -1024,8 +1021,6 @@ class MainActivity : AppCompatActivity() {
     // ==================== ГРУППЫ ====================
 
     private fun updateGroupState(gid: String, eid: String, st: String) {
-        val groupMap = groupStates.getOrPut(gid) { mutableMapOf() }
-        groupMap[eid] = st
         viewModel.updateGroupState(gid, eid, st)
         updateGroupButtonAppearance(gid)
     }
@@ -1034,16 +1029,7 @@ class MainActivity : AppCompatActivity() {
         val tile = tileManager.getAllTiles().find { it.id == gid && it.type == "group" } ?: return false
         val result = TileButtonConfig.group(tile.config)
         if (result !is ButtonConfigResult.Valid) return false
-        val ids = result.value.entityIds
-        val states = groupStates.getOrPut(gid) { mutableMapOf() }
-        // Удалённые участники больше не определяют цвет и команду группы.
-        states.keys.retainAll(ids.toSet())
-        // Оставляем известные (в том числе оптимистические) состояния участников.
-        // Для добавленных берём уже полученное состояние, не ожидая нового события HA.
-        ids.forEach { eid ->
-            if (eid !in states) singleStates[eid]?.let { states[eid] = it }
-        }
-        return ids.any { states[it] == "on" }
+        return viewModel.groupIsOn(gid, result.value.entityIds)
     }
 
     private fun updateGroupButtonAppearance(gid: String) {
@@ -1367,20 +1353,7 @@ class MainActivity : AppCompatActivity() {
         renderEntityState(eid, st)
     }
 
-    private fun restorePanelState(state: MainUiState) {
-        singleStates.clear()
-        singleStates.putAll(state.singleStates)
-        entityAttributes.clear()
-        entityAttributes.putAll(state.entityAttributes)
-        syntheticForecasts.clear()
-        syntheticForecasts.putAll(state.syntheticForecasts)
-        groupStates.clear()
-        state.groupStates.forEach { (id, states) -> groupStates[id] = states.toMutableMap() }
-        isEditMode = state.isEditMode
-    }
-
     private fun renderEntityState(eid: String, st: String) {
-        applyEntitySnapshot(eid)
 
         // Состояние храним для всех сущностей: плитка, добавленная позже, сразу покажет значение.
         // А перерисовка нужна только для тех, которые читает панель; HA шлёт события всего дома.
@@ -1416,19 +1389,7 @@ class MainActivity : AppCompatActivity() {
         renderForecastState(eid)
     }
 
-    private fun applyEntitySnapshot(eid: String) {
-        val state = viewModel.uiState.value
-        state.singleStates[eid]?.let { singleStates[eid] = it }
-        state.entityAttributes[eid]?.let { entityAttributes[eid] = it }
-        if (state.syntheticForecasts.containsKey(eid)) {
-            syntheticForecasts[eid] = state.syntheticForecasts[eid]
-        } else {
-            syntheticForecasts.remove(eid)
-        }
-    }
-
     private fun renderForecastState(eid: String) {
-        applyEntitySnapshot(eid)
         updateWeatherViews()
     }
 

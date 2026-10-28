@@ -20,9 +20,9 @@ import java.time.Duration
 class WeatherRefreshScheduleTest {
     @Test fun refreshReschedulesItselfHourlyAndPauseStopsIt() {
         val activity = Robolectric.buildActivity(MainActivity::class.java).get()
-        ReflectionHelpers.setField(activity, "yandexWeatherManager", YandexWeatherManager(activity))
-        val handler = ReflectionHelpers.getField<Handler>(activity, "clockHandler")
-        val refresh = ReflectionHelpers.getField<Runnable>(activity, "weatherRefreshRunnable")
+        ArchitectureTestAccess.setField(activity, "yandexWeatherManager", YandexWeatherManager(activity))
+        val handler = ArchitectureTestAccess.getField<Handler>(activity, "clockHandler")
+        val refresh = ArchitectureTestAccess.getField<Runnable>(activity, "weatherRefreshRunnable")
 
         refresh.run()
         assertTrue(handler.hasCallbacks(refresh))

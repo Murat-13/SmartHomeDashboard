@@ -80,7 +80,7 @@ class SensorCardFactoryTest {
         TileEntity(id, type, "grid", title, 20, 30, 1, 1, config = config, fontSize = 18)
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+        ArchitectureTestAccess.setField(activity, name, value)
     }
 
     private fun invoke(name: String, vararg args: Any?): Any? {
@@ -198,7 +198,7 @@ class SensorCardFactoryTest {
     }
 
     @Test fun knownBatteryStateAppliesAfterFirstMeasureAndResize() {
-        val states = ReflectionHelpers.getField<MutableMap<String, String>>(activity, "singleStates")
+        val states = ArchitectureTestAccess.getField<MutableMap<String, String>>(activity, "singleStates")
         states["sensor.soc"] = "50"
         val card = create(tile(type = "battery", config = """{"entity_id":"sensor.soc"}"""))
         val fill = card.findViewWithTag<View>("battery_progress_fill")
@@ -318,7 +318,7 @@ class SensorCardFactoryTest {
             layout(card, 220, 180)
             val resize = handle(card)
             event(resize, MotionEvent.ACTION_DOWN, 10f, 10f)
-            assertTrue(ReflectionHelpers.getField<Boolean>(activity, "isResizing"))
+            assertTrue(ArchitectureTestAccess.getField<Boolean>(activity, "isResizing"))
             event(resize, MotionEvent.ACTION_MOVE, 70f, 50f)
             assertEquals(280, card.layoutParams.width)
             assertEquals(220, card.layoutParams.height)
@@ -332,7 +332,7 @@ class SensorCardFactoryTest {
             }
             layout(card, 280, 220)
             event(resize, MotionEvent.ACTION_UP, 70f, 50f)
-            assertFalse(ReflectionHelpers.getField<Boolean>(activity, "isResizing"))
+            assertFalse(ArchitectureTestAccess.getField<Boolean>(activity, "isResizing"))
             val saved = JSONObject(manager.loadTiles().single().config)
             assertEquals(280, saved.getInt("button_size"))
             assertEquals(220, saved.getInt("widget_height"))
@@ -369,7 +369,7 @@ class SensorCardFactoryTest {
             isAccessible = true; set(client, socket)
         }
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
-        ReflectionHelpers.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "webSocket", client)
         tiles.forEach { create(it) }
         shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
         assertTrue(socket.messages.isEmpty())

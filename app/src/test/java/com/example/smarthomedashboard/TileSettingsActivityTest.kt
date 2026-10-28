@@ -190,7 +190,7 @@ class TileSettingsActivityTest {
         main.resources.displayMetrics.heightPixels = 1200
         val panel = android.widget.FrameLayout(main)
         val set = { name: String, value: Any ->
-            org.robolectric.util.ReflectionHelpers.setField(main, name, value)
+            ArchitectureTestAccess.setField(main, name, value)
         }
         set("tileManager", TileManager(main))
         set("bottomPanel", panel)

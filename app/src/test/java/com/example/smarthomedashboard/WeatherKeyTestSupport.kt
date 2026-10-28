@@ -1,5 +1,7 @@
 package com.example.smarthomedashboard
 
+import org.robolectric.util.ReflectionHelpers
+
 import android.content.Context
 import android.os.Looper
 import javax.crypto.KeyGenerator
@@ -66,7 +68,7 @@ internal fun attachWeatherSettingsFields(activity: SettingsActivity, access: Wea
     set("tvYandexKeyStatus", android.widget.TextView(activity))
     weatherInvoke(activity, "prepareWeatherInput")
     weatherInvoke(activity, "loadWeatherConfiguration")
-    weatherAwait { !org.robolectric.util.ReflectionHelpers.getField<Boolean>(activity, "weatherLoading") }
+    weatherAwait { !ReflectionHelpers.getField<Boolean>(activity, "weatherLoading") }
 }
 
 internal fun <T> weatherWorker(action: () -> T): T {

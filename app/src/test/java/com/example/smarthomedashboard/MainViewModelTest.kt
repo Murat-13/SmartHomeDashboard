@@ -1,5 +1,7 @@
 package com.example.smarthomedashboard
 
+import org.robolectric.util.ReflectionHelpers
+
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -101,7 +103,7 @@ class MainViewModelTest {
     }
 
     private fun callback(client: HomeAssistantWebSocket, name: String): (String) -> Unit =
-        org.robolectric.util.ReflectionHelpers.getField(client, name)
+        ReflectionHelpers.getField(client, name)
 
     @Test
     fun sameConfigurationKeepsClientAndLatestStatus() {
@@ -152,7 +154,7 @@ class MainViewModelTest {
         viewModel.detachUi()
         val before = calls
         val event: (String, String, JSONObject) -> Unit =
-            org.robolectric.util.ReflectionHelpers.getField(client, "onStateChanged")
+            ReflectionHelpers.getField(client, "onStateChanged")
         event("light.test", "on", JSONObject())
         callback(client, "onStatus")("Ожидание")
         assertEquals(before, calls)
@@ -245,7 +247,7 @@ class MainViewModelTest {
         // An authenticated connection is running; the earlier invalid-URL probe was stopped.
         org.robolectric.util.ReflectionHelpers.setField(client, "running", true)
         org.robolectric.util.ReflectionHelpers.setField(client, "authenticated", true)
-        val connected: () -> Unit = org.robolectric.util.ReflectionHelpers.getField(client, "onConnected")
+        val connected: () -> Unit = ReflectionHelpers.getField(client, "onConnected")
         connected()
         viewModel.detachUi()
         var restored = 0

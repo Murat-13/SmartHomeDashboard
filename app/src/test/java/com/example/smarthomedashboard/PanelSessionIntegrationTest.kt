@@ -61,12 +61,12 @@ class PanelSessionIntegrationTest {
     private fun set(name: String, value: Any?) {
         if (name == "webSocket") {
             val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
-            org.robolectric.util.ReflectionHelpers.setField(owner, "webSocket", value)
-        } else MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+            ArchitectureTestAccess.setField(owner, "webSocket", value)
+        } else ArchitectureTestAccess.setField(activity, name, value)
     }
     private fun <T> get(name: String): T = if (name == "webSocket") {
-        ReflectionHelpers.getField(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], name)
-    } else ReflectionHelpers.getField(activity, name)
+        ArchitectureTestAccess.getField(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], name)
+    } else ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
@@ -91,8 +91,8 @@ class PanelSessionIntegrationTest {
         root.addView(panel)
         root.addView(dim)
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         invoke("refreshBottomPanel")
         layoutCards()
     }
@@ -272,7 +272,7 @@ class PanelSessionIntegrationTest {
         manager.deleteTile("first")
         invoke("collapseSensor")
         assertNoExpansion()
-        assertNull(ReflectionHelpers.getField<Runnable?>(sensorSessionFixture(activity), "collapseTask"))
+        assertNull(ArchitectureTestAccess.getField<Runnable?>(sensorSessionFixture(activity), "collapseTask"))
         tap("second")
         advance()
         assertSame(card("second"), checkNotNull(sensorSessionFixture(activity).current))
@@ -290,7 +290,7 @@ class PanelSessionIntegrationTest {
         assertEquals("❄️", card("weather").findViewWithTag<TextView>("weather_icon").text.toString())
         assertEquals(110, card("battery").findViewWithTag<View>("battery_progress_fill").layoutParams.width)
         val button = panel.findViewWithTag<Button>("light")
-        val filter = ReflectionHelpers.getField<android.graphics.PorterDuffColorFilter>(button.background, "mTintFilter")
+        val filter = ArchitectureTestAccess.getField<android.graphics.PorterDuffColorFilter>(button.background, "mTintFilter")
         assertEquals(0x8033CC33.toInt(), shadowOf(filter).color)
         assertTrue(card("clock").findViewWithTag<TextView>("clock_text").text.matches(Regex("\\d{2}:\\d{2}")))
     }
@@ -411,7 +411,7 @@ class PanelSessionIntegrationTest {
             (get(activity) as androidx.fragment.app.FragmentController).attachHost(null)
         }
         (activity.lifecycle as LifecycleRegistry).currentState = Lifecycle.State.CREATED
-        ReflectionHelpers.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry")
+        ArchitectureTestAccess.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry")
             .currentState = Lifecycle.State.CREATED
     }
 
@@ -447,7 +447,7 @@ class PanelSessionIntegrationTest {
         set("haTokens", haTokenTestAccess(activity))
         set("mqttRemovalMigration", MqttRemovalMigration(
             activity.getSharedPreferences("dashboard_prefs", 0), { SecretStore.Status.ABSENT }, {}))
-        ReflectionHelpers.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
+        ArchitectureTestAccess.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
         (panel.parent as FrameLayout).addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         invoke("onResume")
         assertEquals(listOf("sensor", "T  32.0"), rows("sensor"))
@@ -507,8 +507,8 @@ class PanelSessionIntegrationTest {
             }
         }
         val client = HomeAssistantWebSocket("http://localhost/test-only", "test-token", { _, _, _ -> }, {}, {})
-        ReflectionHelpers.setField(client, "authenticated", true)
-        ReflectionHelpers.setField(client, "webSocket", socket)
+        ArchitectureTestAccess.setField(client, "authenticated", true)
+        ArchitectureTestAccess.setField(client, "webSocket", socket)
         set("webSocket", client)
         val beforeTiles = activity.getSharedPreferences("tiles_prefs", 0).all.toMap()
         val beforePrefs = activity.getSharedPreferences("dashboard_prefs", 0).all.toMap()
@@ -554,21 +554,21 @@ class PanelSessionIntegrationTest {
         set("haTokens", tokens)
         set("mqttRemovalMigration", MqttRemovalMigration(
             activity.getSharedPreferences("dashboard_prefs", 0), { SecretStore.Status.ABSENT }, {}))
-        ReflectionHelpers.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
+        ArchitectureTestAccess.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
         (panel.parent as FrameLayout).addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         val socket = HomeAssistantWebSocket("http://localhost:1", "FAKE-RESUME-TOKEN", { _, _, _ -> }, {}, {})
         set("webSocket", socket)
         set("haConfiguration", listOf("http://localhost:1", "", "FAKE-RESUME-TOKEN"))
         set("connectedTokenRevision", HaTokenAccess.revision)
-        assertFalse(ReflectionHelpers.getField<Boolean>(socket, "running"))
+        assertFalse(ArchitectureTestAccess.getField<Boolean>(socket, "running"))
         invoke("onResume")
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6)
-        while (!ReflectionHelpers.getField<Boolean>(socket, "running") && System.nanoTime() < deadline) {
+        while (!ArchitectureTestAccess.getField<Boolean>(socket, "running") && System.nanoTime() < deadline) {
             shadowOf(Looper.getMainLooper()).idle()
             Thread.sleep(10)
         }
         assertSame(socket, get<HomeAssistantWebSocket>("webSocket"))
-        assertTrue(ReflectionHelpers.getField<Boolean>(socket, "running"))
+        assertTrue(ArchitectureTestAccess.getField<Boolean>(socket, "running"))
         socket.disconnect()
         invoke("onPause")
     }
@@ -583,7 +583,7 @@ class PanelSessionIntegrationTest {
         // Некорректный адрес исключает сетевое подключение; статус наблюдаем как открытый экран.
         invoke("connectWithHaToken", "http://[", "", "ARTIFICIAL-TOKEN")
         val old = get<HomeAssistantWebSocket>("webSocket")
-        val error: (String) -> Unit = ReflectionHelpers.getField(old, "onError")
+        val error: (String) -> Unit = ArchitectureTestAccess.getField(old, "onError")
         error("Неверный токен HA")
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("Неверный токен HA", status.text.toString())
@@ -591,7 +591,7 @@ class PanelSessionIntegrationTest {
         assertNull(get<HomeAssistantWebSocket?>("webSocket"))
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
         assertNull(owner.getWebSocket())
-        assertFalse(ReflectionHelpers.getField<Boolean>(old, "running"))
+        assertFalse(ArchitectureTestAccess.getField<Boolean>(old, "running"))
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("Ошибка: укажите адрес и токен Home Assistant", status.text.toString())
         val message = status.text.toString()
@@ -607,7 +607,6 @@ class PanelSessionIntegrationTest {
         owner.onEntityStateChanged("sensor.test", "42", JSONObject().put("unit_of_measurement", "W"))
         owner.updateGroupState("group.test", "light.test", "on")
         owner.setEditMode(true)
-        invoke("restorePanelState", owner.uiState.value)
         assertEquals("42", get<Map<String, String>>("singleStates")["sensor.test"])
         assertEquals("W", get<Map<String, JSONObject>>("entityAttributes")["sensor.test"]?.optString("unit_of_measurement"))
         assertEquals("on", get<Map<String, Map<String, String>>>("groupStates")["group.test"]?.get("light.test"))

@@ -50,7 +50,7 @@ class HaTokenConsumerIntegrationTest {
     private val context = RuntimeEnvironment.getApplication()
     private val prefs = context.getSharedPreferences("dashboard_prefs", 0)
     private val access by lazy { haTokenTestAccess(context) }
-    private fun set(target: Any, name: String, value: Any?) = ReflectionHelpers.setField(target, name, value)
+    private fun set(target: Any, name: String, value: Any?) = ArchitectureTestAccess.setField(target, name, value)
     private fun invoke(target: Any, name: String, vararg args: Any?) = try {
         target.javaClass.declaredMethods.single { it.name == name }.apply { isAccessible = true }.invoke(target, *args)
     } catch (e: InvocationTargetException) { throw e.targetException }
@@ -110,8 +110,8 @@ class HaTokenConsumerIntegrationTest {
     }
     private fun <T> field(target: Any, name: String): T =
         if (target is MainActivity && name == "webSocket") {
-            ReflectionHelpers.getField(androidx.lifecycle.ViewModelProvider(target)[MainViewModel::class.java], name)
-        } else ReflectionHelpers.getField(target, name)
+            ArchitectureTestAccess.getField(androidx.lifecycle.ViewModelProvider(target)[MainViewModel::class.java], name)
+        } else ArchitectureTestAccess.getField(target, name)
 
     private class Peer(private val accept: Boolean = true) : WebSocketListener() {
         val messages = CopyOnWriteArrayList<JSONObject>()
@@ -227,8 +227,8 @@ class HaTokenConsumerIntegrationTest {
             set(activity, "bottomPanel", FrameLayout(activity))
             val root = FrameLayout(activity).apply { addView(TextView(activity).apply { id = R.id.tvHaLiveStatus }) }
             activity.window.setContentView(root)
-            ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-            ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+            ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+            ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
             invoke(activity, "setupWebSocket")
             await { peer.messages.any { it.optString("type") == "get_states" } }
             assertEquals("FAKE-LEGACY", peer.messages.single { it.optString("type") == "auth" }.getString("access_token"))
@@ -334,8 +334,8 @@ class HaTokenConsumerIntegrationTest {
         activity.window.setContentView(FrameLayout(activity).apply {
             addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         })
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
     }
     private fun unavailable(): HaTokenAccess = HaTokenAccess(object : HaTokenSlot {
         override fun read() = SecretStore.ReadResult(SecretStore.Status.KEY_UNAVAILABLE)

@@ -30,9 +30,9 @@ class PanelEventFilterTest {
     private val panel by lazy { FrameLayout(activity) }
 
     private fun set(name: String, value: Any?) {
-        MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true; set(activity, value) }
+        ArchitectureTestAccess.setField(activity, name, value)
     }
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
@@ -59,8 +59,8 @@ class PanelEventFilterTest {
         root.addView(panel)
         root.addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         invoke("refreshBottomPanel")
     }
     private fun event(eid: String, state: String) = invoke("updateTilesForEntity", eid, state, JSONObject())

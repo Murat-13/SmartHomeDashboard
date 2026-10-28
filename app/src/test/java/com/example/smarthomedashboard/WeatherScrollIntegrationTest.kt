@@ -36,8 +36,8 @@ class WeatherScrollIntegrationTest {
     private val yandex by lazy { YandexWeatherManager(activity) }
     private var useYandex = false
 
-    private fun set(name: String, value: Any?) = ReflectionHelpers.setField(activity, name, value)
-    private fun <T> get(name: String): T = ReflectionHelpers.getField(activity, name)
+    private fun set(name: String, value: Any?) = ArchitectureTestAccess.setField(activity, name, value)
+    private fun <T> get(name: String): T = ArchitectureTestAccess.getField(activity, name)
     private fun invoke(name: String, vararg args: Any?): Any? = try {
         MainActivity::class.java.declaredMethods.single { it.name == name && it.parameterTypes.size == args.size }
             .apply { isAccessible = true }.invoke(activity, *args)
@@ -67,8 +67,8 @@ class WeatherScrollIntegrationTest {
         (panel.parent as? ViewGroup)?.removeView(panel)
         root.addView(panel)
         activity.window.setContentView(root)
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         get<MutableMap<String, String>>("singleStates").putAll(mapOf("weather.home" to "sunny", "weather.other" to "snow"))
         get<MutableMap<String, JSONObject>>("entityAttributes")["weather.home"] = attributes(20, 14)
         get<MutableMap<String, JSONObject>>("entityAttributes")["weather.other"] = attributes(-2, 14)
@@ -412,7 +412,7 @@ class WeatherScrollIntegrationTest {
             (get(activity) as androidx.fragment.app.FragmentController).attachHost(null)
         }
         (activity.lifecycle as LifecycleRegistry).currentState = Lifecycle.State.CREATED
-        ReflectionHelpers.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry").currentState = Lifecycle.State.CREATED
+        ArchitectureTestAccess.getField<LifecycleRegistry>(activity, "mFragmentLifecycleRegistry").currentState = Lifecycle.State.CREATED
         controller.destroy()
         old.forEach { layout(it) }
         assertTrue(old.all { it.scrollX == 0 })

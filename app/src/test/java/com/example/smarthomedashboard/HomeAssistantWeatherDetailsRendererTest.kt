@@ -47,7 +47,7 @@ class HomeAssistantWeatherDetailsRendererTest {
     @Suppress("UNCHECKED_CAST")
     private fun invokeActivity(tile: TileEntity, container: LinearLayout) {
         for ((name, values) in listOf("entityAttributes" to attributes, "singleStates" to states)) {
-            MainActivity::class.java.getDeclaredField(name).apply {
+            ArchitectureTestAccess.field(name).apply {
                 isAccessible = true
                 val target = get(activity) as MutableMap<String, Any>
                 target.clear()
@@ -333,7 +333,7 @@ class HomeAssistantWeatherDetailsRendererTest {
 
     @Test fun activityKeepsYandexBranchAndItsEarlyReturn() {
         val manager = YandexWeatherManager(context).apply { currentTemp = "11"; currentState = "clear" }
-        MainActivity::class.java.getDeclaredField("yandexWeatherManager").apply {
+        ArchitectureTestAccess.field("yandexWeatherManager").apply {
             isAccessible = true
             set(activity, manager)
         }

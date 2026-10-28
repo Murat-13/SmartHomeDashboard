@@ -41,8 +41,8 @@ class HaStatusLifecycleTest {
         activity.window.setContentView(FrameLayout(activity).apply {
             addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         })
-        ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
-        ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
+        ArchitectureTestAccess.setField(activity.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(activity.delegate, "mWindow", activity.window)
         return activity
     }
 
@@ -67,10 +67,10 @@ class HaStatusLifecycleTest {
         val owner = ViewModelProvider(activity)[MainViewModel::class.java]
         assertNull(client(activity))
         val first = artificialClient()
-        ReflectionHelpers.setField(owner, "webSocket", first)
+        ArchitectureTestAccess.setField(owner, "webSocket", first)
         assertSame(first, client(activity))
         val second = artificialClient()
-        ReflectionHelpers.setField(owner, "webSocket", second)
+        ArchitectureTestAccess.setField(owner, "webSocket", second)
         assertSame(second, client(activity))
         owner.disconnectWebSocket()
         assertNull(client(activity))
@@ -80,9 +80,9 @@ class HaStatusLifecycleTest {
         val old = screen()
         val owner = ViewModelProvider(old)[MainViewModel::class.java]
         val existing = artificialClient()
-        ReflectionHelpers.setField(owner, "webSocket", existing)
+        ArchitectureTestAccess.setField(owner, "webSocket", existing)
         val next = screen()
-        ReflectionHelpers.setField(next, "viewModel\$delegate", lazy { owner })
+        ArchitectureTestAccess.setField(next, "viewModel\$delegate", lazy { owner })
         assertSame(existing, client(next))
         assertSame(existing, client(old))
         owner.disconnectWebSocket()
@@ -120,7 +120,7 @@ class HaStatusLifecycleTest {
         lifecycle(old, "onStop")
         val next = screen()
         // Общий ViewModel имитирует сохранённого владельца при recreation.
-        ReflectionHelpers.setField(next, "viewModel\$delegate", lazy { owner })
+        ArchitectureTestAccess.setField(next, "viewModel\$delegate", lazy { owner })
         owner.publishStatus("Повторное подключение")
         lifecycle(next, "onStart")
         assertEquals("Повторное подключение", text(next))
