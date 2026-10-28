@@ -113,12 +113,18 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_BUTTON_SIZE = 160
         private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
+        internal const val WEATHER_REFRESH_MS = 60 * 60 * 1000L
+
+        /** Панель уже создана: по кнопке «Домой» заставка не нужна. */
+        @Volatile internal var isAlive = false
+            private set
     }
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isAlive = true
         setupPanelWindow()
         setContentView(R.layout.activity_main)
         bottomPanel = findViewById(R.id.bottomPanel)
@@ -172,16 +178,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        // Bridge выполняет только локальный IO. Сетевой запрос по-прежнему разрешён лишь выбранному Яндексу.
-        yandexWeatherManager.fetchWeather(lifecycleScope, object : YandexWeatherManager.WeatherCallback {
-                override fun onWeatherUpdated() {
-                    runOnUiThread { updateWeatherViews() }
-                }
-                override fun onError(error: String) {
-                    Log.e("MainActivity", "Yandex Weather Error: $error")
-                }
-            })
-        
+        // Сразу и далее раз в час: панель может неделями не уходить с экрана.
+        clockHandler.removeCallbacks(weatherRefreshRunnable)
+        clockHandler.post(weatherRefreshRunnable)
+
         setupWebSocket()
         subscribeToNeededEntities()
         checkKioskMode()
@@ -195,7 +195,28 @@ class MainActivity : AppCompatActivity() {
         haTokenRequest++
         super.onPause()
         clockHandler.removeCallbacks(clockRunnable)
+        clockHandler.removeCallbacks(weatherRefreshRunnable)
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
+    }
+
+    // Бесплатный ключ Яндекса ограничен ~50 запросами в сутки: раз в час — 24 запроса с запасом.
+    private val weatherRefreshRunnable = object : Runnable {
+        override fun run() {
+            refreshYandexWeather()
+            clockHandler.postDelayed(this, WEATHER_REFRESH_MS)
+        }
+    }
+
+    private fun refreshYandexWeather() {
+        // Bridge выполняет только локальный IO. Сетевой запрос по-прежнему разрешён лишь выбранному Яндексу.
+        yandexWeatherManager.fetchWeather(lifecycleScope, object : YandexWeatherManager.WeatherCallback {
+            override fun onWeatherUpdated() {
+                runOnUiThread { updateWeatherViews() }
+            }
+            override fun onError(error: String) {
+                Log.e("MainActivity", "Yandex Weather Error: $error")
+            }
+        })
     }
 
     @Suppress("DEPRECATION")
@@ -224,6 +245,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // При пересоздании (поворот) новая панель снова пометит себя в onCreate.
+        isAlive = false
+        clockHandler.removeCallbacks(weatherRefreshRunnable)
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
         super.onDestroy()
         clearPanelInteractions()
