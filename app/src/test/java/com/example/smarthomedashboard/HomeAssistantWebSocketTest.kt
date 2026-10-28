@@ -48,10 +48,10 @@ class HomeAssistantWebSocketTest {
     }
 
     private fun client(host: String, alternatives: List<String> = emptyList(), retry: Boolean = true,
-                       connected: () -> Unit = {}, error: (String) -> Unit = {},
+                       connected: () -> Unit = {}, error: (String) -> Unit = {}, status: (String) -> Unit = {},
                        state: (String, String, JSONObject) -> Unit = { _, _, _ -> }): HomeAssistantWebSocket =
         HomeAssistantWebSocket(host, "test-token", state, connected, {}, alternateHosts = alternatives,
-            autoReconnect = retry, onError = error).also { clients.add(it) }
+            autoReconnect = retry, onError = error, onStatus = status).also { clients.add(it) }
 
     private fun await(condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6)
@@ -132,6 +132,57 @@ class HomeAssistantWebSocketTest {
         client(server.url("/").toString(), error = { error = it }).connect()
         await { error.contains("токен") }
         shadowOf(Looper.getMainLooper()).idleFor(2, TimeUnit.MINUTES)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun invalidTokenRetriesAfterLongDelayAndKeepsExplicitTokenStatus() {
+        val denied = Peer(accept = false)
+        val server = server(denied)
+        val recovered = Peer()
+        server.enqueue(MockResponse().withWebSocketUpgrade(recovered))
+        var status = ""
+        var connected = false
+        val socket = client(server.url("/").toString(), connected = { connected = true }, status = { status = it })
+        socket.connect()
+        await { status.contains("10 минут") }
+        assertTrue(status.contains("токен"))
+        socket.connect() // Resuming must not bypass the token cooldown.
+        shadowOf(Looper.getMainLooper()).idleFor(599, TimeUnit.SECONDS)
+        assertEquals(1, server.requestCount)
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
+        await { connected }
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun handshakeUnauthorizedAndForbiddenRetryAsTransientFailures() {
+        for (code in listOf(401, 403)) {
+            val server = MockWebServer().also { servers.add(it) }
+            server.enqueue(MockResponse().setResponseCode(code))
+            server.enqueue(MockResponse().withWebSocketUpgrade(Peer()))
+            server.start()
+            var status = ""
+            var connected = false
+            val socket = client(server.url("/").toString(), connected = { connected = true }, status = { status = it })
+            socket.connect()
+            await { status.contains("Переподключение") }
+            assertTrue(status.contains("HTTP $code"))
+            shadowOf(Looper.getMainLooper()).idleFor(1999, TimeUnit.MILLISECONDS)
+            assertEquals(1, server.requestCount)
+            shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MILLISECONDS)
+            await { connected }
+            socket.disconnect()
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun disconnectCancelsLongTokenRetry() {
+        val server = server(Peer(accept = false))
+        var status = ""
+        val socket = client(server.url("/").toString(), status = { status = it })
+        socket.connect()
+        await { status.contains("10 минут") }
+        socket.disconnect()
+        shadowOf(Looper.getMainLooper()).idleFor(11, TimeUnit.MINUTES)
         assertEquals(1, server.requestCount)
     }
 

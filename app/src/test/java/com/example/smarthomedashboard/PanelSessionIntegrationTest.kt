@@ -416,4 +416,32 @@ class PanelSessionIntegrationTest {
         assertTrue(get<Set<Button>>("closingChildButtons").isEmpty())
     }
 
+    @Test fun unchangedConfigurationRestartsStoppedSocketOnResume() {
+        open(tile("sensor"))
+        prepareLifecycleCallbacks()
+        val prefs = activity.getSharedPreferences("dashboard_prefs", 0)
+        prefs.edit().putString("ha_local_host", "http://localhost:1").commit()
+        val tokens = haTokenTestAccess(activity)
+        weatherWorker { tokens.replace("FAKE-RESUME-TOKEN") }
+        set("haTokens", tokens)
+        set("mqttCredentials", mqttTestAccess(activity))
+        ReflectionHelpers.setField(get<YandexWeatherManager>("yandexWeatherManager"), "weatherKeys", weatherKeyTestAccess(activity))
+        (panel.parent as FrameLayout).addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
+        val socket = HomeAssistantWebSocket("http://localhost:1", "FAKE-RESUME-TOKEN", { _, _, _ -> }, {}, {})
+        set("webSocket", socket)
+        set("haConfiguration", listOf("http://localhost:1", "", "FAKE-RESUME-TOKEN"))
+        set("connectedTokenRevision", HaTokenAccess.revision)
+        assertFalse(ReflectionHelpers.getField<Boolean>(socket, "running"))
+        invoke("onResume")
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6)
+        while (!ReflectionHelpers.getField<Boolean>(socket, "running") && System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        assertSame(socket, get<HomeAssistantWebSocket>("webSocket"))
+        assertTrue(ReflectionHelpers.getField<Boolean>(socket, "running"))
+        socket.disconnect()
+        invoke("onPause")
+    }
+
 }
