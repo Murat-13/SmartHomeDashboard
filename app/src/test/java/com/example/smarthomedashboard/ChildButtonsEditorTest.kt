@@ -32,13 +32,21 @@ class ChildButtonsEditorTest {
     private fun row(parent: ViewGroup): View = LinearLayout(parent.context).apply {
         layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 100)
         addView(TextView(context).apply { id = R.id.tvChildOrder })
-        addView(TextView(context).apply { id = R.id.tvChildEntityId })
+        addView(LinearLayout(context).apply {
+            id = R.id.btnReplaceChild
+            addView(TextView(context).apply { id = R.id.tvChildEntityId })
+        })
         addView(EditText(context).apply { id = R.id.etChildName })
         addView(ImageView(context).apply { id = R.id.ivDragHandle })
+        addView(ImageView(context).apply { id = R.id.btnRemoveChild })
     }
 
+    private val replaced = mutableListOf<Int>()
+    private val removed = mutableListOf<Int>()
+
     private fun list(items: MutableList<ChildButtonData>): Pair<RecyclerView, ChildButtonAdapter> {
-        val adapter = ChildButtonAdapter(items, { position, name -> items[position].name = name }, ::row)
+        val adapter = ChildButtonAdapter(items, { position, name -> items[position].name = name }, ::row,
+            describe = { "→ $it" }, onReplace = { replaced += it }, onRemove = { removed += it })
         val recycler = RecyclerView(host).apply {
             layoutManager = LinearLayoutManager(host)
             this.adapter = adapter
@@ -79,7 +87,12 @@ class ChildButtonsEditorTest {
         layout(recycler)
         assertEquals(listOf("light.b", "light.c", "light.a"), items.map { it.entityId })
         val moved = recycler.findViewHolderForAdapterPosition(2)!!
-        assertEquals("light.a", moved.itemView.findViewById<TextView>(R.id.tvChildEntityId).text.toString())
+        assertEquals("→ light.a", moved.itemView.findViewById<TextView>(R.id.tvChildEntityId).text.toString())
+        // «Заменить» и «Удалить» тоже берут текущую позицию строки, а не позицию привязки.
+        moved.itemView.findViewById<View>(R.id.btnReplaceChild).performClick()
+        moved.itemView.findViewById<View>(R.id.btnRemoveChild).performClick()
+        assertEquals(listOf(2), replaced)
+        assertEquals(listOf(2), removed)
         // Раньше holder помнил позицию 0 и записал бы имя в light.b.
         moved.itemView.findViewById<EditText>(R.id.etChildName).setText("Новое")
         assertEquals("Новое", items.single { it.entityId == "light.a" }.name)

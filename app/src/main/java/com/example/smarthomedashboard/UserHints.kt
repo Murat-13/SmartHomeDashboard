@@ -73,11 +73,12 @@ internal object UserHints {
      * Скрывает подсказку и предлагает отмену, как принято в Material: случайное нажатие
      * не должно заставлять искать настройку возврата.
      */
-    fun hideWithUndo(anchor: View, hint: Hint, refresh: () -> Unit) {
+    /** [above] — view, над которой показать Snackbar, чтобы он не закрывал нижний ряд кнопок. */
+    fun hideWithUndo(anchor: View, hint: Hint, above: View? = null, refresh: () -> Unit) {
         val context = anchor.context
         setHidden(context, hint, true)
         refresh()
-        undoNotice(anchor, HIDDEN_NOTICE) {
+        undoNotice(anchor, HIDDEN_NOTICE, above) {
             setHidden(context, hint, false)
             refresh()
         }
@@ -86,9 +87,13 @@ internal object UserHints {
     const val HIDDEN_NOTICE = "Подсказка скрыта. Вернуть: «⚙» → «Подсказки и справка»"
 
     // В JVM-тестах нет ресурсов Material для Snackbar: тест подменяет показ и сам нажимает «Отменить».
-    internal var undoNotice: (anchor: View, message: String, undo: () -> Unit) -> Unit = { anchor, message, undo ->
-        Snackbar.make(anchor, message, Snackbar.LENGTH_LONG).setAction("Отменить") { undo() }.show()
-    }
+    internal var undoNotice: (anchor: View, message: String, above: View?, undo: () -> Unit) -> Unit =
+        { anchor, message, above, undo ->
+            Snackbar.make(anchor, message, Snackbar.LENGTH_LONG)
+                .setAnchorView(above)
+                .setAction("Отменить") { undo() }
+                .show()
+        }
 
     const val SETUP_ADDRESS = "Адрес в домашней сети, например http://192.168.1.10:8123 или " +
         "http://homeassistant.local:8123. Внешний адрес нужен, если панель будет подключаться через " +

@@ -210,6 +210,17 @@ class TileSettingsActivityTest {
         }
     }
 
+    @Test fun changingGroupSelectionKeepsEachNameWithItsDevice() {
+        manager.saveTiles(listOf(tile("""{"entity_ids":["light.a","light.b","light.c"],
+            "child_names":["Кухня","Коридор","Ванная"]}""").copy(type = "group", container = "bottom_panel")))
+        val activity = open()
+        // Раньше имена оставались на прежних позициях: «Ванная» становилась именем нового устройства.
+        choose(activity, listOf("light.a", "light.c", "light.new"))
+        val config = JSONObject(save(activity).config)
+        assertEquals("""["light.a","light.c","light.new"]""", config.getJSONArray("entity_ids").toString())
+        assertEquals("""["Кухня","Ванная","3"]""", config.getJSONArray("child_names").toString())
+    }
+
     @Test fun emptyTitleKeepsScreenOpenAndSavesNothing() {
         manager.saveTiles(emptyList())
         val activity = open(tileId = null)
@@ -454,19 +465,21 @@ class TileSettingsActivityTest {
         val json = JSONObject(save(activity).config)
         assertFalse(json.has("entity_id"))
         assertEquals("""["switch.new"]""", json.getJSONArray("entity_ids").toString())
-        assertEquals("""["First","Second"]""", json.getJSONArray("child_names").toString())
+        // Имя принадлежит устройству: новое устройство не наследует чужое имя, и имён столько же, сколько кнопок.
+        assertEquals("""["1"]""", json.getJSONArray("child_names").toString())
     }
 
-    @Test fun groupMultipleSelectionKeepsExistingChildNamesAndOrder() {
+    @Test fun groupMultipleSelectionKeepsNamesOfRemainingDevicesInNewOrder() {
         val old = tile("""{"entity_ids":["switch.old1","switch.old2"],
             "child_names":["First","Second"],"button_size":160}""")
             .copy(type = "group", container = "bottom_panel")
         manager.saveTiles(listOf(old))
         val activity = open()
-        choose(activity, listOf("switch.new2", "switch.new1"))
+        choose(activity, listOf("switch.old2", "switch.new1"))
         val json = JSONObject(save(activity).config)
-        assertEquals("""["switch.new2","switch.new1"]""", json.getJSONArray("entity_ids").toString())
-        assertEquals("""["First","Second"]""", json.getJSONArray("child_names").toString())
+        assertEquals("""["switch.old2","switch.new1"]""", json.getJSONArray("entity_ids").toString())
+        assertEquals("""["Second","2"]""", json.getJSONArray("child_names").toString())
+        assertEquals(160, json.getInt("button_size"))
     }
 
     @Test fun confirmedEmptyPickerChoiceDoesNotRestoreOldSourceAfterSaveAndReload() {

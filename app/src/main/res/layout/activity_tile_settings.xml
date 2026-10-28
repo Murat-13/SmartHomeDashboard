@@ -160,7 +160,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:layout_marginTop="8dp"
-                android:text="Редактировать группу"
+                android:text="Устройства и имена кнопок"
                 android:backgroundTint="#FF9800"
                 android:visibility="gone" />
 

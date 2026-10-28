@@ -1440,7 +1440,7 @@ class MainActivity : AppCompatActivity() {
         panelHintText = text
         close.setOnClickListener {
             val shown = shownPanelHint ?: return@setOnClickListener
-            UserHints.hideWithUndo(container, shown, ::updatePanelHint)
+            UserHints.hideWithUndo(container, shown, above = topBottomRowButton(), refresh = ::updatePanelHint)
         }
     }
 
@@ -1465,17 +1465,28 @@ class MainActivity : AppCompatActivity() {
         val params = container.layoutParams as? ViewGroup.MarginLayoutParams ?: return
         val density = resources.displayMetrics.density
         // До первого layout высоты панели ещё нет: берём экран, после layout пересчитаем.
-        val panelHeight = bottomPanel.height.takeIf { it > 0 } ?: screenH
-        val buttons = (0 until bottomPanel.childCount).map { bottomPanel.getChildAt(it) }
-            .filter { it is Button && it.isVisible }
-            .map { it.y to (it.layoutParams?.height?.takeIf { h -> h > 0 } ?: it.height) }
         val margin = TilePlacement.hintBottomMargin(
-            buttons, panelHeight, gap = (8 * density).toInt(), minMargin = (12 * density).toInt()
+            panelButtons().map { it.y to buttonHeight(it) }, panelHeight(),
+            gap = (8 * density).toInt(), minMargin = (12 * density).toInt()
         )
         if (params.bottomMargin != margin) {
             params.bottomMargin = margin
             container.layoutParams = params
         }
+    }
+
+    // До первого layout высоты панели ещё нет: берём экран, после layout пересчитаем.
+    private fun panelHeight() = bottomPanel.height.takeIf { it > 0 } ?: screenH
+
+    private fun buttonHeight(view: View) = view.layoutParams?.height?.takeIf { it > 0 } ?: view.height
+
+    private fun panelButtons() = (0 until bottomPanel.childCount).map { bottomPanel.getChildAt(it) }
+        .filter { it is Button && it.isVisible }
+
+    /** Самая высокая кнопка нижнего ряда: над ней показываем Snackbar. */
+    private fun topBottomRowButton(): View? {
+        val half = panelHeight() / 2f
+        return panelButtons().filter { it.y + buttonHeight(it) / 2f > half }.minByOrNull { it.y }
     }
 
     // ==================== ДАННЫЕ С ДАТЧИКОВ ====================

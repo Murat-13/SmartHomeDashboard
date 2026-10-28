@@ -55,10 +55,14 @@ class OnboardingTest {
     }
 
     private val notices = mutableListOf<Pair<String, () -> Unit>>()
+    private val noticeAnchors = mutableListOf<View?>()
     private val defaultNotice = UserHints.undoNotice
 
     @org.junit.Before fun recordUndoNotices() {
-        UserHints.undoNotice = { _, message, undo -> notices += message to undo }
+        UserHints.undoNotice = { _, message, above, undo ->
+            notices += message to undo
+            noticeAnchors += above
+        }
     }
 
     @org.junit.After fun restoreUndoNotices() {
@@ -196,6 +200,12 @@ class OnboardingTest {
         // В редактировании выше всех кнопки «+» и «⚙»: верх на 1200 − 160 − 80 = 960.
         assertEquals(UserHints.EDIT_MODE, hintText.text.toString())
         assertEquals(1200 - 960 + gap, margin())
+
+        // Snackbar «Отменить» показывается над самой высокой кнопкой нижнего ряда («+»/«⚙»).
+        hintClose.performClick()
+        val above = noticeAnchors.single() as android.widget.Button
+        assertEquals(960f, above.y, 0f)
+        assertTrue(above.text.toString() in listOf("+", "⚙"))
     }
 
     @Test fun undoRightAfterClosingBringsHintBack() {

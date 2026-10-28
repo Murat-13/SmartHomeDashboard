@@ -107,6 +107,29 @@ class PanelHintLayoutTest {
         }
     }
 
+    @Test fun groupDeviceRowKeepsReplaceAndRemoveVisibleWithLongNames() {
+        val activity = Robolectric.buildActivity(AppCompatActivity::class.java).get()
+        activity.setTheme(R.style.Theme_SmartHomeDashboard)
+        val row = activity.layoutInflater.inflate(R.layout.item_child_button_editor,
+            android.widget.FrameLayout(activity), false)
+        row.findViewById<TextView>(R.id.tvChildEntityId).text =
+            "Очень длинное понятное имя устройства в Home Assistant для проверки переноса\n" +
+                "switch.sonoff_very_long_entity_identifier_for_layout_check_channel_1"
+        row.findViewById<TextView>(R.id.etChildName).text = "Длинное название кнопки на панели"
+        for (width in listOf(screenW - 32, 540)) {
+            row.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+            row.layout(0, 0, width, row.measuredHeight)
+            val density = row.resources.displayMetrics.density
+            val remove = row.findViewById<View>(R.id.btnRemoveChild)
+            assertEquals("Удаление 48dp при ширине $width", (48 * density).toInt(), remove.width)
+            assertTrue(boundsIn(row, remove).right <= width)
+            val replace = row.findViewById<View>(R.id.btnReplaceChild)
+            assertTrue("Зона «Заменить» не меньше 48dp", replace.height >= (48 * density).toInt())
+            assertTrue("«Заменить» не заходит на удаление", boundsIn(row, replace).right <= boundsIn(row, remove).left)
+        }
+    }
+
     @Test fun hintStandsAboveBottomButtonRow() {
         val gap = 12
         // Кнопки внизу (верх на 1600 и 1640) и плитка датчика сверху — она не нижний ряд.

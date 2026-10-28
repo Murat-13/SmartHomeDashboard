@@ -71,14 +71,18 @@ class TileSettingsActivity : PinProtectedActivity() {
             typeHint.visibility = if (UserHints.isHidden(this, UserHints.Hint.TILE_TYPE)) View.GONE else View.VISIBLE
         }
         findViewById<View>(R.id.btnTileTypeHintClose).setOnClickListener {
-            UserHints.hideWithUndo(typeHint, UserHints.Hint.TILE_TYPE, ::updateTypeHint)
+            UserHints.hideWithUndo(typeHint, UserHints.Hint.TILE_TYPE, refresh = ::updateTypeHint)
         }
 
         spinnerType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 updateTypeHint()
-                val isGroup = position == 2 && tileId != null
+                // У группы устройства и имена кнопок редактируются в одном месте — на экране устройств группы.
+                val isGroup = position == 2
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
+                btnSelectSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
+                btnClearSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
+                updateSelectedSensorsText()
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
@@ -113,6 +117,10 @@ class TileSettingsActivity : PinProtectedActivity() {
         }
 
         btnEditChildren.setOnClickListener {
+            // Экран устройств работает со сохранённой группой: новую или только что ставшую
+            // группой плитку сначала сохраняем.
+            val savedType = tileId?.let { id -> tileManager.loadTiles().find { it.id == id }?.type }
+            if (savedType != "group" && !saveTileWithoutFinish()) return@setOnClickListener
             tileId?.let { id ->
                 val intent = Intent(this, ChildButtonsEditorActivity::class.java)
                 intent.putExtra("tile_id", id)
@@ -229,17 +237,15 @@ class TileSettingsActivity : PinProtectedActivity() {
             } else if (selectedSensors.size == 1 && type != "group") {
                 existingConfig.put("entity_id", selectedSensors.first())
                 existingConfig.remove("entity_ids")
+            } else if (type == "group") {
+                // Имя кнопки едет вместе со своим устройством: удаление или перестановка
+                // не сдвигают имена. Новые устройства получают номер кнопки.
+                val previous = GroupChildren.fromConfig(existingConfig).items.associate { it.entityId to it.name }
+                GroupChildren(selectedSensors.mapTo(mutableListOf()) { ChildButtonData(it, previous[it].orEmpty()) })
+                    .writeTo(existingConfig)
             } else {
-                // Управление группой читает массив даже при единственном устройстве.
                 existingConfig.put("entity_ids", JSONArray(selectedSensors))
                 existingConfig.remove("entity_id")
-                if (type == "group" && !existingConfig.has("child_names")) {
-                    val names = JSONArray()
-                    selectedSensors.forEachIndexed { index, _ ->
-                        names.put((index + 1).toString())
-                    }
-                    existingConfig.put("child_names", names)
-                }
             }
         }
 
@@ -322,11 +328,23 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     private fun updateSelectedSensorsText() {
-        tvSelectedSensors.text = if (selectedSensors.isEmpty()) {
-            getString(R.string.none_selected)
-        } else {
-            "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
+        val isGroup = typeAt(spinnerType.selectedItemPosition) == "group"
+        tvSelectedSensors.text = when {
+            isGroup && selectedSensors.isEmpty() -> "В группе пока нет устройств"
+            isGroup -> "Устройств в группе: ${selectedSensors.size}"
+            selectedSensors.isEmpty() -> getString(R.string.none_selected)
+            else -> "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
         }
+    }
+
+    /** После экрана устройств группы источник правды — сохранённая плитка, а не старый выбор этого экрана. */
+    private fun reloadGroupDevices() {
+        val tile = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } } ?: return
+        val ids = try { GroupChildren.fromConfig(JSONObject(tile.config)).items.map { it.entityId } } catch (_: Exception) { return }
+        selectedSensors.clear()
+        selectedSensors.addAll(ids)
+        sensorSelectionChanged = false
+        updateSelectedSensorsText()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -340,6 +358,11 @@ class TileSettingsActivity : PinProtectedActivity() {
                 selectedSensors.addAll(it)
                 updateSelectedSensorsText()
             }
+        }
+        if (requestCode == REQUEST_EDIT_CHILDREN && resultCode == Activity.RESULT_OK) {
+            reloadGroupDevices()
+            // Устройства уже сохранены: панель должна обновиться, даже если здесь нажмут «назад».
+            setResult(Activity.RESULT_OK)
         }
         if (requestCode == REQUEST_ADVANCED_SETTINGS) {
             setResult(Activity.RESULT_OK)

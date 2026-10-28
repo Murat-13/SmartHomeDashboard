@@ -12,16 +12,27 @@
         android:layout_height="?attr/actionBarSize"
         android:background="#2A2A2A"
         app:navigationIcon="?attr/homeAsUpIndicator"
-        app:title="Редактирование группы"
+        app:title="Устройства группы"
         app:titleTextColor="#FFFFFF" />
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:padding="16dp"
-        android:text="Перетащите для изменения порядка. Нажмите на название для редактирования."
+        android:text="Нажмите на устройство, чтобы заменить его. Перетащите строку, чтобы изменить порядок кнопок. Изменения применяются после «Сохранить»."
         android:textColor="#888888"
         android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/tvGroupEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp"
+        android:gravity="center"
+        android:text="В группе нет устройств. Добавьте хотя бы одно."
+        android:textColor="#BDBDBD"
+        android:textSize="16sp"
+        android:visibility="gone" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvChildButtons"
@@ -29,6 +40,18 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:padding="8dp" />
+
+    <Button
+        android:id="@+id/btnAddChild"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="16dp"
+        android:text="+ Добавить устройство"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#616161"
+        android:textSize="16sp" />
 
     <Button
         android:id="@+id/btnSave"
