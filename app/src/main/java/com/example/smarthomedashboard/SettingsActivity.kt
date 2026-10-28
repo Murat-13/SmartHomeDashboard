@@ -494,10 +494,10 @@ class SettingsActivity : PinProtectedActivity() {
     companion object {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
         private val CONFIG_STRING_DEFAULTS = linkedMapOf(
-            "mqtt_host" to "", "motion_sensor_id" to "", "app_theme" to "system"
+            "motion_sensor_id" to "", "app_theme" to "system"
         )
         private val CONFIG_INT_DEFAULTS = linkedMapOf(
-            "mqtt_port" to 1883, "pin_session_minutes" to 60, "screen_timeout_minutes" to 5
+            "pin_session_minutes" to 60, "screen_timeout_minutes" to 5
         )
         private val CONFIG_ALLOWED_KEYS = CONFIG_STRING_DEFAULTS.keys + CONFIG_INT_DEFAULTS.keys +
             setOf("kiosk_mode", "tiles_json")
