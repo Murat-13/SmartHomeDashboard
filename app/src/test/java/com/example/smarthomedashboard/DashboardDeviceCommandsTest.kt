@@ -9,8 +9,9 @@ class DashboardDeviceCommandsTest {
     private val state = DashboardDeviceState()
     private val sent = mutableListOf<Triple<String, String, String>>()
     private var changes = 0
-    private val commands = DashboardDeviceCommands(state, { domain, service, id ->
+    private val commands = DashboardDeviceCommands(state, { domain, service, id, _ ->
         sent.add(Triple(domain, service, id))
+        true
     }, { changes++ })
 
     @Test fun singleTogglePreservesArbitraryDomainAndOptimisticState() {
@@ -46,7 +47,7 @@ class DashboardDeviceCommandsTest {
         val size = sent.size
         // Повторное чтение состояния и создание другого контроллера не отправляют прошлое действие.
         state.groupIsOn("group", listOf("switch.test"))
-        DashboardDeviceCommands(state, { _, _, _ -> fail("stale command replayed") }, {})
+        DashboardDeviceCommands(state, { _, _, _, _ -> error("stale command replayed") }, {})
         assertEquals(size, sent.size)
     }
 }

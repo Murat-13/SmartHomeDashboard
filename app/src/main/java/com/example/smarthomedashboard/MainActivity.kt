@@ -460,6 +460,9 @@ class MainActivity : AppCompatActivity() {
             onStateChangedCallback = { entity, state, _ ->
                 if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) panelController.renderEntityState(entity, state)
             },
+            onCommandStateChangedCallback = { entity ->
+                if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) panelController.renderCommandState(entity)
+            },
             onForecastChangedCallback = { entity, _ ->
                 if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) panelController.renderForecastState(entity)
             },

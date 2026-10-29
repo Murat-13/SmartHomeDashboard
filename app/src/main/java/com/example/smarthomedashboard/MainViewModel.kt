@@ -14,7 +14,9 @@ class MainViewModel : ViewModel() {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     internal val devices = DashboardDeviceState()
-    internal val commands = DashboardDeviceCommands(devices, ::callService, ::publishDevices)
+    internal val commands = DashboardDeviceCommands(devices, ::callService, ::publishDevices) { id ->
+        commandStateCallback?.invoke(id)
+    }
 
     private var webSocket: HomeAssistantWebSocket? = null
 
@@ -24,6 +26,7 @@ class MainViewModel : ViewModel() {
     private var stateCallback: ((String, String, JSONObject) -> Unit)? = null
     private var forecastCallback: ((String, JSONArray?) -> Unit)? = null
     private var connectedCallback: (() -> Unit)? = null
+    private var commandStateCallback: ((String) -> Unit)? = null
     private var entitiesCallback: ((List<HaEntity>) -> Unit)? = null
 
     // Заменяем обработчики экрана, чтобы ViewModel не удерживал уничтоженную Activity.
@@ -32,6 +35,7 @@ class MainViewModel : ViewModel() {
         forecastCallback = null
         connectedCallback = null
         entitiesCallback = null
+        commandStateCallback = null
     }
 
     // Статус — сохраняемое состояние экрана, а не одноразовое событие подключённого UI.
@@ -55,8 +59,10 @@ class MainViewModel : ViewModel() {
         onStateChangedCallback: ((entityId: String, state: String, attributes: JSONObject) -> Unit)? = null,
         onForecastChangedCallback: ((entityId: String, forecast: JSONArray?) -> Unit)? = null,
         onConnectedCallback: (() -> Unit)? = null,
-        onEntitiesListCallback: ((List<HaEntity>) -> Unit)? = null
+        onEntitiesListCallback: ((List<HaEntity>) -> Unit)? = null,
+        onCommandStateChangedCallback: ((String) -> Unit)? = null
     ) {
+        commandStateCallback = onCommandStateChangedCallback
         stateCallback = onStateChangedCallback
         forecastCallback = onForecastChangedCallback
         connectedCallback = onConnectedCallback
@@ -137,13 +143,19 @@ class MainViewModel : ViewModel() {
         webSocket?.syncForecastSubscriptions(entityIds)
     }
 
-    fun callService(domain: String, service: String, entityId: String) {
-        webSocket?.callService(domain, service, entityId)
+    fun callService(domain: String, service: String, entityId: String, onFinished: () -> Unit = {}): Boolean {
+        val client = webSocket
+        if (client == null) {
+            publishStatus("Нет соединения: дождитесь переподключения и повторите команду")
+            return false
+        }
+        return client.callService(domain, service, entityId, onFinished)
     }
 
     fun getWebSocket(): HomeAssistantWebSocket? = webSocket
 
     fun onEntityStateChanged(eid: String, st: String, attrs: JSONObject? = null) {
+        commands.entityChanged(eid)
         devices.entityChanged(eid, st, attrs)
         publishDevices()
     }

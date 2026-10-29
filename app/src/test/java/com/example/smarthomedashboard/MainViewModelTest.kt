@@ -257,4 +257,14 @@ class MainViewModelTest {
         assertEquals(1, restored)
         viewModel.disconnectWebSocket()
     }
+
+    @Test
+    fun offlineToggleDoesNotInventStateOnRepeatedPresses() {
+        viewModel.onEntityStateChanged("switch.test", "off", JSONObject())
+        repeat(2) {
+            viewModel.commands.toggleSingle("switch.test")
+            assertEquals("off", viewModel.uiState.value.singleStates["switch.test"])
+        }
+        assertTrue(viewModel.uiState.value.statusMessage.orEmpty().contains("Нет соединения"))
+    }
 }

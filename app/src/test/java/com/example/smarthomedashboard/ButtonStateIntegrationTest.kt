@@ -77,9 +77,13 @@ class ButtonStateIntegrationTest {
 
     private class RecordingSocket : WebSocket {
         val messages = mutableListOf<JSONObject>()
+        var accepts = true
         override fun request() = Request.Builder().url("http://localhost/test-only").build()
         override fun queueSize() = 0L
-        override fun send(text: String): Boolean { messages.add(JSONObject(text)); return true }
+        override fun send(text: String): Boolean {
+            if (accepts) messages.add(JSONObject(text))
+            return accepts
+        }
         override fun send(bytes: ByteString): Boolean = error("Unexpected binary message")
         override fun close(code: Int, reason: String?) = true
         override fun cancel() {
@@ -123,6 +127,9 @@ class ButtonStateIntegrationTest {
         set(client, "webSocket", socket)
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
         ArchitectureTestAccess.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "commandStateCallback", { id: String ->
+            invoke(activity, "renderCommandState", id)
+        })
         invoke(activity, "refreshBottomPanel")
     }
 
@@ -331,4 +338,42 @@ class ButtonStateIntegrationTest {
         assertEquals(listOf("switch.b"), calls().map { it.getJSONObject("service_data").getString("entity_id") })
     }
 
+
+    @Test fun failedSendNeverChangesButtonColorOrStateOnRepeatedPresses() {
+        open(button("single", "switch.test"))
+        event("switch.test", "off")
+        socket.accepts = false
+        repeat(2) {
+            view("single").performClick()
+            assertEquals(0xFF424242.toInt(), color("single"))
+            assertEquals("off", ArchitectureTestAccess.getField<Map<String, String>>(activity, "singleStates")["switch.test"])
+        }
+        assertTrue(calls().isEmpty())
+    }
+
+    @Test fun rejectedAckRestoresSingleAndChildColorsWithoutSyntheticSensorEvents() {
+        open(button("single", "switch.test"), group("group", "switch.test"))
+        event("switch.test", "off")
+        view("single").performClick()
+        assertEquals(0x8033CC33.toInt(), color("single"))
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        val client = requireNotNull(owner.getWebSocket())
+        fun rejectLast() {
+            val message = JSONObject().put("type", "result").put("id", calls().last().getInt("id")).put("success", false)
+            client.javaClass.getDeclaredMethod("handleMessage", String::class.java)
+                .apply { isAccessible = true }.invoke(client, message.toString())
+        }
+        rejectLast()
+        assertEquals(0xFF424242.toInt(), color("single"))
+        invoke(activity, "expandChildButtons", manager.loadTiles().single { it.id == "group" }, view("group"))
+        val child = ArchitectureTestAccess.getField<List<Button>>(activity, "expandedChildButtons").single()
+        child.performClick()
+        assertEquals(0x8033CC33.toInt(), shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
+        rejectLast()
+        assertEquals(0xFF424242.toInt(), color("group"))
+        assertEquals(0xFF424242.toInt(), shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
+        child.performClick()
+        event("switch.test", "off")
+        assertEquals(0xFF424242.toInt(), shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
+    }
 }

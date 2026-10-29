@@ -56,6 +56,8 @@ class HomeAssistantWebSocket(
         var wanted: Boolean = true
     )
     private val forecastSubscriptions = mutableMapOf<Int, ForecastRequest>()
+    private data class ServiceRequest(val finished: () -> Unit, val timeout: Runnable)
+    private val serviceRequests = mutableMapOf<Int, ServiceRequest>()
     private val rejectedHosts = mutableSetOf<String>()
     private val tokenRejectedHosts = mutableSetOf<String>()
     private var reconnectTask: Runnable? = null
@@ -142,6 +144,7 @@ class HomeAssistantWebSocket(
         webSocket?.cancel()
         webSocket = null
         authenticated = false
+        finishServiceRequests()
         forecastSubscriptions.clear()
         if (permanent || tokenRejected) rejectedHosts.add(getHost())
         if (tokenRejected) tokenRejectedHosts.add(getHost())
@@ -195,6 +198,15 @@ class HomeAssistantWebSocket(
                 schedulePrimaryProbe()
             }
             "result" -> if (authenticated) {
+                serviceRequests.remove(json.optInt("id"))?.let { request ->
+                    handler.removeCallbacks(request.timeout)
+                    // ACK подтверждает обработку запроса, а не новое состояние устройства.
+                    request.finished()
+                    if (!json.optBoolean("success", false)) {
+                        onError(HomeAssistantDiagnostics.commandError(json.optJSONObject("error")?.optString("code"), forecast = false))
+                    }
+                    return
+                }
                 forecastSubscriptions[json.optInt("id")]?.let {
                     handleForecastResult(json, it)
                     return
@@ -360,20 +372,63 @@ class HomeAssistantWebSocket(
         sendMessage(command("config/entity_registry/list"))
     }
 
-    fun callService(domain: String, service: String, entityId: String) = onMain {
-        // Do not replay stale device actions after a network outage.
+    fun callService(
+        domain: String,
+        service: String,
+        entityId: String,
+        onFinished: () -> Unit = {}
+    ): Boolean {
+        // Не ставим действие в очередь даже при вызове не с UI-потока.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { onError("Команда не отправлена: повторите действие на панели") }
+            return false
+        }
         if (!authenticated) {
             onError("Нет соединения: дождитесь переподключения и повторите команду")
-        } else {
-            sendMessage(command("call_service").put("domain", domain).put("service", service)
-                .put("service_data", JSONObject().put("entity_id", entityId)))
+            return false
+        }
+        val message = command("call_service").put("domain", domain).put("service", service)
+            .put("service_data", JSONObject().put("entity_id", entityId))
+        val id = message.getInt("id")
+        val timeout = Runnable {
+            serviceRequests.remove(id)?.let {
+                it.finished()
+                onError("Нет ответа Home Assistant на команду")
+            }
+        }
+        serviceRequests[id] = ServiceRequest(onFinished, timeout)
+        if (!sendMessage(message)) {
+            serviceRequests.remove(id)?.finished?.invoke()
+            return false
+        }
+        // Однократный предел ожидания ответа; без опроса и повторной отправки действия.
+        handler.postDelayed(timeout, 15_000L)
+        return true
+    }
+
+    private fun finishServiceRequests() {
+        val requests = serviceRequests.values.toList()
+        serviceRequests.clear()
+        requests.forEach {
+            handler.removeCallbacks(it.timeout)
+            it.finished()
         }
     }
 
     private fun command(type: String): JSONObject = JSONObject().put("id", messageId++).put("type", type)
 
-    private fun sendMessage(message: JSONObject) {
-        if (authenticated && webSocket?.send(message.toString()) != true) fail("Ошибка отправки: соединение потеряно")
+    private fun sendMessage(message: JSONObject): Boolean {
+        if (!authenticated) return false
+        val sent = try {
+            webSocket?.send(message.toString()) == true
+        } catch (_: RuntimeException) {
+            false
+        }
+        if (!sent) {
+            if (running) fail("Ошибка отправки: соединение потеряно")
+            else onError("Ошибка отправки: соединение потеряно")
+        }
+        return sent
     }
 
     /**
@@ -432,6 +487,7 @@ class HomeAssistantWebSocket(
         webSocket?.cancel()
         webSocket = null
         authenticated = false
+        finishServiceRequests()
         forecastSubscriptions.clear()
         endpointIndex = 0
         failures = 0
@@ -454,6 +510,7 @@ class HomeAssistantWebSocket(
         reconnectTask = null
         timeoutTask = null
         authenticated = false
+        finishServiceRequests()
         webSocket?.cancel()
         webSocket = null
         forecastSubscriptions.clear()

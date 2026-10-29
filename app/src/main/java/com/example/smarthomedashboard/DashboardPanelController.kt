@@ -457,8 +457,9 @@ internal class DashboardPanelController(
             if (!isEditMode) {
                 val eid = buttonEntityId(tile, reportError = true)
                 if (eid != null) {
-                    val newState = viewModel.commands.toggleSingle(eid)
-                    button.background?.setTint(if (newState == "on") activeColor else inactiveColor)
+                    viewModel.commands.toggleSingle(eid)?.let { newState ->
+                        button.background?.setTint(if (newState == "on") activeColor else inactiveColor)
+                    }
                 }
             }
         }
@@ -570,8 +571,9 @@ internal class DashboardPanelController(
                 setTextColor("#FFFFFF".toColorInt()); textSize = 14f
                 gravity = Gravity.CENTER; isAllCaps = false
                 setOnClickListener {
-                    val n = viewModel.commands.toggleMember(tile.id, eid)
-                    background?.setTint(if (n == "on") "#8033CC33".toColorInt() else "#424242".toColorInt())
+                    viewModel.commands.toggleMember(tile.id, eid)?.let { next ->
+                        background?.setTint(if (next == "on") "#8033CC33".toColorInt() else "#424242".toColorInt())
+                    }
                     updateGroupButtonAppearance(tile.id)
                     resetCollapseTimer()
                 }
@@ -696,6 +698,21 @@ internal class DashboardPanelController(
         viewModel.commands.toggleGroup(gid, group.entityIds)
     }
 
+    fun renderCommandState(eid: String) {
+        updateSingleButtonColor(eid)
+        tileManager.getAllTiles().filter { it.type == "group" }.forEach { tile ->
+            val group = TileButtonConfig.group(tile.config)
+            if (group is ButtonConfigResult.Valid && eid in group.value.entityIds) {
+                updateGroupButtonAppearance(tile.id)
+            }
+        }
+        val group = expandedGroupId ?: return
+        expandedChildButtons.filter { it.tag == eid }.forEach { button ->
+            val active = groupStates[group]?.get(eid) == "on"
+            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
+        }
+    }
+
     private fun updateSingleButtonColor(eid: String) {
         val c = if (singleStates[eid] == "on") "#8033CC33".toColorInt() else "#424242".toColorInt()
         for (i in 0 until bottomPanel.childCount) {
@@ -755,6 +772,12 @@ internal class DashboardPanelController(
             if (result is ButtonConfigResult.Valid && eid in result.value.entityIds) {
                 updateGroupState(t.id, eid, st); updateGroupButtonAppearance(t.id)
             }
+        }
+        // Дочерняя кнопка также должна получать фактическое состояние вместо оптимистического.
+        val group = expandedGroupId
+        expandedChildButtons.filter { it.tag == eid }.forEach { button ->
+            val active = groupStates[group]?.get(eid) == "on"
+            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
         }
     }
 

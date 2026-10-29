@@ -342,4 +342,28 @@ class HomeAssistantWebSocketTest {
         await{errors.isNotEmpty()}
         assertFalse(errors.joinToString().contains("FAKE-PRIVATE-FORECAST-CODE"))
     }
+
+    @Test fun serviceAckCompletesOnlyItsRequestWithoutClaimingAnEntityState() {
+        val peer = Peer()
+        val errors = mutableListOf<String>()
+        var connected = false
+        var states = 0
+        var finished = 0
+        val client = client(server(peer).url("/").toString(), connected = { connected = true },
+            error = { errors.add(it) }, state = { _, _, _ -> states++ })
+        client.connect()
+        await { connected }
+        assertTrue(client.callService("switch", "turn_on", "switch.test") { finished++ })
+        await { peer.received.any { it.optString("type") == "call_service" } }
+        val request = peer.received.single { it.optString("type") == "call_service" }
+        peer.socket!!.send(JSONObject().put("type", "result").put("id", request.getInt("id"))
+            .put("success", false).put("error", JSONObject().put("code", "artificial-private-code")).toString())
+        await { finished == 1 }
+        assertEquals(0, states)
+        assertEquals(1, errors.size)
+        assertFalse(errors.single().contains("artificial-private-code"))
+        shadowOf(Looper.getMainLooper()).idleFor(20, TimeUnit.SECONDS)
+        assertEquals(1, finished)
+        assertEquals(1, peer.received.count { it.optString("type") == "call_service" })
+    }
 }
