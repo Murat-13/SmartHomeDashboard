@@ -141,6 +141,14 @@ class ButtonStateIntegrationTest {
     private fun event(eid: String, state: String) {
         invoke(activity, "updateTilesForEntity", eid, state, null)
     }
+    private fun owner() = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+    private fun ack(request: JSONObject, success: Boolean = true) {
+        val message = JSONObject().put("type", "result").put("id", request.getInt("id")).put("success", success)
+        invoke(owner().getWebSocket()!!, "handleMessage", requireNotNull(HaInboundMessage.parse(message.toString())))
+    }
+    private fun childColor(child: Button): Int = shadowOf(
+        ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color
+
     private fun calls() = socket.messages.filter { it.optString("type") == "call_service" }
     private fun send(view: View, action: Int) {
         val event = MotionEvent.obtain(0, 1, action, 5f, 5f, 0)
@@ -248,14 +256,14 @@ class ButtonStateIntegrationTest {
         open(button("light", "light.a"), button("switch", "switch.b"), button("other", "light.other"))
         event("light.a", "on")
         assertEquals(0x8033CC33.toInt(), color("light"))
-        assertEquals(0xFF424242.toInt(), color("switch"))
-        assertEquals(0xFF424242.toInt(), color("other"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("switch"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("other"))
         event("switch.b", "on")
         assertEquals(0x8033CC33.toInt(), color("switch"))
         event("light.a", "off")
         assertEquals(0xFF424242.toInt(), color("light"))
         assertEquals(0x8033CC33.toInt(), color("switch"))
-        assertEquals(0xFF424242.toInt(), color("other"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("other"))
     }
 
     @Test fun arbitraryDomainAndChangedOrdinarySourceUseCurrentEntityId() {
@@ -263,23 +271,33 @@ class ButtonStateIntegrationTest {
         event("custom.a", "on")
         assertEquals(0x8033CC33.toInt(), color("custom"))
         saveSelection("custom", listOf("light.new"))
-        assertEquals(0xFF424242.toInt(), color("custom"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("custom"))
         event("custom.a", "on")
-        assertEquals(0xFF424242.toInt(), color("custom"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("custom"))
         event("light.new", "on")
         assertEquals(0x8033CC33.toInt(), color("custom"))
-        assertEquals(0xFF424242.toInt(), color("other"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("other"))
     }
 
-    @Test fun ordinaryShortTapKeepsCommandAndOptimisticState() {
+    @Test fun ordinaryTapShowsPendingForBothDirectionsUntilFactsArrive() {
         open(button("light", "light.a"))
+        event("light.a", "off")
         view("light").performClick()
         assertEquals("light", calls().single().getString("domain"))
         assertEquals("turn_on", calls().single().getString("service"))
-        assertEquals(0x8033CC33.toInt(), color("light"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("light"))
+        assertTrue(view("light").text.contains("Включается"))
+        view("light").performClick()
+        assertEquals(1, calls().size)
+        event("light.a", "on")
+        assertEquals(ButtonCommandAppearance.ON, color("light"))
         view("light").performClick()
         assertEquals("turn_off", calls().last().getString("service"))
-        assertEquals(0xFF424242.toInt(), color("light"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("light"))
+        assertTrue(view("light").text.contains("Выключается"))
+        event("light.a", "off")
+        assertEquals(ButtonCommandAppearance.OFF, color("light"))
+        assertEquals("Кнопка", view("light").text.toString())
     }
 
     @Test fun longPressExpandsKnownAddedMemberWithoutSendingCommandAndChildStillToggles() {
@@ -300,19 +318,19 @@ class ButtonStateIntegrationTest {
         children[1].performClick()
         assertEquals("turn_off", calls().single().getString("service"))
         assertEquals("light.a", calls().single().getJSONObject("service_data").getString("entity_id"))
-        assertEquals(0xFF424242.toInt(), color("group"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("group"))
     }
 
     @Test fun realUnknownAndUnavailableUpdateStateAndRemainInactive() {
         open(group("group", "light.a"), button("light", "light.a"))
         event("light.a", "on")
         event("light.a", "unknown")
-        assertEquals(0xFF424242.toInt(), color("group"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("group"))
         // Настоящий unknown больше не оставляет устаревший on у обычной кнопки.
-        assertEquals(0xFF424242.toInt(), color("light"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("light"))
         event("light.a", "unavailable")
-        assertEquals(0xFF424242.toInt(), color("group"))
-        assertEquals(0xFF424242.toInt(), color("light"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("group"))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("light"))
     }
 
     @Test fun removedActiveMemberCannotSelectTurnOffForRemainingOffMember() {
@@ -355,7 +373,7 @@ class ButtonStateIntegrationTest {
         open(button("single", "switch.test"), group("group", "switch.test"))
         event("switch.test", "off")
         view("single").performClick()
-        assertEquals(0x8033CC33.toInt(), color("single"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("single"))
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
         val client = requireNotNull(owner.getWebSocket())
         fun rejectLast() {
@@ -368,12 +386,160 @@ class ButtonStateIntegrationTest {
         invoke(activity, "expandChildButtons", manager.loadTiles().single { it.id == "group" }, view("group"))
         val child = ArchitectureTestAccess.getField<List<Button>>(activity, "expandedChildButtons").single()
         child.performClick()
-        assertEquals(0x8033CC33.toInt(), shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
+        assertEquals(ButtonCommandAppearance.PENDING, shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
         rejectLast()
         assertEquals(0xFF424242.toInt(), color("group"))
         assertEquals(0xFF424242.toInt(), shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
         child.performClick()
         event("switch.test", "off")
-        assertEquals(0xFF424242.toInt(), shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
+        assertEquals(ButtonCommandAppearance.PENDING, shadowOf(ArchitectureTestAccess.getField<PorterDuffColorFilter>(child.background, "mTintFilter")).color)
     }
+    @Test fun acceptedTapDoesNotChangeConfirmedStateOrShowGreenBeforeFact() {
+        open(button("single", "switch.test"))
+        event("switch.test", "off")
+        view("single").performClick()
+        assertEquals("off", ArchitectureTestAccess.getField<Map<String, String>>(activity, "singleStates")["switch.test"])
+        assertEquals(0xFF80652F.toInt(), color("single"))
+        val client = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java].getWebSocket()!!
+        val ack = JSONObject().put("type", "result").put("id", calls().single().getInt("id")).put("success", true)
+        invoke(client, "handleMessage", requireNotNull(HaInboundMessage.parse(ack.toString())))
+        assertEquals(0xFF80652F.toInt(), color("single"))
+        event("switch.test", "on")
+        assertEquals(0x8033CC33.toInt(), color("single"))
+    }
+
+    @Test fun duplicateButtonsChildrenAndGroupSharePendingAndConfirmedColor() {
+        open(button("first", "switch.test"), button("second", "switch.test"), group("group", "switch.test"))
+        event("switch.test", "off")
+        invoke(activity, "expandChildButtons", manager.loadTiles().single { it.id == "group" }, view("group"))
+        val child = ArchitectureTestAccess.getField<List<Button>>(activity, "expandedChildButtons").single()
+        child.performClick()
+        listOf("first", "second", "group").forEach { assertEquals(ButtonCommandAppearance.PENDING, color(it)) }
+        assertEquals(ButtonCommandAppearance.PENDING, childColor(child))
+        view("first").performClick()
+        tap("group")
+        assertEquals(1, calls().size)
+        ack(calls().single())
+        listOf("first", "second", "group").forEach { assertEquals(ButtonCommandAppearance.PENDING, color(it)) }
+        event("switch.test", "on")
+        listOf("first", "second", "group").forEach { assertEquals(ButtonCommandAppearance.ON, color(it)) }
+        assertEquals(ButtonCommandAppearance.ON, childColor(child))
+    }
+
+    @Test fun partialGroupExecutionNeverConfusesAckWithActualMemberStates() {
+        open(group("group", "switch.a", "switch.b"), button("a", "switch.a"), button("b", "switch.b"))
+        event("switch.a", "off")
+        event("switch.b", "off")
+        tap("group")
+        calls().forEach { ack(it) }
+        assertEquals(ButtonCommandAppearance.PENDING, color("group"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("a"))
+        event("switch.a", "on")
+        assertEquals(ButtonCommandAppearance.ON, color("a"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("group"))
+        // Второй участник не переключился: ожидание ограничено и не создаёт повторной команды.
+        shadowOf(Looper.getMainLooper()).idleFor(21, TimeUnit.SECONDS)
+        assertEquals(ButtonCommandAppearance.ON, color("group")) // Прежняя семантика any-on.
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("b"))
+        assertEquals("off", owner().uiState.value.singleStates["switch.b"])
+        assertEquals(2, calls().size)
+    }
+
+    @Test fun timeoutUnavailableAndRecoveryAreVisibleWithoutLateRollback() {
+        open(button("single", "switch.test"))
+        event("switch.test", "on")
+        view("single").performClick()
+        val request = calls().single()
+        ack(request)
+        shadowOf(Looper.getMainLooper()).idleFor(21, TimeUnit.SECONDS)
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("single"))
+        assertTrue(view("single").text.contains("Нет данных"))
+        event("switch.test", "off")
+        assertEquals(ButtonCommandAppearance.OFF, color("single"))
+        ack(request, false)
+        assertEquals(ButtonCommandAppearance.OFF, color("single"))
+        view("single").performClick()
+        event("switch.test", "unknown")
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("single"))
+        assertTrue(owner().uiState.value.pendingCommands.isEmpty())
+    }
+
+    @Test fun rebuildRetainsPendingAndDetachReleasesViewsWithoutResending() {
+        open(button("single", "switch.test"))
+        event("switch.test", "off")
+        view("single").performClick()
+        val oldView = view("single")
+        val operation = owner().uiState.value.pendingCommands.getValue("switch.test")
+        owner().detachUi()
+        invoke(activity, "refreshBottomPanel")
+        assertNotSame(oldView, view("single"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("single"))
+        assertEquals(operation, owner().uiState.value.pendingCommands["switch.test"])
+        assertFalse(oldView.hasOnClickListeners())
+        assertEquals(1, calls().size)
+        ArchitectureTestAccess.setField(owner(), "commandStateCallback", { id: String -> invoke(activity, "renderCommandState", id) })
+        owner().disconnectWebSocket()
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("single"))
+        assertTrue(owner().uiState.value.pendingCommands.isEmpty())
+        assertTrue(ArchitectureTestAccess.getField<Map<*, *>>(owner().commands, "deadlines").isEmpty())
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.DAYS)
+        assertEquals(1, calls().size)
+    }
+
+    @Test fun replacementActivityUsesRetainedOwnerAndFreshViewsWithoutResending() {
+        open(button("single", "switch.test"))
+        event("switch.test", "off")
+        view("single").performClick()
+        val retained = owner()
+        val oldView = view("single")
+        val operation = retained.uiState.value.pendingCommands.getValue("switch.test")
+        retained.detachUi()
+        invoke(activity, "clearPanelInteractions")
+        // Сохранённая ViewModel передана новому экрану, как при configuration change.
+        // onCreate/XML и реальный сетевой транспорт эта фикстура не запускает.
+        val replacement = Robolectric.buildActivity(MainActivity::class.java).get().apply {
+            setTheme(android.R.style.Theme_Material_Light_NoActionBar)
+        }
+        ReflectionHelpers.setField(replacement, "viewModel\$delegate", lazy { retained })
+        val newPanel = FrameLayout(replacement)
+        val root = FrameLayout(replacement)
+        val dim = View(replacement).apply { visibility = View.GONE }
+        root.addView(newPanel)
+        root.addView(dim)
+        replacement.window.setContentView(root)
+        ArchitectureTestAccess.setField(replacement.delegate, "mSubDecorInstalled", true)
+        ArchitectureTestAccess.setField(replacement.delegate, "mWindow", replacement.window)
+        set(replacement, "tileManager", manager)
+        set(replacement, "bottomPanel", newPanel)
+        set(replacement, "dimOverlay", dim)
+        invoke(replacement, "refreshBottomPanel")
+        val fresh = newPanel.findViewWithTag<Button>("single")
+        assertNotSame(oldView, fresh)
+        assertFalse(oldView.hasOnClickListeners())
+        assertEquals(ButtonCommandAppearance.PENDING, childColor(fresh))
+        assertEquals(operation, retained.uiState.value.pendingCommands["switch.test"])
+        retained.onEntityStateChanged("switch.test", "on")
+        invoke(replacement, "renderEntityState", "switch.test", "on")
+        assertEquals(ButtonCommandAppearance.ON, childColor(fresh))
+        assertEquals("Кнопка", fresh.text.toString())
+        assertEquals(1, calls().size)
+        assertTrue(retained.uiState.value.pendingCommands.isEmpty())
+        invoke(replacement, "clearPanelInteractions")
+        retained.disconnectWebSocket()
+    }
+
+    @Test fun oppositeFreshFactStaysVisibleAfterTimeoutAndLateAck() {
+        open(button("single", "switch.test"))
+        event("switch.test", "on")
+        view("single").performClick()
+        val request = calls().single()
+        ack(request)
+        event("switch.test", "on")
+        assertEquals(ButtonCommandAppearance.PENDING, color("single"))
+        shadowOf(Looper.getMainLooper()).idleFor(21, TimeUnit.SECONDS)
+        assertEquals(ButtonCommandAppearance.ON, color("single"))
+        ack(request, false)
+        assertEquals(ButtonCommandAppearance.ON, color("single"))
+    }
+
 }

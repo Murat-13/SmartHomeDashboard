@@ -74,16 +74,18 @@ class ServiceCommandRegressionTest {
         shadowOf(Looper.getMainLooper()).idle()
     }
 
-    @Test fun acceptedSendIsOptimisticButActualEventWinsOverLateFailure() {
+    @Test fun acceptedSendKeepsFactsAndActualEventWinsOverLateFailure() {
         val client = ready()
         owner.onEntityStateChanged("switch.test", "off")
         assertEquals("on", owner.commands.toggleSingle("switch.test"))
-        assertEquals("on", owner.uiState.value.singleStates["switch.test"])
-        event(client, "off")
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
+        assertNotNull(owner.uiState.value.pendingCommands["switch.test"])
+        event(client, "on")
+        val confirmed = owner.uiState.value
         result(client, services().single(), false)
-        assertEquals("off", owner.uiState.value.singleStates["switch.test"])
-        assertTrue(restored.isEmpty())
+        assertEquals("on", owner.uiState.value.singleStates["switch.test"])
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
+        assertEquals(confirmed.statusMessage, owner.uiState.value.statusMessage)
     }
 
     @Test fun falseSendAndTransportExceptionNeverChangeState() {
@@ -97,7 +99,7 @@ class ServiceCommandRegressionTest {
                 assertEquals("off", owner.uiState.value.singleStates["switch.test"])
             }
             assertTrue(services().isEmpty())
-            assertTrue(owner.uiState.value.statusMessage.orEmpty().contains("соединени"))
+            assertTrue(owner.uiState.value.statusMessage.orEmpty().let { it.contains("соединени") || it.contains("актуального состояния") })
             owner.disconnectWebSocket()
         }
     }
@@ -117,6 +119,7 @@ class ServiceCommandRegressionTest {
         val client = ready()
         owner.onEntityStateChanged("switch.test", "off")
         owner.commands.toggleSingle("switch.test")
+        restored.clear()
         result(client, services().single(), false)
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
         assertEquals(listOf("switch.test"), restored)
@@ -129,6 +132,7 @@ class ServiceCommandRegressionTest {
         owner.commands.toggleSingle("switch.test")
         result(client, services().single(), true)
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
+        assertTrue(owner.uiState.value.pendingCommands.getValue("switch.test").acknowledged)
         event(client, "on")
         assertEquals("on", owner.uiState.value.singleStates["switch.test"])
         shadowOf(Looper.getMainLooper()).idleFor(20, TimeUnit.SECONDS)
@@ -139,6 +143,7 @@ class ServiceCommandRegressionTest {
         val client = ready()
         owner.onEntityStateChanged("switch.test", "off")
         owner.commands.toggleSingle("switch.test")
+        restored.clear()
         shadowOf(Looper.getMainLooper()).idleFor(16, TimeUnit.SECONDS)
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
         assertEquals(1, services().size)
@@ -162,18 +167,21 @@ class ServiceCommandRegressionTest {
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
     }
 
-    @Test fun olderAckDoesNotUndoNewerToggleAndNewestFailureRestoresOriginalState() {
+    @Test fun repeatedTapIsBlockedAndOlderAckCannotAffectNewOperation() {
         val client = ready()
         owner.onEntityStateChanged("switch.test", "off")
         owner.commands.toggleSingle("switch.test")
+        repeat(3) { assertNull(owner.commands.toggleSingle("switch.test")) }
+        assertEquals(1, services().size)
+        event(client, "on")
         owner.commands.toggleSingle("switch.test")
-        owner.commands.toggleSingle("switch.test")
+        val operation = owner.uiState.value.pendingCommands.getValue("switch.test")
         result(client, services()[0], false)
-        result(client, services()[1], true)
+        result(client, services()[0], true)
+        assertEquals(operation, owner.uiState.value.pendingCommands["switch.test"])
+        result(client, services()[1], false)
         assertEquals("on", owner.uiState.value.singleStates["switch.test"])
-        result(client, services()[2], false)
-        assertEquals("off", owner.uiState.value.singleStates["switch.test"])
-        assertEquals(1, restored.size)
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
     }
 
     @Test fun memberFailureRestoresGroupWithoutChangingActualSingleState() {
@@ -181,7 +189,8 @@ class ServiceCommandRegressionTest {
         owner.onEntityStateChanged("switch.test", "off")
         owner.updateGroupState("group", "switch.test", "off")
         owner.commands.toggleMember("group", "switch.test")
-        assertEquals("on", owner.uiState.value.groupStates["group"]?.get("switch.test"))
+        assertEquals("off", owner.uiState.value.groupStates["group"]?.get("switch.test"))
+        assertNotNull(owner.uiState.value.pendingCommands["switch.test"])
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
         result(client, services().single(), false)
         assertEquals("off", owner.uiState.value.groupStates["group"]?.get("switch.test"))
@@ -219,9 +228,117 @@ class ServiceCommandRegressionTest {
         owner.onEntityStateChanged("switch.test", "off")
         owner.commands.toggleSingle("switch.test")
         owner.detachUi()
+        restored.clear()
         result(client, services().single(), false)
         assertEquals("off", owner.uiState.value.singleStates["switch.test"])
         assertTrue(restored.isEmpty())
         assertNull(ReflectionHelpers.getField<Any?>(owner, "commandStateCallback"))
     }
+    @Test fun acknowledgedCommandWithoutPhysicalChangeExpiresAndLateAckIsHarmless() {
+        val client = ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        owner.commands.toggleSingle("switch.test")
+        val request = services().single()
+        result(client, request, true)
+        shadowOf(Looper.getMainLooper()).idleFor(19, TimeUnit.SECONDS)
+        assertNotNull(owner.uiState.value.pendingCommands["switch.test"])
+        shadowOf(Looper.getMainLooper()).idleFor(2, TimeUnit.SECONDS)
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
+        assertEquals(ConfirmedState.UNAVAILABLE, owner.devices.confirmedState("switch.test"))
+        assertEquals("off", owner.uiState.value.singleStates["switch.test"])
+        val message = owner.uiState.value.statusMessage
+        result(client, request, false)
+        assertEquals(message, owner.uiState.value.statusMessage)
+        event(client, "on")
+        assertEquals(ConfirmedState.ON, owner.devices.confirmedState("switch.test"))
+        assertEquals(1, services().size)
+    }
+
+    @Test fun matchingEventBeforeAckReleasesTransportCallbackAndBothTimers() {
+        val client = ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        owner.commands.toggleSingle("switch.test")
+        event(client, "on")
+        assertTrue(ReflectionHelpers.getField<Map<*, *>>(client, "serviceRequests").isEmpty())
+        assertTrue(ReflectionHelpers.getField<Map<*, *>>(owner.commands, "deadlines").isEmpty())
+        val status = owner.uiState.value.statusMessage
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.DAYS)
+        assertEquals(status, owner.uiState.value.statusMessage)
+        assertEquals(ConfirmedState.ON, owner.devices.confirmedState("switch.test"))
+    }
+
+    @Test fun newerOppositeFactIsNotOverwrittenOnRejection() {
+        val client = ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        owner.commands.toggleSingle("switch.test")
+        event(client, "off")
+        assertNotNull(owner.uiState.value.pendingCommands["switch.test"])
+        result(client, services().single(), false)
+        assertEquals("off", owner.uiState.value.singleStates["switch.test"])
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
+    }
+
+    @Test fun endpointChangeAndOwnerClearCancelPendingWithoutReplayOrRetainingTimers() {
+        ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        owner.commands.toggleSingle("switch.test")
+        owner.connectWebSocket("http://[", "artificial-new-token", autoReconnect = false)
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
+        assertEquals(ConfirmedState.UNAVAILABLE, owner.devices.confirmedState("switch.test"))
+        owner.javaClass.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(owner)
+        assertTrue(ReflectionHelpers.getField<Map<*, *>>(owner.commands, "deadlines").isEmpty())
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.DAYS)
+        assertEquals(1, services().size)
+    }
+
+    @Test fun retiredServiceIdsDoNotHideInitialSnapshotOnNextConnection() {
+        val client = ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        owner.commands.toggleSingle("switch.test")
+        event(client, "on")
+        owner.commands.toggleSingle("switch.test")
+        event(client, "off")
+        assertEquals(listOf(1, 2), services().map { it.getInt("id") })
+        client.disconnect()
+        assertSame(client, ready()) // Новый сеанс того же транспорта, ID начинаются с 1.
+        client.subscribeEntities(listOf("switch.test"))
+        val request = messages.last { it.optString("type") == "get_states" }
+        deliver(client, JSONObject().put("type", "result").put("id", request.getInt("id"))
+            .put("success", true).put("result", org.json.JSONArray().put(JSONObject()
+                .put("entity_id", "switch.test").put("state", "on").put("attributes", JSONObject()))))
+        assertEquals("on", owner.uiState.value.singleStates["switch.test"])
+        assertEquals(ConfirmedState.ON, owner.devices.confirmedState("switch.test"))
+    }
+
+    @Test fun timeoutPreservesARealOppositeFactReceivedDuringOperation() {
+        val client = ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        owner.commands.toggleSingle("switch.test")
+        result(client, services().single(), true)
+        event(client, "off") // HA действительно сообщил, что устройство осталось выключенным.
+        shadowOf(Looper.getMainLooper()).idleFor(21, TimeUnit.SECONDS)
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
+        assertEquals(ConfirmedState.OFF, owner.devices.confirmedState("switch.test"))
+        assertEquals("off", owner.uiState.value.singleStates["switch.test"])
+    }
+
+    @Test fun repeatedOperationsKeepOnlyBoundedIdsAndReleaseAllCallbacksAndDeadlines() {
+        val client = ready()
+        owner.onEntityStateChanged("switch.test", "off")
+        repeat(200) {
+            owner.commands.toggleSingle("switch.test")
+            event(client, "on")
+            owner.commands.toggleSingle("switch.test")
+            event(client, "off")
+        }
+        assertEquals(400, services().size)
+        assertTrue(owner.uiState.value.pendingCommands.isEmpty())
+        assertTrue(ReflectionHelpers.getField<Map<*, *>>(client, "serviceRequests").isEmpty())
+        assertTrue(ReflectionHelpers.getField<Map<*, *>>(owner.commands, "deadlines").isEmpty())
+        assertEquals(128, ReflectionHelpers.getField<Set<*>>(client, "retiredServiceIds").size)
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.DAYS)
+        assertEquals(400, services().size)
+        assertEquals(ConfirmedState.OFF, owner.devices.confirmedState("switch.test"))
+    }
+
 }

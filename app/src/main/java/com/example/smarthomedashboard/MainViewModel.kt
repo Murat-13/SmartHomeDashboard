@@ -15,9 +15,13 @@ class MainViewModel : ViewModel() {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     internal val devices = DashboardDeviceState()
-    internal val commands = DashboardDeviceCommands(devices, ::callService, ::publishDevices) { id ->
-        commandStateCallback?.invoke(id)
-    }
+    internal val commands = DashboardDeviceCommands(
+        devices, ::callService, ::publishDevices,
+        render = { id -> commandStateCallback?.invoke(id) },
+        cancelRequest = { id -> webSocket?.cancelServiceRequests(id) },
+        connectionGeneration = { webSocket?.connectionGeneration ?: generation },
+        error = ::publishStatus
+    )
 
     private var webSocket: HomeAssistantWebSocket? = null
 
@@ -47,6 +51,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun resumeWebSocket() {
+        commands.expireOverdue()
         webSocket?.connect()
     }
 
@@ -80,6 +85,7 @@ class MainViewModel : ViewModel() {
             }
             return
         }
+        commands.disconnected()
         val currentGeneration = ++generation
         webSocket?.disconnect()
         configuration = nextConfiguration
@@ -119,6 +125,7 @@ class MainViewModel : ViewModel() {
             },
             onDisconnected = {
                 if (generation == currentGeneration) {
+                    commands.disconnected()
                     _uiState.update { it.copy(connectionStatus = ConnectionStatus.Disconnected) }
                 }
             },
@@ -145,6 +152,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun disconnectWebSocket() {
+        commands.disconnected()
         generation++
         configuration = null
         webSocket?.disconnect()
@@ -162,31 +170,32 @@ class MainViewModel : ViewModel() {
         webSocket?.syncForecastSubscriptions(entityIds)
     }
 
-    fun callService(domain: String, service: String, entityId: String, onFinished: () -> Unit = {}): Boolean {
+    fun callService(domain: String, service: String, entityId: String, onResult: (ServiceCommandResult) -> Unit = {}): Boolean {
         val client = webSocket
         if (client == null) {
             publishStatus("Нет соединения: дождитесь переподключения и повторите команду")
             return false
         }
-        return client.callService(domain, service, entityId, onFinished)
+        return client.callService(domain, service, entityId, onResult)
     }
 
     fun getWebSocket(): HomeAssistantWebSocket? = webSocket
 
     internal fun onStatesSnapshot(states: List<HaEntityState>) {
-        states.forEach { commands.entityChanged(it.entityId) }
         devices.applySnapshot(states)
+        states.forEach { commands.entityChanged(it.entityId) }
         publishDevices()
     }
 
     fun onEntityStateChanged(eid: String, st: String, attrs: JSONObject? = null) {
-        commands.entityChanged(eid)
         devices.entityChanged(eid, st, attrs)
+        commands.entityChanged(eid)
         publishDevices()
     }
 
     fun updateGroupState(groupId: String, entityId: String, state: String) {
         devices.updateGroup(groupId, entityId, state)
+        commands.entityChanged(entityId)
         publishDevices()
     }
 
@@ -204,16 +213,11 @@ class MainViewModel : ViewModel() {
 
     private fun publishDevices() {
         if (snapshotDepth != 0) return
-        _uiState.update { devices.snapshot(it) }
+        _uiState.update { devices.snapshot(it).copy(pendingCommands = commands.pendingCommands) }
     }
 
     fun setEditMode(enabled: Boolean) {
         _uiState.update { it.copy(isEditMode = enabled) }
-    }
-
-    fun setOptimisticState(entityId: String, state: String) {
-        devices.singleStates[entityId] = state
-        publishDevices()
     }
 
     fun toggleEditMode() {

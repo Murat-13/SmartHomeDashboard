@@ -97,12 +97,13 @@ class HaSnapshotBatchTest {
         assertFalse(owner.devices.singleStates.containsKey("switch.test"))
     }
 
-    @Test fun acceptedCommandAfterRequestKeepsItsOptimismUntilActualEvent() {
+    @Test fun acceptedCommandAfterRequestKeepsFactsAndPendingUntilActualEvent() {
         owner.onEntityStateChanged("switch.test", "off")
         val req = request()
         owner.commands.toggleSingle("switch.test")
         deliver(result(req, JSONArray().put(row())))
-        assertEquals("on", owner.devices.singleStates["switch.test"])
+        assertEquals("off", owner.devices.singleStates["switch.test"])
+        assertNotNull(owner.uiState.value.pendingCommands["switch.test"])
         event("off")
         assertEquals("off", owner.devices.singleStates["switch.test"])
     }
@@ -145,7 +146,8 @@ class HaSnapshotBatchTest {
         owner.onEntityStateChanged("switch.test", "off")
         owner.commands.toggleSingle("switch.test")
         deliver(result(request(), JSONArray().put(row())))
-        assertEquals("on", owner.devices.singleStates["switch.test"])
+        assertEquals("off", owner.devices.singleStates["switch.test"])
+        assertNotNull(owner.uiState.value.pendingCommands["switch.test"])
     }
 
     @Test fun newerForecastSurvivesOldSnapshotWithoutLosingWeatherState() {

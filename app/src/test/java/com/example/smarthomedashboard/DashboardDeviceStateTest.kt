@@ -22,7 +22,7 @@ class DashboardDeviceStateTest {
         assertEquals("Test", previous.entityAttributes["light.test"]?.getString("friendly_name"))
     }
 
-    @Test fun membershipReconciliationDropsRemovedMembersAndPreservesOptimisticOverrides() {
+    @Test fun membershipReconciliationDropsRemovedMembersAndSharesFacts() {
         val owner = MainViewModel()
         owner.onEntityStateChanged("light.added", "on")
         owner.updateGroupState("group", "light.removed", "on")

@@ -59,8 +59,11 @@ class HomeAssistantWebSocket(
         var wanted: Boolean = true
     )
     private val forecastSubscriptions = mutableMapOf<Int, ForecastRequest>()
-    private data class ServiceRequest(val entityId: String, val finished: () -> Unit, val timeout: Runnable)
+    private data class ServiceRequest(val entityId: String, val result: (ServiceCommandResult) -> Unit, val timeout: Runnable)
     private val serviceRequests = mutableMapOf<Int, ServiceRequest>()
+    // Только идентификаторы, без callbacks/данных устройств. Ограниченный хвост поздних ACK.
+    private val retiredServiceIds = linkedSetOf<Int>()
+    internal val connectionGeneration: Int get() = generation
     private data class StateRequest(
         val id: Int,
         val changed: MutableSet<String>,
@@ -107,6 +110,7 @@ class HomeAssistantWebSocket(
         stateSubscriptionSent = false
         forecastSubscriptions.clear()
         messageId = 1
+        retiredServiceIds.clear() // ID запросов начинается заново; старое поколение уже отсечено.
         onStatus("Подключение: ${getHost()}")
         val request = try {
             Request.Builder().url(HomeAssistantAddress.webSocketUrl(getHost())).build()
@@ -231,12 +235,14 @@ class HomeAssistantWebSocket(
                 serviceRequests.remove(json.optInt("id"))?.let { request ->
                     handler.removeCallbacks(request.timeout)
                     // ACK подтверждает обработку запроса, а не новое состояние устройства.
-                    request.finished()
+                    retireService(json.optInt("id"))
+                    request.result(if (json.optBoolean("success", false)) ServiceCommandResult.ACKNOWLEDGED else ServiceCommandResult.REJECTED)
                     if (!json.optBoolean("success", false)) {
                         onError(HomeAssistantDiagnostics.commandError(json.optJSONObject("error")?.optString("code"), forecast = false))
                     }
                     return
                 }
+                if (json.optInt("id") in retiredServiceIds) return
                 forecastSubscriptions[json.optInt("id")]?.let {
                     handleForecastResult(json, it)
                     return
@@ -479,7 +485,7 @@ class HomeAssistantWebSocket(
         domain: String,
         service: String,
         entityId: String,
-        onFinished: () -> Unit = {}
+        onResult: (ServiceCommandResult) -> Unit = {}
     ): Boolean {
         // Не ставим действие в очередь даже при вызове не с UI-потока.
         if (Looper.myLooper() != Looper.getMainLooper()) {
@@ -495,27 +501,44 @@ class HomeAssistantWebSocket(
         val id = message.getInt("id")
         val timeout = Runnable {
             serviceRequests.remove(id)?.let {
-                it.finished()
+                retireService(id)
+                it.result(ServiceCommandResult.ACK_TIMEOUT)
                 onError("Нет ответа Home Assistant на команду")
             }
         }
-        serviceRequests[id] = ServiceRequest(entityId, onFinished, timeout)
+        serviceRequests[id] = ServiceRequest(entityId, onResult, timeout)
         if (!sendMessage(message)) {
-            serviceRequests.remove(id)?.finished?.invoke()
+            serviceRequests.remove(id)?.let {
+                retireService(id)
+                it.result(ServiceCommandResult.SEND_FAILED)
+            }
             return false
         }
         // Однократный предел ожидания ответа; без опроса и повторной отправки действия.
-        handler.postDelayed(timeout, 15_000L)
+        if (id in serviceRequests) handler.postDelayed(timeout, 15_000L)
         stateRequest?.changed?.add(entityId)
         return true
     }
 
+    internal fun cancelServiceRequests(entityId: String) {
+        serviceRequests.filterValues { it.entityId == entityId }.keys.toList().forEach { id ->
+            serviceRequests.remove(id)?.let { handler.removeCallbacks(it.timeout) }
+            retireService(id)
+        }
+    }
+
+    private fun retireService(id: Int) {
+        retiredServiceIds.add(id)
+        while (retiredServiceIds.size > 128) retiredServiceIds.remove(retiredServiceIds.first())
+    }
+
     private fun finishServiceRequests() {
-        val requests = serviceRequests.values.toList()
+        val requests = serviceRequests.toMap()
         serviceRequests.clear()
-        requests.forEach {
+        requests.keys.forEach(::retireService)
+        requests.values.forEach {
             handler.removeCallbacks(it.timeout)
-            it.finished()
+            it.result(ServiceCommandResult.DISCONNECTED)
         }
     }
 
@@ -593,6 +616,7 @@ class HomeAssistantWebSocket(
         webSocket = null
         authenticated = false
         finishServiceRequests()
+        onDisconnected()
         forecastSubscriptions.clear()
         endpointIndex = 0
         failures = 0

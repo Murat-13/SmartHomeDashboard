@@ -344,23 +344,29 @@ internal class DashboardPanelController(
 
     private fun createTileButton(tile: TileEntity): Button {
         val sz = getButtonSize(tile)
-        val on = "#8033CC33".toColorInt()
-        val off = "#424242".toColorInt()
-        val initialColor = if (tile.type == "group") {
-            if (TileButtonConfig.group(tile.config) is ButtonConfigResult.Invalid) off
-            else if (getGroupState(tile.id)) on else off
-        } else {
-            val eid = buttonEntityId(tile)
-            if (eid != null && singleStates[eid] == "on") on else off
+        return TileButtonFactory.create(activity, tile.title, tile.id, sz, ButtonCommandAppearance.OFF).apply {
+            renderTileButton(this, tile)
+            if (tile.type == "group") setupGroupTouch(tile, this)
+            else setupButtonTouch(tile, this)
         }
+    }
 
-        return TileButtonFactory.create(activity, tile.title, tile.id, sz, initialColor).apply {
-            if (tile.type == "group") {
-                setupGroupTouch(tile, this)
-            } else {
-                setupButtonTouch(tile, this, on, off)
-            }
+    private fun renderTileButton(button: Button, tile: TileEntity) {
+        val ids = if (tile.type == "group") {
+            val result = TileButtonConfig.group(tile.config)
+            if (result is ButtonConfigResult.Valid) {
+                viewModel.groupIsOn(tile.id, result.value.entityIds)
+                result.value.entityIds
+            } else emptyList()
+        } else listOfNotNull(buttonEntityId(tile))
+        val confirmed = when {
+            ids.isEmpty() -> ConfirmedState.OFF // Пустая/повреждённая конфигурация не является устройством.
+            ids.any { viewModel.devices.confirmedState(it) == ConfirmedState.ON } -> ConfirmedState.ON
+            ids.all { viewModel.devices.confirmedState(it) == ConfirmedState.OFF } -> ConfirmedState.OFF
+            else -> ConfirmedState.UNAVAILABLE
         }
+        val pending = ids.firstNotNullOfOrNull { viewModel.commands.pendingFor(it) }
+        ButtonCommandAppearance.render(button, tile.title, confirmed, pending, isGroup = tile.type == "group")
     }
 
     private fun buttonEntityId(tile: TileEntity, reportError: Boolean = false): String? {
@@ -453,17 +459,13 @@ internal class DashboardPanelController(
 
     private fun setupButtonTouch(
         tile: TileEntity,
-        button: Button,
-        activeColor: Int,
-        inactiveColor: Int
+        button: Button
     ) {
         button.setOnClickListener {
             if (!isEditMode) {
                 val eid = buttonEntityId(tile, reportError = true)
                 if (eid != null) {
-                    viewModel.commands.toggleSingle(eid)?.let { newState ->
-                        button.background?.setTint(if (newState == "on") activeColor else inactiveColor)
-                    }
+                    viewModel.commands.toggleSingle(eid)
                 }
             }
         }
@@ -562,7 +564,6 @@ internal class DashboardPanelController(
 
         for (i in 0 until cnt) {
             val eid = ids[i]
-            val st = groupStates[tile.id]?.get(eid) ?: "off"
             val nm = group.childNames[i]
 
             val btn = Button(activity).apply {
@@ -571,13 +572,11 @@ internal class DashboardPanelController(
                 layoutParams = FrameLayout.LayoutParams(bs, bs)
                 alpha = 0f; scaleX = 0.5f; scaleY = 0.5f; elevation = 12f
                 background = ResourcesCompat.getDrawable(resources, R.drawable.bg_button_rounded, null)
-                background?.setTint(if (st == "on") "#8033CC33".toColorInt() else "#424242".toColorInt())
+                ButtonCommandAppearance.render(this, nm, viewModel.devices.confirmedState(eid), viewModel.commands.pendingFor(eid))
                 setTextColor("#FFFFFF".toColorInt()); textSize = 14f
                 gravity = Gravity.CENTER; isAllCaps = false
                 setOnClickListener {
-                    viewModel.commands.toggleMember(tile.id, eid)?.let { next ->
-                        background?.setTint(if (next == "on") "#8033CC33".toColorInt() else "#424242".toColorInt())
-                    }
+                    viewModel.commands.toggleMember(tile.id, eid)
                     updateGroupButtonAppearance(tile.id)
                     resetCollapseTimer()
                 }
@@ -693,10 +692,10 @@ internal class DashboardPanelController(
     }
 
     private fun updateGroupButtonAppearance(gid: String) {
-        val c = if (getGroupState(gid)) "#8033CC33".toColorInt() else "#424242".toColorInt()
+        val tile = tileManager.getAllTiles().find { it.id == gid && it.type == "group" } ?: return
         for (i in 0 until bottomPanel.childCount) {
-            val ch = bottomPanel.getChildAt(i)
-            if (ch is Button && ch.tag == gid) { ch.background?.setTint(c); return }
+            val child = bottomPanel.getChildAt(i)
+            if (child is Button && child.tag == gid) renderTileButton(child, tile)
         }
     }
 
@@ -738,18 +737,17 @@ internal class DashboardPanelController(
     private fun renderControls(tiles: List<TileEntity>, changed: Set<String>) {
         tiles.forEach { tile ->
             val button = viewForTile(tile.id) as? Button ?: return@forEach
-            val active = if (tile.type == "group") {
-                val result = TileButtonConfig.group(tile.config)
-                result is ButtonConfigResult.Valid && viewModel.groupIsOn(tile.id, result.value.entityIds)
-            } else {
-                buttonEntityId(tile)?.let { singleStates[it] == "on" } ?: false
-            }
-            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
+            if (tile.type == "button" || tile.type == "group") renderTileButton(button, tile)
         }
-        val group = expandedGroupId
-        expandedChildButtons.filter { it.tag in changed }.forEach { button ->
-            val active = groupStates[group]?.get(button.tag) == "on"
-            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
+        val group = expandedGroupId?.let { id -> tileManager.getAllTiles().find { it.id == id } }
+        val config = group?.let { TileButtonConfig.group(it.config) }
+        expandedChildButtons.forEachIndexed { childIndex, button ->
+            if (button.tag !in changed) return@forEachIndexed
+            val id = button.tag as String
+            val title = if (config is ButtonConfigResult.Valid) {
+                config.value.childNames.getOrNull(childIndex)
+            } else null
+            ButtonCommandAppearance.render(button, title ?: id, viewModel.devices.confirmedState(id), viewModel.commands.pendingFor(id))
         }
     }
 

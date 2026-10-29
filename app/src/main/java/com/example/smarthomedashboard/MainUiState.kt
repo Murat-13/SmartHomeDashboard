@@ -16,6 +16,8 @@ data class MainUiState(
     val groupStates: Map<String, Map<String, String>> = emptyMap(),
     val entityAttributes: Map<String, JSONObject> = emptyMap(),
     val syntheticForecasts: Map<String, JSONArray?> = emptyMap(),
+    val pendingCommands: Map<String, PendingCommand> = emptyMap(),
+    val staleEntities: Set<String> = emptySet(),
     val isEditMode: Boolean = false,
     val statusMessage: String? = null
 )

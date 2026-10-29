@@ -70,6 +70,7 @@ class TileButtonFactoryTest {
     }
     private val states = linkedMapOf<String, String>()
     private val groups = linkedMapOf<String, MutableMap<String, String>>()
+    private val createdButtons = mutableListOf<Pair<Button, TileEntity>>()
 
     private class RecordingSocket : WebSocket {
         val messages = mutableListOf<JSONObject>()
@@ -102,7 +103,9 @@ class TileButtonFactoryTest {
     @Suppress("UNCHECKED_CAST")
     private fun syncStates() {
         (ArchitectureTestAccess.getField<Any>(activity, "singleStates") as MutableMap<String, String>).apply {
-            clear(); putAll(states)
+            clear()
+            groups.values.forEach { putAll(it) } // Факты участников теперь имеют общего владельца.
+            putAll(states)
         }
         (ArchitectureTestAccess.getField<Any>(activity, "groupStates") as
             MutableMap<String, MutableMap<String, String>>).apply {
@@ -120,7 +123,7 @@ class TileButtonFactoryTest {
         return try {
             ArchitectureTestAccess.method(activity, "createTileButton", TileEntity::class.java).apply {
                 isAccessible = true
-            }.invoke(activity, tile) as Button
+            }.invoke(activity, tile).let { it as Button }.also { createdButtons.add(it to tile) }
         } catch (error: InvocationTargetException) {
             throw error.targetException
         }
@@ -140,6 +143,9 @@ class TileButtonFactoryTest {
         set(client, "webSocket", socket)
         val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
         ArchitectureTestAccess.setField(owner, "webSocket", client)
+        ArchitectureTestAccess.setField(owner, "commandStateCallback", { _: String ->
+            createdButtons.forEach { (button, tile) -> invoke("renderTileButton", button, tile) }
+        })
         return socket
     }
 
@@ -157,6 +163,7 @@ class TileButtonFactoryTest {
     }
 
     @Test fun textTagContextAndExactButtonTypeArePreserved() {
+        states["switch.test"] = "off"
         val button = create(tile(id = "custom-id", title = "Длинная подпись"))
         assertEquals(Button::class.java, button.javaClass)
         assertSame(activity, button.context)
@@ -198,6 +205,7 @@ class TileButtonFactoryTest {
     }
 
     @Test fun backgroundResourceUsesNullThemeAndKeepsAppearance() {
+        states["switch.test"] = "off"
         val button = create()
         assertEquals(listOf<Resources.Theme?>(null), TileButtonResources.requestedThemes)
         assertTrue(button.background is GradientDrawable)
@@ -227,7 +235,7 @@ class TileButtonFactoryTest {
         states["switch.test"] = "off"
         assertEquals(0xFF424242.toInt(), tint(create()))
         states.clear()
-        assertEquals(0xFF424242.toInt(), tint(create()))
+        assertEquals(ButtonCommandAppearance.UNAVAILABLE, tint(create()))
     }
 
     @Test fun groupIsActiveIfAnyMemberIsOn() {
@@ -259,8 +267,9 @@ class TileButtonFactoryTest {
         assertEquals(0x8033CC33.toInt(), tint(first))
     }
 
-    @Test fun ordinaryClickUsesExistingHandlerAndOptimisticColors() {
+    @Test fun ordinaryClickUsesExistingHandlerAndPendingColorsUntilFact() {
         val socket = recordingSocket()
+        states["switch.test"] = "off"
         val button = create()
         assertTrue(socket.messages.isEmpty())
         button.performClick()
@@ -270,11 +279,19 @@ class TileButtonFactoryTest {
         assertEquals("switch", socket.messages[0].getString("domain"))
         assertEquals("turn_on", socket.messages[0].getString("service"))
         assertEquals("switch.test", socket.messages[0].getJSONObject("service_data").getString("entity_id"))
-        assertEquals(0x8033CC33.toInt(), tint(button))
+        assertEquals(ButtonCommandAppearance.PENDING, tint(button))
         button.performClick()
-        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, socket.messages.size)
+        val owner = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java]
+        owner.onEntityStateChanged("switch.test", "on")
+        invoke("renderTileButton", button, tile())
+        assertEquals(ButtonCommandAppearance.ON, tint(button))
+        button.performClick()
         assertEquals("turn_off", socket.messages[1].getString("service"))
-        assertEquals(0xFF424242.toInt(), tint(button))
+        assertEquals(ButtonCommandAppearance.PENDING, tint(button))
+        owner.onEntityStateChanged("switch.test", "off")
+        invoke("renderTileButton", button, tile())
+        assertEquals(ButtonCommandAppearance.OFF, tint(button))
     }
 
     @Test fun groupTouchUsesGroupHandlerAndDoesNotOptimisticallyToggleSingleEntity() {

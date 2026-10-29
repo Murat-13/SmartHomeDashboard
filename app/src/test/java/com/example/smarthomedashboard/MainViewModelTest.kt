@@ -178,10 +178,10 @@ class MainViewModelTest {
     }
 
     @Test
-    fun optimisticTogglePreservesAttributesAndSyntheticForecast() {
+    fun actualEventPreservesAttributesAndSyntheticForecast() {
         viewModel.onEntityStateChanged("light.test", "off", JSONObject().put("friendly_name", "Test"))
         viewModel.onForecastChanged("light.test", JSONArray().put(JSONObject().put("temperature", 10)))
-        viewModel.setOptimisticState("light.test", "on")
+        viewModel.onEntityStateChanged("light.test", "on", JSONObject().put("friendly_name", "Test"))
         assertEquals("on", viewModel.uiState.value.singleStates["light.test"])
         assertEquals("Test", viewModel.uiState.value.entityAttributes["light.test"]?.optString("friendly_name"))
         assertTrue(viewModel.uiState.value.syntheticForecasts.containsKey("light.test"))
@@ -265,7 +265,7 @@ class MainViewModelTest {
             viewModel.commands.toggleSingle("switch.test")
             assertEquals("off", viewModel.uiState.value.singleStates["switch.test"])
         }
-        assertTrue(viewModel.uiState.value.statusMessage.orEmpty().contains("Нет соединения"))
+        assertTrue(viewModel.uiState.value.statusMessage.orEmpty().contains("соединени"))
     }
 
     @Test fun staleBatchAndDetachedScreenCannotUpdateNewGeneration() {

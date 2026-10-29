@@ -10,11 +10,25 @@ internal class DashboardDeviceState {
     val entityAttributes = mutableMapOf<String, JSONObject>()
     val syntheticForecasts = mutableMapOf<String, JSONArray?>()
 
+    val staleEntities = mutableSetOf<String>()
+
+    fun confirmedState(id: String): ConfirmedState = when {
+        id in staleEntities -> ConfirmedState.UNAVAILABLE
+        singleStates[id] == "on" -> ConfirmedState.ON
+        singleStates[id] == "off" -> ConfirmedState.OFF
+        else -> ConfirmedState.UNAVAILABLE
+    }
+
+    fun markUnconfirmed(id: String) { staleEntities.add(id) }
+
+    fun markDisconnected() { staleEntities.addAll(singleStates.keys) }
+
     fun applySnapshot(states: List<HaEntityState>) {
         states.forEach { entityChanged(it.entityId, it.state, it.attributes) }
     }
 
     fun entityChanged(id: String, state: String, attributes: JSONObject?) {
+        staleEntities.remove(id)
         singleStates[id] = state
         val complete = copyAttributes(attributes)
         if (complete.has("forecast")) {
@@ -32,6 +46,9 @@ internal class DashboardDeviceState {
     }
 
     fun updateGroup(group: String, id: String, state: String) {
+        staleEntities.remove(id)
+        singleStates[id] = state
+        groupStates.values.forEach { if (id in it) it[id] = state }
         groupStates.getOrPut(group) { mutableMapOf() }[id] = state
     }
 
@@ -47,7 +64,8 @@ internal class DashboardDeviceState {
         singleStates = singleStates.toMap(),
         groupStates = groupStates.mapValues { it.value.toMap() },
         entityAttributes = entityAttributes.toMap(),
-        syntheticForecasts = syntheticForecasts.toMap()
+        syntheticForecasts = syntheticForecasts.toMap(),
+        staleEntities = staleEntities.toSet()
     )
 
     private fun copyAttributes(source: JSONObject?) = JSONObject().also { copy ->
