@@ -5,29 +5,35 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 
-/**
- * Сущности HA, которые может прочитать хоть одна плитка панели.
- * Набор намеренно избыточный: в него попадает каждая строка из JSON-полей плитки
- * и результат всех резолверов, включая значения по умолчанию. Лишний id стоит одну
- * перерисовку, а пропущенный оставил бы на экране устаревшее значение.
- */
+/** Единый консервативный расчёт зависимостей для фильтра и адресного индекса. */
 internal object PanelEntityIds {
-    fun collect(tiles: List<TileEntity>, extra: Collection<String>): Set<String> {
-        val ids = HashSet<String>(extra)
-        for (tile in tiles) {
-            listOf(tile.config, tile.colorRules, tile.collapsedSensorIds, tile.appearance, tile.conditions)
-                .forEach { parseStrings(it, ids) }
-            ids += SensorConfigResolver.getCollapsedSensorIds(tile)
-            ids += SensorConfigResolver.getExpandedSensorIds(tile)
-            ids += WeatherEntityResolver.resolve(tile.config)
-        }
-        return ids
-    }
+    data class Dependencies(val ids: Set<String>, val malformed: Boolean)
 
-    private fun parseStrings(json: String?, into: MutableSet<String>) {
-        if (json.isNullOrBlank()) return
-        val value = try { JSONTokener(json).nextValue() } catch (_: Exception) { return }
-        walkStrings(value, into)
+    fun collect(tiles: List<TileEntity>, extra: Collection<String>): Set<String> =
+        HashSet<String>(extra).also { ids -> tiles.forEach { ids.addAll(describe(it).ids) } }
+
+    fun describe(tile: TileEntity): Dependencies {
+        val ids = HashSet<String>()
+        var malformed = false
+        fun read(text: String?, array: Boolean?) {
+            if (text.isNullOrBlank()) return
+            val value = try { JSONTokener(text).nextValue() } catch (_: Exception) {
+                malformed = true
+                return
+            }
+            if ((array == true && value !is JSONArray) || (array == false && value !is JSONObject)) malformed = true
+            walkStrings(value, ids)
+        }
+        // Все строки расширенных полей оставлены: неизвестное поле безопаснее учесть избыточно.
+        read(tile.config, false)
+        read(tile.colorRules, true)
+        read(tile.collapsedSensorIds, true)
+        read(tile.appearance, null)
+        read(tile.conditions, null)
+        ids += SensorConfigResolver.getCollapsedSensorIds(tile)
+        ids += SensorConfigResolver.getExpandedSensorIds(tile)
+        if (tile.type == "weather") ids += WeatherEntityResolver.resolve(tile.config)
+        return Dependencies(ids, malformed)
     }
 
     private fun walkStrings(value: Any?, into: MutableSet<String>) {

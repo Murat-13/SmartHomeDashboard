@@ -64,10 +64,13 @@ class DashboardPanelControllerTest {
         controller.refreshBottomPanel()
         val current = panel.findViewWithTag<Button>("button")
         assertNotSame(old, current)
+        assertFalse(org.robolectric.util.ReflectionHelpers.getField<Map<String, View>>(controller, "renderedViews").values.any { it === old })
         assertFalse(old.hasOnClickListeners())
         assertEquals("on", owner.devices.singleStates["light.test"])
         assertEquals(1, panel.childCount)
         controller.clearPanelInteractions()
         assertFalse(current.hasOnClickListeners())
+        assertTrue(org.robolectric.util.ReflectionHelpers.getField<Map<String, View>>(controller, "renderedViews").isEmpty())
+        assertTrue(org.robolectric.util.ReflectionHelpers.getField<PanelDependencyIndex>(controller, "dependencyIndex").entityIds.isEmpty())
     }
 }

@@ -54,25 +54,40 @@ internal class DashboardContentController(
 
     fun updateWeatherViews(refreshExpanded: Boolean) {
         val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
-
         for (i in 0 until bottomPanel.childCount) {
-            val v = bottomPanel.getChildAt(i)
-            val tag = v.tag as? String ?: continue
-            val tile = tileManager.getAllTiles().find { it.id == tag } ?: continue
-            if (tile.type == "weather") {
-                val container = v.findViewWithTag<LinearLayout>("sensor_text_container")
-                if (container != null && expandedSensorView == v) {
-                    if (refreshExpanded) buildWeatherDetailedContent(tile, container)
-                    continue
-                }
+            val view = bottomPanel.getChildAt(i)
+            val tile = (view.tag as? String)?.let { id -> tileManager.getAllTiles().find { it.id == id } } ?: continue
+            if (tile.type == "weather") updateWeatherCard(tile, view, refreshExpanded, useYandex)
+        }
+    }
 
-                if (useYandex) {
-                    CompactWeatherRenderer.renderYandex(v, yandexWeatherManager.currentTemp,
-                        yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState),
-                        yandexWeatherManager.translateCondition(yandexWeatherManager.currentState))
-                } else {
-                    CompactWeatherRenderer.renderHomeAssistant(v, tile, singleStates::get, entityAttributes::get)
-                }
+    private fun updateWeatherCard(tile: TileEntity, view: View, refreshExpanded: Boolean, useYandex: Boolean) {
+        val container = view.findViewWithTag<LinearLayout>("sensor_text_container")
+        if (container != null && expandedSensorView === view) {
+            if (refreshExpanded) buildWeatherDetailedContent(tile, container)
+            return
+        }
+        if (useYandex) {
+            CompactWeatherRenderer.renderYandex(view, yandexWeatherManager.currentTemp,
+                yandexWeatherManager.getWeatherIcon(yandexWeatherManager.currentState),
+                yandexWeatherManager.translateCondition(yandexWeatherManager.currentState))
+        } else {
+            CompactWeatherRenderer.renderHomeAssistant(view, tile, singleStates::get, entityAttributes::get)
+        }
+    }
+
+    fun updateTiles(tiles: Collection<TileEntity>, viewForTile: (String) -> View?) {
+        val useYandex = if (tiles.any { it.type == "weather" }) {
+            getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
+        } else false
+        tiles.forEach { tile ->
+            if (tile.container != "grid") return@forEach
+            val view = viewForTile(tile.id) as? FrameLayout ?: return@forEach
+            if (tile.type == "weather") {
+                updateWeatherCard(tile, view, true, useYandex)
+                updateNormalSensorWidget(tile, view)
+            } else {
+                updateSensorCard(tile, view)
             }
         }
     }
@@ -106,35 +121,30 @@ internal class DashboardContentController(
     }
 
     fun updateSensorDisplay() {
-        val sensorTiles = tileManager.getTilesByContainer("grid")
+        val tiles = tileManager.getTilesByContainer("grid").associateBy { it.id }
         for (i in 0 until bottomPanel.childCount) {
-            val child = bottomPanel.getChildAt(i)
-            val tag = child.tag as? String ?: continue
-            val tile = sensorTiles.find { it.id == tag } ?: continue
+            val child = bottomPanel.getChildAt(i) as? FrameLayout ?: continue
+            val tile = tiles[child.tag as? String] ?: continue
+            updateSensorCard(tile, child)
+        }
+    }
 
-            if (child is FrameLayout) {
-                val isExpanded = (expandedSensorView == child)
-
-                val idsToShow = if (isExpanded) {
-                    getExpandedSensorIds(tile)
-                } else {
-                    getCollapsedSensorIds(tile)
-                }
-
-                // Погодное дерево обновляется отдельно, обычные строки не должны его перестраивать.
-                val container = child.findViewWithTag<LinearLayout>("sensor_text_container")
-                if (container != null && tile.type != "clock" && tile.type != "weather") {
-                    buildSensorContent(tile, idsToShow, isExpanded, container)
-                }
-
-                if (tile.type == "clock") {
-                    updateClockViews()
-                } else if (tile.type == "battery") {
-                    updateBatteryWidget(tile, child)
-                } else {
-                    updateNormalSensorWidget(tile, child)
-                }
+    private fun updateSensorCard(tile: TileEntity, child: FrameLayout) {
+        val isExpanded = expandedSensorView === child
+        val ids = if (isExpanded) getExpandedSensorIds(tile) else getCollapsedSensorIds(tile)
+        val container = child.findViewWithTag<LinearLayout>("sensor_text_container")
+        if (container != null && tile.type != "clock" && tile.type != "weather") {
+            buildSensorContent(tile, ids, isExpanded, container)
+        }
+        when (tile.type) {
+            "clock" -> {
+                // Адресное событие не должно обновлять посторонние погодные деревья.
+                val now = Date()
+                child.findViewWithTag<TextView>("clock_text")?.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+                child.findViewWithTag<TextView>("clock_date")?.text = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
             }
+            "battery" -> updateBatteryWidget(tile, child)
+            else -> updateNormalSensorWidget(tile, child)
         }
     }
 

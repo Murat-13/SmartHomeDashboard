@@ -48,6 +48,7 @@ class PanelEntityIdsTest {
         val broken = tile("sensor", config = "{not json", colorRules = "oops", collapsed = "")
         val ids = PanelEntityIds.collect(listOf(broken), listOf("sensor.extra"))
         assertTrue("sensor.extra" in ids)
-        assertTrue("weather.home" in ids)
+        assertFalse("Непогодная карточка не зависит от погоды по умолчанию", "weather.home" in ids)
+        assertTrue("weather.home" in PanelEntityIds.collect(listOf(tile("weather", config = "{broken")), emptyList()))
     }
 }

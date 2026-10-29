@@ -81,6 +81,8 @@ internal class DashboardPanelController(
 
     private val editDragHandlers = mutableMapOf<View, TileEditDragHandler>()
 
+    private var dependencyIndex = PanelDependencyIndex(emptyList())
+    private val renderedViews = mutableMapOf<String, View>()
     private var panelEntityTiles: List<TileEntity>? = null
     private var panelEntityMotionSensor: String? = null
     private var panelEntityIds: Set<String> = emptySet()
@@ -127,6 +129,7 @@ internal class DashboardPanelController(
             val card = createSensorView(tile)
             placeTile(card, tile.x.toFloat(), tile.y.toFloat(), card.layoutParams.width, card.layoutParams.height)
             bottomPanel.addView(card)
+            renderedViews[tile.id] = card
         }
 
         // Кнопки
@@ -136,6 +139,7 @@ internal class DashboardPanelController(
             btn.layoutParams = FrameLayout.LayoutParams(sz, sz)
             placeTile(btn, tile.x.toFloat(), tile.y.toFloat(), sz, sz)
             bottomPanel.addView(btn)
+            renderedViews[tile.id] = btn
         }
 
         // Кнопки управления (Настройки и +) только в режиме редактирования
@@ -631,6 +635,11 @@ internal class DashboardPanelController(
     }
 
     fun clearPanelInteractions() {
+        renderedViews.clear()
+        dependencyIndex = PanelDependencyIndex(emptyList())
+        panelEntityTiles = null
+        panelEntityMotionSensor = null
+        panelEntityIds = emptySet()
         // Этот Handler принадлежит только Activity и обслуживает жесты старой панели.
         handler.removeCallbacksAndMessages(null)
         longPressRunnable = null
@@ -699,44 +708,49 @@ internal class DashboardPanelController(
     }
 
     fun renderCommandState(eid: String) {
-        updateSingleButtonColor(eid)
-        tileManager.getAllTiles().filter { it.type == "group" }.forEach { tile ->
-            val group = TileButtonConfig.group(tile.config)
-            if (group is ButtonConfigResult.Valid && eid in group.value.entityIds) {
-                updateGroupButtonAppearance(tile.id)
-            }
-        }
-        val group = expandedGroupId ?: return
-        expandedChildButtons.filter { it.tag == eid }.forEach { button ->
-            val active = groupStates[group]?.get(eid) == "on"
-            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
-        }
+        renderControls(currentIndex().affected(listOf(eid)), setOf(eid))
     }
 
-    private fun updateSingleButtonColor(eid: String) {
-        val c = if (singleStates[eid] == "on") "#8033CC33".toColorInt() else "#424242".toColorInt()
-        for (i in 0 until bottomPanel.childCount) {
-            val ch = bottomPanel.getChildAt(i)
-            if (ch is Button) {
-                val tile = (ch.tag as? String)?.let { tileManager.getAllTiles().find { t -> t.id == it } }
-                if (tile != null && tile.type != "group") {
-                    if (buttonEntityId(tile) == eid) {
-                        ch.background?.setTint(c)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun isShownOnPanel(eid: String): Boolean {
-        // TileManager возвращает тот же список, пока плитки не менялись.
+    private fun currentIndex(): PanelDependencyIndex {
         val tiles = tileManager.getAllTiles()
         if (tiles !== panelEntityTiles || motionSensorId != panelEntityMotionSensor) {
-            panelEntityIds = PanelEntityIds.collect(tiles, listOfNotNull(motionSensorId))
+            dependencyIndex = PanelDependencyIndex(tiles)
+            panelEntityIds = dependencyIndex.entityIds + listOfNotNull(motionSensorId)
             panelEntityTiles = tiles
             panelEntityMotionSensor = motionSensorId
         }
-        return eid in panelEntityIds
+        return dependencyIndex
+    }
+
+    private fun viewForTile(id: String): View? {
+        val cached = renderedViews[id]
+        if (cached?.parent === bottomPanel) return cached
+        // Проверяем фактическое дерево, если View создан/заменён вне обычного refresh.
+        // Сохраняем только прямых живых детей; старые Views не остаются в кеше.
+        renderedViews.clear()
+        for (i in 0 until bottomPanel.childCount) {
+            val child = bottomPanel.getChildAt(i)
+            (child.tag as? String)?.let { renderedViews[it] = child }
+        }
+        return renderedViews[id]
+    }
+
+    private fun renderControls(tiles: List<TileEntity>, changed: Set<String>) {
+        tiles.forEach { tile ->
+            val button = viewForTile(tile.id) as? Button ?: return@forEach
+            val active = if (tile.type == "group") {
+                val result = TileButtonConfig.group(tile.config)
+                result is ButtonConfigResult.Valid && viewModel.groupIsOn(tile.id, result.value.entityIds)
+            } else {
+                buttonEntityId(tile)?.let { singleStates[it] == "on" } ?: false
+            }
+            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
+        }
+        val group = expandedGroupId
+        expandedChildButtons.filter { it.tag in changed }.forEach { button ->
+            val active = groupStates[group]?.get(button.tag) == "on"
+            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
+        }
     }
 
     private fun updateTilesForEntity(eid: String, st: String, attrs: JSONObject? = null) {
@@ -745,62 +759,24 @@ internal class DashboardPanelController(
     }
 
     fun renderInitialStates(entityIds: List<String>) {
-        val shown = entityIds.filter { isShownOnPanel(it) }.toSet()
-        if (shown.isEmpty()) return
-        motionSensorId?.takeIf { it in shown }?.let { id ->
-            if (singleStates[id] in listOf("on", "true", "playing")) host.wake()
-        }
-        shown.forEach(::updateSingleButtonColor)
-        contentController.updateSensorDisplay()
-        contentController.updateWeatherViews()
-        tileManager.getAllTiles().filter { it.type == "group" }.forEach { tile ->
-            val result = TileButtonConfig.group(tile.config)
-            if (result is ButtonConfigResult.Valid && result.value.entityIds.any { it in shown }) {
-                updateGroupButtonAppearance(tile.id)
-            }
-        }
-        val expanded = expandedGroupId
-        expandedChildButtons.filter { it.tag in shown }.forEach { button ->
-            val active = groupStates[expanded]?.get(button.tag) == "on"
-            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
-        }
+        val changed = entityIds.toSet()
+        val tiles = currentIndex().affected(changed)
+        motionSensorId?.takeIf { it in changed }?.let { wakeForState(it, singleStates[it]) }
+        renderControls(tiles, changed)
+        contentController.updateTiles(tiles, ::viewForTile)
+    }
+
+    private fun wakeForState(id: String, state: String?) {
+        if (id == motionSensorId && state in listOf("on", "true", "playing")) host.wake()
     }
 
     fun renderEntityState(eid: String, st: String) {
-
-        // Состояние храним для всех сущностей: плитка, добавленная позже, сразу покажет значение.
-        // А перерисовка нужна только для тех, которые читает панель; HA шлёт события всего дома.
-        if (!isShownOnPanel(eid)) return
-
-        // Полное обновление погоды выполняется один раз ниже через updateWeatherViews.
-
-        if (eid == motionSensorId) {
-            if (st == "on" || st == "true" || st == "playing") {
-                host.wake()
-            }
-        }
-
-        // Цвет определяется фактическим источником кнопки независимо от домена HA.
-        updateSingleButtonColor(eid)
-        if (!eid.startsWith("weather.")) {
-            // На плитке может быть любая сущность (binary_sensor, input_number, climate),
-            // а не только sensor.*: посторонние события уже отсеяны выше.
-            contentController.updateSensorDisplay()
-        }
-        contentController.updateWeatherViews()
-
-        tileManager.getAllTiles().filter { it.type == "group" }.forEach { t ->
-            val result = TileButtonConfig.group(t.config)
-            if (result is ButtonConfigResult.Valid && eid in result.value.entityIds) {
-                updateGroupState(t.id, eid, st); updateGroupButtonAppearance(t.id)
-            }
-        }
-        // Дочерняя кнопка также должна получать фактическое состояние вместо оптимистического.
-        val group = expandedGroupId
-        expandedChildButtons.filter { it.tag == eid }.forEach { button ->
-            val active = groupStates[group]?.get(eid) == "on"
-            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
-        }
+        // Пробуждение не ждёт отрисовки и не зависит от conflation StateFlow.
+        wakeForState(eid, st)
+        val tiles = currentIndex().affected(listOf(eid))
+        if (tiles.isEmpty()) return
+        renderControls(tiles, setOf(eid))
+        contentController.updateTiles(tiles, ::viewForTile)
     }
 
     private fun updateForecastForEntity(eid: String, forecast: JSONArray?) {
@@ -809,7 +785,8 @@ internal class DashboardPanelController(
     }
 
     fun renderForecastState(eid: String) {
-        contentController.updateWeatherViews()
+        val weather = currentIndex().affected(listOf(eid)).filter { it.type == "weather" }
+        contentController.updateTiles(weather, ::viewForTile)
     }
 
     fun updateClockViews() = contentController.updateClockViews()

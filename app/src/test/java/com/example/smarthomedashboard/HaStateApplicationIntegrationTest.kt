@@ -443,4 +443,16 @@ class HaStateApplicationIntegrationTest {
         assertTrue(peer.received.none { it.optString("type") == "unsubscribe_events" })
     }
 
+
+    @Test fun anotherWeatherForecastDoesNotRebuildOpenWeatherTree() {
+        start()
+        state(attrs = JSONObject().put("temperature", 20))
+        drain()
+        expand()
+        val header = content().getChildAt(0)
+        forecast(JSONArray("""[{"time":"10:00","temperature":8}]"""), "weather.b")
+        drain()
+        assertSame(header, content().getChildAt(0))
+        assertSame(card(), sensorSessionFixture(activity).current)
+    }
 }

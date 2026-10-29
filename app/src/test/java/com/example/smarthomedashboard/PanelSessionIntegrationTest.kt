@@ -613,4 +613,33 @@ class PanelSessionIntegrationTest {
         assertTrue(get<Boolean>("isEditMode"))
         assertEquals("42", owner.uiState.value.singleStates["sensor.test"])
     }
+
+    @Test fun expandedSourceUpdatesOnlyItsCardWithoutInterruptingExpansion() {
+        val first = tile("first", config = """{"collapsed_sensor_configs":[{"entity_id":"sensor.closed"}],
+            "expanded_sensor_configs":[{"entity_id":"sensor.open"}]}""")
+        val second = tile("second", config = """{"collapsed_sensor_configs":[{"entity_id":"sensor.other"}]}""")
+        open(first, second)
+        expandFirst()
+        val expanded = card("first")
+        val width = expanded.layoutParams.width
+        val height = expanded.layoutParams.height
+        val other = card("second").findViewWithTag<LinearLayout>("sensor_text_container").getChildAt(1)
+        invoke("updateTilesForEntity", "sensor.open", "42", JSONObject())
+        assertTrue(rows("first").any { it.endsWith("42") })
+        assertSame(expanded, sensorSessionFixture(activity).current)
+        assertEquals(width, expanded.layoutParams.width)
+        assertEquals(height, expanded.layoutParams.height)
+        assertSame(other, card("second").findViewWithTag<LinearLayout>("sensor_text_container").getChildAt(1))
+    }
+
+    @Test fun socOutsideTextRowsUpdatesOnlyBatteryFillAndKeepsOtherCard() {
+        open(tile("first", "battery", """{"entity_ids":["sensor.soc"],
+            "collapsed_sensor_configs":[{"entity_id":"sensor.power"}]}"""),
+            tile("second", config = """{"collapsed_sensor_configs":[{"entity_id":"sensor.other"}]}"""))
+        val other = card("second").findViewWithTag<LinearLayout>("sensor_text_container").getChildAt(1)
+        invoke("updateTilesForEntity", "sensor.soc", "50", JSONObject())
+        advance(1000)
+        assertEquals(card("first").width / 2, card("first").findViewWithTag<View>("battery_progress_fill").width)
+        assertSame(other, card("second").findViewWithTag<LinearLayout>("sensor_text_container").getChildAt(1))
+    }
 }

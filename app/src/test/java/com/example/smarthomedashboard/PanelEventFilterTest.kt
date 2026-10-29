@@ -124,4 +124,102 @@ class PanelEventFilterTest {
         assertTrue(invoke("getGroupState", "g") as Boolean)
         assertNotNull(button.background)
     }
+
+    @Test fun oneVisibleSensorDoesNotRebuildOtherCards() {
+        open(sensorTile("first", "sensor.first"), sensorTile("second", "sensor.second"))
+        val second = row("second")
+        event("sensor.first", "21")
+        assertSame(second, row("second"))
+        assertTrue(row("first").text.endsWith("21.0"))
+    }
+
+    @Test fun ruleDependencyUpdatesOnlyItsCard() {
+        open(sensorTile("first", "sensor.first",
+            """[{"entity_id":"sensor.rule","from":"1","to":"","color_hex":"#FF112233"}]"""),
+            sensorTile("second", "sensor.second"))
+        val second = row("second")
+        event("sensor.rule", "2")
+        assertSame(second, row("second"))
+        assertEquals("#FF112233".toColorInt(), (panel.findViewWithTag<FrameLayout>("first").background as ColorDrawable).color)
+    }
+
+    @Test fun sourceAndRuleChangesInvalidateTheIndexWithoutTouchingOtherCards() {
+        open(sensorTile("first", "sensor.old"), sensorTile("second", "sensor.second"))
+        event("sensor.old", "1")
+        val second = row("second")
+        manager.updateTile(sensorTile("first", "sensor.new"))
+        event("sensor.new", "2")
+        assertTrue(row("first").text.endsWith("2.0"))
+        assertSame(second, row("second"))
+        val first = row("first")
+        event("sensor.old", "3")
+        assertSame(first, row("first"))
+    }
+
+    @Test fun motionWakeDoesNotRebuildUnrelatedSensorRows() {
+        open(sensorTile("first", "sensor.first"), sensorTile("second", "sensor.second"))
+        val first = row("first")
+        val second = row("second")
+        set("motionSensorId", "binary_sensor.motion")
+        invoke("dimScreen")
+        event("binary_sensor.motion", "on")
+        assertEquals(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE, activity.window.attributes.screenBrightness, 0f)
+        assertSame(first, row("first"))
+        assertSame(second, row("second"))
+    }
+
+    @Test fun groupEventDoesNotRebuildUnrelatedSensor() {
+        open(sensorTile("sensor", "sensor.first"),
+            TileEntity("group", "group", "bottom_panel", "Group", 20, 900, 1, 1,
+                config = """{"entity_ids":["light.first"]}"""))
+        val before = row("sensor")
+        event("light.first", "on")
+        assertTrue(invoke("getGroupState", "group") as Boolean)
+        assertSame(before, row("sensor"))
+    }
+
+    @Test fun externalImportInvalidatesDependencies() {
+        open(sensorTile("first", "sensor.old"), sensorTile("second", "sensor.second"))
+        event("sensor.old", "1")
+        val second = row("second")
+        // Другой экземпляр/импорт пишет ту же строку prefs, которую проверяет TileManager.
+        TileManager(activity).saveTiles(listOf(sensorTile("first", "sensor.imported"), sensorTile("second", "sensor.second")))
+        event("sensor.imported", "7")
+        assertTrue(row("first").text.endsWith("7.0"))
+        assertSame(second, row("second"))
+        val first = row("first")
+        event("sensor.old", "99")
+        assertSame(first, row("first"))
+    }
+
+    @Test fun changingColorRuleDropsOldDependencyAfterRefresh() {
+        val old = """[{"entity_id":"sensor.old_rule","from":"1","to":"","color_hex":"#FF112233"}]"""
+        val updated = """[{"entity_id":"sensor.new_rule","from":"1","to":"","color_hex":"#FF334455"}]"""
+        open(sensorTile("first", "sensor.first", old), sensorTile("second", "sensor.second"))
+        event("sensor.old_rule", "2")
+        manager.updateTile(sensorTile("first", "sensor.first", updated))
+        invoke("refreshBottomPanel")
+        val first = row("first")
+        val second = row("second")
+        event("sensor.old_rule", "3")
+        assertSame(first, row("first"))
+        event("sensor.new_rule", "4")
+        assertEquals("#FF334455".toColorInt(), (panel.findViewWithTag<FrameLayout>("first").background as ColorDrawable).color)
+        assertSame(second, row("second"))
+    }
+
+    @Test fun changedGroupMembershipDoesNotKeepTheOldMemberDependency() {
+        open(sensorTile("sensor", "sensor.first"),
+            TileEntity("group", "group", "bottom_panel", "Group", 20, 900, 1, 1,
+                config = """{"entity_ids":["light.old"]}"""))
+        event("light.old", "on")
+        manager.updateTile(manager.loadTiles().single { it.id == "group" }.copy(config = """{"entity_ids":["light.new"]}"""))
+        invoke("refreshBottomPanel")
+        val sensor = row("sensor")
+        event("light.old", "on")
+        assertFalse(invoke("getGroupState", "group") as Boolean)
+        event("light.new", "on")
+        assertTrue(invoke("getGroupState", "group") as Boolean)
+        assertSame(sensor, row("sensor"))
+    }
 }

@@ -182,20 +182,24 @@ class WeatherScrollIntegrationTest {
         assertEquals(before, prefs())
     }
 
-    private fun ordinarySensorEventBuildsOpenForecastOnlyOnce(y: Boolean) {
+    private fun ordinarySensorEventDoesNotRebuildOpenForecast(y: Boolean) {
         open(y)
         position()
         set("motionSensorId", "sensor.test_only")
+        val children = (0 until content().childCount).map { content().getChildAt(it) }
+        val oldScrolls = scrolls()
         val sections = countForecastSections {
             invoke("updateTilesForEntity", "sensor.test_only", "12", JSONObject())
         }
-        assertEquals(if (y) 2 else 1, sections)
+        assertEquals(0, sections)
+        assertEquals(children, (0 until content().childCount).map { content().getChildAt(it) })
+        assertEquals(oldScrolls, scrolls())
         layoutCards()
         assertEquals(expectedPositions(), scrolls().map { it.scrollX })
     }
 
-    @Test fun ordinarySensorEventBuildsHaForecastOnce() = ordinarySensorEventBuildsOpenForecastOnlyOnce(false)
-    @Test fun ordinarySensorEventBuildsYandexForecastOnce() = ordinarySensorEventBuildsOpenForecastOnlyOnce(true)
+    @Test fun ordinarySensorEventDoesNotRebuildHaForecast() = ordinarySensorEventDoesNotRebuildOpenForecast(false)
+    @Test fun ordinarySensorEventDoesNotRebuildYandexForecast() = ordinarySensorEventDoesNotRebuildOpenForecast(true)
 
     @Test fun partialForecastAndYandexCallbackStillBuildExactlyOnce() {
         open()
