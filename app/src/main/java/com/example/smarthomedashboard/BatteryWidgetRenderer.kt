@@ -73,13 +73,15 @@ internal object BatteryWidgetRenderer {
             if (animator?.isRunning == true && targetWidth == target) return
             cancelAnimation()
             targetWidth = target
-            if (card.width == 0 || fill.width == target) {
+            // layout может ещё помнить старую ширину после потери данных или предыдущего кадра.
+            val startWidth = fill.layoutParams.width.coerceAtLeast(0)
+            if (card.width == 0 || startWidth == target) {
                 // Записываем и layoutParams: после отмены анимации измеренная ширина могла отставать.
                 setWidth(target)
                 return
             }
 
-            val next = ValueAnimator.ofInt(fill.width, target)
+            val next = ValueAnimator.ofInt(startWidth, target)
             animator = next
             next.duration = 500
             next.addUpdateListener {

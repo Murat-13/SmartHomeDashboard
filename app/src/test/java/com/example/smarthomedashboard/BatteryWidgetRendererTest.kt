@@ -354,4 +354,21 @@ class BatteryWidgetRendererTest {
         assertEquals(20, fill(card).width)
         assertEquals(Color.parseColor("#80FF3333"), (fill(card).background as ColorDrawable).color)
     }
+
+    @Test fun zeroRestoredBeforeLayoutCannotRestartTheOldMeasuredFill() {
+        val card = card()
+        states["sensor.soc"] = "50"
+        render(tile(), card)
+        settle(card)
+        assertEquals(100, fill(card).width)
+        states["sensor.soc"] = "unknown"
+        render(tile(), card)
+        assertEquals(0, fill(card).layoutParams.width)
+        // Новый пакет HA приходит до следующего layout: measured width ещё от старого SOC.
+        states["sensor.soc"] = "0"
+        render(tile(), card)
+        assertEquals(0, fill(card).layoutParams.width)
+        settle(card)
+        assertEquals(0, fill(card).width)
+    }
 }
