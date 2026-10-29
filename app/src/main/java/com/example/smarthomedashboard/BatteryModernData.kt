@@ -83,7 +83,16 @@ internal enum class PowerFlow(val label: String, val arrow: String, val color: I
 internal object BatteryFormat {
     data class Text(val value: String, val unit: String = "")
 
-    private val timeUnits = mapOf("s" to 1.0, "sec" to 1.0, "min" to 60.0, "h" to 3600.0, "d" to 86400.0)
+    /** Единицы времени HA и привычные русские обозначения, которые владелец мог ввести сам. */
+    private val timeUnits = mapOf(
+        "s" to 1.0, "sec" to 1.0, "с" to 1.0, "сек" to 1.0,
+        "min" to 60.0, "мин" to 60.0,
+        "h" to 3600.0, "hr" to 3600.0, "ч" to 3600.0,
+        "d" to 86400.0, "д" to 86400.0, "сут" to 86400.0
+    )
+
+    private fun timeFactor(unit: String?): Double? =
+        unit?.trim()?.trimEnd('.')?.lowercase(Locale.ROOT)?.let(timeUnits::get)
 
     /** Число из состояния HA целиком: «12.5», «-7,69», «1e3». Части строк не склеиваются. */
     fun number(raw: String): Double? = raw.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
@@ -104,10 +113,12 @@ internal object BatteryFormat {
         val unit = unit(row, reading)
         val deviceClass = reading.attributes?.optString("device_class").orEmpty()
         var number = reading.number ?: return Text(word(reading.raw, deviceClass))
-        val seconds = timeUnits[unit.lowercase(Locale.ROOT)]
-        if (seconds != null && (deviceClass == "duration" || row.decimals == null)) {
-            return Text(duration(number * seconds))
-        }
+        // Длительность всегда «4 ч 16 мин», а не «4,27 ч»: точность строки для времени не применяется.
+        // Пересчёт — от единицы HA (в ней пришло число); без неё — от единицы, заданной в строке.
+        val haUnit = reading.attributes?.optString("unit_of_measurement").orEmpty()
+        val seconds = timeFactor(haUnit)
+            ?: if (haUnit.isBlank() || deviceClass == "duration") timeFactor(unit) else null
+        if (seconds != null) return Text(duration(number * seconds))
         var shownUnit = unit
         if (unit.contains("°")) {
             if (unit.contains("C") && tempUnit == "F") { number = number * 9 / 5 + 32; shownUnit = "°F" }

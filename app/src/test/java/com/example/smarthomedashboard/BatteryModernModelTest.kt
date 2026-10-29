@@ -127,6 +127,14 @@ class BatteryModernModelTest {
         val base = BatteryModernConfig().row("runtime")!!.copy(entityId = "sensor.t")
         assertEquals("4 ч 16 мин", BatteryFormat.text(base, BatteryReading.Value("256", 256.0, JSONObject().put("unit_of_measurement", "min"))).value)
         assertEquals("1 д 2 ч", BatteryFormat.duration(26 * 3600.0))
+        // Точность и своя единица не превращают время в «16,87 ч».
+        val hours = BatteryReading.Value("16.87", 16.87, JSONObject().put("unit_of_measurement", "h"))
+        assertEquals("16 ч 52 мин", BatteryFormat.text(base.copy(decimals = 2), hours).value)
+        assertEquals("16 ч 52 мин", BatteryFormat.text(base.copy(unit = "ч"), hours).value)
+        assertEquals("16 ч 52 мин", BatteryFormat.text(base.copy(unit = "ч", decimals = 2),
+            BatteryReading.Value("16.87", 16.87, JSONObject())).value)
+        assertEquals("2 ч 0 мин", BatteryFormat.text(base.copy(unit = "ч"),
+            BatteryReading.Value("7200", 7200.0, JSONObject().put("unit_of_measurement", "s").put("device_class", "duration"))).value)
         val charging = BatteryModernConfig().row("charging")!!.copy(entityId = "binary_sensor.c")
         assertEquals("Не заряжается", BatteryFormat.text(charging, BatteryReading.Value("off", null, JSONObject().put("device_class", "battery_charging"))).value)
         val problem = BatteryModernConfig().row("problem")!!.copy(entityId = "binary_sensor.p")
