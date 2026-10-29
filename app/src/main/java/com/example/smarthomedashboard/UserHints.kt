@@ -43,7 +43,8 @@ internal object UserHints {
         EDIT_MODE("hint_hidden_edit_mode"),
         TILE_TYPE("hint_hidden_tile_type"),
         BATTERY_MODERN_EDITOR("hint_hidden_battery_modern_editor"),
-        BATTERY_MODERN_ROW("hint_hidden_battery_modern_row")
+        BATTERY_MODERN_ROW("hint_hidden_battery_modern_row"),
+        POWER_MODERN_EDITOR("hint_hidden_power_modern_editor")
     }
 
     /** Пользователь уже входил в редактирование: подсказка «как войти» ему не нужна. */
@@ -115,6 +116,9 @@ internal object UserHints {
             "Строки с другими значениями — в «Расширенных настройках»."
         BatteryModernConfig.TYPE -> "Современная карточка АКБ: заряд, мощность с направлением, напряжение и подробная диагностика. " +
             "После сохранения нажмите на плитку в режиме редактирования и выберите датчики для каждого показателя."
+        PowerModernConfig.TYPE -> "Электропитание: крупные напряжение и мощность, частота и подробная диагностика. " +
+            "Цвет плитки задают правила напряжения. После сохранения нажмите на плитку в режиме редактирования " +
+            "и выберите датчики этой линии."
         "clock" -> "Часы и дата. Датчики выбирать не нужно."
         "weather" -> "Погода из Home Assistant: выберите сущность weather.* (без выбора — weather.home). " +
             "Яндекс Погоду можно включить в настройках приложения."

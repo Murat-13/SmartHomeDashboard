@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Опора ЛЭП: решётчатая мачта с траверсами. Цвет задаёт плитка (tint). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,1.8L8.2,22.2M12,1.8L15.8,22.2M4.2,6.2L19.8,6.2M5.6,10.4L18.4,10.4M9.6,6.2L14.4,10.4M14.4,6.2L9.6,10.4M9.2,14.8L14.8,14.8M9.6,10.4L14.8,14.8M14.4,10.4L9.2,14.8M8.5,18.6L15.5,18.6M9.2,14.8L15.5,18.6M14.8,14.8L8.5,18.6M4.2,6.2L4.2,7.8M19.8,6.2L19.8,7.8M5.6,10.4L5.6,12M18.4,10.4L18.4,12" />
+</vector>

@@ -277,9 +277,12 @@ class MainActivity : AppCompatActivity() {
         TileEditorPreviewSource.attach(viewModel)
         openWithPinCheck {
             // Тип читаем после PIN: плитка могла измениться, пока открыт диалог.
-            val modern = ::tileManager.isInitialized &&
-                tileManager.loadTiles().find { it.id == id }?.type == BatteryModernConfig.TYPE
-            val screen = if (modern) BatteryModernEditorActivity::class.java else TileSettingsActivity::class.java
+            val type = if (::tileManager.isInitialized) tileManager.loadTiles().find { it.id == id }?.type else null
+            val screen = when (type) {
+                BatteryModernConfig.TYPE -> BatteryModernEditorActivity::class.java
+                PowerModernConfig.TYPE -> PowerModernEditorActivity::class.java
+                else -> TileSettingsActivity::class.java
+            }
             startActivityForResult(Intent(this, screen).putExtra("tile_id", id), REQUEST_TILE_SETTINGS)
         }
     }

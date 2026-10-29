@@ -132,7 +132,7 @@ internal class DashboardContentController(
 
     private fun updateSensorCard(tile: TileEntity, child: FrameLayout) {
         // У Modern своё дерево и оценка достоверности; цветовые правила фона ей не применяются.
-        if (tile.type == BatteryModernConfig.TYPE) {
+        if (tile.type == BatteryModernConfig.TYPE || tile.type == PowerModernConfig.TYPE) {
             renderModernBattery(tile, child)
             return
         }

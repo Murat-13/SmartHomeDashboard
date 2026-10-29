@@ -253,6 +253,38 @@ class TileSettingsActivityTest {
         assertEquals("sensor.new", JSONObject(created.config).getString("entity_id"))
     }
 
+    @Test fun bothPowerModernProfilesAreCreatedInFreeSpotsWithOwnTemplates() {
+        val other = tile().copy(id = "other", x = 20, y = 40, config = "{}")
+        manager.saveTiles(listOf(other))
+        listOf(7 to PowerModernConfig.PROFILE_GRID, 8 to PowerModernConfig.PROFILE_INVERTER).forEach { (position, profile) ->
+            val activity = open(tileId = null)
+            activity.resources.displayMetrics.widthPixels = 1920
+            activity.resources.displayMetrics.heightPixels = 1200
+            set(activity, "spinnerType", Spinner(activity).apply {
+                adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_item, (0..8).map { "type $it" })
+                setSelection(position)
+            })
+            get<EditText>(activity, "etTitle").setText(PowerModernConfig.title(profile))
+            invoke(activity, "saveTile")
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        val tiles = manager.loadTiles()
+        assertEquals(other, tiles.first { it.id == "other" })
+        val grid = tiles.single { it.title == "Сеть · Вход" }
+        val inverter = tiles.single { it.title == "Инвертор · Выход" }
+        listOf(grid, inverter).forEach { assertEquals(PowerModernConfig.TYPE, it.type); assertEquals("grid", it.container) }
+        assertEquals(PowerModernConfig.profile(PowerModernConfig.PROFILE_GRID), PowerModernConfig.from(grid.config))
+        assertEquals(PowerModernConfig.profile(PowerModernConfig.PROFILE_INVERTER), PowerModernConfig.from(inverter.config))
+        assertEquals(PowerModernConfig.DEFAULT_WIDTH, JSONObject(grid.config).getInt("button_size"))
+        // Новые плитки не кладутся поверх уже настроенных.
+        for (tile in listOf(grid, inverter)) for (o in tiles.filter { it.id != tile.id }) {
+            val a = TilePlacement.size(tile.container, tile.config)
+            val b = TilePlacement.size(o.container, o.config)
+            assertFalse("${tile.title} перекрывает ${o.title}", tile.x < o.x + b.width && tile.x + a.width > o.x &&
+                tile.y < o.y + b.height && tile.y + a.height > o.y)
+        }
+    }
+
     @Test fun newTilesArePlacedInFreePanelPixelsInsteadOfStackingInCorner() {
         manager.saveTiles(listOf(tile().copy(id = "other", x = 20, y = 40, config = "{}")))
         val created = mutableListOf<TileEntity>()

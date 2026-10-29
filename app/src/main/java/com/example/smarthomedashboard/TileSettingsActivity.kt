@@ -101,13 +101,18 @@ class TileSettingsActivity : PinProtectedActivity() {
                 // У группы устройства и имена кнопок редактируются в одном месте — на экране устройств группы.
                 val isGroup = position == 2
                 // Источники «АКБ Modern» выбираются по каждому показателю в её редакторе.
-                val isModern = typeAt(position) == BatteryModernConfig.TYPE
+                val isModern = typeAt(position) == BatteryModernConfig.TYPE || typeAt(position) == PowerModernConfig.TYPE
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 btnSelectSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 updateSelectedSensorsText()
                 setSensorMode(position == 0)
                 if (isModern) btnAdvanced.visibility = View.GONE
+                // Новая плитка профиля получает стандартное название, если пользователь его ещё не ввёл.
+                if (tileId == null && (position == 7 || position == 8) && etTitle.text.isBlank()) {
+                    etTitle.setText(PowerModernConfig.title(
+                        if (position == 8) PowerModernConfig.PROFILE_INVERTER else PowerModernConfig.PROFILE_GRID))
+                }
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
@@ -216,6 +221,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             "clock" -> 4
             "weather" -> 5
             BatteryModernConfig.TYPE -> 6
+            PowerModernConfig.TYPE -> powerIndex(tile.config)
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -257,7 +263,7 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
-            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE -> "grid"
+            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE -> "grid"
             else -> "grid"
         }
 
@@ -314,8 +320,14 @@ class TileSettingsActivity : PinProtectedActivity() {
         }
 
         // Новая «АКБ Modern» получает готовый шаблон (без источников) и подходящий размер; существующие ключи не меняются.
-        val config = if (type == BatteryModernConfig.TYPE) BatteryModernConfig.newTileConfig(existingConfig.toString())
-            else existingConfig.toString()
+        // «Электропитание Modern»: профиль выбранного пункта; у существующей плитки её настройки сохраняются.
+        val config = when (type) {
+            BatteryModernConfig.TYPE -> BatteryModernConfig.newTileConfig(existingConfig.toString())
+            PowerModernConfig.TYPE -> PowerModernConfig.newTileConfig(
+                if (spinnerType.selectedItemPosition == 8) PowerModernConfig.PROFILE_INVERTER else PowerModernConfig.PROFILE_GRID,
+                existingConfig.toString())
+            else -> existingConfig.toString()
+        }
 
         // При редактировании не сбрасываем параметры, которыми этот экран не управляет.
         val tile = oldTile?.copy(
@@ -336,6 +348,10 @@ class TileSettingsActivity : PinProtectedActivity() {
         return true
     }
 
+    /** Пункт списка типов для профиля «Электропитание Modern»: 7 — Сеть · Вход, 8 — Инвертор · Выход. */
+    private fun powerIndex(config: String) =
+        if (PowerModernConfig.from(config).profile == PowerModernConfig.PROFILE_INVERTER) 8 else 7
+
     /** Порядок совпадает с массивом R.array.tile_types. */
     private fun typeAt(position: Int): String = when (position) {
         0 -> "sensor"
@@ -345,6 +361,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         4 -> "clock"
         5 -> "weather"
         6 -> BatteryModernConfig.TYPE
+        7, 8 -> PowerModernConfig.TYPE
         else -> "sensor"
     }
 
@@ -392,7 +409,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         tvSelectedSensors.text = when {
             isGroup && selectedSensors.isEmpty() -> "В группе пока нет устройств"
             isGroup -> "Устройств в группе: ${selectedSensors.size}"
-            typeAt(spinnerType.selectedItemPosition) == BatteryModernConfig.TYPE ->
+            typeAt(spinnerType.selectedItemPosition) == BatteryModernConfig.TYPE ||
+                typeAt(spinnerType.selectedItemPosition) == PowerModernConfig.TYPE ->
                 "Датчики выбираются в редакторе АКБ Modern: в режиме редактирования нажмите на плитку."
             selectedSensors.isEmpty() -> getString(R.string.none_selected)
             else -> "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
@@ -457,7 +475,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         val original = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
             ?: TileEntity("new-sensor-draft", "sensor", "grid", "", 0, 0, 1, 1)
         initialTitle = original.title
-        initialType = listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
+        initialType = if (original.type == PowerModernConfig.TYPE) powerIndex(original.config)
+            else listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
         val draft = try {
             saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)
         } catch (_: Exception) {

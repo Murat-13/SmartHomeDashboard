@@ -40,6 +40,8 @@
         <item>Часы</item>
         <item>Погода</item>
         <item>АКБ Modern (подробная)</item>
+        <item>Электропитание Modern — Сеть · Вход</item>
+        <item>Электропитание Modern — Инвертор · Выход</item>
     </string-array>
 
     <!-- Настройки плитки -->

@@ -189,6 +189,23 @@ class SettingsConfigTransferTest {
         assertEquals("keep", JSONObject(TileManager(context).loadTiles().single().config).getString("future_display_option"))
     }
 
+    @Test fun powerModernTilesRoundTripWithIndependentProfiles() {
+        seed()
+        var grid = PowerModernConfig.profile(PowerModernConfig.PROFILE_GRID)
+        grid = grid.withRow(grid.row("voltage")!!.copy(entityId = "sensor.test_grid_v"))
+            .copy(rules = grid.rules.map { if (it.label == "Норма") it.copy(color = 0xFF3B82F6.toInt()) else it })
+        val inverter = PowerModernConfig.profile(PowerModernConfig.PROFILE_INVERTER)
+        TileManager(context).saveTiles(listOf(
+            TileEntity("grid", PowerModernConfig.TYPE, "grid", "Сеть · Вход", 10, 20, 1, 1, config = grid.writeTo("{}")),
+            TileEntity("inv", PowerModernConfig.TYPE, "grid", "Инвертор · Выход", 300, 20, 1, 1, config = inverter.writeTo("{}"))))
+        val exported = export()
+        tiles.edit().putString("tiles", "[]").commit()
+        import(exported)
+        val back = TileManager(context).loadTiles()
+        assertEquals(grid, PowerModernConfig.from(back.single { it.id == "grid" }.config))
+        assertEquals(inverter, PowerModernConfig.from(back.single { it.id == "inv" }.config))
+    }
+
     @Test fun malformedJsonLeavesBothPrefsUntouchedAndDoesNotEchoInput() {
         seed()
         val before = prefs.all.toMap()

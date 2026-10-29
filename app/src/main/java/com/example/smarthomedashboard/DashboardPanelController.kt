@@ -139,6 +139,8 @@ internal class DashboardPanelController(
         bottomPanel.removeAllViews()
 
         val tiles = tileManager.getTilesByContainer("bottom_panel")
+        // Состояния удалённых плиток «Электропитание Modern» не накапливаются.
+        viewModel.retainPowerTrackers(tileManager.getAllTiles().filter { it.type == PowerModernConfig.TYPE }.mapTo(HashSet()) { it.id })
 
         // Сенсоры
         tileManager.getTilesByContainer("grid").forEach { tile ->
@@ -192,7 +194,7 @@ internal class DashboardPanelController(
 
     private fun createSensorView(tile: TileEntity): View {
         val (savedWidth, savedHeight) = TilePlacement.displaySize("grid", tile.config, screenW, screenH)
-        if (tile.type == BatteryModernConfig.TYPE) return createModernBatteryView(tile, savedWidth, savedHeight)
+        if (isModern(tile.type)) return createModernBatteryView(tile, savedWidth, savedHeight)
 
         val card = SensorCardFactory.createBase(activity, tile.id, tile.type, savedWidth, savedHeight)
         if (tile.type == "battery") {
@@ -343,7 +345,7 @@ internal class DashboardPanelController(
                     if (!gestureActive) return@setOnTouchListener true
                     gestureActive = false
                     view.performClick()
-                    if (!hasMoved && tile.type == BatteryModernConfig.TYPE) {
+                    if (!hasMoved && isModern(tile.type)) {
                         // Актуальная плитка: настройки могли измениться после построения дерева.
                         if (expandedSensorView != null) collapseSensor()
                         else tileManager.getAllTiles().find { it.id == tile.id }?.let { expandModernBattery(it, view) }
@@ -649,9 +651,15 @@ internal class DashboardPanelController(
         collapseChildButtons()
     }
 
+    /** Modern-плитки (АКБ, Электропитание): общие раскрытие, resize, перемещение и редактирование. */
+    private fun isModern(type: String) = type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE
+
     private fun createModernBatteryView(tile: TileEntity, width: Int, height: Int): View {
-        val (card, resizeHandle) = BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
-        renderModernBattery(tile, card)
+        val (card, resizeHandle) = if (tile.type == PowerModernConfig.TYPE) {
+            PowerModernCard.createTile(activity, tile.id, width, height, isEditMode)
+        } else BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
+        // Новая View сразу получает уже подтверждённое оформление (без повторной анимации).
+        renderModern(tile, card, animate = false)
         setupSensorTouch(card, tile)
         resizeHandlers += SensorResizeHandler(
             card, resizeHandle, tile.type, screenW, screenH,
@@ -663,20 +671,54 @@ internal class DashboardPanelController(
 
     private fun modernReadings() = BatteryReadings.from(viewModel.uiState.value.haSession, viewModel.devices)
 
+    private fun renderModernBattery(tile: TileEntity, view: FrameLayout) = renderModern(tile, view, animate = true)
+
     /** Только отрисовка: таймер автосворачивания событиями HA не перезапускается. */
-    private fun renderModernBattery(tile: TileEntity, view: FrameLayout) {
-        val config = BatteryModernConfig.from(tile.config)
+    private fun renderModern(tile: TileEntity, view: FrameLayout?, animate: Boolean) {
         val readings = modernReadings()
-        view.findViewWithTag<BatteryModernCard>("bm_compact")?.bind(tile.title, config, readings, host.temperatureUnit)
-        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
-            modernExpansion.card?.bind(tile.title, config, readings, host.temperatureUnit)
+        if (tile.type == PowerModernConfig.TYPE) {
+            renderPower(tile, view, readings, animate)
+            return
         }
+        val config = BatteryModernConfig.from(tile.config)
+        view?.findViewWithTag<BatteryModernCard>("bm_compact")?.bind(tile.title, config, readings, host.temperatureUnit)
+        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
+            (modernExpansion.card as? BatteryModernCard)?.bind(tile.title, config, readings, host.temperatureUnit)
+        }
+    }
+
+    /** Отложенные проверки подтверждения диапазона: не больше одной на плитку. */
+    private val powerChecks = mutableMapOf<String, Runnable>()
+
+    /**
+     * Цифры — сразу; цвет — по трекеру этой плитки (только её собственное напряжение).
+     * Если новый диапазон ещё не подтверждён, плитка перерисуется к моменту подтверждения.
+     */
+    private fun renderPower(tile: TileEntity, view: FrameLayout?, readings: BatteryReadings, animate: Boolean) {
+        val config = PowerModernConfig.from(tile.config)
+        val tracker = viewModel.powerTracker(tile.id)
+        val voltage = readings.of(config.row(PowerModernConfig.ROLE_VOLTAGE))
+        val now = android.os.SystemClock.uptimeMillis()
+        val confirmed = tracker.update((voltage as? BatteryReading.Value)?.number, config, now)
+        val visual = PowerVisual.of(config, voltage, readings, confirmed)
+        view?.findViewWithTag<PowerModernCard>("pm_compact")?.bind(tile.title, config, readings, visual, animate)
+        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
+            (modernExpansion.card as? PowerModernCard)?.bind(tile.title, config, readings, visual, animate)
+        }
+        powerChecks.remove(tile.id)?.let(handler::removeCallbacks)
+        val at = tracker.nextCheckAt ?: return
+        val check = Runnable {
+            powerChecks.remove(tile.id)
+            tileManager.getAllTiles().find { it.id == tile.id }?.let { renderModern(it, viewForTile(it.id) as? FrameLayout, true) }
+        }
+        powerChecks[tile.id] = check
+        handler.postDelayed(check, (at - now).coerceAtLeast(0L))
     }
 
     /** Смена связи/синхронизации меняет достоверность всех показаний Modern без событий сущностей. */
     fun renderSessionState() {
         if (!host.hasPanel) return
-        tileManager.getAllTiles().filter { it.type == BatteryModernConfig.TYPE }.forEach { tile ->
+        tileManager.getAllTiles().filter { isModern(it.type) }.forEach { tile ->
             (viewForTile(tile.id) as? FrameLayout)?.let { renderModernBattery(tile, it) }
         }
     }
@@ -688,6 +730,16 @@ internal class DashboardPanelController(
 
     private fun expandModernBattery(tile: TileEntity, source: View) {
         collapseChildButtons()
+        if (tile.type == PowerModernConfig.TYPE) {
+            // Компоновка по эскизу: широкая карточка, слева линия и главные цифры, справа строки.
+            val width = minOf((screenW * 0.86f).toInt(), 1500)
+            val height = (width * 0.46f).toInt().coerceIn(screenH / 3, (screenH * 0.86f).toInt())
+            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
+            val card = PowerModernCard(activity, expanded = true)
+            modernExpansion.expand(tile.id, source, card, target)
+            renderModern(tile, null, animate = false)
+            return
+        }
         val card = BatteryModernCard(activity, expanded = true)
         val width = minOf((screenW * 0.92f).toInt(), 1600)
         val height = minOf((screenH * 0.9f).toInt(), (width * 0.8f).toInt().coerceAtLeast(screenH / 2))
@@ -724,6 +776,7 @@ internal class DashboardPanelController(
         collapseChildrenRunnable = null
         clearSensorExpansion()
         clearModernExpansion()
+        powerChecks.clear()
         resizeHandlers.forEach { it.dispose() }
         resizeHandlers.clear()
         editDragHandlers.values.forEach { it.dispose() }

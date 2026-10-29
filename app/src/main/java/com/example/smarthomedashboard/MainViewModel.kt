@@ -15,6 +15,12 @@ class MainViewModel : ViewModel() {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     internal val devices = DashboardDeviceState()
+
+    // Подтверждённые цветовые состояния «Электропитание Modern» по id плитки: переживают
+    // пересоздание экрана, чтобы новая View сразу показала уже подтверждённый диапазон.
+    private val powerTrackers = mutableMapOf<String, PowerStateTracker>()
+    internal fun powerTracker(tileId: String) = powerTrackers.getOrPut(tileId) { PowerStateTracker() }
+    internal fun retainPowerTrackers(tileIds: Set<String>) { powerTrackers.keys.retainAll(tileIds) }
     internal val commands = DashboardDeviceCommands(
         devices, ::callService, ::publishDevices,
         render = { id -> commandStateCallback?.invoke(id) },
