@@ -18,6 +18,8 @@ data class MainUiState(
     val syntheticForecasts: Map<String, JSONArray?> = emptyMap(),
     val pendingCommands: Map<String, PendingCommand> = emptyMap(),
     val staleEntities: Set<String> = emptySet(),
+    /** Соединение и синхронизация текущей сессии; не зависит от статуса-текста ошибки команды. */
+    val haSession: HaSession = HaSession(),
     val isEditMode: Boolean = false,
     val statusMessage: String? = null
 )

@@ -90,7 +90,7 @@ class MainViewModel : ViewModel() {
         webSocket?.disconnect()
         configuration = nextConfiguration
         _uiState.update {
-            it.copy(connectionStatus = ConnectionStatus.Connecting(host), statusMessage = null)
+            it.copy(connectionStatus = ConnectionStatus.Connecting(host), statusMessage = null, haSession = HaSession())
         }
         webSocket = HomeAssistantWebSocket(
             host = host,
@@ -108,6 +108,8 @@ class MainViewModel : ViewModel() {
                     snapshotDepth++
                     try {
                         onStatesSnapshot(states)
+                        // Снимок текущей сессии принят до отрисовки: карточки видят данные достоверными.
+                        _uiState.update { it.copy(haSession = it.haSession.copy(synced = it.haSession.connected)) }
                         val callback = snapshotCallback
                         if (callback != null) callback(states.map { it.entityId })
                         else states.forEach { stateCallback?.invoke(it.entityId, it.state, it.attributes) }
@@ -119,14 +121,16 @@ class MainViewModel : ViewModel() {
             },
             onConnected = {
                 if (generation == currentGeneration) {
-                    _uiState.update { it.copy(connectionStatus = ConnectionStatus.Connected) }
+                    _uiState.update {
+                        it.copy(connectionStatus = ConnectionStatus.Connected, haSession = HaSession(connected = true))
+                    }
                     connectedCallback?.invoke()
                 }
             },
             onDisconnected = {
                 if (generation == currentGeneration) {
                     commands.disconnected()
-                    _uiState.update { it.copy(connectionStatus = ConnectionStatus.Disconnected) }
+                    _uiState.update { it.copy(connectionStatus = ConnectionStatus.Disconnected, haSession = HaSession()) }
                 }
             },
             onEntitiesList = { entities ->
@@ -158,7 +162,7 @@ class MainViewModel : ViewModel() {
         webSocket?.disconnect()
         webSocket = null
         _uiState.update {
-            it.copy(connectionStatus = ConnectionStatus.Disconnected, statusMessage = null)
+            it.copy(connectionStatus = ConnectionStatus.Disconnected, statusMessage = null, haSession = HaSession())
         }
     }
 

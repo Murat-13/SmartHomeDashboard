@@ -41,7 +41,9 @@ internal object UserHints {
     enum class Hint(internal val key: String) {
         HOW_TO_EDIT("hint_hidden_how_to_edit"),
         EDIT_MODE("hint_hidden_edit_mode"),
-        TILE_TYPE("hint_hidden_tile_type")
+        TILE_TYPE("hint_hidden_tile_type"),
+        BATTERY_MODERN_EDITOR("hint_hidden_battery_modern_editor"),
+        BATTERY_MODERN_ROW("hint_hidden_battery_modern_row")
     }
 
     /** Пользователь уже входил в редактирование: подсказка «как войти» ему не нужна. */
@@ -111,6 +113,8 @@ internal object UserHints {
             "1 секунду открывает отдельные кнопки. Имена и порядок задаются после первого сохранения."
         "battery" -> "Шкала заряда. Первый выбранный датчик — уровень заряда в процентах (0–100). " +
             "Строки с другими значениями — в «Расширенных настройках»."
+        BatteryModernConfig.TYPE -> "Современная карточка АКБ: заряд, мощность с направлением, напряжение и подробная диагностика. " +
+            "После сохранения нажмите на плитку в режиме редактирования и выберите датчики для каждого показателя."
         "clock" -> "Часы и дата. Датчики выбирать не нужно."
         "weather" -> "Погода из Home Assistant: выберите сущность weather.* (без выбора — weather.home). " +
             "Яндекс Погоду можно включить в настройках приложения."

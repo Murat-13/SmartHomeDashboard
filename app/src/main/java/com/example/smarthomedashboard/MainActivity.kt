@@ -125,8 +125,16 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         uiStateJob = lifecycleScope.launch {
-            viewModel.uiState.map { it.statusMessage }.distinctUntilChanged().collect { status ->
-                status?.let { setHaStatus(it) }
+            launch {
+                viewModel.uiState.map { it.statusMessage }.distinctUntilChanged().collect { status ->
+                    status?.let { setHaStatus(it) }
+                }
+            }
+            // Достоверность показаний «АКБ Modern» зависит от связи и синхронизации сессии.
+            launch {
+                viewModel.uiState.map { it.haSession }.distinctUntilChanged().collect {
+                    if (::tileManager.isInitialized) panelController.renderSessionState()
+                }
             }
         }
     }
@@ -268,11 +276,17 @@ class MainActivity : AppCompatActivity() {
     private fun openTileSettings(id: String) {
         TileEditorPreviewSource.attach(viewModel)
         openWithPinCheck {
-            startActivityForResult(
-                Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", id),
-                REQUEST_TILE_SETTINGS
-            )
+            // Тип читаем после PIN: плитка могла измениться, пока открыт диалог.
+            val modern = ::tileManager.isInitialized &&
+                tileManager.loadTiles().find { it.id == id }?.type == BatteryModernConfig.TYPE
+            val screen = if (modern) BatteryModernEditorActivity::class.java else TileSettingsActivity::class.java
+            startActivityForResult(Intent(this, screen).putExtra("tile_id", id), REQUEST_TILE_SETTINGS)
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (::tileManager.isInitialized) panelController.setInteractive(hasFocus)
     }
 
     private fun refreshBottomPanel() = panelController.refreshBottomPanel()

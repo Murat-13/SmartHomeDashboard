@@ -100,11 +100,14 @@ class TileSettingsActivity : PinProtectedActivity() {
                 updateTypeHint()
                 // У группы устройства и имена кнопок редактируются в одном месте — на экране устройств группы.
                 val isGroup = position == 2
+                // Источники «АКБ Modern» выбираются по каждому показателю в её редакторе.
+                val isModern = typeAt(position) == BatteryModernConfig.TYPE
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
-                btnSelectSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
-                btnClearSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
+                btnSelectSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
+                btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 updateSelectedSensorsText()
                 setSensorMode(position == 0)
+                if (isModern) btnAdvanced.visibility = View.GONE
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
@@ -212,6 +215,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             "battery" -> 3
             "clock" -> 4
             "weather" -> 5
+            BatteryModernConfig.TYPE -> 6
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -253,7 +257,7 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
-            "clock", "sensor", "battery", "weather" -> "grid"
+            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE -> "grid"
             else -> "grid"
         }
 
@@ -309,7 +313,9 @@ class TileSettingsActivity : PinProtectedActivity() {
             if (!unchanged) existingConfig.put("button_size", buttonSize)
         }
 
-        val config = existingConfig.toString()
+        // Новая «АКБ Modern» получает готовый шаблон (без источников) и подходящий размер; существующие ключи не меняются.
+        val config = if (type == BatteryModernConfig.TYPE) BatteryModernConfig.newTileConfig(existingConfig.toString())
+            else existingConfig.toString()
 
         // При редактировании не сбрасываем параметры, которыми этот экран не управляет.
         val tile = oldTile?.copy(
@@ -338,6 +344,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         3 -> "battery"
         4 -> "clock"
         5 -> "weather"
+        6 -> BatteryModernConfig.TYPE
         else -> "sensor"
     }
 
@@ -385,6 +392,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         tvSelectedSensors.text = when {
             isGroup && selectedSensors.isEmpty() -> "В группе пока нет устройств"
             isGroup -> "Устройств в группе: ${selectedSensors.size}"
+            typeAt(spinnerType.selectedItemPosition) == BatteryModernConfig.TYPE ->
+                "Датчики выбираются в редакторе АКБ Modern: в режиме редактирования нажмите на плитку."
             selectedSensors.isEmpty() -> getString(R.string.none_selected)
             else -> "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
         }
@@ -448,7 +457,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         val original = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
             ?: TileEntity("new-sensor-draft", "sensor", "grid", "", 0, 0, 1, 1)
         initialTitle = original.title
-        initialType = listOf("sensor", "button", "group", "battery", "clock", "weather").indexOf(original.type).coerceAtLeast(0)
+        initialType = listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
         val draft = try {
             saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)
         } catch (_: Exception) {

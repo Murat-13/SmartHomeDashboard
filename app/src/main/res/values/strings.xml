@@ -39,6 +39,7 @@
         <item>Батарея (SOC %)</item>
         <item>Часы</item>
         <item>Погода</item>
+        <item>АКБ Modern (подробная)</item>
     </string-array>
 
     <!-- Настройки плитки -->

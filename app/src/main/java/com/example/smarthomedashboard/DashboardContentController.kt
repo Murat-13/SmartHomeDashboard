@@ -17,7 +17,8 @@ internal class DashboardContentController(
     private val devices: DashboardDeviceState,
     private val sources: Sources,
     private val expanded: () -> View?,
-    private val touch: () -> Unit
+    private val touch: () -> Unit,
+    private val renderModernBattery: (TileEntity, FrameLayout) -> Unit = { _, _ -> }
 ) : ContextWrapper(activity) {
     interface Sources {
         val panel: FrameLayout
@@ -130,6 +131,11 @@ internal class DashboardContentController(
     }
 
     private fun updateSensorCard(tile: TileEntity, child: FrameLayout) {
+        // У Modern своё дерево и оценка достоверности; цветовые правила фона ей не применяются.
+        if (tile.type == BatteryModernConfig.TYPE) {
+            renderModernBattery(tile, child)
+            return
+        }
         val isExpanded = expandedSensorView === child
         val ids = if (isExpanded) getExpandedSensorIds(tile) else getCollapsedSensorIds(tile)
         val container = child.findViewWithTag<LinearLayout>("sensor_text_container")

@@ -65,7 +65,22 @@ internal class DashboardPanelController(
     private val sensorExpansion = SensorExpansionSession(handler)
     private val expandedSensorView: View? get() = sensorExpansion.current
     private val contentController by lazy {
-        DashboardContentController(activity, viewModel.devices, host, { expandedSensorView }, ::resetSensorCollapseTimer)
+        DashboardContentController(activity, viewModel.devices, host, { expandedSensorView }, ::resetSensorCollapseTimer,
+            ::renderModernBattery)
+    }
+
+    // «АКБ Modern» раскрывается отдельной View поверх панели; обычные датчики — прежним способом.
+    internal val modernExpansion by lazy {
+        BatteryModernExpansion(handler, { activity.findViewById(android.R.id.content) },
+            { if (host.hasPanel) bottomPanel else null }, BatteryModernExpansion.blurAvailable(activity))
+    }
+    private val modernWindowInput by lazy {
+        SensorWindowTouchHandler(
+            { modernExpansion.card?.takeIf { modernExpansion.isOpen } },
+            { view -> view.parent != null && tileManager.getAllTiles().any { it.id == modernExpansion.tileId } },
+            modernExpansion::touch, ::clearModernExpansion, ::collapseModernBattery,
+            android.view.ViewConfiguration.get(activity).scaledTouchSlop
+        )
     }
     private val weatherForecastScroll get() = contentController.weatherForecastScroll
     private var isResizing = false
@@ -88,7 +103,8 @@ internal class DashboardPanelController(
     private var panelEntityIds: Set<String> = emptySet()
     companion object { private const val DEFAULT_BUTTON_SIZE = 160 }
 
-    fun dispatchTouch(event: MotionEvent): Boolean? = sensorWindowInput.dispatch(event)
+    fun dispatchTouch(event: MotionEvent): Boolean? =
+        modernWindowInput.dispatch(event) ?: sensorWindowInput.dispatch(event)
 
     fun backgroundTouch(event: MotionEvent) {
         if (event.action == MotionEvent.ACTION_DOWN) {
@@ -176,6 +192,7 @@ internal class DashboardPanelController(
 
     private fun createSensorView(tile: TileEntity): View {
         val (savedWidth, savedHeight) = TilePlacement.displaySize("grid", tile.config, screenW, screenH)
+        if (tile.type == BatteryModernConfig.TYPE) return createModernBatteryView(tile, savedWidth, savedHeight)
 
         val card = SensorCardFactory.createBase(activity, tile.id, tile.type, savedWidth, savedHeight)
         if (tile.type == "battery") {
@@ -326,7 +343,11 @@ internal class DashboardPanelController(
                     if (!gestureActive) return@setOnTouchListener true
                     gestureActive = false
                     view.performClick()
-                    if (!hasMoved && tile.type != "clock") {
+                    if (!hasMoved && tile.type == BatteryModernConfig.TYPE) {
+                        // Актуальная плитка: настройки могли измениться после построения дерева.
+                        if (expandedSensorView != null) collapseSensor()
+                        else tileManager.getAllTiles().find { it.id == tile.id }?.let { expandModernBattery(it, view) }
+                    } else if (!hasMoved && tile.type != "clock") {
                         if (expandedSensorView != null && expandedSensorView != view) collapseSensor()
                         else expandSensor(tile, view)
                     }
@@ -624,7 +645,65 @@ internal class DashboardPanelController(
 
     fun collapseAll() {
         collapseSensor()
+        collapseModernBattery()
         collapseChildButtons()
+    }
+
+    private fun createModernBatteryView(tile: TileEntity, width: Int, height: Int): View {
+        val (card, resizeHandle) = BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
+        renderModernBattery(tile, card)
+        setupSensorTouch(card, tile)
+        resizeHandlers += SensorResizeHandler(
+            card, resizeHandle, tile.type, screenW, screenH,
+            onResizingChanged = { isResizing = it },
+            saveSize = { w, h -> saveSensorSize(tile.id, w, h) }
+        )
+        return card
+    }
+
+    private fun modernReadings() = BatteryReadings.from(viewModel.uiState.value.haSession, viewModel.devices)
+
+    /** Только отрисовка: таймер автосворачивания событиями HA не перезапускается. */
+    private fun renderModernBattery(tile: TileEntity, view: FrameLayout) {
+        val config = BatteryModernConfig.from(tile.config)
+        val readings = modernReadings()
+        view.findViewWithTag<BatteryModernCard>("bm_compact")?.bind(tile.title, config, readings, host.temperatureUnit)
+        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
+            modernExpansion.card?.bind(tile.title, config, readings, host.temperatureUnit)
+        }
+    }
+
+    /** Смена связи/синхронизации меняет достоверность всех показаний Modern без событий сущностей. */
+    fun renderSessionState() {
+        if (!host.hasPanel) return
+        tileManager.getAllTiles().filter { it.type == BatteryModernConfig.TYPE }.forEach { tile ->
+            (viewForTile(tile.id) as? FrameLayout)?.let { renderModernBattery(tile, it) }
+        }
+    }
+
+    /** Окно не в фокусе (системный диалог, шторка): автосворачивание приостанавливается. */
+    fun setInteractive(interactive: Boolean) {
+        if (interactive) modernExpansion.resume() else modernExpansion.pause()
+    }
+
+    private fun expandModernBattery(tile: TileEntity, source: View) {
+        collapseChildButtons()
+        val card = BatteryModernCard(activity, expanded = true)
+        val width = minOf((screenW * 0.92f).toInt(), 1600)
+        val height = minOf((screenH * 0.9f).toInt(), (width * 0.8f).toInt().coerceAtLeast(screenH / 2))
+        val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
+        card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit)
+        modernExpansion.expand(tile.id, source, card, target)
+    }
+
+    private fun collapseModernBattery() {
+        modernWindowInput.clear()
+        modernExpansion.collapse()
+    }
+
+    private fun clearModernExpansion() {
+        modernWindowInput.clear()
+        modernExpansion.clear()
     }
 
     private fun clearSensorExpansion() {
@@ -644,6 +723,7 @@ internal class DashboardPanelController(
         longPressRunnable = null
         collapseChildrenRunnable = null
         clearSensorExpansion()
+        clearModernExpansion()
         resizeHandlers.forEach { it.dispose() }
         resizeHandlers.clear()
         editDragHandlers.values.forEach { it.dispose() }
