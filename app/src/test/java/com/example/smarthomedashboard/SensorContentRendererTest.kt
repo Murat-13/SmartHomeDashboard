@@ -154,7 +154,7 @@ class SensorContentRendererTest {
         assertEquals(listOf("Long  1", "B     2"), rows(container))
     }
 
-    @Test fun repeatedBuildReplacesRowsWithoutDuplicatingThem() = withUsLocale {
+    @Test fun repeatedBuildReusesRowsWithoutDuplicatingThem() = withUsLocale {
         val container = container()
         val header = container.getChildAt(0)
         states["sensor.a"] = "1"
@@ -164,7 +164,8 @@ class SensorContentRendererTest {
         render(tile(), listOf("sensor.a"), false, container)
         assertEquals(2, container.childCount)
         assertSame(header, container.getChildAt(0))
-        assertNull(oldRow.parent)
+        assertSame(oldRow, container.getChildAt(1))
+        assertSame(container, oldRow.parent)
         assertEquals(listOf("sensor.a  2"), rows(container))
     }
 
