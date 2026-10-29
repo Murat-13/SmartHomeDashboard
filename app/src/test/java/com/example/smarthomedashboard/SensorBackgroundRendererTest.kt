@@ -204,4 +204,36 @@ class SensorBackgroundRendererTest {
         states["sensor.value"] = "15"
         assertColor(0x802196F3, tile(rules(rule()), type = "weather"))
     }
+
+    @Test fun invalidNumericStateDoesNotKeepNormalReadingColor() {
+        val card = card()
+        val tile = tile(rules(rule(from = "10", to = "")))
+        states["sensor.value"] = "15"
+        assertColor(0x802196F3, tile, card)
+        for (value in listOf("unknown", "unavailable", "NaN", "Infinity", "bad")) {
+            states["sensor.value"] = value
+            assertColor(0x80333333, tile, card)
+        }
+    }
+
+    @Test fun explicitUnavailableTextRuleSurvivesLaterNumericRule() {
+        states["sensor.value"] = "unavailable"
+        assertColor(0x80FFCC00, tile(rules(
+            rule(from = "10", to = ""),
+            rule(from = "unavailable", to = "unavailable", color = "#80FFCC00"),
+            rule(from = "20", to = "", color = "#8033CC33")
+        )))
+    }
+
+    @Test fun lastValidMatchWinsAcrossSensorsButInvalidReadingCannotOverrideIt() {
+        val tile = tile(rules(rule(), rule(entity = "sensor.other", from = "10", to = "", color = "#80F44336")))
+        val card = card()
+        states["sensor.value"] = "15"
+        for (value in listOf("unknown", "NaN", "Infinity", "1 2", "bad25")) {
+            states["sensor.other"] = value
+            assertColor(0x802196F3, tile, card)
+        }
+        states["sensor.other"] = "15 V"
+        assertColor(0x80F44336, tile, card)
+    }
 }

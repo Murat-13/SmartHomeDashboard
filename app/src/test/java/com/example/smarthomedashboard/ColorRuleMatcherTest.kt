@@ -81,8 +81,8 @@ class ColorRuleMatcherTest {
     }
 
     @Test
-    fun nonNumericValueWithNumericBoundaryFallsBackToStringComparison() {
-        assertTrue(ColorRuleMatcher.matches("on", "1", "z"))
+    fun nonNumericValueWithNumericBoundaryNeverFallsBackToStringComparison() {
+        assertFalse(ColorRuleMatcher.matches("on", "1", "z"))
         assertFalse(ColorRuleMatcher.matches("on", "1", "9"))
     }
 
@@ -101,5 +101,61 @@ class ColorRuleMatcherTest {
         assertFalse(ColorRuleMatcher.matches("Beta", "alpha", "gamma"))
         assertTrue(ColorRuleMatcher.matches("beta", "", "gamma"))
         assertTrue(ColorRuleMatcher.matches("beta", "alpha", ""))
+    }
+
+    @Test fun unavailableValuesNeverMatchNumericOrMixedBounds() {
+        for (value in listOf("unknown", "unavailable", "bad", "NaN", "Infinity")) {
+            assertFalse(value, ColorRuleMatcher.matches(value, "20", ""))
+            assertFalse(value, ColorRuleMatcher.matches(value, "1", "z"))
+        }
+    }
+
+    @Test fun signedNumbersUnitsAndWhitespaceUseFiniteNumericComparison() {
+        assertTrue(ColorRuleMatcher.matches(" 230 V ", " 220 ", "240 "))
+        assertTrue(ColorRuleMatcher.matches("-5.5 °C", "-10", "0"))
+        assertTrue(ColorRuleMatcher.matches("+.5 A", "0", "1"))
+        assertTrue(ColorRuleMatcher.matches("2.3e2 V", "220", "240"))
+        assertTrue(ColorRuleMatcher.matches("20", " 20 ", "  "))
+        assertTrue(ColorRuleMatcher.matches("20", "  ", " 20 "))
+        assertFalse(ColorRuleMatcher.matches(" ", "20", ""))
+        assertTrue(ColorRuleMatcher.matches("value", "  ", "  "))
+    }
+
+    @Test fun nonFiniteValuesIncludingOverflowNeverMatchNumericRules() {
+        for (value in listOf("NaN", "Infinity", "+Infinity", "-Infinity", "1e309", "1e309 V", "NaN V")) {
+            assertFalse(value, ColorRuleMatcher.matches(value, "", "2000"))
+            assertFalse(value, ColorRuleMatcher.matches(value, "-2000", ""))
+            assertFalse(value, ColorRuleMatcher.matches(value, "1200", "1400"))
+        }
+    }
+
+    @Test fun nonFiniteBoundsAreInvalidRatherThanTextOrUnboundedLimits() {
+        for (bound in listOf("NaN", "Infinity", "-Infinity", "1e309")) {
+            assertFalse(bound, ColorRuleMatcher.matches("25", bound, ""))
+            assertFalse(bound, ColorRuleMatcher.matches("25", "", bound))
+            assertFalse(bound, ColorRuleMatcher.matches(bound, bound, bound))
+        }
+    }
+
+    @Test fun mixedBoundsNeverMatchEitherNumericOrTextReadings() {
+        for (value in listOf("25", "unknown", "on", "z", "25 V")) {
+            assertFalse(value, ColorRuleMatcher.matches(value, "20", "z"))
+            assertFalse(value, ColorRuleMatcher.matches(value, "a", "30"))
+        }
+    }
+
+    @Test fun malformedReadingsDoNotJoinDigitsFromUnrelatedText() {
+        for (value in listOf("--5", "5..5", "1,5", "1 2", "bad25", "1e", "1e+", ".", "5 V 5")) {
+            assertFalse(value, ColorRuleMatcher.matches(value, "-100", "100"))
+        }
+    }
+
+    @Test fun textStatesAndUserDefinedTextRangesKeepExistingSemantics() {
+        for (value in listOf("on", "off", "open", "closed", "пользовательское значение")) {
+            assertTrue(value, ColorRuleMatcher.matches(value.uppercase(), value, value))
+        }
+        assertTrue(ColorRuleMatcher.matches("beta", "alpha", "gamma"))
+        assertFalse(ColorRuleMatcher.matches(" on ", "on", "on"))
+        assertTrue(ColorRuleMatcher.matches(" on ", " on ", " on "))
     }
 }
