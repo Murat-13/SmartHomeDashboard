@@ -28,6 +28,14 @@ internal object SensorConfigResolver {
                 for (i in 0 until arr.length()) ids.add(arr.getString(i))
                 return ids
             }
+            // Обычный выбор источников тоже задаёт показания, пока пользователь
+            // не настроил собственный свёрнутый набор. Явный пустой набор сохраняем.
+            if (tile.type == "sensor" && !config.has("collapsed_sensor_configs")) {
+                val selected = config.optJSONArray("entity_ids")
+                if (selected != null) return (0 until selected.length()).map { selected.getString(it) }
+                val single = config.opt("entity_id") as? String
+                if (!single.isNullOrBlank()) return listOf(single)
+            }
         } catch (_: Exception) {}
         return emptyList()
     }

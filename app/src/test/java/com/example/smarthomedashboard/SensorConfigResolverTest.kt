@@ -251,4 +251,19 @@ class SensorConfigResolverTest {
         configs(tile, true)
         assertEquals(before, tile)
     }
+
+    @Test fun basicSingleSensorSelectionIsVisibleInBothModes() {
+        val simple = tile("""{"entity_id":"sensor.voltage"}""")
+        assertEquals(listOf("sensor.voltage"), ids(simple, false))
+        assertEquals(listOf("sensor.voltage"), ids(simple, true))
+    }
+
+    @Test fun basicMultipleSelectionPopulatesCompactWithoutReplacingExplicitRows() {
+        val simple = tile("""{"entity_ids":["sensor.b","sensor.a"]}""")
+        assertEquals(listOf("sensor.b", "sensor.a"), ids(simple, false))
+        assertEquals(listOf("sensor.b", "sensor.a"), ids(simple, true))
+        val explicit = tile("""{"entity_id":"sensor.other","collapsed_sensor_configs":[],"expanded_sensor_configs":[]}""")
+        assertEquals(emptyList<String>(), ids(explicit, false))
+        assertEquals(emptyList<String>(), ids(explicit, true))
+    }
 }
