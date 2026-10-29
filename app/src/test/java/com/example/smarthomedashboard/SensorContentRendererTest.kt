@@ -313,4 +313,30 @@ class SensorContentRendererTest {
         assertEquals(2, container.childCount)
         assertSame(old, container.getChildAt(1))
     }
+
+    @Test fun onlyConfiguredBatterySocUsesDashForMissingOrNonFiniteReadings() = withUsLocale {
+        val battery = tile("""{"entity_ids":["sensor.any_charge","sensor.other"],
+            "entity_id":"sensor.not_selected"}""").copy(type = "battery")
+        val container = container()
+        states["sensor.other"] = "unknown"
+        for (value in listOf(null, "unknown", "unavailable", "", "bad", "NaN", "Infinity", "-Infinity", "1e100")) {
+            states.remove("sensor.any_charge")
+            if (value != null) states["sensor.any_charge"] = value
+            for (expanded in listOf(false, true)) {
+                render(battery, listOf("sensor.any_charge", "sensor.other"), expanded, container)
+                assertEquals(value, listOf("charge        —", "sensor.other  unknown"), rows(container))
+            }
+        }
+        for (value in listOf("0", "10", "50", "100")) {
+            states["sensor.any_charge"] = value
+            render(battery, listOf("sensor.any_charge"), false, container)
+            assertEquals(listOf("charge  $value"), rows(container))
+        }
+        states["sensor.any_charge"] = "50%"
+        render(battery, listOf("sensor.any_charge"), false, container)
+        assertEquals(listOf("charge  50%"), rows(container))
+        states["sensor.any_charge"] = "unknown"
+        render(battery.copy(type = "sensor"), listOf("sensor.any_charge"), false, container)
+        assertEquals(listOf("charge  unknown"), rows(container))
+    }
 }

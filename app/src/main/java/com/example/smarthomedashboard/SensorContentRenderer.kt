@@ -20,6 +20,7 @@ internal object SensorContentRenderer {
         formatSensorValue: (String, Int, String) -> String
     ) {
         val sensorConfigs = loadSensorConfigs(tile, isExpanded)
+        val socEntityId = if (tile.type == "battery") BatteryWidgetRenderer.socEntityId(tile) else null
 
         val rows = mutableListOf<Pair<String, String>>()
         var maxNameLen = 0
@@ -33,7 +34,11 @@ internal object SensorContentRenderer {
             val defaultDecimals = if (eid.contains("temp") || eid.contains("freq")) 1 else if (eid.contains("current") || eid.contains("energy")) 2 else 0
             val decimals = config?.decimals ?: defaultDecimals
 
-            val formattedValue = formatSensorValue(rawValue, decimals, eid)
+            val formattedValue = if (eid == socEntityId && BatteryWidgetRenderer.socValue(rawValue) == null) {
+                "—"
+            } else {
+                formatSensorValue(rawValue, decimals, eid)
+            }
             rows.add(displayName to formattedValue)
             if (displayName.length > maxNameLen) maxNameLen = displayName.length
         }

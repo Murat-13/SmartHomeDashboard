@@ -111,13 +111,14 @@ class BatteryWidgetRendererTest {
         assertEquals(Color.parseColor("#80FFCC00"), (fill(card).background as ColorDrawable).color)
     }
 
-    @Test fun absentInvalidAndOutOfRangeValuesKeepExistingFallbackAndClamping() {
+    @Test fun absentInvalidValuesAreNeutralAndFiniteOutOfRangeKeepsClamping() {
         for ((value, width, color) in listOf(
-            Triple<String?, Int, String>(null, 0, "#80FF3333"),
-            Triple("unknown", 0, "#80FF3333"), Triple("unavailable", 0, "#80FF3333"),
-            Triple("", 0, "#80FF3333"), Triple("50,5", 0, "#80FF3333"),
+            Triple<String?, Int, String>(null, 0, "#80333333"),
+            Triple("unknown", 0, "#80333333"), Triple("unavailable", 0, "#80333333"),
+            Triple("", 0, "#80333333"), Triple("50,5", 0, "#80333333"),
             Triple("-20", 0, "#80FF3333"), Triple("150", 200, "#8033CC33"),
-            Triple("NaN", 0, "#80FF3333"), Triple("Infinity", 200, "#8033CC33"))) {
+            Triple("NaN", 0, "#80333333"), Triple("Infinity", 0, "#80333333"),
+            Triple("-Infinity", 0, "#80333333"), Triple("1e100", 0, "#80333333"))) {
             states.clear()
             if (value != null) states["sensor.soc"] = value
             val card = card()
@@ -293,5 +294,64 @@ class BatteryWidgetRendererTest {
         layout(card, 200)
         settle(card)
         assertEquals(150, fill(card).width)
+    }
+
+    @Test fun unavailableCancelsFillImmediatelyAndRecoveryStillAnimates() {
+        val card = card()
+        states["sensor.soc"] = "50"
+        render(tile(), card)
+        settle(card)
+        assertEquals(100, fill(card).width)
+        states["sensor.soc"] = "100"
+        render(tile(), card)
+        states["sensor.soc"] = "unavailable"
+        render(tile(), card)
+        assertEquals(0, fill(card).layoutParams.width)
+        layout(card, 400)
+        settle(card)
+        assertEquals(0, fill(card).width)
+        assertEquals(Color.parseColor("#80333333"), (fill(card).background as ColorDrawable).color)
+        states["sensor.soc"] = "50"
+        render(tile(), card)
+        settle(card)
+        assertEquals(200, fill(card).width)
+    }
+
+    @Test fun missingDataDuringAnimationStaysEmptyAcrossRepeatedUpdatesAndResize() {
+        val card = card()
+        states["sensor.soc"] = "75"
+        render(tile(), card)
+        shadowOf(Looper.getMainLooper()).idleFor(100, TimeUnit.MILLISECONDS)
+        layout(card, 200)
+        states.clear()
+        repeat(3) {
+            render(tile(), card)
+            assertEquals(0, fill(card).layoutParams.width)
+            layout(card, 400)
+            settle(card)
+            assertEquals(0, fill(card).width)
+        }
+        states["sensor.soc"] = "25"
+        render(tile(), card)
+        layout(card, 300)
+        settle(card)
+        assertEquals(75, fill(card).width)
+        assertEquals(Color.parseColor("#8033CC33"), (fill(card).background as ColorDrawable).color)
+    }
+
+    @Test fun invalidBeforeMeasurementCannotReappearOnFirstLayout() {
+        val card = card(width = 0)
+        states["sensor.soc"] = "100"
+        render(tile(), card)
+        states["sensor.soc"] = "NaN"
+        render(tile(), card)
+        layout(card, 200)
+        settle(card)
+        assertEquals(0, fill(card).width)
+        states["sensor.soc"] = "10"
+        render(tile(), card)
+        settle(card)
+        assertEquals(20, fill(card).width)
+        assertEquals(Color.parseColor("#80FF3333"), (fill(card).background as ColorDrawable).color)
     }
 }

@@ -191,7 +191,7 @@ class SensorCardFactoryTest {
         assertEquals(FrameLayout.LayoutParams::class.java, fill.layoutParams.javaClass)
         assertEquals(0, fill.layoutParams.width)
         assertEquals(-1, fill.layoutParams.height)
-        assertEquals(0x80FF3333.toInt(), (fill.background as ColorDrawable).color)
+        assertEquals(0x80333333.toInt(), (fill.background as ColorDrawable).color)
         assertSame(content(card), card.getChildAt(1))
         assertSame(handle(card), card.getChildAt(2))
         assertEquals("Мой датчик", (content(card).getChildAt(0) as TextView).text.toString())

@@ -19,17 +19,8 @@ internal object BatteryWidgetRenderer {
             return
         }
 
-        // Общий список датчиков задаёт SOC; конфигурации свёрнутого/развёрнутого текста его не заменяют.
-        val socEntityId = try {
-            val config = JSONObject(tile.config)
-            val arr = config.optJSONArray("entity_ids")
-            if (arr != null && arr.length() > 0) arr.getString(0)
-            else config.optString("entity_id", "")
-        } catch (_: Exception) { "" }
-
-        val socValueStr = stateForEntity(socEntityId) ?: "0"
-        val soc = socValueStr.replace("%", "").trim().toFloatOrNull() ?: 0f
-        val percent = (soc / 100f).coerceIn(0f, 1f)
+        val soc = socValue(stateForEntity(socEntityId(tile)))
+        val percent = soc?.let { (it / 100f).coerceIn(0f, 1f) }
 
         val state = if (previous != null && previous.fill === progressFill) previous else {
             previous?.dispose()
@@ -38,6 +29,7 @@ internal object BatteryWidgetRenderer {
         state.update(percent)
 
         val color = when {
+            soc == null -> "#80333333"
             soc > 20f -> "#8033CC33"
             soc > 10f -> "#80FFCC00"
             else -> "#80FF3333"
@@ -45,6 +37,17 @@ internal object BatteryWidgetRenderer {
         progressFill.setBackgroundColor(color.toColorInt())
         view.setBackgroundColor("#80333333".toColorInt())
     }
+
+    // Общий список датчиков задаёт SOC; конфигурации свёрнутого/развёрнутого текста его не заменяют.
+    fun socEntityId(tile: TileEntity): String = try {
+        val config = JSONObject(tile.config)
+        val arr = config.optJSONArray("entity_ids")
+        if (arr != null && arr.length() > 0) arr.getString(0)
+        else config.optString("entity_id", "")
+    } catch (_: Exception) { "" }
+
+    fun socValue(value: String?): Float? = value?.replace("%", "")?.trim()
+        ?.toFloatOrNull()?.takeIf { it.isFinite() }
 
     // Это служебное состояние анимации конкретной плитки, а не кеш данных датчика.
     // Оно принадлежит самой View через keyed tag; renderer не хранит глобальные ссылки на Views.
@@ -57,8 +60,15 @@ internal object BatteryWidgetRenderer {
             card.addOnLayoutChangeListener(this)
         }
 
-        fun update(percent: Float) {
-            fraction = percent
+        fun update(percent: Float?) {
+            fraction = percent ?: 0f
+            if (percent == null) {
+                // Недостоверное заполнение убираем сразу, включая ещё не измеренный кадр.
+                cancelAnimation()
+                targetWidth = 0
+                setWidth(0)
+                return
+            }
             val target = (card.width * fraction).toInt()
             if (animator?.isRunning == true && targetWidth == target) return
             cancelAnimation()
