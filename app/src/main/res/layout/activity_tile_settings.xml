@@ -17,7 +17,8 @@
 
     <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
         android:padding="16dp">
 
         <LinearLayout
@@ -117,7 +118,15 @@
                 android:inputType="number"
                 android:visibility="gone" />
 
+            <LinearLayout
+                android:id="@+id/sensorEditorContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone" />
+
             <TextView
+                android:id="@+id/legacySourcesLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/sensors_label"
@@ -127,6 +136,7 @@
                 android:layout_marginBottom="8dp" />
 
             <LinearLayout
+                android:id="@+id/legacySourceButtons"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
@@ -201,4 +211,21 @@
 
         </LinearLayout>
     </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/sensorEditorFooter"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="12dp"
+        android:orientation="horizontal"
+        android:visibility="gone">
+        <Button
+            android:id="@+id/btnSensorCancel"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:backgroundTint="#374151"
+            android:textColor="#FFFFFF"
+            android:text="Отмена" />
+    </LinearLayout>
 </LinearLayout>

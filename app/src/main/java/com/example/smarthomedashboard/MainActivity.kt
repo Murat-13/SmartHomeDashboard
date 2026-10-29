@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
             }
             override fun addTile() {
+                TileEditorPreviewSource.attach(viewModel)
                 startActivityForResult(Intent(this@MainActivity, TileSettingsActivity::class.java)
                     .putExtra("container", "grid"), REQUEST_TILE_SETTINGS)
             }
@@ -265,6 +266,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openTileSettings(id: String) {
+        TileEditorPreviewSource.attach(viewModel)
         openWithPinCheck {
             startActivityForResult(
                 Intent(this, TileSettingsActivity::class.java).putExtra("tile_id", id),

@@ -1,6 +1,15 @@
 package com.example.smarthomedashboard
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.text.Editable
+import android.text.TextWatcher
+import android.widget.LinearLayout
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -35,6 +44,19 @@ class TileSettingsActivity : PinProtectedActivity() {
     private lateinit var btnEditChildren: Button
     private lateinit var etButtonSize: EditText
 
+    private var previewJob: Job? = null
+    private var sensorEditor: SensorTileEditor? = null
+    private val sensorPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        sensorEditor?.pickerResult(if (result.resultCode == Activity.RESULT_OK) result.data?.getStringArrayListExtra("selected_sensors") else null)
+    }
+    private var editorRestoreError = false
+    private var saveParent: LinearLayout? = null
+    private var savePosition = 0
+    private var saveParameters: android.view.ViewGroup.LayoutParams? = null
+    private var initialTitle = ""
+    private var initialType = 0
+    private var entityNames: Map<String, String> = emptyMap()
+
     private var tileId: String? = null
     private val selectedSensors = mutableListOf<String>()
     // Пустой список после загрузки не равнозначен подтверждённой пользователем очистке.
@@ -57,11 +79,10 @@ class TileSettingsActivity : PinProtectedActivity() {
         btnEditChildren = findViewById(R.id.btnEditChildren)
         etButtonSize = findViewById(R.id.etButtonSize)
 
-        val adapter = ArrayAdapter.createFromResource(
-            this,
-            R.array.tile_types,
-            android.R.layout.simple_spinner_item
-        )
+        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, resources.getStringArray(R.array.tile_types)) {
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                super.getView(position, convertView, parent).also { (it as TextView).setTextColor(android.graphics.Color.WHITE) }
+        }
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         spinnerType.adapter = adapter
 
@@ -83,6 +104,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 btnSelectSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
                 btnClearSensors.visibility = if (isGroup) View.GONE else View.VISIBLE
                 updateSelectedSensorsText()
+                setSensorMode(position == 0)
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
@@ -98,6 +120,9 @@ class TileSettingsActivity : PinProtectedActivity() {
         }
 
         restoreSensorSelection(savedInstanceState)
+        initializeSensorEditor(savedInstanceState)
+        updateTypeHint()
+        findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).navigationIcon?.setTint(android.graphics.Color.WHITE)
 
         btnSelectSensors.setOnClickListener {
             val intent = Intent(this, SensorPickerActivity::class.java)
@@ -108,6 +133,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         btnClearSensors.setOnClickListener { clearSelectedSensors() }
 
         btnAdvanced.setOnClickListener {
+            if (isSensorEditorActive()) return@setOnClickListener
             if (tileId == null && !saveTileWithoutFinish()) return@setOnClickListener
             tileId?.let { id ->
                 val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
@@ -129,17 +155,32 @@ class TileSettingsActivity : PinProtectedActivity() {
         }
 
         btnSave.setOnClickListener { saveTile() }
-        btnDelete.setOnClickListener { deleteTile() }
+        btnDelete.setOnClickListener {
+            if (isSensorEditorActive()) sensorEditor?.showDialog(AlertDialog.Builder(this)
+                .setTitle("Удалить плитку?").setMessage("Устройства и цветовые правила других плиток не изменятся.")
+                .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> deleteTile() }.create())
+            else deleteTile()
+        }
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
-            finish()
+            leaveEditor()
         }
+        findViewById<Button>(R.id.btnSensorCancel).setOnClickListener { leaveEditor() }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = leaveEditor()
+        })
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(STATE_TILE_ID, tileId)
         outState.putStringArrayList(STATE_SELECTED_SENSORS, ArrayList(selectedSensors))
         outState.putBoolean(STATE_SELECTION_CHANGED, sensorSelectionChanged)
+        sensorEditor?.let { editor ->
+            outState.putString("sensor_draft", editor.draft.saveState())
+            outState.putString("sensor_preview", editor.saveUiState())
+            outState.putString("sensor_pick_mode", editor.pendingPick?.mode)
+            outState.putInt("sensor_pick_index", editor.pendingPick?.index ?: -1)
+        }
         super.onSaveInstanceState(outState)
     }
 
@@ -207,6 +248,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             return false
         }
 
+        if (isSensorEditorActive()) return saveSensorDraft()
         val type = typeAt(spinnerType.selectedItemPosition)
 
         val container = when (type) {
@@ -379,6 +421,126 @@ class TileSettingsActivity : PinProtectedActivity() {
             setResult(Activity.RESULT_OK)
             finish()
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        previewJob?.cancel()
+        TileEditorPreviewSource.states?.let { flow ->
+            previewJob = lifecycleScope.launch { flow.collect { if (isSensorEditorActive()) sensorEditor?.acceptState(it) } }
+        }
+    }
+
+    override fun onStop() {
+        previewJob?.cancel()
+        previewJob = null
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        sensorEditor?.dispose()
+        super.onDestroy()
+    }
+
+    private fun isSensorEditorActive() = sensorEditor != null && spinnerType.selectedItemPosition == 0
+
+    private fun initializeSensorEditor(saved: Bundle?) {
+        val original = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
+            ?: TileEntity("new-sensor-draft", "sensor", "grid", "", 0, 0, 1, 1)
+        initialTitle = original.title
+        initialType = listOf("sensor", "button", "group", "battery", "clock", "weather").indexOf(original.type).coerceAtLeast(0)
+        val draft = try {
+            saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)
+        } catch (_: Exception) {
+            editorRestoreError = true
+            Toast.makeText(this, "Черновик не восстановлен. Сохранение заблокировано, исходная плитка не изменена.", Toast.LENGTH_LONG).show()
+            SensorTileDraft(original)
+        }
+        val root = findViewById<LinearLayout>(R.id.sensorEditorContainer)
+        sensorEditor = SensorTileEditor(this, draft, root, { etTitle.text.toString() },
+            { id -> entityNames[id] ?: id.substringAfter('.').replace('_', ' ') }) { selected, single ->
+            val intent = Intent(this, SensorPickerActivity::class.java)
+                .putStringArrayListExtra("selected_sensors", ArrayList(selected))
+                .putExtra(SensorPickerActivity.EXTRA_SINGLE_CHOICE, single)
+            sensorPicker.launch(intent)
+        }
+        saved?.getString("sensor_preview")?.let { state ->
+            try { sensorEditor?.restoreUiState(state) } catch (_: org.json.JSONException) { editorRestoreError = true }
+        }
+        saved?.getString("sensor_pick_mode")?.let { mode ->
+            sensorEditor?.pendingPick = SensorTileEditor.PickTarget(mode, saved.getInt("sensor_pick_index", -1))
+        }
+        etTitle.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) { sensorEditor?.updatePreview() }
+        })
+        saveParent = btnSave.parent as LinearLayout
+        savePosition = saveParent!!.indexOfChild(btnSave)
+        saveParameters = btnSave.layoutParams
+        setSensorMode(spinnerType.selectedItemPosition == 0)
+        lifecycleScope.launch {
+            val cached = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getString("cached_entities", "[]").orEmpty()
+            entityNames = withContext(Dispatchers.Default) {
+                try {
+                    val array = JSONArray(cached)
+                    buildMap {
+                        repeat(array.length()) {
+                            val obj = array.optJSONObject(it) ?: return@repeat
+                            val id = obj.optString("entityId")
+                            val name = obj.optString("name")
+                            if (id.isNotBlank() && name.isNotBlank()) put(id, name)
+                        }
+                    }
+                } catch (_: org.json.JSONException) { emptyMap() }
+            }
+        }
+    }
+
+    private fun setSensorMode(enabled: Boolean) {
+        if (sensorEditor == null) return
+        val visible = if (enabled) View.VISIBLE else View.GONE
+        if (enabled) TileEditorPreviewSource.states?.value?.let { sensorEditor?.acceptState(it) }
+        findViewById<View>(R.id.sensorEditorContainer).visibility = visible
+        findViewById<View>(R.id.sensorEditorFooter).visibility = visible
+        listOf(R.id.legacySourcesLabel, R.id.legacySourceButtons, R.id.tvSelectedSensors, R.id.btnAdvanced).forEach {
+            findViewById<View>(it).visibility = if (enabled) View.GONE else View.VISIBLE
+        }
+        val footer = findViewById<LinearLayout>(R.id.sensorEditorFooter)
+        if (enabled && btnSave.parent !== footer) {
+            (btnSave.parent as android.view.ViewGroup).removeView(btnSave)
+            footer.addView(btnSave, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f))
+        } else if (!enabled && btnSave.parent !== saveParent) {
+            (btnSave.parent as android.view.ViewGroup).removeView(btnSave)
+            saveParent?.addView(btnSave, savePosition, saveParameters)
+        }
+    }
+
+    private fun leaveEditor() {
+        val dirty = isSensorEditorActive() && (sensorEditor!!.draft.isDirty || etTitle.text.toString() != initialTitle || spinnerType.selectedItemPosition != initialType)
+        if (!dirty) { finish(); return }
+        sensorEditor?.showDialog(AlertDialog.Builder(this).setTitle("Сохранить изменения?")
+            .setMessage("Показания и цветовые правила пока не записаны.")
+            .setPositiveButton("Сохранить") { _, _ -> saveTile() }
+            .setNegativeButton("Не сохранять") { _, _ -> finish() }
+            .setNeutralButton("Продолжить редактирование", null).create())
+    }
+
+    private fun saveSensorDraft(): Boolean {
+        val editor = requireNotNull(sensorEditor)
+        val problem = if (editorRestoreError) "Черновик не восстановлен. Закройте редактор без сохранения." else editor.validationError()
+        if (problem != null) { Toast.makeText(this, problem, Toast.LENGTH_LONG).show(); return false }
+        val latest = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
+        if (tileId != null && latest != editor.draft.original) {
+            Toast.makeText(this, "Плитка изменена другим экраном. Закройте редактор и откройте её заново.", Toast.LENGTH_LONG).show()
+            return false
+        }
+        val changed = editor.draft.applyTo(editor.draft.original.copy(title = etTitle.text.toString().trim(), type = "sensor", container = "grid"))
+        val tile = latest?.let { changed } ?: newTile("sensor", "grid", changed.title, changed.config)
+            .copy(fontSize = changed.fontSize, colorRules = changed.colorRules, collapsedSensorIds = changed.collapsedSensorIds)
+        // Один вызов заменяет всю плитку, без промежуточных записей из вложенных экранов.
+        if (latest == null) { tileManager.addTile(tile); tileId = tile.id } else tileManager.updateTile(tile)
+        return true
     }
 
     companion object {
