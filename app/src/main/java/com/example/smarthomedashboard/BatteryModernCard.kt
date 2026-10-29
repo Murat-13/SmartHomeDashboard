@@ -28,7 +28,7 @@ internal class BatteryModernCard(
     context: Context,
     val expanded: Boolean,
     private val editor: Editor? = null
-) : FrameLayout(context) {
+) : FrameLayout(context), ModernOverlayCard {
     interface Editor {
         fun editRole(role: String)
         fun editRow(id: String)
@@ -429,7 +429,7 @@ internal class BatteryModernCard(
     }
 
     /** Освобождает обработчики редактора; Views карточки больше не используются. */
-    fun dispose() {
+    override fun dispose() {
         fun clear(view: View) {
             view.setOnClickListener(null)
             view.cancelPendingInputEvents()

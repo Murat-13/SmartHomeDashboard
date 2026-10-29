@@ -4,7 +4,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -12,26 +11,17 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.ScrollView
-import android.widget.Spinner
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.widget.SwitchCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileManager
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
 
 /**
  * Редактор «АКБ Modern»: предпросмотр развёрнутой карточки, где каждая зона и строка
@@ -46,8 +36,7 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
         private set
     private var model = MainUiState()
     private var previewJob: Job? = null
-    private var cachedEntities: Map<String, String> = emptyMap()
-    private val dialogs = linkedSetOf<AlertDialog>()
+    private val kit = ModernEditorKit(this) { model }
     private lateinit var invertSwitch: SwitchCompat
     private lateinit var hideSwitch: SwitchCompat
     private lateinit var thresholdInput: EditText
@@ -71,10 +60,7 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = leave()
         })
-        lifecycleScope.launch {
-            val cached = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getString("cached_entities", "[]").orEmpty()
-            cachedEntities = withContext(Dispatchers.Default) { parseCachedEntities(cached) }
-        }
+        kit.loadCachedEntities()
     }
 
     private fun buildUi() {
@@ -181,8 +167,7 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
     }
 
     override fun onDestroy() {
-        dialogs.toList().forEach { it.dismiss() }
-        dialogs.clear()
+        kit.dispose()
         if (::preview.isInitialized) preview.dispose()
         super.onDestroy()
     }
@@ -212,140 +197,18 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
             .setNegativeButton("Отмена", null).create())
     }
 
-    internal var openRowDialog: AlertDialog? = null
-        private set
+    internal val openRowDialog get() = kit.openRowDialog
+    internal val openPicker get() = kit.openPicker
 
     /** Изменения строки попадают в черновик по «Готово»; в prefs — только по «Сохранить». */
-    internal fun editRowDialog(row: BatteryModernConfig.Row, isNew: Boolean) {
-        var entityId = row.entityId
-        val source = label("", 15f).apply { tag = "bm_row_source" }
-        fun showSource() {
-            source.text = if (entityId.isBlank()) "Источник не выбран" else "${entityName(entityId)}\n$entityId"
-        }
-        showSource()
-        val pick = button("Выбрать сущность HA", "bm_row_pick") {
-            pickEntity(entityId) { picked -> entityId = picked; showSource() }
-        }
-        val clear = button("Очистить источник", "bm_row_clear") { entityId = ""; showSource() }
-        val labelInput = input(row.label, "Подпись").apply { tag = "bm_row_label" }
-        val icons = BatteryIcons.all.entries.toList()
-        val iconSpinner = Spinner(this).apply {
-            tag = "bm_row_icon"
-            adapter = whiteAdapter(icons.map { "${it.value.first}  ${it.value.second}" })
-            setSelection(icons.indexOfFirst { it.key == row.icon }.coerceAtLeast(0))
-        }
-        val precisions = listOf<Int?>(null, 0, 1, 2, 3, 4)
-        val precisionSpinner = Spinner(this).apply {
-            tag = "bm_row_decimals"
-            adapter = whiteAdapter(precisions.map { it?.let { d -> "$d знак(ов) после запятой" } ?: "Как в Home Assistant" })
-            setSelection(precisions.indexOf(row.decimals).coerceAtLeast(0))
-        }
-        val unitInput = input(row.unit, "Пусто — единица из HA").apply { tag = "bm_row_unit" }
-        val hidden = SwitchCompat(this).apply {
-            text = "Скрыть строку"
-            setTextColor(Color.WHITE)
-            isChecked = row.hidden
-            tag = "bm_row_hidden"
-        }
-        fun edited() = row.copy(
-            entityId = entityId,
-            label = labelInput.text.toString().trim(),
-            icon = icons[iconSpinner.selectedItemPosition.coerceAtLeast(0)].key,
-            decimals = precisions[precisionSpinner.selectedItemPosition.coerceAtLeast(0)],
-            unit = unitInput.text.toString().trim(),
-            hidden = hidden.isChecked
-        )
-        val rowHint = hintBar(UserHints.Hint.BATTERY_MODERN_ROW,
-            "Подпись — только название строки. Выберите сущность, которая действительно показывает это значение: " +
-                "приложение не подбирает датчики по названию.")
-        val content = column(rowHint, source, pick, clear, label("Подпись", 14f), labelInput, label("Иконка", 14f), iconSpinner,
-            label("Точность", 14f), precisionSpinner, label("Единица измерения", 14f), unitInput, hidden)
-        if (!isNew) {
-            val moves = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            moves.addView(button("▲ Выше", "bm_row_up") { draft.update(edited()); draft.move(row.id, -1); render() })
-            moves.addView(button("▼ Ниже", "bm_row_down") { draft.update(edited()); draft.move(row.id, 1); render() })
-            content.addView(moves)
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(if (isNew) "Новый показатель" else row.label.ifBlank { "Показатель" })
-            .setView(ScrollView(this).apply { addView(content) })
-            .setPositiveButton("Готово", null)
-            .setNegativeButton("Отмена", null)
-            .apply { if (!isNew) setNeutralButton("Удалить", null) }
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val next = edited()
-                if (next.label.isBlank()) { labelInput.error = "Введите подпись"; return@setOnClickListener }
-                draft.update(next)
-                render()
-                dialog.dismiss()
-            }
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
-                show(AlertDialog.Builder(this).setTitle("Удалить «${row.label}»?")
-                    .setMessage("Строка исчезнет из карточки после сохранения. Отменить можно кнопкой «Отмена» редактора.")
-                    .setPositiveButton("Удалить") { _, _ ->
-                        draft.delete(row.id)
-                        render()
-                        dialog.dismiss()
-                    }
-                    .setNegativeButton("Оставить", null).create())
-            }
-        }
-        openRowDialog = dialog
-        show(dialog)
-    }
+    internal fun editRowDialog(row: BatteryModernConfig.Row, isNew: Boolean) = kit.editRowDialog(row, isNew,
+        onApply = { draft.update(it); render() },
+        onDelete = { draft.delete(it.id); render() },
+        onMove = { edited, delta -> draft.update(edited); draft.move(edited.id, delta); render() })
 
-    internal var openPicker: AlertDialog? = null
-        private set
+    internal fun pickEntity(current: String, onPicked: (String) -> Unit) = kit.pickEntity(current, onPicked)
 
-    /** Поиск по уже известным сущностям HA: кеш списка и текущие состояния панели. */
-    internal fun pickEntity(current: String, onPicked: (String) -> Unit) {
-        val all = entityChoices()
-        val search = input("", "Поиск по названию или entity_id").apply { tag = "bm_pick_search" }
-        val list = ListView(this).apply { tag = "bm_pick_list" }
-        var shown = all
-        val adapter = whiteAdapter(emptyList())
-        list.adapter = adapter
-        fun filter(query: String) {
-            val q = query.trim().lowercase()
-            shown = if (q.isEmpty()) all else all.filter { it.first.lowercase().contains(q) || it.second.lowercase().contains(q) }
-            adapter.clear()
-            adapter.addAll(shown.map { (id, name) ->
-                val value = model.singleStates[id]?.let { "  ·  $it" }.orEmpty()
-                (if (id == current) "✓ " else "") + "$name$value\n$id"
-            })
-        }
-        search.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) = filter(s.toString())
-        })
-        filter("")
-        val empty = label(if (all.isEmpty()) "Список сущностей пуст: дождитесь подключения панели к Home Assistant." else "", 14f)
-        val content = column(search, empty)
-        content.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(360)))
-        val dialog = AlertDialog.Builder(this).setTitle("Сущность Home Assistant").setView(content)
-            .setNegativeButton("Отмена", null).create()
-        list.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-            shown.getOrNull(position)?.let { onPicked(it.first) }
-            dialog.dismiss()
-        }
-        openPicker = dialog
-        show(dialog)
-    }
-
-    internal fun entityChoices(): List<Pair<String, String>> {
-        val names = LinkedHashMap<String, String>()
-        cachedEntities.forEach { (id, name) -> names[id] = name }
-        model.singleStates.keys.forEach { id ->
-            if (id !in names) names[id] = model.entityAttributes[id]?.optString("friendly_name")?.takeIf { it.isNotBlank() } ?: id
-        }
-        return names.entries.map { it.key to it.value }.sortedBy { it.first }
-    }
-
-    private fun entityName(id: String) = cachedEntities[id]
-        ?: model.entityAttributes[id]?.optString("friendly_name")?.takeIf { it.isNotBlank() } ?: id
+    internal fun entityChoices(): List<Pair<String, String>> = kit.entityChoices()
 
     // ---- Сохранение / отмена ----
 
@@ -382,92 +245,19 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
         finish()
     }
 
-    // ---- Вспомогательные Views ----
+    // ---- Вспомогательные Views (общие с другими Modern-редакторами) ----
 
-    private fun show(dialog: AlertDialog) {
-        if (isFinishing || isDestroyed) return
-        dialogs.add(dialog)
-        dialog.setOnDismissListener {
-            dialogs.remove(dialog)
-            if (openRowDialog === dialog) openRowDialog = null
-            if (openPicker === dialog) openPicker = null
-        }
-        dialog.show()
-    }
-
-    private fun hintBar(hint: UserHints.Hint, message: String): View {
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = BatteryModernCard.rounded(Color.argb(60, 38, 198, 218), dp(12).toFloat(), BatteryModernCard.BORDER)
-            setPadding(dp(12), dp(6), dp(4), dp(6))
-            tag = "bm_hint_${hint.key}"
-            visibility = if (UserHints.isHidden(this@BatteryModernEditorActivity, hint)) View.GONE else View.VISIBLE
-        }
-        bar.addView(label("ⓘ  $message", 14f), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        bar.addView(Button(this).apply {
-            text = "✕"
-            contentDescription = "Закрыть подсказку"
-            setBackgroundColor(Color.TRANSPARENT)
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                UserHints.setHidden(this@BatteryModernEditorActivity, hint, true)
-                bar.visibility = View.GONE
-            }
-        }, LinearLayout.LayoutParams(dp(48), dp(48)))
-        return bar
-    }
-
-    private fun label(text: String, size: Float, bold: Boolean = false) = TextView(this).apply {
-        this.text = text
-        textSize = size
-        setTextColor(if (bold) Color.WHITE else Color.rgb(200, 214, 222))
-        if (bold) typeface = Typeface.DEFAULT_BOLD
-        setPadding(0, dp(4), 0, dp(4))
-    }
-
-    private fun input(value: String, hint: String) = EditText(this).apply {
-        setText(value)
-        this.hint = hint
-        setTextColor(Color.WHITE)
-        setHintTextColor(Color.rgb(120, 140, 150))
-        isSingleLine = true
-    }
-
-    private fun button(text: String, tag: String, action: () -> Unit) = Button(this).apply {
-        this.text = text
-        this.tag = tag
-        isAllCaps = false
-        setOnClickListener { action() }
-    }
-
-    private fun column(vararg views: View) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(20), dp(8), dp(20), dp(8))
-        views.forEach { addView(it) }
-    }
-
-    private fun whiteAdapter(items: List<String>) = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList(items)) {
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
-            super.getView(position, convertView, parent).also { (it as TextView).setTextColor(Color.WHITE) }
-        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
-            super.getDropDownView(position, convertView, parent).also { (it as TextView).setTextColor(Color.WHITE) }
-    }
-
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+    private fun show(dialog: AlertDialog) = kit.show(dialog)
+    private fun hintBar(hint: UserHints.Hint, message: String) = kit.hintBar(hint, message)
+    private fun label(text: String, size: Float, bold: Boolean = false) = kit.label(text, size, bold)
+    private fun input(value: String, hint: String) = kit.input(value, hint)
+    private fun button(text: String, tag: String, action: () -> Unit) = kit.button(text, tag, action)
+    private fun column(vararg views: View) = kit.column(*views)
+    private fun dp(value: Int) = kit.dp(value)
 
     companion object {
         private const val STATE_DRAFT = "battery_modern_draft"
 
-        internal fun parseCachedEntities(json: String): Map<String, String> = try {
-            val array = JSONArray(json)
-            buildMap {
-                repeat(array.length()) {
-                    val obj = array.optJSONObject(it) ?: return@repeat
-                    val id = obj.optString("entityId")
-                    if (id.isNotBlank()) put(id, obj.optString("name").ifBlank { id })
-                }
-            }
-        } catch (_: Exception) { emptyMap() }
+        internal fun parseCachedEntities(json: String): Map<String, String> = ModernEditorKit.parseCachedEntities(json)
     }
 }

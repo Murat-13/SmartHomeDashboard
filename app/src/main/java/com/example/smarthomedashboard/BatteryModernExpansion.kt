@@ -14,8 +14,13 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import androidx.annotation.RequiresApi
 
+/** Карточка, которую раскрытие показывает поверх панели и освобождает при закрытии. */
+internal interface ModernOverlayCard {
+    fun dispose()
+}
+
 /**
- * Раскрытие одной «АКБ Modern» поверх панели. Карточка — отдельная View в [overlay];
+ * Раскрытие одной Modern-плитки (АКБ, Электропитание) поверх панели. Карточка — отдельная View в [overlay];
  * компактная плитка остаётся на месте (скрыта) и после закрытия снова видна с прежними
  * размерами и координатами. Анимация — только transform (без relayout содержимого на каждом кадре).
  *
@@ -33,7 +38,7 @@ internal class BatteryModernExpansion(
 
     var tileId: String? = null
         private set
-    var card: BatteryModernCard? = null
+    var card: View? = null
         private set
     var source: View? = null
         private set
@@ -55,7 +60,7 @@ internal class BatteryModernExpansion(
         collapse()
     }
 
-    fun expand(id: String, from: View, expandedCard: BatteryModernCard, target: Bounds) {
+    fun expand(id: String, from: View, expandedCard: View, target: Bounds) {
         clear()
         val host = overlay() ?: return
         val start = Bounds(from.x, from.y, from.layoutParams.width, from.layoutParams.height)
@@ -145,7 +150,7 @@ internal class BatteryModernExpansion(
         }
         clearBlur()
         card?.let { view ->
-            view.dispose()
+            (view as? ModernOverlayCard)?.dispose()
             (view.parent as? ViewGroup)?.removeView(view)
         }
         scrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
