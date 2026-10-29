@@ -47,8 +47,8 @@ class DashboardPerformanceScenarioTest {
     }
 
     private fun deliver(client: HomeAssistantWebSocket, text: String) {
-        HomeAssistantWebSocket::class.java.getDeclaredMethod("handleMessage", String::class.java)
-            .apply { isAccessible = true }.invoke(client, text)
+        HomeAssistantWebSocket::class.java.getDeclaredMethod("handleMessage", HaInboundMessage::class.java)
+            .apply { isAccessible = true }.invoke(client, requireNotNull(HaInboundMessage.parse(text)))
     }
 
     private fun payload(size: Int): JSONArray = JSONArray().also { array ->

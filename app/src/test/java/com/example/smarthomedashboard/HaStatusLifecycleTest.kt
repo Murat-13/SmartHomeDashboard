@@ -138,7 +138,7 @@ class HaStatusLifecycleTest {
         ArchitectureTestAccess.getField<LifecycleRegistry>(old, "mFragmentLifecycleRegistry")
             .currentState = Lifecycle.State.CREATED
         lifecycle(old, "onDestroy")
-        for (name in listOf("stateCallback", "forecastCallback", "connectedCallback", "entitiesCallback")) {
+        for (name in listOf("stateCallback", "forecastCallback", "connectedCallback", "entitiesCallback", "snapshotCallback", "commandStateCallback")) {
             assertNull(ArchitectureTestAccess.getField<Any?>(owner, name))
         }
         // При отсутствии UI входящее событие обновляет данные, не обращаясь к старым Views.

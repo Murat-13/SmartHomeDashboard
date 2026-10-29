@@ -267,4 +267,22 @@ class MainViewModelTest {
         }
         assertTrue(viewModel.uiState.value.statusMessage.orEmpty().contains("Нет соединения"))
     }
+
+    @Test fun staleBatchAndDetachedScreenCannotUpdateNewGeneration() {
+        var uiCalls = 0
+        viewModel.connectWebSocket("http://[", "artificial-token", autoReconnect = false,
+            onStatesSnapshotCallback = { uiCalls++ })
+        val old = requireNotNull(viewModel.getWebSocket())
+        val batch: (List<HaEntityState>) -> Unit = ReflectionHelpers.getField(old, "onStatesSnapshot")
+        viewModel.detachUi()
+        batch(listOf(HaEntityState("sensor.test", "1", JSONObject())))
+        assertEquals("1", viewModel.devices.singleStates["sensor.test"])
+        assertEquals(0, uiCalls)
+        viewModel.connectWebSocket("http://]", "artificial-next-token", autoReconnect = false)
+        batch(listOf(HaEntityState("sensor.test", "stale", JSONObject())))
+        assertEquals("1", viewModel.devices.singleStates["sensor.test"])
+        viewModel.disconnectWebSocket()
+        batch(listOf(HaEntityState("sensor.test", "stale", JSONObject())))
+        assertEquals("1", viewModel.devices.singleStates["sensor.test"])
+    }
 }

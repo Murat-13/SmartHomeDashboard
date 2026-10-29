@@ -205,6 +205,9 @@ class HaStateApplicationIntegrationTest {
         start()
         state(value = "sunny", attrs = JSONObject("""{"temperature":20,"humidity":60}"""))
         drain()
+        // Это новый полный снимок после события, не запоздалый ответ первоначального запроса.
+        client.subscribeEntities(emptyList())
+        await { peer.received.count { it.optString("type") == "get_states" } == 2 }
         snapshot("unknown", JSONObject().put("forecast", forecast7()))
         drain()
         assertEquals("unknown", get<Map<String, String>>("singleStates")["weather.a"])

@@ -10,6 +10,10 @@ internal class DashboardDeviceState {
     val entityAttributes = mutableMapOf<String, JSONObject>()
     val syntheticForecasts = mutableMapOf<String, JSONArray?>()
 
+    fun applySnapshot(states: List<HaEntityState>) {
+        states.forEach { entityChanged(it.entityId, it.state, it.attributes) }
+    }
+
     fun entityChanged(id: String, state: String, attributes: JSONObject?) {
         singleStates[id] = state
         val complete = copyAttributes(attributes)

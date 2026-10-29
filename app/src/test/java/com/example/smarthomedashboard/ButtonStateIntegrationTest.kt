@@ -360,8 +360,8 @@ class ButtonStateIntegrationTest {
         val client = requireNotNull(owner.getWebSocket())
         fun rejectLast() {
             val message = JSONObject().put("type", "result").put("id", calls().last().getInt("id")).put("success", false)
-            client.javaClass.getDeclaredMethod("handleMessage", String::class.java)
-                .apply { isAccessible = true }.invoke(client, message.toString())
+            client.javaClass.getDeclaredMethod("handleMessage", HaInboundMessage::class.java)
+                .apply { isAccessible = true }.invoke(client, requireNotNull(HaInboundMessage.parse(message.toString())))
         }
         rejectLast()
         assertEquals(0xFF424242.toInt(), color("single"))

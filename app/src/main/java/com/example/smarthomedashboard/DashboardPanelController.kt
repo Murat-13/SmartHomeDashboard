@@ -744,6 +744,28 @@ internal class DashboardPanelController(
         renderEntityState(eid, st)
     }
 
+    fun renderInitialStates(entityIds: List<String>) {
+        val shown = entityIds.filter { isShownOnPanel(it) }.toSet()
+        if (shown.isEmpty()) return
+        motionSensorId?.takeIf { it in shown }?.let { id ->
+            if (singleStates[id] in listOf("on", "true", "playing")) host.wake()
+        }
+        shown.forEach(::updateSingleButtonColor)
+        contentController.updateSensorDisplay()
+        contentController.updateWeatherViews()
+        tileManager.getAllTiles().filter { it.type == "group" }.forEach { tile ->
+            val result = TileButtonConfig.group(tile.config)
+            if (result is ButtonConfigResult.Valid && result.value.entityIds.any { it in shown }) {
+                updateGroupButtonAppearance(tile.id)
+            }
+        }
+        val expanded = expandedGroupId
+        expandedChildButtons.filter { it.tag in shown }.forEach { button ->
+            val active = groupStates[expanded]?.get(button.tag) == "on"
+            button.background?.setTint(if (active) "#8033CC33".toColorInt() else "#424242".toColorInt())
+        }
+    }
+
     fun renderEntityState(eid: String, st: String) {
 
         // Состояние храним для всех сущностей: плитка, добавленная позже, сразу покажет значение.

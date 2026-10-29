@@ -28,7 +28,10 @@ class HomeAssistantWebSocket(
         onStateChanged(entityId, "unknown", JSONObject().put("forecast", forecast ?: JSONObject.NULL))
     },
     // Пока работаем через запасной адрес, так часто проверяем, не вернулся ли основной (локальный).
-    private val primaryProbeIntervalMs: Long = TimeUnit.MINUTES.toMillis(5)
+    private val primaryProbeIntervalMs: Long = TimeUnit.MINUTES.toMillis(5),
+    private val onStatesSnapshot: (List<HaEntityState>) -> Unit = { states ->
+        states.forEach { onStateChanged(it.entityId, it.state, it.attributes) }
+    }
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -38,8 +41,8 @@ class HomeAssistantWebSocket(
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
     private var webSocket: WebSocket? = null
-    private var generation = 0
-    private var running = false
+    @Volatile private var generation = 0
+    @Volatile private var running = false
     private var authenticated = false
     private var authSent = false
     private var endpointIndex = 0
@@ -56,8 +59,18 @@ class HomeAssistantWebSocket(
         var wanted: Boolean = true
     )
     private val forecastSubscriptions = mutableMapOf<Int, ForecastRequest>()
-    private data class ServiceRequest(val finished: () -> Unit, val timeout: Runnable)
+    private data class ServiceRequest(val entityId: String, val finished: () -> Unit, val timeout: Runnable)
     private val serviceRequests = mutableMapOf<Int, ServiceRequest>()
+    private data class StateRequest(
+        val id: Int,
+        val changed: MutableSet<String>,
+        val forecasts: MutableSet<String>,
+        val timeout: Runnable
+    )
+    private var stateRequest: StateRequest? = null
+    private val registryRequests = linkedSetOf<Int>()
+    private var registryTimeout: Runnable? = null
+    private var inboundGate: HaMessageGate? = null
     private val rejectedHosts = mutableSetOf<String>()
     private val tokenRejectedHosts = mutableSetOf<String>()
     private var reconnectTask: Runnable? = null
@@ -86,7 +99,9 @@ class HomeAssistantWebSocket(
         if (!running) return
         reconnectTask = null
         cancelPrimaryProbe()
+        cancelIncoming()
         val id = ++generation
+        val gate = HaMessageGate().also { inboundGate = it }
         authenticated = false
         authSent = false
         stateSubscriptionSent = false
@@ -108,7 +123,21 @@ class HomeAssistantWebSocket(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                current { handleMessage(text) }
+                if (!gate.acquire()) return
+                // OkHttp сериализует сообщения соединения. JSON и подготовка массива не занимают UI.
+                val message = HaInboundMessage.parse(text) { running && generation == id }
+                if (message == null) {
+                    gate.release()
+                    return
+                }
+                val posted = handler.post {
+                    try {
+                        if (running && generation == id) handleMessage(message)
+                    } finally {
+                        gate.release()
+                    }
+                }
+                if (!posted) gate.release()
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -138,6 +167,7 @@ class HomeAssistantWebSocket(
         if (!running) return
         cancelPrimaryProbe()
         // Invalidate first: cancel() can itself cause onFailure.
+        cancelIncoming()
         generation++
         timeoutTask?.let { handler.removeCallbacks(it) }
         timeoutTask = null
@@ -177,8 +207,8 @@ class HomeAssistantWebSocket(
         reconnectTask = Runnable { openConnection() }.also { handler.postDelayed(it, delay) }
     }
 
-    private fun handleMessage(text: String) {
-        val json = try { JSONObject(text) } catch (_: Exception) { return }
+    private fun handleMessage(message: HaInboundMessage) {
+        val json = message.json
         when (json.optString("type")) {
             "auth_required" -> if (!authenticated && !authSent) {
                 authSent = true
@@ -211,28 +241,51 @@ class HomeAssistantWebSocket(
                     handleForecastResult(json, it)
                     return
                 }
-                if (!json.optBoolean("success", true)) {
-                    onError(HomeAssistantDiagnostics.commandError(json.optJSONObject("error")?.optString("code"), forecast = false))
+                val id = json.optInt("id", -1)
+                stateRequest?.takeIf { it.id == id }?.let { request ->
+                    stateRequest = null
+                    handler.removeCallbacks(request.timeout)
+                    if (!json.optBoolean("success", false) || json.optJSONArray("result") == null) {
+                        onError("Не удалось получить состояния Home Assistant")
+                        return
+                    }
+                    val states = message.states.filter { it.entityId !in request.changed }.map { state ->
+                        if (state.entityId !in request.forecasts || !state.attributes.has("forecast")) state
+                        else state.copy(attributes = JSONObject().also { copy ->
+                            state.attributes.keys().forEach { key ->
+                                if (key != "forecast") copy.put(key, state.attributes.get(key))
+                            }
+                        })
+                    }
+                    onStatesSnapshot(states)
+                    onEntitiesList?.invoke(message.entities)
                     return
                 }
-                val result = json.optJSONArray("result") ?: return
-                val entities = mutableListOf<HaEntity>()
-                for (i in 0 until result.length()) {
-                    val obj = result.optJSONObject(i) ?: continue
-                    val entityId = obj.optString("entity_id")
-                    if (entityId.isEmpty()) continue
-                    val attrs = obj.optJSONObject("attributes") ?: JSONObject()
-                    if (obj.has("state")) onStateChanged(entityId, obj.optString("state"), attrs)
-                    entities.add(HaEntity(entityId, displayName(entityId, obj, attrs), entityId.substringBefore(".")))
+                if (registryRequests.remove(id)) {
+                    // Уже полученный более новый список не должен заменяться поздним старым ответом.
+                    registryRequests.removeAll { it < id }
+                    if (registryRequests.isEmpty()) {
+                        registryTimeout?.let { handler.removeCallbacks(it) }
+                        registryTimeout = null
+                    }
+                    if (!json.optBoolean("success", false) || json.optJSONArray("result") == null) {
+                        onError("Не удалось получить список сущностей Home Assistant")
+                    } else {
+                        onEntitiesList?.invoke(message.entities)
+                    }
+                    return
                 }
-                onEntitiesList?.invoke(entities)
+                // Ошибку не скрываем, но неизвестный/повторный массив не считается снимком состояний.
+                if (!json.optBoolean("success", true)) {
+                    onError(HomeAssistantDiagnostics.commandError(json.optJSONObject("error")?.optString("code"), forecast = false))
+                }
             }
             "event" -> if (authenticated) {
                 val event = json.optJSONObject("event") ?: return
                 if (event.optString("event_type") == "state_changed") {
                     val data = event.optJSONObject("data")
                     val state = data?.optJSONObject("new_state")
-                    if (state != null) onStateChanged(data.optString("entity_id"),
+                    if (state != null) deliverState(data.optString("entity_id"),
                         state.optString("state", "unknown"), state.optJSONObject("attributes") ?: JSONObject())
                 }
                 forecastSubscriptions[json.optInt("id")]?.let { request ->
@@ -249,20 +302,35 @@ class HomeAssistantWebSocket(
                 event.optJSONObject("a")?.let { added ->
                     added.keys().forEach { entityId ->
                         val state = added.optJSONObject(entityId)
-                        onStateChanged(entityId, state?.optString("s") ?: "unknown",
+                        deliverState(entityId, state?.optString("s") ?: "unknown",
                             state?.optJSONObject("a") ?: JSONObject())
                     }
                 }
                 event.optJSONObject("c")?.let { changed ->
                     changed.keys().forEach { entityId ->
                         changed.optJSONObject(entityId)?.optJSONObject("+")?.let {
-                            onStateChanged(entityId, it.optString("s", "unknown"),
+                            deliverState(entityId, it.optString("s", "unknown"),
                                 it.optJSONObject("a") ?: JSONObject())
                         }
                     }
                 }
             }
         }
+    }
+
+    private fun deliverState(entityId: String, state: String, attributes: JSONObject) {
+        stateRequest?.changed?.add(entityId)
+        onStateChanged(entityId, state, attributes)
+    }
+
+    private fun cancelIncoming() {
+        inboundGate?.cancel()
+        inboundGate = null
+        stateRequest?.timeout?.let { handler.removeCallbacks(it) }
+        stateRequest = null
+        registryTimeout?.let { handler.removeCallbacks(it) }
+        registryTimeout = null
+        registryRequests.clear()
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -279,7 +347,18 @@ class HomeAssistantWebSocket(
             stateSubscriptionSent = true
             command("subscribe_events").put("event_type", "state_changed").let { sendMessage(it) }
         }
-        sendMessage(command("get_states"))
+        stateRequest?.timeout?.let { handler.removeCallbacks(it) }
+        val message = command("get_states")
+        val id = message.getInt("id")
+        val timeout = Runnable {
+            if (stateRequest?.id == id) {
+                stateRequest = null
+                onError("Нет ответа на запрос состояний Home Assistant")
+            }
+        }
+        stateRequest = StateRequest(id, serviceRequests.values.mapTo(HashSet()) { it.entityId }, HashSet(), timeout)
+        if (sendMessage(message)) handler.postDelayed(timeout, 30_000L)
+        else stateRequest = null
     }
 
     // Прежний добавляющий API оставлен для существующих вызывающих экранов.
@@ -358,8 +437,14 @@ class HomeAssistantWebSocket(
     private fun deliverForecast(entityId: String, value: Any?) {
         // Отсутствующее/неверного типа поле не приравниваем к явному JSON null.
         when {
-            value is JSONArray -> onForecastChanged(entityId, value)
-            value === JSONObject.NULL -> onForecastChanged(entityId, null)
+            value is JSONArray -> {
+                stateRequest?.forecasts?.add(entityId)
+                onForecastChanged(entityId, value)
+            }
+            value === JSONObject.NULL -> {
+                stateRequest?.forecasts?.add(entityId)
+                onForecastChanged(entityId, null)
+            }
         }
     }
 
@@ -369,7 +454,25 @@ class HomeAssistantWebSocket(
     }
 
     private fun requestEntities() {
-        sendMessage(command("config/entity_registry/list"))
+        registryTimeout?.let { handler.removeCallbacks(it) }
+        val message = command("config/entity_registry/list")
+        val id = message.getInt("id")
+        registryRequests.add(id)
+        // Старые запросы списка заменяемыми данными не должны накапливаться без ограничения.
+        while (registryRequests.size > 32) registryRequests.remove(registryRequests.first())
+        val timeout = Runnable {
+            if (registryRequests.isNotEmpty()) {
+                registryRequests.clear()
+                registryTimeout = null
+                onError("Нет ответа на запрос списка сущностей Home Assistant")
+            }
+        }
+        registryTimeout = timeout
+        if (sendMessage(message)) handler.postDelayed(timeout, 30_000L)
+        else {
+            registryRequests.clear()
+            registryTimeout = null
+        }
     }
 
     fun callService(
@@ -396,13 +499,14 @@ class HomeAssistantWebSocket(
                 onError("Нет ответа Home Assistant на команду")
             }
         }
-        serviceRequests[id] = ServiceRequest(onFinished, timeout)
+        serviceRequests[id] = ServiceRequest(entityId, onFinished, timeout)
         if (!sendMessage(message)) {
             serviceRequests.remove(id)?.finished?.invoke()
             return false
         }
         // Однократный предел ожидания ответа; без опроса и повторной отправки действия.
         handler.postDelayed(timeout, 15_000L)
+        stateRequest?.changed?.add(entityId)
         return true
     }
 
@@ -481,6 +585,7 @@ class HomeAssistantWebSocket(
         if (!running || generation != id || endpointIndex == 0) return
         onStatus("Локальный адрес снова доступен: переключение")
         // Как в fail(): сначала инвалидируем поколение, чтобы callbacks старого сокета не сработали.
+        cancelIncoming()
         generation++
         timeoutTask?.let { handler.removeCallbacks(it) }
         timeoutTask = null
@@ -503,6 +608,7 @@ class HomeAssistantWebSocket(
 
     fun disconnect() = onMain {
         running = false
+        cancelIncoming()
         cancelPrimaryProbe()
         generation++
         reconnectTask?.let { handler.removeCallbacks(it) }

@@ -56,8 +56,8 @@ class ServiceCommandRegressionTest {
     }
 
     private fun deliver(client: HomeAssistantWebSocket, message: JSONObject) {
-        client.javaClass.getDeclaredMethod("handleMessage", String::class.java)
-            .apply { isAccessible = true }.invoke(client, message.toString())
+        client.javaClass.getDeclaredMethod("handleMessage", HaInboundMessage::class.java)
+            .apply { isAccessible = true }.invoke(client, requireNotNull(HaInboundMessage.parse(message.toString())))
     }
 
     private fun event(client: HomeAssistantWebSocket, value: String) {

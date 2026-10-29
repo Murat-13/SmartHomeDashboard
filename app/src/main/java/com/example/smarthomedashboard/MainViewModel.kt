@@ -10,6 +10,7 @@ import org.json.JSONObject
 
 class MainViewModel : ViewModel() {
 
+    private var snapshotDepth = 0
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -23,6 +24,7 @@ class MainViewModel : ViewModel() {
     internal var tokenRevision = -1L
     private var generation = 0
     private var configuration: List<String>? = null
+    private var snapshotCallback: ((List<String>) -> Unit)? = null
     private var stateCallback: ((String, String, JSONObject) -> Unit)? = null
     private var forecastCallback: ((String, JSONArray?) -> Unit)? = null
     private var connectedCallback: (() -> Unit)? = null
@@ -31,6 +33,7 @@ class MainViewModel : ViewModel() {
 
     // Заменяем обработчики экрана, чтобы ViewModel не удерживал уничтоженную Activity.
     fun detachUi() {
+        snapshotCallback = null
         stateCallback = null
         forecastCallback = null
         connectedCallback = null
@@ -60,8 +63,10 @@ class MainViewModel : ViewModel() {
         onForecastChangedCallback: ((entityId: String, forecast: JSONArray?) -> Unit)? = null,
         onConnectedCallback: (() -> Unit)? = null,
         onEntitiesListCallback: ((List<HaEntity>) -> Unit)? = null,
-        onCommandStateChangedCallback: ((String) -> Unit)? = null
+        onCommandStateChangedCallback: ((String) -> Unit)? = null,
+        onStatesSnapshotCallback: ((List<String>) -> Unit)? = null
     ) {
+        snapshotCallback = onStatesSnapshotCallback
         commandStateCallback = onCommandStateChangedCallback
         stateCallback = onStateChangedCallback
         forecastCallback = onForecastChangedCallback
@@ -90,6 +95,20 @@ class MainViewModel : ViewModel() {
                 if (generation == currentGeneration) {
                     onEntityStateChanged(entityId, state, attributes)
                     stateCallback?.invoke(entityId, state, attributes)
+                }
+            },
+            onStatesSnapshot = { states ->
+                if (generation == currentGeneration) {
+                    snapshotDepth++
+                    try {
+                        onStatesSnapshot(states)
+                        val callback = snapshotCallback
+                        if (callback != null) callback(states.map { it.entityId })
+                        else states.forEach { stateCallback?.invoke(it.entityId, it.state, it.attributes) }
+                    } finally {
+                        snapshotDepth--
+                        publishDevices()
+                    }
                 }
             },
             onConnected = {
@@ -154,6 +173,12 @@ class MainViewModel : ViewModel() {
 
     fun getWebSocket(): HomeAssistantWebSocket? = webSocket
 
+    internal fun onStatesSnapshot(states: List<HaEntityState>) {
+        states.forEach { commands.entityChanged(it.entityId) }
+        devices.applySnapshot(states)
+        publishDevices()
+    }
+
     fun onEntityStateChanged(eid: String, st: String, attrs: JSONObject? = null) {
         commands.entityChanged(eid)
         devices.entityChanged(eid, st, attrs)
@@ -178,6 +203,7 @@ class MainViewModel : ViewModel() {
     }
 
     private fun publishDevices() {
+        if (snapshotDepth != 0) return
         _uiState.update { devices.snapshot(it) }
     }
 

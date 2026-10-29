@@ -316,7 +316,9 @@ class HomeAssistantWebSocketTest {
         assertTrue(second.received.any { it.optString("type") == "subscribe_events" })
         assertTrue(second.received.any { it.optString("type") == "get_states" })
         assertTrue(second.received.any { it.optString("type") == "weather/subscribe_forecast" })
-        second.socket!!.send("""{"type":"result","success":true,"result":[{"entity_id":"light.test","state":"on","attributes":{}}]}""")
+        second.socket!!.send(JSONObject().put("type", "result").put("success", true)
+            .put("id", second.received.single { it.optString("type") == "get_states" }.getInt("id"))
+            .put("result", org.json.JSONArray("""[{"entity_id":"light.test","state":"on","attributes":{}}]""")).toString())
         await { state == "on" }
         client.callService("light", "turn_off", "light.test")
         await { second.received.any { it.optString("type") == "call_service" } }
@@ -365,5 +367,39 @@ class HomeAssistantWebSocketTest {
         shadowOf(Looper.getMainLooper()).idleFor(20, TimeUnit.SECONDS)
         assertEquals(1, finished)
         assertEquals(1, peer.received.count { it.optString("type") == "call_service" })
+    }
+
+    @Test fun largeSnapshotAndFastMotionTransitionsStayOrderedOnMainThread() {
+        val peer = Peer()
+        val batches = mutableListOf<List<HaEntityState>>()
+        val motion = mutableListOf<String>()
+        val order = mutableListOf<String>()
+        var connected = false
+        val client = HomeAssistantWebSocket(server(peer).url("/").toString(), "artificial-token",
+            { id, value, _ ->
+                assertSame(Looper.getMainLooper(), Looper.myLooper())
+                if (id == "binary_sensor.motion") { motion.add(value); order.add(value) }
+            }, { connected = true }, {}, onStatesSnapshot = {
+                assertSame(Looper.getMainLooper(), Looper.myLooper())
+                batches.add(it); order.add("snapshot")
+            }).also { clients.add(it) }
+        client.subscribeEntities(emptyList())
+        client.connect()
+        await { connected && peer.received.any { it.optString("type") == "get_states" } }
+        val request = peer.received.last { it.optString("type") == "get_states" }
+        val rows = org.json.JSONArray()
+        repeat(2000) { rows.put(JSONObject().put("entity_id", "sensor.artificial_$it").put("state", it.toString())) }
+        peer.socket!!.send(JSONObject().put("type", "result").put("id", request.getInt("id"))
+            .put("success", true).put("result", rows).toString())
+        repeat(100) { i ->
+            val value = if (i % 2 == 0) "on" else "off"
+            peer.socket!!.send(JSONObject().put("type", "event").put("event", JSONObject()
+                .put("event_type", "state_changed").put("data", JSONObject().put("entity_id", "binary_sensor.motion")
+                    .put("new_state", JSONObject().put("state", value).put("attributes", JSONObject())))).toString())
+        }
+        await { batches.size == 1 && motion.size == 100 }
+        assertEquals(2000, batches.single().size)
+        assertEquals("snapshot", order.first())
+        assertEquals((0 until 100).map { if (it % 2 == 0) "on" else "off" }, motion)
     }
 }
