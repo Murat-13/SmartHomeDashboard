@@ -111,7 +111,10 @@ class BatteryModernUiTest {
     @Test fun cardShowsValuesDirectionAndNeutralStateWhenDisconnected() {
         val card = card(expanded = false)
         assertEquals("89", text(card, "bm_soc"))
-        assertEquals("-407,3".replace(',', java.text.DecimalFormatSymbols.getInstance().decimalSeparator), text(card, "bm_power"))
+        // Свёрнутый вид — целые ватты; развёрнутый сохраняет десятые.
+        assertEquals("-407", text(card, "bm_power"))
+        assertEquals("-407,3".replace(',', java.text.DecimalFormatSymbols.getInstance().decimalSeparator),
+            text(card(expanded = true), "bm_power"))
         assertEquals("↓ Разряд", text(card, "bm_flow"))
         assertEquals(0.89f, card.findViewWithTag<BatterySegmentBar>("bm_bar").fraction!!, 0.001f)
         assertEquals(View.GONE, card.findViewWithTag<View>("bm_status").visibility)

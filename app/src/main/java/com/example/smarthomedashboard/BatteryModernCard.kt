@@ -37,6 +37,8 @@ internal class BatteryModernCard(
 
     private val scaled = mutableListOf<Pair<TextView, Float>>()
     private val padded = mutableListOf<Pair<View, Float>>()
+    private val verticalPadding = mutableMapOf<View, Float>()
+    private val fitPaint = Paint()
     private val sized = mutableListOf<Triple<View, Float, Float>>()
     private var scale = 1f
 
@@ -48,7 +50,10 @@ internal class BatteryModernCard(
     private val socUnit = text(if (expanded) 48f else 42f, GREEN, bold = true).apply { text = "%" }
     private val powerIcon = text(if (expanded) 64f else 52f, GREEN, bold = true).apply { text = "ϟ" }
     private val powerLabel = text(22f, SECONDARY).apply { text = if (expanded) "Текущая мощность" else "Мощность" }
-    private val power = text(if (expanded) 66f else 50f, Color.WHITE, bold = true).apply { tag = "bm_power" }
+    private val power = text(if (expanded) 66f else COMPACT_POWER, Color.WHITE, bold = true).apply {
+        tag = "bm_power"
+        maxLines = 1
+    }
     private val powerUnit = text(if (expanded) 36f else 28f, SECONDARY)
     private val flow = text(22f, SECONDARY, bold = true).apply { tag = "bm_flow" }
     private val bar = BatterySegmentBar(context).apply { tag = "bm_bar" }
@@ -128,10 +133,17 @@ internal class BatteryModernCard(
             background = rounded(PANEL, 26f, BORDER)
         }
         pad(powerBlock, 18f)
+        // В компактном виде место сверху и снизу отдано крупным цифрам мощности.
+        if (!expanded) verticalPadding[powerBlock] = 10f
         powerBlock.addView(powerIcon)
         val powerText = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         powerText.addView(powerLabel)
-        val powerLine = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
+        val powerLine = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            // В компактном виде BOTTOM + базовая линия сдвигали крупные цифры вверх, на подпись.
+            // TOP сохраняет общую базовую линию цифр и единицы без выхода за строку.
+            gravity = if (expanded) Gravity.BOTTOM else Gravity.TOP
+        }
         powerLine.addView(power)
         powerLine.addView(powerUnit)
         pad(powerUnit, 8f, horizontalOnly = true)
@@ -233,7 +245,10 @@ internal class BatteryModernCard(
 
         val powerRow = config.row(BatteryModernConfig.ROLE_POWER)
         val powerReading = readings.of(powerRow)
-        val powerText = BatteryFormat.text(powerRow, powerReading, tempUnit)
+        // Свёрнутый вид — целые ватты; развёрнутый — прежняя точность строки. Данные не округляются.
+        val powerText = if (!expanded && powerRow != null && powerReading is BatteryReading.Value) {
+            BatteryFormat.compactPower(powerRow, powerReading)
+        } else BatteryFormat.text(powerRow, powerReading, tempUnit)
         set(power, if (powerReading is BatteryReading.Value) powerText.value else "—")
         set(powerUnit, if (powerReading is BatteryReading.Value) powerText.unit else "")
         val direction = PowerFlow.of((powerReading as? BatteryReading.Value)?.number, config.invertPowerSign, config.idleThreshold)
@@ -317,13 +332,41 @@ internal class BatteryModernCard(
         if (clamped != scale) post { applyScale(clamped) }
     }
 
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (!expanded) fitPower()
+    }
+
+    /**
+     * Цифры мощности: масштабный размер плитки, но не шире своей колонки вместе с единицей.
+     * Размер считается от базового (не от текущего), поэтому повторный layout даёт тот же результат.
+     */
+    private fun fitPower() {
+        val column = power.parent?.parent as? View ?: return
+        val available = column.width - column.paddingLeft - column.paddingRight
+        if (available <= 0) return
+        val full = COMPACT_POWER * scale
+        fitPaint.set(power.paint)
+        fitPaint.textSize = full
+        val needed = fitPaint.measureText(power.text.toString())
+        val unit = powerUnit.text.toString()
+        val room = available - (if (unit.isEmpty()) 0f else
+            powerUnit.paint.measureText(unit) + powerUnit.paddingLeft + powerUnit.paddingRight)
+        var size = if (needed <= room || needed <= 0f) full else (full * room / needed).coerceAtLeast(full * 0.4f)
+        // Ширина текста не строго пропорциональна размеру шрифта: доводим до фактического измерения.
+        while (size > full * 0.4f && fitPaint.apply { textSize = size }.measureText(power.text.toString()) > room) size -= 1f
+        // Изменение шрифта запрашивает layout: не делаем это внутри текущего прохода.
+        if (kotlin.math.abs(power.textSize - size) > 0.5f) post { power.setTextSize(TypedValue.COMPLEX_UNIT_PX, size) }
+    }
+
     private fun applyScale(next: Float) {
         scale = next
         scaled.forEach { (view, base) -> view.setTextSize(TypedValue.COMPLEX_UNIT_PX, base * next) }
         padded.forEach { (view, base) ->
             val p = (base * next).toInt()
             val horizontal = view.getTag(R.id.battery_modern_horizontal_padding) == true
-            view.setPadding(p, if (horizontal) view.paddingTop else p, p, if (horizontal) view.paddingBottom else p)
+            val v = verticalPadding[view]?.let { (it * next).toInt() } ?: p
+            view.setPadding(p, if (horizontal) view.paddingTop else v, p, if (horizontal) view.paddingBottom else v)
         }
         sized.forEach { (view, width, height) ->
             val params = view.layoutParams ?: return@forEach
@@ -396,6 +439,8 @@ internal class BatteryModernCard(
     }
 
     companion object {
+        /** Базовый размер цифр мощности компактного вида (было 50, +24%). */
+        const val COMPACT_POWER = 62f
         val GREEN = Color.rgb(52, 232, 158)
         val ACCENT = Color.rgb(38, 198, 218)
         val BLUE = Color.rgb(41, 182, 246)

@@ -123,6 +123,51 @@ class BatteryModernModelTest {
         assertEquals("0", BatteryFormat.decimal(-0.2, 0, ru))
     }
 
+    @Test fun compactPowerIsWholeWattsWhileExpandedAndDirectionUseRawValue() {
+        val row = BatteryModernConfig().row("power")!!.copy(entityId = "sensor.p", decimals = 2)
+        fun reading(raw: String, unit: String = "W") = BatteryReading.Value(raw, BatteryFormat.number(raw),
+            JSONObject().put("unit_of_measurement", unit))
+        mapOf("-383.52" to "-384", "-407.30" to "-407", "1381.65" to "1382", "9543.21" to "9543", "0" to "0",
+            "-0.4" to "0", "1382.5" to "1383", "-9" to "-9").forEach { (raw, shown) ->
+            assertEquals(raw, BatteryFormat.Text(shown, "Вт"), BatteryFormat.compactPower(row, reading(raw), ru))
+        }
+        assertEquals("Без перехода на кВт", "Вт", BatteryFormat.compactPower(row, reading("10000"), ru).unit)
+        assertEquals("Своя единица строки сохраняется", BatteryFormat.Text("-545", "Вт"),
+            BatteryFormat.compactPower(row.copy(unit = "Вт"), reading("-544.79"), ru))
+        // Развёрнутый вид — прежняя точность строки; исходное число не меняется.
+        val raw = reading("-383.52")
+        assertEquals(BatteryFormat.Text("-383,52", "W"), BatteryFormat.text(row, raw, locale = ru))
+        assertEquals(-383.52, raw.number!!, 0.0)
+        // Направление — по неокруглённому значению: 20,4 Вт при пороге 20 — заряд, хотя показано «20».
+        assertEquals("20", BatteryFormat.compactPower(row, reading("20.4"), ru).value)
+        assertEquals(PowerFlow.CHARGE, PowerFlow.of(reading("20.4").number, invert = false, idleThreshold = 20.0))
+        assertEquals(PowerFlow.IDLE, PowerFlow.of(reading("-19.6").number, invert = false, idleThreshold = 20.0))
+    }
+
+    @Test fun cellVoltagesShowThousandthsWithoutChangingOtherRowsOrUserChoice() {
+        val template = BatteryModernConfig()
+        val cells = listOf("delta_cell_voltage", "highest_cell_voltage", "lowest_cell_voltage")
+        assertEquals(cells, template.rows.filter { it.decimals == 3 }.map { it.id })
+        assertTrue("Остальные строки шаблона без изменений", template.rows.filterNot { it.id in cells }.all { it.decimals == null })
+        fun volts(raw: String) = BatteryReading.Value(raw, BatteryFormat.number(raw), JSONObject().put("unit_of_measurement", "V"))
+        // Сохранённая ранее строка без явной точности и с изменённой подписью — тоже тысячные.
+        val saved = template.row("highest_cell_voltage")!!.copy(decimals = null, label = "Максимум", entityId = "sensor.max")
+        assertEquals(BatteryFormat.Text("3,327", "V"), BatteryFormat.text(saved, volts("3.327"), locale = ru))
+        assertEquals("3,312", BatteryFormat.text(template.row("lowest_cell_voltage")!!, volts("3.312"), locale = ru).value)
+        assertEquals("0,015", BatteryFormat.text(template.row("delta_cell_voltage")!!, volts("0.015"), locale = ru).value)
+        assertEquals("0,010", BatteryFormat.text(template.row("delta_cell_voltage")!!, volts("0.01"), locale = ru).value)
+        // Явный выбор владельца не перезаписывается ни при показе, ни при чтении конфигурации.
+        val chosen = saved.copy(decimals = 2)
+        assertEquals("3,33", BatteryFormat.text(chosen, volts("3.327"), locale = ru).value)
+        val config = template.withRow(chosen)
+        assertEquals(2, BatteryModernConfig.from(config.writeTo("{}")).row("highest_cell_voltage")!!.decimals)
+        // Напряжение АКБ и температура — прежняя точность (не больше сотых при «как в HA»).
+        assertEquals("53,12", BatteryFormat.text(template.row("voltage")!!, volts("53.1234"), locale = ru).value)
+        assertEquals("52,50", BatteryFormat.text(template.row("voltage")!!.copy(decimals = 2), volts("52.5"), locale = ru).value)
+        val temp = BatteryReading.Value("21.333", 21.333, JSONObject().put("unit_of_measurement", "°C"))
+        assertEquals("21,33", BatteryFormat.text(template.row("temperature")!!, temp, locale = ru).value)
+    }
+
     @Test fun formattingUsesHaUnitsDurationsAndDeviceClasses() {
         val base = BatteryModernConfig().row("runtime")!!.copy(entityId = "sensor.t")
         assertEquals("4 ч 16 мин", BatteryFormat.text(base, BatteryReading.Value("256", 256.0, JSONObject().put("unit_of_measurement", "min"))).value)

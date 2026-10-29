@@ -124,13 +124,24 @@ internal object BatteryFormat {
             if (unit.contains("C") && tempUnit == "F") { number = number * 9 / 5 + 32; shownUnit = "°F" }
             else if (unit.contains("F") && tempUnit == "C") { number = (number - 32) * 5 / 9; shownUnit = "°C" }
         }
-        return Text(decimal(number, row.decimals ?: autoDecimals(reading.raw), locale), shownUnit)
+        val decimals = row.decimals ?: BatteryModernConfig.defaultDecimals(row.role) ?: autoDecimals(reading.raw)
+        return Text(decimal(number, decimals, locale), shownUnit)
+    }
+
+    /**
+     * Мощность свёрнутой плитки: целые ватты (математическое округление, без «−0»), без перехода на кВт.
+     * Исходное число в reading не меняется: по нему по-прежнему определяется направление.
+     */
+    fun compactPower(row: BatteryModernConfig.Row, reading: BatteryReading.Value, locale: Locale = Locale.getDefault()): Text {
+        val text = value(row.copy(decimals = 0), reading, tempUnit = "C", locale = locale)
+        return if (text.unit == "W") text.copy(unit = "Вт") else text
     }
 
     fun decimal(number: Double, decimals: Int, locale: Locale = Locale.getDefault()): String {
         // «-0,0» не показываем: округлённый ноль не имеет знака. Знак остальных значений сохраняется.
-        val rounded = java.math.BigDecimal(number).setScale(decimals, java.math.RoundingMode.HALF_UP)
-        val value = if (rounded.signum() == 0) 0.0 else number
+        // Выводим уже округлённое HALF_UP число: NumberFormat сам округлял бы «банковским» HALF_EVEN.
+        val rounded = java.math.BigDecimal.valueOf(number).setScale(decimals, java.math.RoundingMode.HALF_UP)
+        val value = if (rounded.signum() == 0) java.math.BigDecimal.ZERO.setScale(decimals) else rounded
         return NumberFormat.getNumberInstance(locale).apply {
             minimumFractionDigits = decimals
             maximumFractionDigits = decimals

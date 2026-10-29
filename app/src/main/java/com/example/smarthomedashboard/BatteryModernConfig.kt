@@ -118,10 +118,17 @@ internal data class BatteryModernConfig(
         const val ROLE_VOLTAGE = "voltage"
         const val ROLE_TEMPERATURE = "temperature"
 
+        /** Напряжения ячеек и их разброс: диагностически важны тысячные вольта. По роли, не по подписи. */
+        private val CELL_VOLTAGE_ROLES = setOf("delta_cell_voltage", "highest_cell_voltage", "lowest_cell_voltage")
+
+        /** Точность строки без явного выбора владельца; null — как в данных HA. */
+        fun defaultDecimals(role: String): Int? = if (role in CELL_VOLTAGE_ROLES) 3 else null
+
         /** Готовый шаблон по образцу карточки BMS в Home Assistant. Все источники пусты. */
         fun template(): List<Row> {
             fun s(role: String, label: String, icon: String) = Row(role, role, Section.SENSORS, label, icon)
-            fun d(role: String, label: String, icon: String) = Row(role, role, Section.DIAGNOSTICS, label, icon)
+            fun d(role: String, label: String, icon: String) =
+                Row(role, role, Section.DIAGNOSTICS, label, icon, decimals = defaultDecimals(role))
             return listOf(
                 s(ROLE_SOC, "Батарея", "battery"),
                 s("charging", "Зарядка", "charging"),
