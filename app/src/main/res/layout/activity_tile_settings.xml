@@ -77,6 +77,22 @@
                     android:background="#0E1A26"
                     android:minHeight="140dp"
                     android:padding="16dp" />
+
+                <!-- Иконка Modern-кнопки/группы: сетку вариантов строит TileStyleEditor. -->
+                <TextView
+                    android:id="@+id/tvModernIconLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="8dp"
+                    android:text="Иконка кнопки"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp" />
+
+                <FrameLayout
+                    android:id="@+id/modernIconPicker"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
             </LinearLayout>
 
             <TextView

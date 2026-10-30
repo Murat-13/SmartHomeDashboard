@@ -441,6 +441,8 @@ internal class DashboardPanelController(
      * отдельные признаки по entity ID, цвет от них не меняется.
      */
     internal fun modernModel(tile: TileEntity): ModernTileView.Model {
+        // Выбор пользователя из редактора; без него — прежний автоподбор.
+        val chosen = ModernIcon.fromConfig(tile.config)
         if (tile.type == "group") {
             val ids = modernEntries(tile).map { it.entityId }
             val states = ids.map { viewModel.devices.confirmedState(it) }
@@ -452,12 +454,14 @@ internal class DashboardPanelController(
             // Один общий spinner — только для общей команды этой группы.
             val pending = ids.mapNotNull { viewModel.commands.pendingFor(it)?.takeIf { p -> p.groupId == tile.id }?.startedAtMs }.minOrNull()
             val items = ids.mapIndexed { i, id -> ModernTileView.Item(modernIcon(id), states[i], recentFailure(id)) }
-            return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, pending, null, items)
+            return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, pending, null, items, groupIcon = chosen)
         }
         val id = (TileButtonConfig.entityId(tile.config) as? ButtonConfigResult.Valid)?.value
-            ?: return ModernTileView.Model(tile.title, ModernIcon.POWER, ConfirmedState.OFF)
+            ?: return ModernTileView.Model(tile.title, chosen ?: ModernIcon.POWER, ConfirmedState.OFF)
+        // Gson оставляет null в поле, которого нет в старой записи, даже если тип не nullable.
+        val hint = (tile.icon as String?)?.takeIf { it.isNotBlank() }
         return ModernTileView.Model(
-            tile.title, modernIcon(id, tile.icon.takeIf { it.isNotBlank() }), viewModel.devices.confirmedState(id),
+            tile.title, chosen ?: modernIcon(id, hint), viewModel.devices.confirmedState(id),
             viewModel.commands.pendingFor(id)?.startedAtMs, recentFailure(id)
         )
     }

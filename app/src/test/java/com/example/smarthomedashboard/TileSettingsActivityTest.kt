@@ -142,6 +142,54 @@ class TileSettingsActivityTest {
         return bundle
     }
 
+    private fun initializeIconEditor(activity: TileSettingsActivity, saved: Bundle? = null): TileStyleEditor {
+        val content = android.widget.LinearLayout(activity).apply {
+            addView(android.widget.LinearLayout(activity).apply { id = R.id.buttonStyleSection })
+            addView(android.widget.Button(activity).apply { id = R.id.btnStyleClassic })
+            addView(android.widget.Button(activity).apply { id = R.id.btnStyleModern })
+            addView(android.widget.FrameLayout(activity).apply { id = R.id.buttonStylePreview })
+            addView(TextView(activity).apply { id = R.id.tvModernIconLabel })
+            addView(android.widget.FrameLayout(activity).apply { id = R.id.modernIconPicker })
+        }
+        activity.setContentView(content)
+        TileSettingsActivity::class.java.getDeclaredMethod("initializeStyleEditor", Bundle::class.java).apply {
+            isAccessible = true
+            invoke(activity, saved)
+        }
+        return get(activity, "styleEditor")
+    }
+
+    @Test fun modernIconDraftSurvivesRecreationAndSavesForButtonAndGroup() {
+        for (type in listOf("button", "group")) {
+            val old = tile("""{"entity_ids":["light.a","light.b"],"child_names":["A","B"],"button_style":"modern","custom":42}""")
+                .copy(type = type, container = "bottom_panel")
+            manager.saveTiles(listOf(old))
+            val activity = open()
+            initializeIconEditor(activity).selectIcon(ModernIcon.GATE)
+            assertFalse(JSONObject(manager.loadTiles().single().config).has("modern_icon"))
+            val bundle = savedState(activity)
+            val recreated = open(bundle)
+            val editor = initializeIconEditor(recreated, bundle)
+            assertEquals(ModernIcon.GATE, editor.icon)
+            assertTrue(editor.iconChanged)
+            val stored = JSONObject(save(recreated).config)
+            assertEquals("gate", stored.getString("modern_icon"))
+            assertEquals(42, stored.getInt("custom"))
+            assertEquals("[\"A\",\"B\"]", stored.getJSONArray("child_names").toString())
+        }
+    }
+
+    @Test fun explicitAutomaticIconSurvivesRecreationAndClearsUnknownKey() {
+        manager.saveTiles(listOf(tile("""{"entity_id":"light.a","button_style":"modern","modern_icon":"future_icon"}""")
+            .copy(type = "button", container = "bottom_panel")))
+        val activity = open()
+        initializeIconEditor(activity).selectIcon(null)
+        val bundle = savedState(activity)
+        val recreated = open(bundle)
+        initializeIconEditor(recreated, bundle)
+        assertFalse(JSONObject(save(recreated).config).has("modern_icon"))
+    }
+
     @Test fun hiddenButtonSizeDoesNotChangeSensorBatteryOrWeatherDimensionsOnSave() {
         for (type in listOf("sensor", "battery", "weather")) {
             for (size in listOf<String?>(null, "287")) {

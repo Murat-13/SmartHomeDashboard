@@ -44,7 +44,9 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         /** elapsedRealtime обнаруженной ошибки команды: индикация [ERROR_MS]. */
         val failedAtMs: Long? = null,
         /** Миниатюры группы в порядке конфигурации; пустой список — пустая группа. */
-        val items: List<Item> = emptyList()
+        val items: List<Item> = emptyList(),
+        /** Выбранная иконка группы рядом с названием; null — прежняя компоновка без иконки. */
+        val groupIcon: ModernIcon? = null
     )
 
     private data class Palette(val background: Int, val border: Int, val icon: Int)
@@ -157,7 +159,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
             visual == Visual.OFF -> "выключено"
             else -> "нет связи"
         }
-        if (previous?.title != next.title) titleKey = null
+        if (previous?.title != next.title || previous?.groupIcon != next.groupIcon) titleKey = null
         invalidate()
     }
 
@@ -165,6 +167,8 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     var displayedVisual: Visual = Visual.OFF
         private set
     val isSpinnerVisible get() = spinnerVisible
+    /** Последняя привязанная модель (предпросмотр и тесты). */
+    val boundModel: Model? get() = model
 
     private fun thumbKey(state: ConfirmedState) = when (state) {
         ConfirmedState.ON -> ON.border
@@ -313,11 +317,23 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     private fun drawGroup(canvas: Canvas, model: Model, palette: Palette) {
         val side = min(card.width(), card.height())
         val pad = side * 0.07f
-        val layout = groupTitle(model.title)
+        val layout = groupTitle(model)
+        val groupIcon = model.groupIcon
+        // Однострочное название вместе с иконкой центрируется как одна строка «иконка + текст».
+        val shift = if (groupIcon != null && layout.lineCount == 1) (groupIconSize() + groupIconGap()) / 2 else 0f
+        val originX = card.centerX() - layout.width / 2f + shift
+        val originY = card.top + pad
         canvas.save()
-        canvas.translate(card.centerX() - layout.width / 2f, card.top + pad)
+        canvas.translate(originX, originY)
         layout.draw(canvas)
         canvas.restore()
+        if (groupIcon != null) {
+            val size = groupIconSize()
+            val x = originX + layout.getLineLeft(0) - groupIconGap() - size
+            val y = originY + (layout.getLineTop(0) + layout.getLineBottom(0)) / 2f - size / 2
+            iconPaint.color = palette.icon
+            groupIcon.draw(canvas, x, y, size, iconPaint)
+        }
         val areaTop = card.top + pad + layout.height + pad * 0.8f
         val area = RectF(card.left + pad, areaTop, card.right - pad, card.bottom - pad)
         if (model.items.isEmpty()) {
@@ -377,7 +393,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
             // Миниатюры ещё не рисовались: та же раскладка, что и в onDraw.
             val side = min(card.width(), card.height())
             val pad = side * 0.07f
-            val layout = groupTitle(model!!.title)
+            val layout = groupTitle(model!!)
             layoutThumbnails(items.size, RectF(card.left + pad, card.top + pad + layout.height + pad * 0.8f,
                 card.right - pad, card.bottom - pad))
         }
@@ -397,12 +413,17 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
      * Название группы по центру. Первая строка оставляет по бокам место под spinner,
      * вторая использует всю ширину: длинные названия не уменьшаются ради индикатора.
      */
-    private fun groupTitle(text: String): StaticLayout {
+    private fun groupTitle(model: Model): StaticLayout {
         val side = min(card.width(), card.height())
         val pad = side * 0.07f
-        val indent = (2 * spinnerRadius() + side * 0.02f).toInt()
-        return title(text, card.width() - 2 * pad, card.height() * 0.4f, 0f, indent)
+        var indent = 2 * spinnerRadius() + side * 0.02f
+        // Иконка группы стоит слева от первой строки: отступ симметричный, справа остаётся место под spinner.
+        if (model.groupIcon != null) indent = max(indent, groupIconSize() + groupIconGap())
+        return title(model.title, card.width() - 2 * pad, card.height() * 0.4f, 0f, indent.toInt())
     }
+
+    private fun groupIconSize() = min(card.width(), card.height()) * 0.13f
+    private fun groupIconGap() = min(card.width(), card.height()) * 0.03f
 
     private fun spinnerRadius() = (min(card.width(), card.height()) * 0.06f).coerceIn(dp(4f), dp(10f))
 
@@ -485,5 +506,6 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
 
         fun backgroundOf(visual: Visual) = palette(visual).background
         fun borderOf(visual: Visual) = palette(visual).border
+        fun iconOf(visual: Visual) = palette(visual).icon
     }
 }

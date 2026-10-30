@@ -160,6 +160,24 @@ class ModernButtonsTest {
         assertFalse(legacy.has("button_style"))
     }
 
+    @Test fun chosenIconIsShownOnButtonAndGroupWhileStatesStayConfirmed() {
+        val chosen = button("chosen", "switch.a").let {
+            it.copy(config = JSONObject(it.config).put("modern_icon", "snowflake").toString())
+        }
+        // Старая запись Gson без поля icon: в поле попадает null.
+        val legacy = button("legacy", "switch.a", x = 600).also { ArchitectureTestAccess.setField(it, "icon", null) }
+        val yard = group("g", "light.a").let { it.copy(config = JSONObject(it.config).put("modern_icon", "gate").toString()) }
+        open(chosen, legacy, yard)
+        assertEquals(ModernIcon.SNOWFLAKE, modernTile("chosen").boundModel!!.icon)
+        assertEquals(ModernIcon.POWER, modernTile("legacy").boundModel!!.icon) // прежний автоподбор
+        assertEquals(ModernIcon.GATE, modernTile("g").boundModel!!.groupIcon)
+        assertEquals(1, modernTile("g").boundModel!!.items.size)
+        event("switch.a", "on")
+        assertEquals(ModernTileView.Visual.ON, modernTile("chosen").displayedVisual)
+        event("switch.a", "unavailable")
+        assertEquals(ModernTileView.Visual.UNAVAILABLE, modernTile("chosen").displayedVisual)
+    }
+
     @Test fun legacyTileRendersClassicAndModernTileRendersModernView() {
         open(button("old", "light.a", style = null), button("new", "light.a", x = 500))
         assertTrue(tile("old") is Button)
@@ -364,7 +382,7 @@ class ModernButtonsTest {
             addView(FrameLayout(host).apply { id = R.id.buttonStylePreview })
         }
         host.setContentView(content)
-        val editor = TileStyleEditor(host, TileButtonStyle.CLASSIC, { "Свет" }, { "button" }, { 160 }, { listOf("light.a" to "a") })
+        val editor = TileStyleEditor(host, TileButtonStyle.CLASSIC, null, { "Свет" }, { "button" }, { 160 }, { listOf("light.a" to "a") })
         editor.update()
         val preview = host.findViewById<FrameLayout>(R.id.buttonStylePreview)
         assertTrue(preview.getChildAt(0) is Button)

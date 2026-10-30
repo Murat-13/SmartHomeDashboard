@@ -186,7 +186,11 @@ class TileSettingsActivity : PinProtectedActivity() {
         outState.putString(STATE_TILE_ID, tileId)
         outState.putStringArrayList(STATE_SELECTED_SENSORS, ArrayList(selectedSensors))
         outState.putBoolean(STATE_SELECTION_CHANGED, sensorSelectionChanged)
-        styleEditor?.let { outState.putString(STATE_STYLE, it.style.key) }
+        styleEditor?.let {
+            outState.putString(STATE_STYLE, it.style.key)
+            outState.putString(STATE_ICON, it.icon?.key)
+            outState.putBoolean(STATE_ICON_CHANGED, it.iconChanged)
+        }
         sensorEditor?.let { editor ->
             outState.putString("sensor_draft", editor.draft.saveState())
             outState.putString("sensor_preview", editor.saveUiState())
@@ -322,7 +326,11 @@ class TileSettingsActivity : PinProtectedActivity() {
             }
             if (!unchanged) existingConfig.put("button_size", buttonSize)
             // Стиль записывается только у новой плитки или при фактической смене: старая запись без ключа остаётся Classic.
-            styleEditor?.let { TileStyleEditor.writeIfChanged(existingConfig, it.style, isNew = oldTile == null) }
+            styleEditor?.let {
+                TileStyleEditor.writeIfChanged(existingConfig, it.style, isNew = oldTile == null)
+                // Иконка — только если её меняли на этом экране; иначе config остаётся как был.
+                ModernIcon.writeIfChanged(existingConfig, it.icon, it.iconChanged)
+            }
         }
 
         // Новая «АКБ Modern» получает готовый шаблон (без источников) и подходящий размер; существующие ключи не меняются.
@@ -488,7 +496,9 @@ class TileSettingsActivity : PinProtectedActivity() {
         val initial = saved?.getString(STATE_STYLE)?.let { key -> TileButtonStyle.entries.find { it.key == key } }
             ?: original?.let { TileButtonStyle.of(it.config) }
             ?: TileButtonStyle.NEW_TILE
-        val editor = TileStyleEditor(this, initial, { etTitle.text.toString().trim() }, { typeAt(spinnerType.selectedItemPosition) },
+        val initialIcon = if (saved?.containsKey(STATE_ICON_CHANGED) == true) ModernIcon.fromKey(saved.getString(STATE_ICON))
+            else original?.let { ModernIcon.fromConfig(it.config) }
+        val editor = TileStyleEditor(this, initial, initialIcon, { etTitle.text.toString().trim() }, { typeAt(spinnerType.selectedItemPosition) },
             { etButtonSize.text.toString().toIntOrNull() ?: TilePlacement.BUTTON_SIZE },
             { selectedSensors.map { it to it } })
         styleEditor = editor
@@ -499,6 +509,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         }
         etTitle.addTextChangedListener(watcher)
         etButtonSize.addTextChangedListener(watcher)
+        if (saved?.getBoolean(STATE_ICON_CHANGED) == true) editor.selectIcon(initialIcon)
         TileEditorPreviewSource.states?.value?.let(editor::acceptState) ?: editor.update()
     }
 
@@ -607,6 +618,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         private const val STATE_SELECTED_SENSORS = "tile_settings_selected_sensors"
         private const val STATE_SELECTION_CHANGED = "tile_settings_selection_changed"
         private const val STATE_STYLE = "tile_settings_button_style"
+        private const val STATE_ICON = "tile_settings_modern_icon"
+        private const val STATE_ICON_CHANGED = "tile_settings_modern_icon_changed"
         private const val REQUEST_SELECT_SENSORS = 1001
         private const val REQUEST_EDIT_CHILDREN = 1002
         private const val REQUEST_ADVANCED_SETTINGS = 1003

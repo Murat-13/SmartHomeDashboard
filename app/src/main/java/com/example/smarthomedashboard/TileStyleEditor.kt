@@ -16,6 +16,7 @@ import org.json.JSONObject
 internal class TileStyleEditor(
     private val activity: Activity,
     initial: TileButtonStyle,
+    initialIcon: ModernIcon?,
     private val title: () -> String,
     private val type: () -> String,
     private val sizePx: () -> Int,
@@ -23,10 +24,23 @@ internal class TileStyleEditor(
 ) {
     var style: TileButtonStyle = initial
         private set
+    /** Выбранная иконка Modern; null — прежнее поведение (автоподбор у кнопки, без иконки у группы). */
+    var icon: ModernIcon? = initialIcon
+        private set
+    /** Пользователь менял иконку на этом экране: только тогда ключ записывается при сохранении. */
+    var iconChanged = false
+        private set
     private val section: View = activity.findViewById(R.id.buttonStyleSection)
     private val classic: Button = activity.findViewById(R.id.btnStyleClassic)
     private val modern: Button = activity.findViewById(R.id.btnStyleModern)
     private val preview: FrameLayout = activity.findViewById(R.id.buttonStylePreview)
+    private val iconLabel: android.widget.TextView? = activity.findViewById(R.id.tvModernIconLabel)
+    private val picker = ModernIconPicker(activity) { selectIcon(it) }.also { picker ->
+        picker.select(initialIcon)
+        activity.findViewById<FrameLayout?>(R.id.modernIconPicker)?.addView(picker,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+    }
+    private var pickerType: String? = null
     private var state: MainUiState? = null
     private var previewView: View? = null
     private var previewKey: Any? = null
@@ -44,6 +58,14 @@ internal class TileStyleEditor(
         update()
     }
 
+    fun selectIcon(next: ModernIcon?, changed: Boolean = true) {
+        if (changed) iconChanged = true
+        if (icon == next) return
+        icon = next
+        picker.select(next)
+        update()
+    }
+
     fun acceptState(next: MainUiState) {
         state = next
         update()
@@ -54,6 +76,7 @@ internal class TileStyleEditor(
         val visible = TileButtonStyle.supports(type())
         section.visibility = if (visible) View.VISIBLE else View.GONE
         if (!visible) return
+        updatePicker()
         val density = activity.resources.displayMetrics.density
         val size = sizePx().coerceIn((64 * density).toInt(), (180 * density).toInt())
         val isGroup = type() == "group"
@@ -80,14 +103,32 @@ internal class TileStyleEditor(
         }
     }
 
+    /** Иконка настраивается только у Modern; подписи зависят от типа плитки. */
+    private fun updatePicker() {
+        val modernVisible = if (style == TileButtonStyle.MODERN) View.VISIBLE else View.GONE
+        picker.visibility = modernVisible
+        iconLabel?.visibility = modernVisible
+        val type = type()
+        if (type == pickerType) return
+        pickerType = type
+        if (type == "group") {
+            iconLabel?.text = "Иконка группы"
+            picker.setNoneLabel("Без иконки", "—")
+        } else {
+            iconLabel?.text = "Иконка кнопки"
+            picker.setNoneLabel("По устройству", "А")
+        }
+    }
+
     private fun modernModel(isGroup: Boolean, ids: List<Pair<String, String>>): ModernTileView.Model {
         val states = ids.map { confirmed(it.first) }
         if (isGroup) {
             val items = ids.mapIndexed { i, (id, _) -> ModernTileView.Item(icon(id), states[i]) }
-            return ModernTileView.Model(title(), ModernIcon.EMPTY_GRID, groupState(states, classic = false), items = items)
+            return ModernTileView.Model(title(), ModernIcon.EMPTY_GRID, groupState(states, classic = false), items = items,
+                groupIcon = icon)
         }
-        val id = ids.firstOrNull()?.first ?: return ModernTileView.Model(title(), ModernIcon.POWER, ConfirmedState.OFF)
-        return ModernTileView.Model(title(), icon(id), states.first())
+        val id = ids.firstOrNull()?.first ?: return ModernTileView.Model(title(), icon ?: ModernIcon.POWER, ConfirmedState.OFF)
+        return ModernTileView.Model(title(), icon ?: icon(id), states.first())
     }
 
     private fun groupState(states: List<ConfirmedState>, classic: Boolean) = when {
