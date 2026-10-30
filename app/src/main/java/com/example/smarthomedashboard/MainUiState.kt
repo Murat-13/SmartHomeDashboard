@@ -20,6 +20,10 @@ data class MainUiState(
     val staleEntities: Set<String> = emptySet(),
     /** Соединение и синхронизация текущей сессии; не зависит от статуса-текста ошибки команды. */
     val haSession: HaSession = HaSession(),
+    val hourlyForecasts: Map<String, JSONArray?> = emptyMap(),
+    val hourlyUnsupported: Set<String> = emptySet(),
+    val dailyForecasts: Map<String, JSONArray?> = emptyMap(),
+    val dailyUnsupported: Set<String> = emptySet(),
     val isEditMode: Boolean = false,
     val statusMessage: String? = null
 )

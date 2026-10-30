@@ -788,20 +788,27 @@ internal class DashboardPanelController(
         modernGroup.close()
     }
 
-    /** Modern-плитки (АКБ, Электропитание): общие раскрытие, resize, перемещение и редактирование. */
-    private fun isModern(type: String) = type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE
+    /** Modern-плитки (АКБ, Электропитание, Часы · Погода · Климат): общие раскрытие, resize, перемещение и редактирование. */
+    private fun isModern(type: String) =
+        type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE || type == HomeClimateConfig.TYPE
 
-    private fun createModernBatteryView(tile: TileEntity, width: Int, height: Int): View {
-        val (card, resizeHandle) = if (tile.type == PowerModernConfig.TYPE) {
-            PowerModernCard.createTile(activity, tile.id, width, height, isEditMode)
-        } else BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
+    private fun createModernBatteryView(tile: TileEntity, savedWidth: Int, savedHeight: Int): View {
+        // «Часы · Погода · Климат» — всегда 2:1 внутри сохранённого прямоугольника; config не переписывается.
+        val (width, height) = if (tile.type == HomeClimateConfig.TYPE) HomeClimateConfig.fit(savedWidth, savedHeight)
+            else savedWidth to savedHeight
+        val (card, resizeHandle) = when (tile.type) {
+            PowerModernConfig.TYPE -> PowerModernCard.createTile(activity, tile.id, width, height, isEditMode)
+            HomeClimateConfig.TYPE -> HomeClimateCompactView.createTile(activity, tile.id, width, height, isEditMode)
+            else -> BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
+        }
         // Новая View сразу получает уже подтверждённое оформление (без повторной анимации).
         renderModern(tile, card, animate = false)
         setupSensorTouch(card, tile)
         resizeHandlers += SensorResizeHandler(
             card, resizeHandle, tile.type, screenW, screenH,
             onResizingChanged = { isResizing = it },
-            saveSize = { w, h -> saveSensorSize(tile.id, w, h) }
+            saveSize = { w, h -> saveSensorSize(tile.id, w, h) },
+            aspectRatio = if (tile.type == HomeClimateConfig.TYPE) HomeClimateConfig.ASPECT else null
         )
         return card
     }
@@ -812,6 +819,10 @@ internal class DashboardPanelController(
 
     /** Только отрисовка: таймер автосворачивания событиями HA не перезапускается. */
     private fun renderModern(tile: TileEntity, view: FrameLayout?, animate: Boolean) {
+        if (tile.type == HomeClimateConfig.TYPE) {
+            renderClimate(tile, view)
+            return
+        }
         val readings = modernReadings()
         if (tile.type == PowerModernConfig.TYPE) {
             renderPower(tile, view, readings, animate)
@@ -821,6 +832,16 @@ internal class DashboardPanelController(
         view?.findViewWithTag<BatteryModernCard>("bm_compact")?.bind(tile.title, config, readings, host.temperatureUnit)
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
             (modernExpansion.card as? BatteryModernCard)?.bind(tile.title, config, readings, host.temperatureUnit)
+        }
+    }
+
+    /** Показания, прогнозы и статус связи — из данных панели; часы тикают внутри самих карточек. */
+    private fun renderClimate(tile: TileEntity, view: FrameLayout?) {
+        val snapshot = HomeClimateSnapshot.from(tile.title, HomeClimateConfig.from(tile.config),
+            viewModel.uiState.value.haSession, viewModel.devices)
+        view?.findViewWithTag<HomeClimateCompactView>("hc_compact")?.bind(snapshot)
+        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
+            (modernExpansion.card as? HomeClimateExpandedCard)?.bind(snapshot)
         }
     }
 
@@ -868,6 +889,16 @@ internal class DashboardPanelController(
     private fun expandModernBattery(tile: TileEntity, source: View) {
         collapseChildButtons()
         modernGroup.close()
+        if (tile.type == HomeClimateConfig.TYPE) {
+            // Та же механика: рост из плитки к центру, blur панели, автосворачивание, закрытие тапом.
+            val width = minOf((screenW * 0.92f).toInt(), 1700)
+            val height = if (screenW < screenH) (screenH * 0.92f).toInt()
+                else minOf((screenH * 0.92f).toInt(), (width * 0.74f).toInt()).coerceAtLeast((screenH * 0.6f).toInt())
+            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
+            modernExpansion.expand(tile.id, source, HomeClimateExpandedCard(activity), target)
+            renderModern(tile, null, animate = false)
+            return
+        }
         if (tile.type == PowerModernConfig.TYPE) {
             // Компоновка по эскизу: широкая карточка, слева линия и главные цифры, справа строки.
             val width = minOf((screenW * 0.86f).toInt(), 1500)
@@ -1064,8 +1095,10 @@ internal class DashboardPanelController(
     }
 
     fun renderForecastState(eid: String) {
-        val weather = currentIndex().affected(listOf(eid)).filter { it.type == "weather" }
+        val affected = currentIndex().affected(listOf(eid))
+        val weather = affected.filter { it.type == "weather" }
         contentController.updateTiles(weather, ::viewForTile)
+        affected.filter { it.type == HomeClimateConfig.TYPE }.forEach { renderClimate(it, viewForTile(it.id) as? FrameLayout) }
     }
 
     fun updateClockViews() = contentController.updateClockViews()

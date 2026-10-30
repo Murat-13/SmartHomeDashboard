@@ -67,6 +67,7 @@
         <activity android:name=".ChildButtonsEditorActivity" android:exported="false" />
         <activity android:name=".BatteryModernEditorActivity" android:exported="false" />
         <activity android:name=".PowerModernEditorActivity" android:exported="false" />
+        <activity android:name=".HomeClimateEditorActivity" android:exported="false" />
 
     </application>
 

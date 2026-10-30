@@ -139,8 +139,11 @@ internal class ModernEditorKit(
     }
 
     /** Поиск по уже известным сущностям HA: кеш списка и текущие состояния панели. */
-    fun pickEntity(current: String, onPicked: (String) -> Unit) {
-        val all = entityChoices()
+    fun pickEntity(current: String, onPicked: (String) -> Unit) = pickEntityWhere(current, { true }, onPicked)
+
+    /** То же, но только сущности, подходящие под [filter] (например, только weather.*). */
+    fun pickEntityWhere(current: String, filter: (String) -> Boolean, onPicked: (String) -> Unit) {
+        val all = entityChoices().filter { filter(it.first) }
         val search = input("", "Поиск по названию или entity_id").apply { tag = "bm_pick_search" }
         val list = ListView(activity).apply { tag = "bm_pick_list" }
         var shown = all

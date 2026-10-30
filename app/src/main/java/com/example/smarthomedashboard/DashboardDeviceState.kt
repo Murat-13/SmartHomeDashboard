@@ -12,6 +12,29 @@ internal class DashboardDeviceState {
 
     val staleEntities = mutableSetOf<String>()
 
+    // Почасовой прогноз — отдельно от атрибута forecast (там дневной). Нет записи — данные ещё не пришли.
+    val hourlyForecasts = mutableMapOf<String, JSONArray?>()
+    /** Сущности, для которых HA отказал в почасовом прогнозе в текущей сессии. */
+    val hourlyUnsupported = mutableSetOf<String>()
+
+    fun hourlyForecastChanged(id: String, forecast: JSONArray?, supported: Boolean) {
+        if (supported) {
+            hourlyUnsupported.remove(id)
+            hourlyForecasts[id] = forecast
+        } else {
+            hourlyUnsupported.add(id)
+            hourlyForecasts.remove(id)
+        }
+    }
+
+    val dailyForecasts = mutableMapOf<String, JSONArray?>()
+    val dailyUnsupported = mutableSetOf<String>()
+
+    fun clearClimateForecasts() {
+        hourlyForecasts.clear(); hourlyUnsupported.clear()
+        dailyForecasts.clear(); dailyUnsupported.clear()
+    }
+
     fun confirmedState(id: String): ConfirmedState = when {
         id in staleEntities -> ConfirmedState.UNAVAILABLE
         singleStates[id] == "on" -> ConfirmedState.ON
@@ -21,7 +44,7 @@ internal class DashboardDeviceState {
 
     fun markUnconfirmed(id: String) { staleEntities.add(id) }
 
-    fun markDisconnected() { staleEntities.addAll(singleStates.keys) }
+    fun markDisconnected() { staleEntities.addAll(singleStates.keys); clearClimateForecasts() }
 
     fun applySnapshot(states: List<HaEntityState>) {
         states.forEach { entityChanged(it.entityId, it.state, it.attributes) }
@@ -32,6 +55,10 @@ internal class DashboardDeviceState {
         singleStates[id] = state
         val complete = copyAttributes(attributes)
         if (complete.has("forecast")) {
+            if (id.startsWith("weather.")) {
+                dailyForecasts[id] = complete.optJSONArray("forecast")
+                dailyUnsupported.remove(id)
+            }
             syntheticForecasts.remove(id)
         } else if (syntheticForecasts.containsKey(id)) {
             complete.put("forecast", syntheticForecasts[id] ?: JSONArray())
@@ -41,6 +68,8 @@ internal class DashboardDeviceState {
     }
 
     fun forecastChanged(id: String, forecast: JSONArray?) {
+        dailyUnsupported.remove(id)
+        dailyForecasts[id] = forecast
         syntheticForecasts[id] = forecast
         entityAttributes[id] = copyAttributes(entityAttributes[id]).put("forecast", forecast ?: JSONArray())
     }
@@ -65,6 +94,8 @@ internal class DashboardDeviceState {
         groupStates = groupStates.mapValues { it.value.toMap() },
         entityAttributes = entityAttributes.toMap(),
         syntheticForecasts = syntheticForecasts.toMap(),
+        hourlyForecasts = hourlyForecasts.toMap(), hourlyUnsupported = hourlyUnsupported.toSet(),
+        dailyForecasts = dailyForecasts.toMap(), dailyUnsupported = dailyUnsupported.toSet(),
         staleEntities = staleEntities.toSet()
     )
 

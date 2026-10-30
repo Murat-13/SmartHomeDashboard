@@ -16,7 +16,9 @@ internal class SensorResizeHandler(
     private val screenWidth: Int,
     private val screenHeight: Int,
     onResizingChanged: (Boolean) -> Unit,
-    saveSize: (Int, Int) -> Boolean
+    saveSize: (Int, Int) -> Boolean,
+    /** Ширина : высота, которую resize сохраняет; null — свободный размер, как прежде. */
+    private val aspectRatio: Float? = null
 ) : View.OnTouchListener {
     private var card: View? = card
     private var handle: View? = handle
@@ -68,7 +70,20 @@ internal class SensorResizeHandler(
                 // layout мог ещё не выполниться после предыдущего MOVE.
                 val width = (card.layoutParams.width + event.rawX - resizeStartX).toInt().coerceIn(120, maxW)
                 val height = (card.layoutParams.height + event.rawY - resizeStartY).toInt().coerceIn(120, maxH)
-                applyResize(width, height)
+                val ratio = aspectRatio
+                if (ratio == null) applyResize(width, height)
+                else {
+                    // Ведущее — большее смещение пальца; итог всегда в пропорции и в границах экрана.
+                    val byWidth = width.toFloat()
+                    val byHeight = height * ratio
+                    val dw = kotlin.math.abs(event.rawX - resizeStartX)
+                    val dh = kotlin.math.abs(event.rawY - resizeStartY) * ratio
+                    val wanted = if (dw >= dh) byWidth else byHeight
+                    val lower = 120 * ratio
+                    val w = wanted.coerceIn(lower, maxOf(lower, minOf(maxW.toFloat(), maxH * ratio)))
+                    val proportionalHeight = (w / ratio).toInt()
+                    applyResize((proportionalHeight * ratio).toInt(), proportionalHeight)
+                }
                 resizeStartX = event.rawX
                 resizeStartY = event.rawY
                 true

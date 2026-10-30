@@ -102,7 +102,8 @@ class TileSettingsActivity : PinProtectedActivity() {
                 // У группы устройства и имена кнопок редактируются в одном месте — на экране устройств группы.
                 val isGroup = position == 2
                 // Источники «АКБ Modern» выбираются по каждому показателю в её редакторе.
-                val isModern = typeAt(position) == BatteryModernConfig.TYPE || typeAt(position) == PowerModernConfig.TYPE
+                val isModern = typeAt(position) == BatteryModernConfig.TYPE || typeAt(position) == PowerModernConfig.TYPE ||
+                    typeAt(position) == HomeClimateConfig.TYPE
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 btnSelectSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
@@ -232,6 +233,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             "weather" -> 5
             BatteryModernConfig.TYPE -> 6
             PowerModernConfig.TYPE -> powerIndex(tile.config)
+            HomeClimateConfig.TYPE -> 9
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -273,7 +275,7 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
-            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE -> "grid"
+            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE, HomeClimateConfig.TYPE -> "grid"
             else -> "grid"
         }
 
@@ -346,6 +348,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             PowerModernConfig.TYPE -> PowerModernConfig.newTileConfig(
                 if (spinnerType.selectedItemPosition == 8) PowerModernConfig.PROFILE_INVERTER else PowerModernConfig.PROFILE_GRID,
                 existingConfig.toString())
+            // «Часы · Погода · Климат»: размер 2:1 и пустой шаблон; сохранённые настройки не сбрасываются.
+            HomeClimateConfig.TYPE -> HomeClimateConfig.newTileConfig(existingConfig.toString())
             else -> existingConfig.toString()
         }
 
@@ -382,6 +386,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         5 -> "weather"
         6 -> BatteryModernConfig.TYPE
         7, 8 -> PowerModernConfig.TYPE
+        9 -> HomeClimateConfig.TYPE
         else -> "sensor"
     }
 
@@ -429,6 +434,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         tvSelectedSensors.text = when {
             isGroup && selectedSensors.isEmpty() -> "В группе пока нет устройств"
             isGroup -> "Устройств в группе: ${selectedSensors.size}"
+            typeAt(spinnerType.selectedItemPosition) == HomeClimateConfig.TYPE ->
+                "Погода и комнаты выбираются в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == BatteryModernConfig.TYPE ||
                 typeAt(spinnerType.selectedItemPosition) == PowerModernConfig.TYPE ->
                 "Датчики выбираются в редакторе АКБ Modern: в режиме редактирования нажмите на плитку."
@@ -528,6 +535,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             ?: TileEntity("new-sensor-draft", "sensor", "grid", "", 0, 0, 1, 1)
         initialTitle = original.title
         initialType = if (original.type == PowerModernConfig.TYPE) powerIndex(original.config)
+            else if (original.type == HomeClimateConfig.TYPE) 9
             else listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
         val draft = try {
             saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)

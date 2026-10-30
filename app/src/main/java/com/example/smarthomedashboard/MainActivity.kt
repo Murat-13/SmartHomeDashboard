@@ -281,6 +281,7 @@ class MainActivity : AppCompatActivity() {
             val screen = when (type) {
                 BatteryModernConfig.TYPE -> BatteryModernEditorActivity::class.java
                 PowerModernConfig.TYPE -> PowerModernEditorActivity::class.java
+                HomeClimateConfig.TYPE -> HomeClimateEditorActivity::class.java
                 else -> TileSettingsActivity::class.java
             }
             startActivityForResult(Intent(this, screen).putExtra("tile_id", id), REQUEST_TILE_SETTINGS)
@@ -517,6 +518,7 @@ class MainActivity : AppCompatActivity() {
         viewModel.subscribeEntities(plan.entityIds)
         // Передаём весь актуальный набор, включая пустой при выборе Яндекса.
         viewModel.syncForecastSubscriptions(plan.forecastIds)
+        viewModel.syncHourlyForecastSubscriptions(plan.hourlyForecastIds)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

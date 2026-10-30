@@ -159,6 +159,22 @@ class MainViewModel : ViewModel() {
                     onForecastChanged(entityId, forecast)
                     forecastCallback?.invoke(entityId, forecast)
                 }
+            },
+            onHourlyForecastChanged = { entityId, forecast, supported ->
+                if (generation == currentGeneration) {
+                    devices.hourlyForecastChanged(entityId, forecast, supported)
+                    publishDevices()
+                    // Экран читает прогноз из хранилища; callback только сообщает, что перерисовать.
+                    forecastCallback?.invoke(entityId, null)
+                }
+            },
+            onDailyForecastUnavailable = { entityId ->
+                if (generation == currentGeneration) {
+                    devices.dailyForecasts.remove(entityId)
+                    devices.dailyUnsupported.add(entityId)
+                    publishDevices()
+                    forecastCallback?.invoke(entityId, null)
+                }
             }
         )
         webSocket?.connect()
@@ -180,7 +196,17 @@ class MainViewModel : ViewModel() {
     }
 
     fun syncForecastSubscriptions(entityIds: Collection<String>) {
+        val desired = entityIds.toSet()
+        val removed = devices.dailyForecasts.keys.retainAll(desired) or devices.dailyUnsupported.retainAll(desired)
+        if (removed) publishDevices()
         webSocket?.syncForecastSubscriptions(entityIds)
+    }
+
+    fun syncHourlyForecastSubscriptions(entityIds: Collection<String>) {
+        val desired = entityIds.toSet()
+        val removed = devices.hourlyForecasts.keys.retainAll(desired) or devices.hourlyUnsupported.retainAll(desired)
+        if (removed) publishDevices()
+        webSocket?.syncHourlyForecastSubscriptions(entityIds)
     }
 
     fun callService(domain: String, service: String, entityId: String, onResult: (ServiceCommandResult) -> Unit = {}): Boolean {

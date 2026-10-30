@@ -31,7 +31,13 @@ class HomeAssistantWebSocket(
     private val primaryProbeIntervalMs: Long = TimeUnit.MINUTES.toMillis(5),
     private val onStatesSnapshot: (List<HaEntityState>) -> Unit = { states ->
         states.forEach { onStateChanged(it.entityId, it.state, it.attributes) }
-    }
+    },
+    /**
+     * Почасовой прогноз (отдельно от дневного). [supported] = false — HA отказал в подписке:
+     * интеграция не поддерживает почасовой тип. Это не ошибка соединения и не показывается статусом.
+     */
+    private val onHourlyForecastChanged: (entityId: String, forecast: JSONArray?, supported: Boolean) -> Unit = { _, _, _ -> },
+    private val onDailyForecastUnavailable: (entityId: String) -> Unit = {}
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -51,12 +57,18 @@ class HomeAssistantWebSocket(
     private var stateSubscriptionSent = false
     private var statesRequested = false
     private var entitiesRequested = false
+    private companion object {
+        const val DAILY = "daily"
+        const val HOURLY = "hourly"
+    }
     private val forecastEntities = linkedSetOf<String>()
+    private val hourlyForecastEntities = linkedSetOf<String>()
     private enum class ForecastStatus { PENDING, SUBSCRIBED, COMPLETE }
     private data class ForecastRequest(
         val entityId: String,
         var status: ForecastStatus = ForecastStatus.PENDING,
-        var wanted: Boolean = true
+        var wanted: Boolean = true,
+        val type: String = DAILY
     )
     private val forecastSubscriptions = mutableMapOf<Int, ForecastRequest>()
     private data class ServiceRequest(val entityId: String, val result: (ServiceCommandResult) -> Unit, val timeout: Runnable)
@@ -297,8 +309,8 @@ class HomeAssistantWebSocket(
                 forecastSubscriptions[json.optInt("id")]?.let { request ->
                     if (event.has("forecast") && request.status != ForecastStatus.COMPLETE) {
                         request.status = ForecastStatus.SUBSCRIBED
-                        if (request.wanted && request.entityId in forecastEntities) {
-                            deliverForecast(request.entityId, event.opt("forecast"))
+                        if (request.wanted && request.entityId in entitiesFor(request.type)) {
+                            deliverForecast(request, event.opt("forecast"))
                         } else {
                             retireForecast(json.optInt("id"), request)
                         }
@@ -372,28 +384,38 @@ class HomeAssistantWebSocket(
         syncForecastSubscriptions(forecastEntities + entityId)
     }
 
-    fun syncForecastSubscriptions(entityIds: Collection<String>) = onMain {
+    fun syncForecastSubscriptions(entityIds: Collection<String>) = onMain { sync(DAILY, entityIds) }
+
+    /** Почасовые подписки — отдельный набор; дневные подписки им не затрагиваются. */
+    fun syncHourlyForecastSubscriptions(entityIds: Collection<String>) = onMain { sync(HOURLY, entityIds) }
+
+    private fun entitiesFor(type: String) = if (type == HOURLY) hourlyForecastEntities else forecastEntities
+
+    private fun sync(type: String, entityIds: Collection<String>) {
         val desired = entityIds.filter { it.startsWith("weather.") }.toCollection(linkedSetOf())
-        forecastEntities.clear()
-        forecastEntities.addAll(desired)
+        val entities = entitiesFor(type)
+        entities.clear()
+        entities.addAll(desired)
         forecastSubscriptions.toMap().forEach { (id, request) ->
-            if (request.wanted && request.entityId !in desired) retireForecast(id, request)
+            if (request.type == type && request.wanted && request.entityId !in desired) retireForecast(id, request)
         }
         ensureForecasts()
     }
 
     private fun ensureForecasts() {
         if (!authenticated) return
-        forecastEntities.toList().forEach { entityId ->
-            if (forecastSubscriptions.values.none { it.wanted && it.entityId == entityId }) sendForecast(entityId)
+        listOf(DAILY, HOURLY).forEach { type ->
+            entitiesFor(type).toList().forEach { entityId ->
+                if (forecastSubscriptions.values.none { it.wanted && it.entityId == entityId && it.type == type }) sendForecast(entityId, type)
+            }
         }
     }
 
-    private fun sendForecast(entityId: String) {
+    private fun sendForecast(entityId: String, type: String) {
         if (!authenticated) return
         val message = command("weather/subscribe_forecast")
-            .put("entity_id", entityId).put("forecast_type", "daily")
-        forecastSubscriptions[message.getInt("id")] = ForecastRequest(entityId)
+            .put("entity_id", entityId).put("forecast_type", type)
+        forecastSubscriptions[message.getInt("id")] = ForecastRequest(entityId, type = type)
         sendMessage(message)
     }
 
@@ -418,8 +440,13 @@ class HomeAssistantWebSocket(
             request.status = ForecastStatus.COMPLETE
             if (!request.wanted) {
                 forecastSubscriptions.remove(id)
+            } else if (request.type == HOURLY) {
+                // Почасовой тип поддерживают не все интеграции: отказ — состояние данных, а не статус ошибки.
+                if (request.entityId in hourlyForecastEntities) onHourlyForecastChanged(request.entityId, null, false)
             } else {
-                onError(HomeAssistantDiagnostics.commandError(json.optJSONObject("error")?.optString("code"), forecast = true))
+                onDailyForecastUnavailable(request.entityId)
+                val code = json.optJSONObject("error")?.optString("code")
+                if (code != "forecast_not_supported") onError(HomeAssistantDiagnostics.commandError(code, forecast = true))
             }
             return
         }
@@ -433,14 +460,23 @@ class HomeAssistantWebSocket(
             request.status = ForecastStatus.COMPLETE
             val result = json.opt("result")
             val forecast = if (result is JSONArray) result else (result as? JSONObject)?.opt("forecast")
-            if (request.wanted && request.entityId in forecastEntities) {
-                deliverForecast(request.entityId, forecast)
+            if (request.wanted && request.entityId in entitiesFor(request.type)) {
+                deliverForecast(request, forecast)
             }
         }
         if (!request.wanted) retireForecast(id, request)
     }
 
-    private fun deliverForecast(entityId: String, value: Any?) {
+    private fun deliverForecast(request: ForecastRequest, value: Any?) {
+        val entityId = request.entityId
+        if (request.type == HOURLY) {
+            // Почасовой не влияет на атрибут forecast и снимок состояний (там — дневной прогноз).
+            when {
+                value is JSONArray -> onHourlyForecastChanged(entityId, value, true)
+                value === JSONObject.NULL -> onHourlyForecastChanged(entityId, null, true)
+            }
+            return
+        }
         // Отсутствующее/неверного типа поле не приравниваем к явному JSON null.
         when {
             value is JSONArray -> {
