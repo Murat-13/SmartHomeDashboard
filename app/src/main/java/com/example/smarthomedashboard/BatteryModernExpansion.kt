@@ -20,6 +20,14 @@ internal interface ModernOverlayCard {
 }
 
 /**
+ * Компактная карточка, которую раскрытие скрывает прозрачностью исходной плитки: alpha родителя
+ * не видна через isShown, поэтому о скрытии сообщается явно (остановить невидимые анимации).
+ */
+internal interface ModernHideAware {
+    fun setHiddenBySource(hidden: Boolean)
+}
+
+/**
  * Раскрытие одной Modern-плитки (АКБ, Электропитание) поверх панели. Карточка — отдельная View в [overlay];
  * компактная плитка остаётся на месте (скрыта) и после закрытия снова видна с прежними
  * размерами и координатами. Анимация — только transform (без relayout содержимого на каждом кадре).
@@ -84,6 +92,7 @@ internal class BatteryModernExpansion(
         expandedCard.pivotY = 0f
         host.addView(expandedCard)
         from.alpha = 0f
+        notifyHidden(from, true)
 
         val sx = start.width / target.width.toFloat().coerceAtLeast(1f)
         val sy = start.height / target.height.toFloat().coerceAtLeast(1f)
@@ -155,6 +164,7 @@ internal class BatteryModernExpansion(
         }
         scrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
         source?.alpha = 1f
+        source?.let { notifyHidden(it, false) }
         card = null
         scrim = null
         source = null
@@ -162,6 +172,11 @@ internal class BatteryModernExpansion(
         tileId = null
         closing = false
         paused = false
+    }
+
+    private fun notifyHidden(view: View, hidden: Boolean) {
+        if (view is ModernHideAware) view.setHiddenBySource(hidden)
+        if (view is ViewGroup) for (i in 0 until view.childCount) notifyHidden(view.getChildAt(i), hidden)
     }
 
     private fun scheduleTimer() {

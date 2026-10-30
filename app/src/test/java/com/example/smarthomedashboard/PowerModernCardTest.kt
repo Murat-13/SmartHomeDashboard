@@ -58,10 +58,21 @@ class PowerModernCardTest {
         }
     }
 
+    /** Robolectric держит окно Activity невидимым; делаем его видимым так же, как система (dispatchAppVisibility). */
+    private fun showWindow(view: View) {
+        val viewRoot = view.rootView.parent ?: return
+        org.robolectric.util.ReflectionHelpers.callInstanceMethod<Any>(viewRoot, "dispatchAppVisibility",
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, true))
+        advance(50)
+    }
+
     private fun card(expanded: Boolean = false, w: Int = 300, h: Int = 360): PowerModernCard {
         val card = PowerModernCard(activity, expanded)
         root.addView(card, FrameLayout.LayoutParams(w, h))
-        shadowOf(Looper.getMainLooper()).idle()
+        // Первый кадр окна прикрепляет карточку: анимации идут только у видимой прикреплённой View.
+        advance(50)
+        showWindow(card)
+        assertTrue(card.isAttachedToWindow)
         return card
     }
 
@@ -147,16 +158,25 @@ class PowerModernCardTest {
         assertEquals(PowerModernConfig.EMERALD, card.accent)
         card.bind("Сеть · Вход", config, readings(), visual(285.0), animate = true)
         assertTrue("Переход цвета анимирован", card.isColorAnimating)
-        advance(250)
-        assertNotEquals(PowerModernConfig.EMERALD, card.accent)
-        assertNotEquals(PowerModernConfig.RED, card.accent)
-        advance(400)
-        assertEquals(PowerModernConfig.RED, card.accent)
+        // Пульсация видимой карточки стартует сразу; выборки — в первых двух полупериодах (1 с):
+        // Robolectric анимирует INFINITE как один повтор, сам бесконечный повтор проверяется ниже.
         assertTrue(card.pulsing)
-        val levels = (0 until 8).map { advance(125); card.glowLevel }
-        assertTrue("Яркость меняется мягко: $levels", levels.max() - levels.min() > 0.3f && levels.min() >= 0.45f - 0.01f)
+        assertEquals("Бесконечная мягкая пульсация ~1 Гц", android.animation.ValueAnimator.INFINITE,
+            shadowOf(card.pulseAnimatorForTest!!).actualRepeatCount)
+        assertEquals(android.animation.ValueAnimator.REVERSE, card.pulseAnimatorForTest!!.repeatMode)
+        assertEquals(500L, card.pulseAnimatorForTest!!.duration)
         val size = card.findViewWithTag<TextView>("pm_voltage").textSize
-        assertEquals("Цифры не меняются при пульсации", size, card.findViewWithTag<TextView>("pm_voltage").textSize, 0f)
+        val levels = (1..8).map { step ->
+            advance(125)
+            if (step == 2) {
+                assertNotEquals(PowerModernConfig.EMERALD, card.accent)
+                assertNotEquals(PowerModernConfig.RED, card.accent)
+            }
+            assertEquals("Цифры не меняются при пульсации", size, card.findViewWithTag<TextView>("pm_voltage").textSize, 0f)
+            card.glowLevel
+        }
+        assertEquals(PowerModernConfig.RED, card.accent)
+        assertTrue("Яркость меняется мягко: $levels", levels.max() - levels.min() > 0.3f && levels.min() >= 0.45f - 0.01f)
         // Возврат в норму: пульсация останавливается, свечение полное.
         card.bind("Сеть · Вход", config, readings(), visual(228.0), animate = true)
         assertFalse(card.pulsing)

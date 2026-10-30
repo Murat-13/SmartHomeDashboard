@@ -32,7 +32,7 @@ internal class PowerModernCard(
     context: Context,
     val expanded: Boolean,
     private val editor: BatteryModernCard.Editor? = null
-) : FrameLayout(context), ModernOverlayCard {
+) : FrameLayout(context), ModernOverlayCard, ModernHideAware {
     private val scaled = mutableListOf<Pair<TextView, Float>>()
     private var scale = 1f
     private val density = resources.displayMetrics.density
@@ -57,6 +57,9 @@ internal class PowerModernCard(
     private var pulseAnimator: ValueAnimator? = null
     private var targetAccent: Int? = null
     private var wantPulse = false
+    /** Исходная плитка скрыта раскрытием (alpha = 0) или окно не показано: невидимых анимаций нет. */
+    private var hiddenBySource = false
+    private var windowVisible = true
 
     // ---- Содержимое ----
     private val icon = ImageView(context).apply { tag = "pm_icon" }
@@ -248,7 +251,7 @@ internal class PowerModernCard(
             targetAccent = color
             colorAnimator?.cancel()
             colorAnimator = null
-            if (!animate || durationMs <= 0 || accent == color) setAccentNow(color)
+            if (!animate || durationMs <= 0 || accent == color || !visiblyShown()) setAccentNow(color)
             else {
                 val from = accent
                 colorAnimator = ValueAnimator.ofObject(ArgbEvaluator(), from, color).apply {
@@ -262,8 +265,45 @@ internal class PowerModernCard(
         updatePulse()
     }
 
+    /** Анимации — только у действительно видимой карточки: окно, все родители и не скрыта раскрытием. */
+    private fun visiblyShown() = isAttachedToWindow && isShown && windowVisible && !hiddenBySource
+
+    override fun setHiddenBySource(hidden: Boolean) {
+        if (hiddenBySource == hidden) return
+        hiddenBySource = hidden
+        visibilityChanged()
+    }
+
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        visibilityChanged()
+    }
+
+    /** Приходит при смене видимости самой карточки или любого её предка. */
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        visibilityChanged()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        windowVisible = visibility == VISIBLE
+        visibilityChanged()
+    }
+
+    /** Скрытая карточка сразу получает целевой цвет; подтверждённое состояние и цифры не меняются. */
+    private fun visibilityChanged() {
+        if (!visiblyShown()) colorAnimator?.let { animator ->
+            colorAnimator = null
+            animator.removeAllUpdateListeners()
+            animator.cancel()
+            targetAccent?.let { setAccentNow(it) }
+        }
+        updatePulse()
+    }
+
     private fun updatePulse() {
-        val run = wantPulse && isAttachedToWindow && visibility == VISIBLE
+        val run = wantPulse && visiblyShown()
         if (run == (pulseAnimator != null)) return
         if (run) {
             // ~1 цикл в секунду: яркость рамки и свечения 45–100%, без изменения цифр и размеров.
@@ -463,6 +503,7 @@ internal class PowerModernCard(
     internal val isColorAnimating get() = colorAnimator?.isRunning == true
     /** Правило требует пульсации (сама анимация идёт только у видимой View в окне). */
     internal val pulseRequested get() = wantPulse
+    internal val pulseAnimatorForTest: ValueAnimator? get() = pulseAnimator
     /** Число привязок данных: адресное обновление не трогает чужие плитки. */
     internal var binds = 0
         private set
