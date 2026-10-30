@@ -161,7 +161,8 @@ internal class PowerModernCard(
         bindMain(config.row(PowerModernConfig.ROLE_POWER), readings, power, powerUnit, "Вт", if (expanded) null else 0)
         val freqRow = config.row(PowerModernConfig.ROLE_FREQUENCY)
         val freqReading = readings.of(freqRow)
-        val freqDecimals = freqRow?.decimals ?: if (expanded) null else 1
+        // Компакт — 1 знак; развёрнуто — точность источника, но не больше 2 и без искусственных нулей.
+        val freqDecimals = freqRow?.decimals ?: if (expanded) sourceDecimals(freqReading, limit = 2) else 1
         set(frequency, joined(value(freqRow, freqReading, freqDecimals, "Гц")))
         if (expanded) bindExtras(config, readings, visual)
         applyVisual(visual.color, visual.pulse, animate, config.transitionMs)
@@ -170,14 +171,15 @@ internal class PowerModernCard(
     private fun bindMain(row: BatteryModernConfig.Row?, readings: BatteryReadings, number: TextView, unit: TextView,
                          defaultUnit: String, decimals: Int?, expandedLimit: Int? = null) {
         val reading = readings.of(row)
-        val chosen = decimals ?: row?.decimals ?: expandedLimit?.let { limit ->
-            // Развёрнуто: не больше [limit] знаков и не больше, чем есть в данных (без ложной точности).
-            (reading as? BatteryReading.Value)?.raw?.trim()?.replace(',', '.')?.substringAfter('.', "")?.length?.coerceAtMost(limit)
-        }
+        val chosen = decimals ?: row?.decimals ?: expandedLimit?.let { sourceDecimals(reading, it) }
         val (text, shownUnit) = value(row, reading, chosen, defaultUnit)
         set(number, text)
         set(unit, shownUnit)
     }
+
+    /** Знаков в данных источника, но не больше [limit] (без ложной точности); null — данных нет. */
+    private fun sourceDecimals(reading: BatteryReading, limit: Int): Int? =
+        (reading as? BatteryReading.Value)?.raw?.trim()?.replace(',', '.')?.substringAfter('.', "")?.length?.coerceAtMost(limit)
 
     /** Достоверное число — по точности; всё остальное — «—» с единицей, без подстановки нуля. */
     private fun value(row: BatteryModernConfig.Row?, reading: BatteryReading, decimals: Int?, defaultUnit: String): Pair<String, String> {
