@@ -38,7 +38,7 @@ internal class ModernGroupPanel(
     private val host: Host
 ) {
     interface Host {
-        fun childModel(entityId: String, name: String): ModernTileView.Model
+        fun childModel(tileId: String, entityId: String, name: String): ModernTileView.Model
         fun parentModel(tileId: String): ModernTileView.Model?
         fun childTapped(tileId: String, entityId: String, view: View)
         /** Пользователь или таймер закрыли панель (не очистка при перестроении). */
@@ -143,7 +143,7 @@ internal class ModernGroupPanel(
         if (tileId == null) return
         children.forEachIndexed { i, child ->
             val entry = entries.getOrNull(i) ?: return@forEachIndexed
-            if (changed == null || entry.entityId in changed) child.bind(host.childModel(entry.entityId, entry.name), animate = true)
+            if (changed == null || entry.entityId in changed) child.bind(host.childModel(requireNotNull(tileId), entry.entityId, entry.name), animate = true)
         }
         refreshParent()
     }
@@ -255,7 +255,7 @@ internal class ModernGroupPanel(
         children.clear()
         entries.forEach { entry ->
             val child = ModernTileView(context, ModernTileView.Kind.CHILD).apply {
-                bind(host.childModel(entry.entityId, entry.name), animate = false)
+                bind(host.childModel(requireNotNull(tileId), entry.entityId, entry.name), animate = false)
                 setOnClickListener { view ->
                     if (closing) return@setOnClickListener
                     resetTimer()

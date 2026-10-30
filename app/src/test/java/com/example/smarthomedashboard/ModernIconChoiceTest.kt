@@ -123,8 +123,10 @@ class ModernIconChoiceTest {
         val model = previewModel(host)
         assertEquals(ModernIcon.GATE, model.groupIcon)
         assertEquals(2, model.items.size)
+        assertTrue(model.items.all { it.icon == ModernIcon.GATE })
         assertEquals("Иконка группы", host.findViewById<TextView>(R.id.tvModernIconLabel).text)
         picker(host).cellFor(null).performClick()
         assertNull(previewModel(host).groupIcon)
+        assertEquals(ModernIcon.BULB, previewModel(host).items[1].icon)
     }
 }

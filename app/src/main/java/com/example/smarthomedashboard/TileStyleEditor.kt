@@ -123,7 +123,7 @@ internal class TileStyleEditor(
     private fun modernModel(isGroup: Boolean, ids: List<Pair<String, String>>): ModernTileView.Model {
         val states = ids.map { confirmed(it.first) }
         if (isGroup) {
-            val items = ids.mapIndexed { i, (id, _) -> ModernTileView.Item(icon(id), states[i]) }
+            val items = ids.mapIndexed { i, (id, _) -> ModernTileView.Item(icon ?: icon(id), states[i]) }
             return ModernTileView.Model(title(), ModernIcon.EMPTY_GRID, groupState(states, classic = false), items = items,
                 groupIcon = icon)
         }

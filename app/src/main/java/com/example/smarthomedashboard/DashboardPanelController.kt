@@ -65,7 +65,7 @@ internal class DashboardPanelController(
     // Раскрытая Modern-группа: собственный overlay и таймер, те же команды ViewModel.
     internal val modernGroup by lazy {
         ModernGroupPanel(activity, { activity.findViewById(android.R.id.content) }, object : ModernGroupPanel.Host {
-            override fun childModel(entityId: String, name: String) = modernChildModel(entityId, name)
+            override fun childModel(tileId: String, entityId: String, name: String) = modernChildModel(tileId, entityId, name)
             override fun parentModel(tileId: String) =
                 tileManager.getAllTiles().find { it.id == tileId && it.type == "group" }?.let(::modernModel)
             override fun childTapped(tileId: String, entityId: String, view: View) {
@@ -453,7 +453,7 @@ internal class DashboardPanelController(
             }
             // Один общий spinner — только для общей команды этой группы.
             val pending = ids.mapNotNull { viewModel.commands.pendingFor(it)?.takeIf { p -> p.groupId == tile.id }?.startedAtMs }.minOrNull()
-            val items = ids.mapIndexed { i, id -> ModernTileView.Item(modernIcon(id), states[i], recentFailure(id)) }
+            val items = ids.mapIndexed { i, id -> ModernTileView.Item(chosen ?: modernIcon(id), states[i], recentFailure(id)) }
             return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, pending, null, items, groupIcon = chosen)
         }
         val id = (TileButtonConfig.entityId(tile.config) as? ButtonConfigResult.Valid)?.value
@@ -467,8 +467,9 @@ internal class DashboardPanelController(
     }
 
     /** Дочерняя кнопка панели: свой spinner только при индивидуальной команде. */
-    private fun modernChildModel(entityId: String, name: String) = ModernTileView.Model(
-        name, modernIcon(entityId), viewModel.devices.confirmedState(entityId),
+    private fun modernChildModel(tileId: String, entityId: String, name: String) = ModernTileView.Model(
+        name, tileManager.getAllTiles().find { it.id == tileId && it.type == "group" }
+            ?.let { ModernIcon.fromConfig(it.config) } ?: modernIcon(entityId), viewModel.devices.confirmedState(entityId),
         viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId)
     )
 
