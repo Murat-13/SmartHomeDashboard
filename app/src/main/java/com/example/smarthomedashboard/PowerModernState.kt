@@ -60,7 +60,10 @@ internal class PowerStateTracker {
         }
         val currentRule = config.rules.getOrNull(current)
         val targetRule = config.rules.getOrNull(target)
-        val beyond = currentRule == null || targetRule == null || targetRule.isPoint ||
+        // Граница пульсации (вход в критический интервал и выход из него) — без гистерезиса, но с тем же
+        // подтверждением: иначе устойчивые 280 В после 279 В не пульсируют, а 151 В после 150 В — пульсируют.
+        val pulseBoundary = currentRule != null && targetRule != null && currentRule.pulse != targetRule.pulse
+        val beyond = currentRule == null || targetRule == null || targetRule.isPoint || pulseBoundary ||
             currentRule.distance(voltage) >= config.hysteresis
         if (!beyond) {
             // Колебание у границы в пределах гистерезиса: ожидание нового диапазона сбрасывается.
