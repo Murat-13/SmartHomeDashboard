@@ -838,7 +838,7 @@ internal class DashboardPanelController(
     /** Показания, прогнозы и статус связи — из данных панели; часы тикают внутри самих карточек. */
     private fun renderClimate(tile: TileEntity, view: FrameLayout?) {
         val snapshot = HomeClimateSnapshot.from(tile.title, HomeClimateConfig.from(tile.config),
-            viewModel.uiState.value.haSession, viewModel.devices)
+            viewModel.uiState.value.haSession, viewModel.devices, viewModel.uiState.value.yandexWeather)
         view?.findViewWithTag<HomeClimateCompactView>("hc_compact")?.bind(snapshot)
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
             (modernExpansion.card as? HomeClimateExpandedCard)?.bind(snapshot)
@@ -1102,5 +1102,11 @@ internal class DashboardPanelController(
     }
 
     fun updateClockViews() = contentController.updateClockViews()
-    fun updateWeatherViews() = contentController.updateWeatherViews()
+    fun updateWeatherViews() {
+        contentController.updateWeatherViews()
+        tileManager.getAllTiles().filter { it.type == HomeClimateConfig.TYPE &&
+            HomeClimateConfig.from(it.config).weather.source == HomeClimateConfig.SOURCE_YANDEX }.forEach {
+            renderClimate(it, viewForTile(it.id) as? FrameLayout)
+        }
+    }
 }

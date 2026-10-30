@@ -122,7 +122,15 @@ class YandexWeatherManager(private val context: Context) {
         }
     }
 
-    fun fetchWeather(scope: CoroutineScope, callback: WeatherCallback? = null) {
+    internal var climateData = YandexClimateWeather()
+        private set
+
+    private fun reportError(callback: WeatherCallback?, message: String) {
+        climateData = climateData.copy(cached = climateData.updatedAt > 0, error = message)
+        callback?.onError(message)
+    }
+
+    fun fetchWeather(scope: CoroutineScope, callback: WeatherCallback? = null, requiredByTile: Boolean = false) {
         cancelPendingRequests()
         val request = requestGeneration
         pendingRead = scope.launch {
@@ -130,14 +138,14 @@ class YandexWeatherManager(private val context: Context) {
             if (request != requestGeneration || !scope.isActive || !WeatherKeyAccess.isCurrent(result)) return@launch
             val configuration = result.configuration
             if (!result.usable || configuration == null) {
-                callback?.onError(result.message)
+                reportError(callback, result.message)
                 return@launch
             }
             fun active() = request == requestGeneration && scope.isActive && matches(result)
-            if (!active() || !configuration.enabled) return@launch
+            if (!active() || (!configuration.enabled && !requiredByTile)) return@launch
             val apiKey = result.value.orEmpty()
             if (apiKey.isEmpty()) {
-                callback?.onError(result.message)
+                reportError(callback, result.message)
                 return@launch
             }
             val lat = configuration.latitude
@@ -150,7 +158,7 @@ class YandexWeatherManager(private val context: Context) {
             } catch (_: IllegalArgumentException) {
                 // OkHttp включает недопустимое значение заголовка в exception.message.
                 // Ключ оставляем в хранилище, но не передаём исключение в UI/логи.
-                if (active()) callback?.onError("Некорректные настройки запроса погоды Яндекса")
+                if (active()) reportError(callback, "Некорректные настройки запроса погоды Яндекса")
                 return@launch
             }
 
@@ -158,7 +166,7 @@ class YandexWeatherManager(private val context: Context) {
             activeCall?.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     scope.launch {
-                        if (active()) callback?.onError("Не удалось загрузить погоду Яндекса")
+                        if (active()) reportError(callback, "Не удалось загрузить погоду Яндекса")
                     }
                 }
 
@@ -168,13 +176,14 @@ class YandexWeatherManager(private val context: Context) {
                         // Только код ответа: ключ, URL и тело ответа не попадают в диагностику.
                         android.util.Log.d("YandexWeather", "HTTP ${response.code}")
                         if (!response.isSuccessful) {
-                            scope.launch { if (active()) callback?.onError("Response not successful: ${response.code}") }
+                            scope.launch { if (active()) reportError(callback, "Response not successful: ${response.code}") }
                             return
                         }
 
                         val body = response.body?.string() ?: ""
                         try {
                             val json = JSONObject(body)
+                            val climate = YandexClimateWeather.parse(json)
                             val fact = json.getJSONObject("fact")
                             val currentTemp = fact.optInt("temp").toString()
                             val currentState = fact.optString("condition", "unknown")
@@ -187,8 +196,8 @@ class YandexWeatherManager(private val context: Context) {
                             val forecastsArray = json.optJSONArray("forecasts")
                             if (forecastsArray != null) {
                                 for (i in 0 until forecastsArray.length()) {
-                                    val dayJson = forecastsArray.getJSONObject(i)
-                                    val parts = dayJson.getJSONObject("parts")
+                                    val dayJson = forecastsArray.optJSONObject(i) ?: continue
+                                    val parts = dayJson.optJSONObject("parts") ?: JSONObject()
 
                                     // Пробуем day_short, если нет - берем day или morning+evening
                                     val dayPart = parts.optJSONObject("day_short") ?: parts.optJSONObject("day")
@@ -236,6 +245,7 @@ class YandexWeatherManager(private val context: Context) {
                                 this@YandexWeatherManager.forecasts = forecasts
                                 this@YandexWeatherManager.hourlyForecasts = hourlyForecasts
                                 lastUpdate = System.currentTimeMillis()
+                                climateData = climate
 
                                 // Сохраняем в кэш
                                 prefs.edit().apply {
@@ -267,6 +277,7 @@ class YandexWeatherManager(private val context: Context) {
                                     }
                                     putString("yandex_last_hourly", hourlyJson.toString())
 
+                                    putString("yandex_climate_cache", climateData.toJson())
                                     putLong("yandex_last_update", lastUpdate)
                                     apply()
                                 }
@@ -275,7 +286,7 @@ class YandexWeatherManager(private val context: Context) {
                                 callback?.onWeatherUpdated()
                             }
                         } catch (_: Exception) {
-                            scope.launch { if (active()) callback?.onError("Не удалось прочитать прогноз Яндекса") }
+                            scope.launch { if (active()) reportError(callback, "Не удалось прочитать прогноз Яндекса") }
                         }
                     }
                 }
@@ -327,6 +338,8 @@ class YandexWeatherManager(private val context: Context) {
         }
 
         lastUpdate = prefs.getLong("yandex_last_update", 0)
+        climateData = YandexClimateWeather.fromCache(prefs.getString("yandex_climate_cache", null))
+            ?: YandexClimateWeather.legacy(currentTemp, currentState, humidity, pressure, windSpeed, windDir, lastUpdate)
     }
 
     fun loadLat() = prefs.getString("yandex_lat", "").orEmpty()

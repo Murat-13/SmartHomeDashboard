@@ -148,6 +148,32 @@ class HomeClimatePanelTest {
         assertEquals(1f, tile().alpha)
     }
 
+    @Test fun yandexRefreshUpdatesCompactAndExpandedInPlaceWithoutHaConnection() {
+        open()
+        val tile = manager.loadTiles().first { it.id == "hc" }
+        val config = HomeClimateConfig.from(tile.config)
+        manager.updateTile(tile.copy(config = config.copy(weather = config.weather.copy(source = HomeClimateConfig.SOURCE_YANDEX)).writeTo(tile.config)))
+        ArchitectureTestAccess.methods(activity).single { it.name == "refreshBottomPanel" && it.parameterTypes.isEmpty() }
+            .apply { isAccessible = true }.invoke(activity)
+        state.value = state.value.copy(haSession = HaSession())
+        fun update(temp: Int) {
+            viewModel.onYandexWeatherChanged(YandexClimateWeather.parse(JSONObject().put("fact", JSONObject()
+                .put("temp", temp).put("condition", "clear"))))
+            controller.updateWeatherViews()
+        }
+        val compact = compact()
+        update(13)
+        assertSame(compact, compact())
+        assertEquals("13 °C", compact.boundSnapshot!!.current.temperature!!.full())
+        assertNull(compact.boundSnapshot!!.rooms.first().temperature)
+        tap(tile())
+        val card = controller.modernExpansion.card as HomeClimateExpandedCard
+        update(15)
+        assertSame(card, controller.modernExpansion.card)
+        assertEquals("15 °C", card.boundSnapshot!!.current.temperature!!.full())
+        assertEquals("15 °C", compact.boundSnapshot!!.current.temperature!!.full())
+    }
+
     @Test fun editModeTapDoesNotExpand() {
         open()
         viewModel.setEditMode(true)

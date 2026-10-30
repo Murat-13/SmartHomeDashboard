@@ -24,6 +24,7 @@ data class MainUiState(
     val hourlyUnsupported: Set<String> = emptySet(),
     val dailyForecasts: Map<String, JSONArray?> = emptyMap(),
     val dailyUnsupported: Set<String> = emptySet(),
+    internal val yandexWeather: YandexClimateWeather = YandexClimateWeather(),
     val isEditMode: Boolean = false,
     val statusMessage: String? = null
 )

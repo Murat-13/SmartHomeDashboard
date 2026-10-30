@@ -217,32 +217,40 @@ class HomeClimateEditorActivity : PinProtectedActivity() {
 
     private fun renderWeather() {
         val weather = draft.config.weather
-        content.addView(kit.label("Сущность погоды Home Assistant", 14f))
-        val entityLabel = if (weather.entityId.isBlank()) "Выбрать weather.*…" else "${kit.entityName(weather.entityId)}\n${weather.entityId}"
-        content.addView(kit.button(entityLabel, "hc_weather_entity") {
-            kit.pickEntityWhere(weather.entityId, { it.startsWith("weather.") }) {
-                draft.setWeather(draft.config.weather.copy(entityId = it)); changed()
-            }
+        content.addView(kit.label("Источник погоды", 14f))
+        content.addView(choice("hc_weather_source", listOf(HomeClimateConfig.SOURCE_HA to "Home Assistant", HomeClimateConfig.SOURCE_YANDEX to "Яндекс"), weather.source) {
+            draft.setWeather(draft.config.weather.copy(source = it)); changed()
         })
-        val manual = kit.input(weather.entityId, "или введите entity_id, например weather.home").apply { tag = "hc_weather_manual" }
-        val error = kit.label("", 13f).apply { setTextColor(Color.rgb(255, 120, 120)) }
-        manual.addTextChangedListener(kit.watcher { value ->
-            draft.setWeather(draft.config.weather.copy(entityId = value.trim())); changed(rebuild = false)
-        })
-        content.addView(manual)
-        content.addView(kit.button("Применить entity_id", "hc_weather_apply") {
-            val id = manual.text.toString().trim()
-            if (id.isNotEmpty() && !HomeClimateConfig.validEntity(id, "weather")) { error.text = "Нужна сущность вида weather.…"; return@button }
-            draft.setWeather(draft.config.weather.copy(entityId = id)); changed()
-        })
-        content.addView(error)
-        if (weather.entityId.isNotBlank() && model.singleStates.isNotEmpty() && weather.entityId !in model.singleStates) {
-            content.addView(kit.label("⚠ Сущность пока не найдена среди данных Home Assistant панели.", 13f).apply {
-                setTextColor(Color.rgb(255, 205, 120))
+        if (weather.source == HomeClimateConfig.SOURCE_YANDEX) {
+            content.addView(kit.label("Используются сохранённые ключ и координаты Яндекса из общих настроек. Погода загрузится после сохранения плитки.", 13f))
+        } else {
+            content.addView(kit.label("Сущность погоды Home Assistant", 14f))
+            val entityLabel = if (weather.entityId.isBlank()) "Выбрать weather.*…" else "${kit.entityName(weather.entityId)}\n${weather.entityId}"
+            content.addView(kit.button(entityLabel, "hc_weather_entity") {
+                kit.pickEntityWhere(weather.entityId, { it.startsWith("weather.") }) {
+                    draft.setWeather(draft.config.weather.copy(entityId = it)); changed()
+                }
             })
+            val manual = kit.input(weather.entityId, "или введите entity_id, например weather.home").apply { tag = "hc_weather_manual" }
+            val error = kit.label("", 13f).apply { setTextColor(Color.rgb(255, 120, 120)) }
+            manual.addTextChangedListener(kit.watcher { value ->
+                draft.setWeather(draft.config.weather.copy(entityId = value.trim())); changed(rebuild = false)
+            })
+            content.addView(manual)
+            content.addView(kit.button("Применить entity_id", "hc_weather_apply") {
+                val id = manual.text.toString().trim()
+                if (id.isNotEmpty() && !HomeClimateConfig.validEntity(id, "weather")) { error.text = "Нужна сущность вида weather.…"; return@button }
+                draft.setWeather(draft.config.weather.copy(entityId = id)); changed()
+            })
+            content.addView(error)
+            if (weather.entityId.isNotBlank() && model.singleStates.isNotEmpty() && weather.entityId !in model.singleStates) {
+                content.addView(kit.label("⚠ Сущность пока не найдена среди данных Home Assistant панели.", 13f).apply {
+                    setTextColor(Color.rgb(255, 205, 120))
+                })
+            }
         }
         content.addView(kit.label("Единицы температуры", 14f))
-        content.addView(choice("hc_unit", listOf(HomeClimateConfig.UNIT_AUTO to "Как в Home Assistant",
+        content.addView(choice("hc_unit", listOf(HomeClimateConfig.UNIT_AUTO to (if (weather.source == HomeClimateConfig.SOURCE_YANDEX) "Как в Яндексе" else "Как в Home Assistant"),
             HomeClimateConfig.UNIT_C to "°C", HomeClimateConfig.UNIT_F to "°F"), weather.unit) {
             draft.setWeather(draft.config.weather.copy(unit = it)); changed()
         })

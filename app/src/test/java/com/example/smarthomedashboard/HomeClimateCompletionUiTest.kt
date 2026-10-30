@@ -98,4 +98,24 @@ class HomeClimateCompletionUiTest {
         assertEquals(HomeClimateConfig.DATE_NUMERIC, editor.draft.config.clock.dateFormat)
     }
 
+    @Test fun weatherSourceSwitchIsLocalSurvivesRotationAndPreservesHaChoice() {
+        val editor = open()
+        editor.showSection(HomeClimateEditorActivity.SECTION_WEATHER)
+        fun root(a: HomeClimateEditorActivity) = a.findViewById<View>(android.R.id.content)
+        root(editor).findViewWithTag<EditText>("hc_weather_manual").setText("weather.previous")
+        root(editor).findViewWithTag<View>("hc_weather_source_1").performClick()
+        assertEquals(HomeClimateConfig.SOURCE_YANDEX, editor.draft.config.weather.source)
+        assertNull(root(editor).findViewWithTag<View>("hc_weather_manual"))
+        assertEquals(HomeClimateConfig.SOURCE_HA, HomeClimateConfig.from(manager.loadTiles().single().config).weather.source)
+        val saved = Bundle()
+        screens.last().saveInstanceState(saved).stop().destroy(); screens.removeAt(screens.lastIndex)
+        val restored = open(saved)
+        assertEquals(HomeClimateConfig.SOURCE_YANDEX, restored.draft.config.weather.source)
+        root(restored).findViewWithTag<View>("hc_weather_source_0").performClick()
+        assertEquals("weather.previous", root(restored).findViewWithTag<EditText>("hc_weather_manual").text.toString())
+        root(restored).findViewWithTag<View>("hc_weather_source_1").performClick()
+        assertTrue(restored.save())
+        assertEquals(HomeClimateConfig.SOURCE_YANDEX, HomeClimateConfig.from(TileManager(context).loadTiles().single().config).weather.source)
+    }
+
 }

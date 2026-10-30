@@ -36,7 +36,8 @@ internal data class HomeClimateConfig(
         val showPrecipitation: Boolean = true,
         val showPressure: Boolean = true,
         val showHourly: Boolean = true,
-        val showDaily: Boolean = true
+        val showDaily: Boolean = true,
+        val source: String = SOURCE_HA
     )
 
     data class Room(
@@ -83,7 +84,7 @@ internal data class HomeClimateConfig(
             if (!validEntity(room.temperatureEntity, "sensor")) return "Выберите sensor.* температуры для комнаты «${room.name}»"
             if (room.humidityEntity.isNotBlank() && !validEntity(room.humidityEntity, "sensor")) return "Выберите sensor.* влажности для комнаты «${room.name}»"
         }
-        if (weather.entityId.isNotBlank() && !validEntity(weather.entityId, "weather")) return "Погода: нужна сущность weather.*"
+        if (weather.source == SOURCE_HA && weather.entityId.isNotBlank() && !validEntity(weather.entityId, "weather")) return "Погода: нужна сущность weather.*"
         if (favorites.size > MAX_FAVORITES) return "Избранных комнат может быть не больше $MAX_FAVORITES"
         return null
     }
@@ -97,6 +98,7 @@ internal data class HomeClimateConfig(
             clock.timeZone?.let { put("time_zone", it) }
         })
         put("weather", JSONObject().apply {
+            put("source", weather.source)
             put("entity_id", weather.entityId)
             put("unit", weather.unit)
             put("feels_like", weather.showFeelsLike)
@@ -150,6 +152,8 @@ internal data class HomeClimateConfig(
         const val DATE_NUMERIC = "numeric" // 30.10.2026
         val DATE_FORMATS = listOf(DATE_FULL to "Пятница, 30 октября", DATE_SHORT to "Пт, 30 окт.", DATE_NUMERIC to "30.10.2026")
 
+        const val SOURCE_HA = "ha"
+        const val SOURCE_YANDEX = "yandex"
         const val UNIT_AUTO = "auto"
         const val UNIT_C = "C"
         const val UNIT_F = "F"
@@ -199,7 +203,8 @@ internal data class HomeClimateConfig(
                     showPrecipitation = weather?.optBoolean("precipitation", true) ?: true,
                     showPressure = weather?.optBoolean("pressure", true) ?: true,
                     showHourly = weather?.optBoolean("hourly", true) ?: true,
-                    showDaily = weather?.optBoolean("daily", true) ?: true
+                    showDaily = weather?.optBoolean("daily", true) ?: true,
+                    source = weather?.optString("source")?.takeIf { it == SOURCE_YANDEX } ?: SOURCE_HA
                 ),
                 rooms, favorites
             )

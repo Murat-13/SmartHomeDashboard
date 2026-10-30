@@ -112,6 +112,7 @@ class MainActivity : AppCompatActivity() {
         tileManager = TileManager(this)
         yandexWeatherManager = YandexWeatherManager(this)
         yandexWeatherManager.loadFromCache()
+        viewModel.onYandexWeatherChanged(yandexWeatherManager.climateData)
 
         createStarterTilesOnFirstLaunch()
 
@@ -189,12 +190,18 @@ class MainActivity : AppCompatActivity() {
         // Локальный доступ к ключу не запускает запрос, если Яндекс не выбран источником погоды.
         yandexWeatherManager.fetchWeather(lifecycleScope, object : YandexWeatherManager.WeatherCallback {
             override fun onWeatherUpdated() {
-                runOnUiThread { panelController.updateWeatherViews() }
+                runOnUiThread {
+                    viewModel.onYandexWeatherChanged(yandexWeatherManager.climateData)
+                    panelController.updateWeatherViews()
+                }
             }
             override fun onError(error: String) {
+                viewModel.onYandexWeatherChanged(yandexWeatherManager.climateData)
+                if (::tileManager.isInitialized && ::bottomPanel.isInitialized) panelController.updateWeatherViews()
                 Log.e("MainActivity", "Yandex Weather Error: $error")
             }
-        })
+        }, requiredByTile = ::tileManager.isInitialized && tileManager.getAllTiles().any { it.type == HomeClimateConfig.TYPE &&
+            HomeClimateConfig.from(it.config).weather.source == HomeClimateConfig.SOURCE_YANDEX })
     }
 
     @Suppress("DEPRECATION")

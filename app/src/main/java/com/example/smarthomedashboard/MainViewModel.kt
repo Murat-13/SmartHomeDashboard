@@ -218,6 +218,10 @@ class MainViewModel : ViewModel() {
         return client.callService(domain, service, entityId, onResult)
     }
 
+    internal fun onYandexWeatherChanged(weather: YandexClimateWeather) {
+        _uiState.update { it.copy(yandexWeather = weather) }
+    }
+
     fun getWebSocket(): HomeAssistantWebSocket? = webSocket
 
     internal fun onStatesSnapshot(states: List<HaEntityState>) {

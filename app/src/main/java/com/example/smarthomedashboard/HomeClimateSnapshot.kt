@@ -26,6 +26,18 @@ internal data class HomeClimateSnapshot(
 
     data class Forecasts(val state: ForecastState, val items: List<HomeClimateData.Forecast> = emptyList())
 
+    private fun withYandex(data: YandexClimateWeather, roomStatus: String?): HomeClimateSnapshot {
+        if (config.weather.source != HomeClimateConfig.SOURCE_YANDEX) return this
+        val available = data.updatedAt > 0
+        val readings = BatteryReadings(HaSession(available, available), { data.condition }, { false }, { data.attributes })
+        val weatherOnly = build(title, config.copy(weather = config.weather.copy(entityId = "weather.yandex"), rooms = emptyList(), favorites = emptyList()),
+            readings, { data.attributes }, { data.hourly }, { available }, { false },
+            dailyData = { data.daily }, dailyKnown = { available })
+        val current = weatherOnly.current.copy(status = data.status() ?: weatherOnly.current.status)
+        val status = listOfNotNull(data.status(), roomStatus?.takeIf { config.rooms.isNotEmpty() }?.let { "Комнаты: $it" }).joinToString(" · ").ifBlank { null }
+        return copy(current = current, hourly = weatherOnly.hourly, daily = weatherOnly.daily, offlineStatus = status)
+    }
+
     companion object {
         fun build(
             title: String,
@@ -83,18 +95,19 @@ internal data class HomeClimateSnapshot(
             )
         }
 
-        fun from(title: String, config: HomeClimateConfig, session: HaSession, devices: DashboardDeviceState) = build(
+        fun from(title: String, config: HomeClimateConfig, session: HaSession, devices: DashboardDeviceState,
+                 yandex: YandexClimateWeather = YandexClimateWeather()) = build(
             title, config, BatteryReadings.from(session, devices), devices.entityAttributes::get,
             devices.hourlyForecasts::get, devices.hourlyForecasts::containsKey, { it in devices.hourlyUnsupported },
             dailyData = devices.dailyForecasts::get, dailyKnown = devices.dailyForecasts::containsKey,
             dailyUnsupported = { it in devices.dailyUnsupported }
-        )
+        ).withYandex(yandex, BatteryReadings.from(session, devices).status)
 
         /** Предпросмотр редактора: тот же снимок текущих данных и прогнозов панели. */
         fun from(title: String, config: HomeClimateConfig, model: MainUiState) = build(
             title, config, BatteryReadings.from(model), model.entityAttributes::get, model.hourlyForecasts::get, model.hourlyForecasts::containsKey, { it in model.hourlyUnsupported },
             dailyData = model.dailyForecasts::get, dailyKnown = model.dailyForecasts::containsKey,
             dailyUnsupported = { it in model.dailyUnsupported }
-        )
+        ).withYandex(model.yandexWeather, BatteryReadings.from(model).status)
     }
 }

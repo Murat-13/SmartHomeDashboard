@@ -21,7 +21,7 @@ internal data class PanelSubscriptionPlan(
                     // У плитки своя сущность HA; выбор Яндекса для прежней плитки погоды ей не мешает.
                     val config = HomeClimateConfig.from(tile.config)
                     val weather = config.weather
-                    if (weather.entityId.startsWith("weather.")) {
+                    if (weather.source == HomeClimateConfig.SOURCE_HA && weather.entityId.startsWith("weather.")) {
                         ids.add(weather.entityId)
                         if (weather.showDaily) weatherIds.add(weather.entityId)
                         // Вероятность осадков берётся из ближайшего часа.

@@ -432,4 +432,26 @@ class WeatherConsumerIntegrationTest {
             assertEquals(1234L, prefs.getLong("yandex_last_update", 0L))
         } finally { scope.cancel(); manager.cancelPendingRequests() }
     }
+    @Test fun tileCanUseSavedYandexKeyWithoutChangingLegacyGlobalSource() {
+        seed()
+        prefs.edit().putBoolean("use_yandex_weather", false).commit()
+        val requests = CopyOnWriteArrayList<Request>()
+        val manager = manager { request -> requests.add(request); response(request) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        var updates = 0
+        try {
+            manager.fetchWeather(scope, callback(updated = { updates++ }), requiredByTile = true)
+            weatherAwait { updates == 1 }
+            assertEquals(1, requests.size)
+            assertFalse(prefs.getBoolean("use_yandex_weather", true))
+            assertEquals(12.0, manager.climateData.attributes.getDouble("temperature"), 0.0)
+            assertEquals("12", manager.currentTemp)
+            assertFalse(manager.climateData.toJson().contains("FAKE-WEATHER"))
+            assertFalse(manager.climateData.toJson().contains("latitude"))
+            val restored = YandexWeatherManager(app).apply { loadFromCache() }
+            assertEquals(12.0, restored.climateData.attributes.getDouble("temperature"), 0.0)
+            assertTrue(restored.climateData.cached)
+        } finally { scope.cancel(); manager.cancelPendingRequests() }
+    }
+
 }
