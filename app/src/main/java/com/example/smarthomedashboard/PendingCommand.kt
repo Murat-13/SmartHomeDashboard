@@ -17,5 +17,7 @@ data class PendingCommand(
     val observedAfterStart: Boolean = false,
     val alreadyConfirmed: Boolean = false,
     val sent: Boolean = false,
-    val acknowledged: Boolean = false
+    val acknowledged: Boolean = false,
+    /** id группы, если команда отправлена общей кнопкой группы; null — индивидуальная команда. */
+    val groupId: String? = null
 )

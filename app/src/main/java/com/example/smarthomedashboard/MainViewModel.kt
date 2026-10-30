@@ -21,6 +21,9 @@ class MainViewModel : ViewModel() {
     private val powerTrackers = mutableMapOf<String, PowerStateTracker>()
     internal fun powerTracker(tileId: String) = powerTrackers.getOrPut(tileId) { PowerStateTracker() }
     internal fun retainPowerTrackers(tileIds: Set<String>) { powerTrackers.keys.retainAll(tileIds) }
+
+    // Открытая Modern-группа остаётся открытой после поворота и изменения размера окна.
+    internal var openModernGroup: String? = null
     internal val commands = DashboardDeviceCommands(
         devices, ::callService, ::publishDevices,
         render = { id -> commandStateCallback?.invoke(id) },

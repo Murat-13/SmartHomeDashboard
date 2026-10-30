@@ -46,6 +46,7 @@ class TileSettingsActivity : PinProtectedActivity() {
 
     private var previewJob: Job? = null
     private var sensorEditor: SensorTileEditor? = null
+    private var styleEditor: TileStyleEditor? = null
     private val sensorPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         sensorEditor?.pickerResult(if (result.resultCode == Activity.RESULT_OK) result.data?.getStringArrayListExtra("selected_sensors") else null)
     }
@@ -117,6 +118,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 val showSize = position == 1 || position == 2
                 findViewById<View>(R.id.tvButtonSizeLabel).visibility = if (showSize) View.VISIBLE else View.GONE
                 etButtonSize.visibility = if (showSize) View.VISIBLE else View.GONE
+                styleEditor?.update()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
@@ -129,6 +131,7 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         restoreSensorSelection(savedInstanceState)
         initializeSensorEditor(savedInstanceState)
+        initializeStyleEditor(savedInstanceState)
         updateTypeHint()
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).navigationIcon?.setTint(android.graphics.Color.WHITE)
 
@@ -183,6 +186,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         outState.putString(STATE_TILE_ID, tileId)
         outState.putStringArrayList(STATE_SELECTED_SENSORS, ArrayList(selectedSensors))
         outState.putBoolean(STATE_SELECTION_CHANGED, sensorSelectionChanged)
+        styleEditor?.let { outState.putString(STATE_STYLE, it.style.key) }
         sensorEditor?.let { editor ->
             outState.putString("sensor_draft", editor.draft.saveState())
             outState.putString("sensor_preview", editor.saveUiState())
@@ -317,6 +321,8 @@ class TileSettingsActivity : PinProtectedActivity() {
                 return false
             }
             if (!unchanged) existingConfig.put("button_size", buttonSize)
+            // Стиль записывается только у новой плитки или при фактической смене: старая запись без ключа остаётся Classic.
+            styleEditor?.let { TileStyleEditor.writeIfChanged(existingConfig, it.style, isNew = oldTile == null) }
         }
 
         // Новая «АКБ Modern» получает готовый шаблон (без источников) и подходящий размер; существующие ключи не меняются.
@@ -415,6 +421,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             selectedSensors.isEmpty() -> getString(R.string.none_selected)
             else -> "Выбрано: ${selectedSensors.size} (${selectedSensors.joinToString(", ")})"
         }
+        styleEditor?.update()
     }
 
     /** После экрана устройств группы источник правды — сохранённая плитка, а не старый выбор этого экрана. */
@@ -454,7 +461,12 @@ class TileSettingsActivity : PinProtectedActivity() {
         super.onStart()
         previewJob?.cancel()
         TileEditorPreviewSource.states?.let { flow ->
-            previewJob = lifecycleScope.launch { flow.collect { if (isSensorEditorActive()) sensorEditor?.acceptState(it) } }
+            previewJob = lifecycleScope.launch {
+                flow.collect {
+                    if (isSensorEditorActive()) sensorEditor?.acceptState(it)
+                    styleEditor?.acceptState(it)
+                }
+            }
         }
     }
 
@@ -470,6 +482,25 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     private fun isSensorEditorActive() = sensorEditor != null && spinnerType.selectedItemPosition == 0
+
+    private fun initializeStyleEditor(saved: Bundle?) {
+        val original = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
+        val initial = saved?.getString(STATE_STYLE)?.let { key -> TileButtonStyle.entries.find { it.key == key } }
+            ?: original?.let { TileButtonStyle.of(it.config) }
+            ?: TileButtonStyle.NEW_TILE
+        val editor = TileStyleEditor(this, initial, { etTitle.text.toString().trim() }, { typeAt(spinnerType.selectedItemPosition) },
+            { etButtonSize.text.toString().toIntOrNull() ?: TilePlacement.BUTTON_SIZE },
+            { selectedSensors.map { it to it } })
+        styleEditor = editor
+        val watcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) { editor.update() }
+        }
+        etTitle.addTextChangedListener(watcher)
+        etButtonSize.addTextChangedListener(watcher)
+        TileEditorPreviewSource.states?.value?.let(editor::acceptState) ?: editor.update()
+    }
 
     private fun initializeSensorEditor(saved: Bundle?) {
         val original = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
@@ -575,6 +606,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         private const val STATE_TILE_ID = "tile_settings_tile_id"
         private const val STATE_SELECTED_SENSORS = "tile_settings_selected_sensors"
         private const val STATE_SELECTION_CHANGED = "tile_settings_selection_changed"
+        private const val STATE_STYLE = "tile_settings_button_style"
         private const val REQUEST_SELECT_SENSORS = 1001
         private const val REQUEST_EDIT_CHILDREN = 1002
         private const val REQUEST_ADVANCED_SETTINGS = 1003

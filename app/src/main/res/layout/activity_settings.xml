@@ -325,6 +325,24 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:text="Кнопки Modern"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="4dp" />
+
+            <!-- Только для кнопок и групп в стиле Modern; Classic настройку не читает. -->
+            <CheckBox
+                android:id="@+id/cbModernHaptics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Виброотклик Modern"
+                android:textColor="#BBBBBB"
+                android:buttonTint="#4CAF50" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:text="Резервное копирование"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"

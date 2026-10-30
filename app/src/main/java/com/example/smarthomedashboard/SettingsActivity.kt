@@ -111,6 +111,7 @@ class SettingsActivity : PinProtectedActivity() {
         loadWeatherConfiguration()
 
         cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
+        findViewById<CheckBox?>(R.id.cbModernHaptics)?.isChecked = prefs.getBoolean(ModernHaptics.PREF, true)
 
         val tempUnit = prefs.getString("temp_unit", "C") ?: "C"
         if (tempUnit == "F") {
@@ -330,6 +331,7 @@ class SettingsActivity : PinProtectedActivity() {
                 putString("app_theme", selectedTheme)
                 putString("temp_unit", tempUnit)
                 putBoolean("kiosk_mode", cbKioskMode.isChecked)
+                findViewById<CheckBox?>(R.id.cbModernHaptics)?.let { putBoolean(ModernHaptics.PREF, it.isChecked) }
             }
 
             etHaToken.text.clear()

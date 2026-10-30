@@ -18,9 +18,23 @@ internal class DashboardDeviceCommands(
     private var nextOperationId = 0L
     private val pending = linkedMapOf<String, PendingCommand>()
     private val deadlines = mutableMapOf<String, Runnable>()
+    // Время (elapsedRealtime) последней надёжно обнаруженной ошибки команды по entity ID.
+    // Только для краткой индикации Modern: факты и Classic от неё не зависят. Разрыв связи
+    // ошибкой команды не считается: для него есть состояние «недоступно».
+    private val failures = mutableMapOf<String, Long>()
     val pendingCommands: Map<String, PendingCommand> get() = pending.toMap()
 
     fun pendingFor(id: String): PendingCommand? = pending[id]
+
+    /** Момент ошибки, если она случилась не раньше [windowMs] назад. */
+    fun recentFailure(id: String, windowMs: Long, now: Long = SystemClock.elapsedRealtime()): Long? {
+        val at = failures[id] ?: return null
+        if (now - at < windowMs) return at
+        failures.remove(id)
+        return null
+    }
+
+    private fun failed(id: String) { failures[id] = SystemClock.elapsedRealtime() }
 
     fun toggleSingle(id: String): String? {
         expireOverdue()
@@ -43,17 +57,19 @@ internal class DashboardDeviceCommands(
         if (ids.isEmpty() || ids.any { it in pending }) return
         val active = state.groupIsOn(group, ids)
         val expected = if (active) "off" else "on"
-        val commands = ids.distinct().associateWith { begin(it, expected) }
+        val commands = ids.distinct().associateWith { begin(it, expected, group) }
         notifyChanged(commands.keys)
         // Сохраняем прежние порядок, сервис и дубликаты списка участников.
         ids.forEach { id -> commands[id]?.takeIf { pending[id]?.operationId == it.operationId }?.let(::dispatch) }
     }
 
-    private fun begin(id: String, expected: String): PendingCommand {
+    private fun begin(id: String, expected: String, groupId: String? = null): PendingCommand {
         val now = SystemClock.elapsedRealtime()
+        failures.remove(id)
         val command = PendingCommand(
             id, expected, ++nextOperationId, connectionGeneration(), now, now + 20_000L,
-            alreadyConfirmed = state.confirmedState(id) != ConfirmedState.UNAVAILABLE && state.singleStates[id] == expected
+            alreadyConfirmed = state.confirmedState(id) != ConfirmedState.UNAVAILABLE && state.singleStates[id] == expected,
+            groupId = groupId
         )
         pending[id] = command
         val deadline = Runnable {
@@ -61,6 +77,7 @@ internal class DashboardDeviceCommands(
                 val observed = pending.getValue(id).observedAfterStart
                 remove(id)
                 if (!observed) state.markUnconfirmed(id)
+                failed(id)
                 error("Устройство не подтвердило переключение. Проверьте его состояние")
                 notifyChanged(listOf(id))
             }
@@ -89,7 +106,7 @@ internal class DashboardDeviceCommands(
                     val observed = pending.getValue(id).observedAfterStart
                     remove(id)
                     if (currentResult == ServiceCommandResult.ACK_TIMEOUT && !observed) state.markUnconfirmed(id)
-                    if (currentResult == ServiceCommandResult.DISCONNECTED) state.markDisconnected()
+                    if (currentResult == ServiceCommandResult.DISCONNECTED) state.markDisconnected() else failed(id)
                     error(when (currentResult) {
                         ServiceCommandResult.REJECTED -> "Home Assistant отклонил команду"
                         ServiceCommandResult.ACK_TIMEOUT -> "Нет ответа Home Assistant на команду"
@@ -101,6 +118,7 @@ internal class DashboardDeviceCommands(
         }
         if (!accepted && isCurrent(command)) {
             remove(id)
+            failed(id)
             error("Команда не отправлена: проверьте соединение с Home Assistant")
             notifyChanged(listOf(id))
         } else if (accepted && isCurrent(command)) {

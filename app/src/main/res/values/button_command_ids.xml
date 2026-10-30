@@ -1,3 +1,4 @@
 <resources>
     <item name="button_command_appearance" type="id" />
+    <item name="modern_press_started" type="id" />
 </resources>

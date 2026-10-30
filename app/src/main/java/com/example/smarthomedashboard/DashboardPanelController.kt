@@ -62,6 +62,24 @@ internal class DashboardPanelController(
     private var expandedSourceButton: Button? = null
     private var expandedTile: TileEntity? = null
 
+    // Раскрытая Modern-группа: собственный overlay и таймер, те же команды ViewModel.
+    internal val modernGroup by lazy {
+        ModernGroupPanel(activity, { activity.findViewById(android.R.id.content) }, object : ModernGroupPanel.Host {
+            override fun childModel(entityId: String, name: String) = modernChildModel(entityId, name)
+            override fun parentModel(tileId: String) =
+                tileManager.getAllTiles().find { it.id == tileId && it.type == "group" }?.let(::modernModel)
+            override fun childTapped(tileId: String, entityId: String, view: View) {
+                if (isEditMode) return
+                ModernPress.haptic(view)
+                viewModel.commands.toggleMember(tileId, entityId)
+                updateGroupButtonAppearance(tileId)
+            }
+            override fun closed(tileId: String) {
+                if (viewModel.openModernGroup == tileId) viewModel.openModernGroup = null
+            }
+        })
+    }
+
     private val sensorExpansion = SensorExpansionSession(handler)
     private val expandedSensorView: View? get() = sensorExpansion.current
     private val contentController by lazy {
@@ -135,7 +153,11 @@ internal class DashboardPanelController(
     fun refreshBottomPanel() {
         // Форматирование нового дерева должно учитывать уже изменённые настройки.
         host.readPreferences()
-        clearPanelInteractions()
+        // Открытая Modern-панель переживает перестроение дерева и пересоздание экрана (поворот).
+        val keepModernGroup = (if (modernGroup.isOpen) modernGroup.tileId else viewModel.openModernGroup)
+            ?.takeIf { !isEditMode }
+            ?.let { id -> tileManager.getAllTiles().find { it.id == id && it.type == "group" && TileButtonStyle.isModern(it.type, it.config) } }
+        clearPanel(keepModernGroup = keepModernGroup != null && modernGroup.isOpen)
         bottomPanel.removeAllViews()
 
         val tiles = tileManager.getTilesByContainer("bottom_panel")
@@ -175,6 +197,21 @@ internal class DashboardPanelController(
                 y = (screenH - DEFAULT_BUTTON_SIZE - 80).toFloat()
             }
             bottomPanel.addView(btnA)
+        }
+
+        if (keepModernGroup == null) {
+            viewModel.openModernGroup = null
+        } else {
+            (renderedViews[keepModernGroup.id] as? ModernTileView)?.let { source ->
+                val entries = modernEntries(keepModernGroup)
+                if (modernGroup.isOpen) modernGroup.reattach(source, keepModernGroup.title, entries)
+                // После пересоздания Activity — сразу открытая панель, без повторного вступления.
+                else bottomPanel.post {
+                    if (source.parent === bottomPanel && !isEditMode && viewModel.openModernGroup == keepModernGroup.id) {
+                        modernGroup.open(keepModernGroup.id, keepModernGroup.title, entries, source, animate = false)
+                    }
+                }
+            } ?: modernGroup.clear()
         }
 
         // Используем уже полученные значения, не ожидая следующего события или тика часов.
@@ -365,14 +402,71 @@ internal class DashboardPanelController(
         }
     }
 
-    private fun createTileButton(tile: TileEntity): Button {
+    private fun createTileButton(tile: TileEntity): View {
         val sz = getButtonSize(tile)
+        if (TileButtonStyle.isModern(tile.type, tile.config)) return createModernTile(tile, sz)
         return TileButtonFactory.create(activity, tile.title, tile.id, sz, ButtonCommandAppearance.OFF).apply {
             renderTileButton(this, tile)
             if (tile.type == "group") setupGroupTouch(tile, this)
             else setupButtonTouch(tile, this)
         }
     }
+
+    private fun createModernTile(tile: TileEntity, size: Int): View {
+        val kind = if (tile.type == "group") ModernTileView.Kind.GROUP else ModernTileView.Kind.SINGLE
+        return ModernTileView(activity, kind).apply {
+            tag = tile.id
+            layoutParams = FrameLayout.LayoutParams(size, size)
+            editOutline = isEditMode
+            bind(modernModel(tile), animate = false)
+            if (tile.type == "group") setupGroupTouch(tile, this)
+            else setupButtonTouch(tile, this)
+        }
+    }
+
+    /** Устройства группы в порядке конфигурации; повреждённая конфигурация — пустой список. */
+    private fun modernEntries(tile: TileEntity): List<ModernGroupPanel.Entry> {
+        val group = (TileButtonConfig.group(tile.config) as? ButtonConfigResult.Valid)?.value ?: return emptyList()
+        return group.entityIds.mapIndexed { i, id -> ModernGroupPanel.Entry(id, group.childNames[i]) }
+    }
+
+    private fun modernIcon(entityId: String, hint: String? = null) =
+        ModernIcon.forEntity(entityId, viewModel.devices.entityAttributes[entityId], hint)
+
+    private fun recentFailure(entityId: String) =
+        viewModel.commands.recentFailure(entityId, ModernTileView.ERROR_MS)
+
+    /**
+     * Только подтверждённые факты HA: Modern не рисует предполагаемый ON/OFF. Ожидание и ошибка —
+     * отдельные признаки по entity ID, цвет от них не меняется.
+     */
+    internal fun modernModel(tile: TileEntity): ModernTileView.Model {
+        if (tile.type == "group") {
+            val ids = modernEntries(tile).map { it.entityId }
+            val states = ids.map { viewModel.devices.confirmedState(it) }
+            val state = when {
+                ConfirmedState.ON in states -> ConfirmedState.ON
+                ConfirmedState.OFF in states || ids.isEmpty() -> ConfirmedState.OFF
+                else -> ConfirmedState.UNAVAILABLE
+            }
+            // Один общий spinner — только для общей команды этой группы.
+            val pending = ids.mapNotNull { viewModel.commands.pendingFor(it)?.takeIf { p -> p.groupId == tile.id }?.startedAtMs }.minOrNull()
+            val items = ids.mapIndexed { i, id -> ModernTileView.Item(modernIcon(id), states[i], recentFailure(id)) }
+            return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, pending, null, items)
+        }
+        val id = (TileButtonConfig.entityId(tile.config) as? ButtonConfigResult.Valid)?.value
+            ?: return ModernTileView.Model(tile.title, ModernIcon.POWER, ConfirmedState.OFF)
+        return ModernTileView.Model(
+            tile.title, modernIcon(id, tile.icon.takeIf { it.isNotBlank() }), viewModel.devices.confirmedState(id),
+            viewModel.commands.pendingFor(id)?.startedAtMs, recentFailure(id)
+        )
+    }
+
+    /** Дочерняя кнопка панели: свой spinner только при индивидуальной команде. */
+    private fun modernChildModel(entityId: String, name: String) = ModernTileView.Model(
+        name, modernIcon(entityId), viewModel.devices.confirmedState(entityId),
+        viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId)
+    )
 
     private fun renderTileButton(button: Button, tile: TileEntity) {
         val ids = if (tile.type == "group") {
@@ -426,8 +520,9 @@ internal class DashboardPanelController(
             Toast.LENGTH_SHORT).show()
     }
 
-    private fun setupGroupTouch(tile: TileEntity, button: Button) {
+    private fun setupGroupTouch(tile: TileEntity, button: View) {
         val editDrag = bindEditDrag(button, tile.id)
+        val modern = button is ModernTileView
         var pressRunnable: Runnable? = null
         var startX = 0f
         var startY = 0f
@@ -443,9 +538,13 @@ internal class DashboardPanelController(
                     hasMoved = false
                     startX = event.rawX
                     startY = event.rawY
+                    if (modern) ModernPress.handle(view, event, enabled = true)
                     pressRunnable = Runnable {
                         if (!gestureActive) return@Runnable
-                        if (expandedGroupId == tile.id) collapseChildButtons()
+                        if (view is ModernTileView) {
+                            if (modernGroup.isOpen && modernGroup.tileId == tile.id) modernGroup.close()
+                            else expandModernGroup(tile, view)
+                        } else if (expandedGroupId == tile.id) collapseChildButtons()
                         else expandChildButtons(tile, view as Button)
                     }.also { handler.postDelayed(it, 1000L) }
                     true
@@ -456,19 +555,26 @@ internal class DashboardPanelController(
                         kotlin.math.abs(event.rawY - startY) > 10) {
                         hasMoved = true
                         pressRunnable?.let { handler.removeCallbacks(it) }
+                        if (modern) ModernPress.release(view)
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!gestureActive) return@setOnTouchListener true
                     gestureActive = false
+                    if (modern) ModernPress.handle(view, event, enabled = true)
                     view.performClick()
                     pressRunnable?.let { handler.removeCallbacks(it) }
                     pressRunnable = null
-                    if (!hasMoved && expandedGroupId != tile.id) toggleGroup(tile.id)
+                    val expanded = if (modern) modernGroup.tileId == tile.id else expandedGroupId == tile.id
+                    if (!hasMoved && !expanded) {
+                        if (modern) ModernPress.haptic(view)
+                        toggleGroup(tile.id)
+                    }
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    if (modern) ModernPress.handle(view, event, enabled = true)
                     pressRunnable?.let { handler.removeCallbacks(it) }
                     pressRunnable = null
                     gestureActive = false
@@ -482,21 +588,39 @@ internal class DashboardPanelController(
 
     private fun setupButtonTouch(
         tile: TileEntity,
-        button: Button
+        button: View
     ) {
+        val modern = button is ModernTileView
         button.setOnClickListener {
             if (!isEditMode) {
                 val eid = buttonEntityId(tile, reportError = true)
                 if (eid != null) {
+                    if (modern) ModernPress.haptic(button)
                     viewModel.commands.toggleSingle(eid)
                 }
             }
         }
 
         val editDrag = bindEditDrag(button, tile.id)
-        button.setOnTouchListener { _, event ->
-            if (isEditMode) editDrag.onTouch(event) else false
+        button.setOnTouchListener { view, event ->
+            if (isEditMode) editDrag.onTouch(event)
+            else {
+                if (modern) ModernPress.handle(view, event, enabled = true)
+                false
+            }
         }
+    }
+
+    private fun expandModernGroup(tile: TileEntity, source: ModernTileView) {
+        // Тот же разбор конфигурации, что и у Classic; пустая группа открывает панель с подписью.
+        if (TileButtonConfig.group(tile.config) is ButtonConfigResult.Invalid) { showButtonConfigError(); return }
+        collapseChildButtons()
+        collapseSensor()
+        collapseModernBattery()
+        ModernPress.release(source)
+        ModernPress.haptic(source)
+        viewModel.openModernGroup = tile.id
+        modernGroup.open(tile.id, tile.title, modernEntries(tile), source, animate = true)
     }
 
     private fun bindEditDrag(view: View, tileId: String): TileEditDragHandler {
@@ -649,6 +773,7 @@ internal class DashboardPanelController(
         collapseSensor()
         collapseModernBattery()
         collapseChildButtons()
+        modernGroup.close()
     }
 
     /** Modern-плитки (АКБ, Электропитание): общие раскрытие, resize, перемещение и редактирование. */
@@ -730,6 +855,7 @@ internal class DashboardPanelController(
 
     private fun expandModernBattery(tile: TileEntity, source: View) {
         collapseChildButtons()
+        modernGroup.close()
         if (tile.type == PowerModernConfig.TYPE) {
             // Компоновка по эскизу: широкая карточка, слева линия и главные цифры, справа строки.
             val width = minOf((screenW * 0.86f).toInt(), 1500)
@@ -764,7 +890,10 @@ internal class DashboardPanelController(
         sensorExpansion.clear()
     }
 
-    fun clearPanelInteractions() {
+    fun clearPanelInteractions() = clearPanel(keepModernGroup = false)
+
+    private fun clearPanel(keepModernGroup: Boolean) {
+        if (!keepModernGroup) modernGroup.clear()
         renderedViews.clear()
         dependencyIndex = PanelDependencyIndex(emptyList())
         panelEntityTiles = null
@@ -828,8 +957,11 @@ internal class DashboardPanelController(
         val tile = tileManager.getAllTiles().find { it.id == gid && it.type == "group" } ?: return
         for (i in 0 until bottomPanel.childCount) {
             val child = bottomPanel.getChildAt(i)
-            if (child is Button && child.tag == gid) renderTileButton(child, tile)
+            if (child.tag != gid) continue
+            if (child is ModernTileView) child.bind(modernModel(tile), animate = true)
+            else if (child is Button) renderTileButton(child, tile)
         }
+        if (modernGroup.tileId == gid) modernGroup.refreshParent()
     }
 
     private fun toggleGroup(gid: String) {
@@ -869,9 +1001,13 @@ internal class DashboardPanelController(
 
     private fun renderControls(tiles: List<TileEntity>, changed: Set<String>) {
         tiles.forEach { tile ->
-            val button = viewForTile(tile.id) as? Button ?: return@forEach
-            if (tile.type == "button" || tile.type == "group") renderTileButton(button, tile)
+            if (tile.type != "button" && tile.type != "group") return@forEach
+            when (val view = viewForTile(tile.id)) {
+                is ModernTileView -> view.bind(modernModel(tile), animate = true)
+                is Button -> renderTileButton(view, tile)
+            }
         }
+        if (modernGroup.tileId != null) modernGroup.render(changed)
         val group = expandedGroupId?.let { id -> tileManager.getAllTiles().find { it.id == id } }
         val config = group?.let { TileButtonConfig.group(it.config) }
         expandedChildButtons.forEachIndexed { childIndex, button ->
