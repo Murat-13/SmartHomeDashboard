@@ -35,6 +35,9 @@ internal class PowerModernCard(
 ) : FrameLayout(context), ModernOverlayCard, ModernHideAware {
     private val scaled = mutableListOf<Pair<TextView, Float>>()
     private var scale = 1f
+    /** Ширина кольца ореола снаружи тёмного тела, внутри собственных границ карточки (px). */
+    internal var haloPx = haloFor(1f)
+        private set
     private val density = resources.displayMetrics.density
 
     // ---- Оформление: только заранее созданные объекты, onDraw ничего не выделяет. ----
@@ -98,10 +101,13 @@ internal class PowerModernCard(
         tag = if (expanded) "pm_expanded" else "pm_compact"
         setWillNotDraw(false)
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
-        clipToOutline = true
+        // Ореол рисуется снаружи тела: обрезки по контуру нет, содержимое удерживает внутренний отступ.
+        // Контур (тень от elevation) — по телу, а не по внешним границам с ореолом.
+        clipToOutline = false
         outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, radius())
+                val inset = haloPx.toInt()
+                outline.setRoundRect(inset, inset, view.width - inset, view.height - inset, radius())
             }
         }
         val header = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -368,7 +374,7 @@ internal class PowerModernCard(
     private fun updateShader() {
         if (height <= 0) return
         val c = accent
-        tintPaint.shader = LinearGradient(0f, 0f, width * 0.35f, height.toFloat(),
+        tintPaint.shader = LinearGradient(haloPx, haloPx, width * 0.35f, height - haloPx,
             Color.argb(92, Color.red(c), Color.green(c), Color.blue(c)),
             Color.argb(22, Color.red(c), Color.green(c), Color.blue(c)), Shader.TileMode.CLAMP)
     }
@@ -378,22 +384,36 @@ internal class PowerModernCard(
         val h = height.toFloat()
         if (w <= 0 || h <= 0) return
         val r = radius()
-        rect.set(0f, 0f, w, h)
+        val c = accent
+        val halo = haloPx
+        // Внешний ореол: три кольца в зарезервированном отступе, яркость убывает наружу и следует
+        // пульсации. Только заранее созданные Paint/RectF, без размытия и без выделений памяти.
+        if (halo >= 1f) {
+            val band = halo / 3f
+            glowPaint.strokeWidth = band
+            for (i in 1..3) {
+                val offset = band * (i - 0.5f)
+                glowPaint.color = Color.argb((70 * glowLevel * (4 - i) / 3f).toInt().coerceIn(0, 255),
+                    Color.red(c), Color.green(c), Color.blue(c))
+                rect.set(halo - offset, halo - offset, w - halo + offset, h - halo + offset)
+                canvas.drawRoundRect(rect, r + offset, r + offset, glowPaint)
+            }
+        }
+        rect.set(halo, halo, w - halo, h - halo)
         canvas.drawRoundRect(rect, r, r, basePaint)
         canvas.drawRoundRect(rect, r, r, tintPaint)
-        val c = accent
-        // Мягкое свечение у кромки: три полупрозрачные обводки внутри границ, без размытия.
+        // Мягкое свечение у внутренней кромки тела.
         for (i in 3 downTo 1) {
             val stroke = 2.2f * i * scale * density
             glowPaint.strokeWidth = stroke
             glowPaint.color = Color.argb((26 * glowLevel * (4 - i)).toInt().coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
-            rect.set(stroke / 2, stroke / 2, w - stroke / 2, h - stroke / 2)
+            rect.set(halo + stroke / 2, halo + stroke / 2, w - halo - stroke / 2, h - halo - stroke / 2)
             canvas.drawRoundRect(rect, r, r, glowPaint)
         }
         val border = (1.4f * scale * density).coerceAtLeast(1.5f)
         borderPaint.strokeWidth = border
         borderPaint.color = Color.argb((235 * glowLevel).toInt().coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
-        rect.set(border / 2, border / 2, w - border / 2, h - border / 2)
+        rect.set(halo + border / 2, halo + border / 2, w - halo - border / 2, h - halo - border / 2)
         canvas.drawRoundRect(rect, r, r, borderPaint)
     }
 
@@ -449,12 +469,14 @@ internal class PowerModernCard(
 
     private fun applyScale(next: Float) {
         scale = next
+        haloPx = haloFor(next)
         scaled.forEach { (view, base) ->
             if (view !== voltage && view !== power && view !== voltageUnit && view !== powerUnit) {
                 view.setTextSize(TypedValue.COMPLEX_UNIT_PX, base * next)
             }
         }
-        val pad = (18 * next).toInt()
+        // Содержимое — внутри тела: к прежнему отступу добавляется кольцо ореола.
+        val pad = (18 * next).toInt() + haloPx.toInt()
         (getChildAt(0) as? ViewGroup)?.setPadding(pad, pad, pad, pad)
         val iconSide = ((if (expanded) 64 else 40) * next).toInt().coerceAtLeast(1)
         icon.layoutParams = (icon.layoutParams as LinearLayout.LayoutParams).apply {
@@ -557,6 +579,13 @@ internal class PowerModernCard(
         const val UNIT_RATIO = 0.46f
         /** Ниже этого масштаба частота скрывается. */
         const val SMALL_SCALE = 0.72f
+        /** Базовая ширина ореола (px при масштабе 1): небольшой отступ внутри сохранённого размера плитки. */
+        const val HALO = 8f
+
+        fun haloFor(scale: Float) = HALO * scale.coerceIn(0.6f, 2f)
+
+        /** Масштаб компактной карточки по размеру плитки — как в onSizeChanged. */
+        fun compactScale(width: Int, height: Int) = minOf(width / 300f, height / 360f).coerceIn(0.35f, 2.6f)
         val SECONDARY = Color.rgb(170, 186, 196)
         val UNIT_COLOR = Color.argb(225, 255, 255, 255)
 
@@ -579,10 +608,13 @@ internal class PowerModernCard(
                 layoutParams = LayoutParams(width, height)
                 tag = tileId
                 elevation = 8f
-                clipToOutline = true
+                // Ореол карточки выходит за тело, но остаётся в сохранённых границах плитки:
+                // обрезки нет, тень — по телу. Размер, координаты и область касания прежние.
+                clipToOutline = false
                 outlineProvider = object : ViewOutlineProvider() {
                     override fun getOutline(view: View, outline: Outline) {
-                        outline.setRoundRect(0, 0, view.width, view.height, 32f)
+                        val inset = haloFor(compactScale(view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))).toInt()
+                        outline.setRoundRect(inset, inset, view.width - inset, view.height - inset, 32f)
                     }
                 }
             }

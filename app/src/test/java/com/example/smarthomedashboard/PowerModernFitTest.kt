@@ -75,6 +75,41 @@ class PowerModernFitTest {
         }
     }
 
+    @Test fun outerHaloIsDrawnOutsideDarkBodyWithinOwnBounds() {
+        val card = card("228", "980", 300, 360)
+        val halo = card.haloPx
+        assertTrue("Кольцо ореола небольшое: $halo", halo in 4f..12f)
+        val bitmap = android.graphics.Bitmap.createBitmap(card.width, card.height, android.graphics.Bitmap.Config.ARGB_8888)
+        card.draw(android.graphics.Canvas(bitmap))
+        val y = card.height / 2
+        fun alpha(x: Int) = android.graphics.Color.alpha(bitmap.getPixel(x, y))
+        val inner = bitmap.getPixel((halo * 0.8f).toInt(), y)
+        // Снаружи тела — полупрозрачный ореол цвета состояния (изумрудный: зелёный канал ведущий).
+        assertTrue("ореол виден: ${Integer.toHexString(inner)}", android.graphics.Color.alpha(inner) in 1..254)
+        assertTrue(android.graphics.Color.green(inner) > android.graphics.Color.red(inner))
+        assertTrue("яркость убывает наружу", alpha(0) < alpha((halo * 0.8f).toInt()))
+        // Тёмное тело начинается сразу за кольцом и непрозрачно.
+        assertEquals(255, alpha(halo.toInt() + 6))
+        // Контур (тень) — по телу; содержимое не заходит на кольцо; сохранённый размер прежний.
+        val outline = android.graphics.Outline()
+        card.outlineProvider.getOutline(card, outline)
+        val bounds = android.graphics.Rect()
+        assertTrue(outline.getRect(bounds))
+        assertEquals(halo.toInt(), bounds.left)
+        assertEquals(card.width - halo.toInt(), bounds.right)
+        assertFalse(card.clipToOutline)
+        assertTrue((card.getChildAt(0) as ViewGroup).paddingLeft >= halo.toInt())
+        assertEquals(300, card.width)
+        val (tile, _) = PowerModernCard.createTile(activity, "t", 300, 360, false)
+        tile.layout(0, 0, 300, 360)
+        val tileOutline = android.graphics.Outline()
+        tile.outlineProvider.getOutline(tile, tileOutline)
+        assertTrue(tileOutline.getRect(bounds))
+        assertEquals(PowerModernCard.haloFor(1f).toInt(), bounds.left)
+        assertFalse(tile.clipToOutline)
+        assertEquals(300, tile.layoutParams.width)
+    }
+
     @Test fun numbersAreLargeOnStandardTile() {
         val card = card("228", "980", 300, 360)
         val voltage = card.findViewWithTag<TextView>("pm_voltage")
