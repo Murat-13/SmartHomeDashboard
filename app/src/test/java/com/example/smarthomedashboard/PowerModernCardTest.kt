@@ -116,6 +116,31 @@ class PowerModernCardTest {
         assertNotNull(card.findViewWithTag<View>("pm_scroll"))
     }
 
+    @Test fun extraRowShowsChosenIconAndChangesItInPlace() {
+        val card = card(expanded = true, w = 1200, h = 560)
+        card.bind("Сеть · Вход", config, readings(), visual(228.0), animate = false)
+        val row = card.findViewWithTag<View>("pm_row_current")
+        val value = card.findViewWithTag<TextView>("pm_value_current")
+        val icon = card.findViewWithTag<TextView>("pm_icon_current")
+        assertEquals("Иконка шаблона «Ток»", BatteryIcons.glyph("current"), icon.text.toString())
+        assertEquals(PowerModernConfig.EMERALD, icon.currentTextColor)
+        // Смена иконки видна сразу и не пересоздаёт строку.
+        val changed = config.withRow(config.row("current")!!.copy(icon = "cycles"))
+        card.bind("Сеть · Вход", changed, readings(), visual(228.0), animate = false)
+        assertSame(row, card.findViewWithTag<View>("pm_row_current"))
+        assertSame(icon, card.findViewWithTag<TextView>("pm_icon_current"))
+        assertEquals(BatteryIcons.glyph("cycles"), icon.text.toString())
+        // Новые показания обновляют значение в тех же View.
+        states["sensor.i"] = "9.5"
+        card.bind("Сеть · Вход", changed, readings(), visual(285.0), animate = false)
+        assertSame(row, card.findViewWithTag<View>("pm_row_current"))
+        assertSame(value, card.findViewWithTag<TextView>("pm_value_current"))
+        assertEquals("9${sep}5 А", value.text.toString())
+        assertEquals("Цвет иконки следует за состоянием", PowerModernConfig.RED, icon.currentTextColor)
+        // У каждой строки шаблона своя иконка.
+        changed.extras.forEach { r -> assertEquals(r.id, BatteryIcons.glyph(r.icon), text(card, "pm_icon_${r.id}")) }
+    }
+
     @Test fun missingPowerOrFrequencyShowDashWhileVoltageKeepsColor() {
         val card = card()
         val noPower = config.withRow(config.row("power")!!.copy(entityId = ""))

@@ -83,6 +83,22 @@ class PowerModernEditorTest {
         assertEquals("Вторая плитка не изменена", inverter, manager.loadTiles().single { it.id == "inv" })
     }
 
+    @Test fun choosingRowIconInEditorChangesPreviewRowAndIsSaved() {
+        val activity = open()
+        val before = activity.preview.findViewWithTag<android.widget.TextView>("pm_icon_current")
+        assertEquals(BatteryIcons.glyph("current"), before.text.toString())
+        activity.editRow("current")
+        val dialog = checkNotNull(activity.openRowDialog).also { idle() }
+        val icons = BatteryIcons.all.keys.toList()
+        (dialog.view("bm_row_icon") as android.widget.Spinner).setSelection(icons.indexOf("health"))
+        ok(dialog)
+        val after = activity.preview.findViewWithTag<android.widget.TextView>("pm_icon_current")
+        assertSame("Строка не пересоздана", before, after)
+        assertEquals(BatteryIcons.glyph("health"), after.text.toString())
+        assertTrue(activity.save())
+        assertEquals("health", saved().row("current")!!.icon)
+    }
+
     @Test fun cancelKeepsWorkingTile() {
         val activity = open()
         activity.editRole("voltage")

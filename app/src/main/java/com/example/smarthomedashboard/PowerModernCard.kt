@@ -89,6 +89,8 @@ internal class PowerModernCard(
     val scroll: ScrollView? = if (expanded) ScrollView(context).apply { tag = "pm_scroll" } else null
     private val extrasBody = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; tag = "pm_extras" }
     private val extraValues = mutableMapOf<String, TextView>()
+    /** Иконки строк: меняются на месте, без пересоздания строк. */
+    private val extraIcons = mutableMapOf<String, TextView>()
     private var structure: String? = null
     private var iconKey: String? = null
 
@@ -197,6 +199,7 @@ internal class PowerModernCard(
         if (signature != structure) {
             structure = signature
             extraValues.clear()
+            extraIcons.clear()
             extrasBody.removeAllViews()
             rows.forEachIndexed { index, row ->
                 if (index > 0) extrasBody.addView(View(context).apply { setBackgroundColor(Color.argb(50, 255, 255, 255)) },
@@ -207,6 +210,7 @@ internal class PowerModernCard(
             applyScale(scale)
         }
         rows.forEach { row ->
+            extraIcons[row.id]?.let { set(it, BatteryIcons.glyph(row.icon)) }
             val view = extraValues[row.id] ?: return@forEach
             if (row.role == PowerModernConfig.ROLE_STATUS && !row.configured) {
                 set(view, visual.status)
@@ -230,6 +234,15 @@ internal class PowerModernCard(
             val p = (10 * scale).toInt()
             setPadding(p, p, p, p)
         }
+        // Иконка из общего набора Modern (как у АКБ), в цвете состояния плитки.
+        val icon = text(24f, accent, bold = true).apply {
+            tag = "pm_icon_${row.id}"
+            gravity = Gravity.CENTER
+            text = BatteryIcons.glyph(row.icon)
+        }
+        extraIcons[row.id] = icon
+        line.addView(icon, LinearLayout.LayoutParams((40 * scale).toInt().coerceAtLeast(1), ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { rightMargin = (8 * scale).toInt() })
         line.addView(text(22f, SECONDARY).apply {
             text = if (row.hidden) "${row.label} (скрыто)" else row.label
             maxLines = 1
@@ -345,6 +358,7 @@ internal class PowerModernCard(
         icon.setColorFilter(color)
         sine.setColorFilter(color)
         status.setTextColor(color)
+        extraIcons.values.forEach { it.setTextColor(color) }
         divider.setBackgroundColor(Color.argb(90, Color.red(color), Color.green(color), Color.blue(color)))
         frequencyBackground.setStroke(2, Color.argb(70, Color.red(color), Color.green(color), Color.blue(color)))
         updateShader()
