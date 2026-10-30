@@ -190,6 +190,30 @@ class TileSettingsActivityTest {
         assertFalse(JSONObject(save(recreated).config).has("modern_icon"))
     }
 
+    @Test fun powerDraftSurvivesRecreationAndOnlyConfirmationWritesIt() {
+        val old = tile("""{"entity_id":"switch.a","button_style":"modern","modern_icon":"gate","custom":42}""")
+            .copy(type = "button", container = "bottom_panel")
+        manager.saveTiles(listOf(old))
+        val activity = open()
+        val editor = initializeIconEditor(activity)
+        (editor.powerEditor.getChildAt(1) as android.widget.Switch).isChecked = true
+        invoke(activity, "saveTile")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(old, manager.loadTiles().single()) // Незаполненная включённая опция не сохраняется.
+        (editor.powerEditor.getChildAt(2) as android.widget.AutoCompleteTextView).setText("sensor.boiler_power")
+        assertEquals(old, manager.loadTiles().single())
+        val bundle = savedState(activity)
+        val recreated = open(bundle)
+        val restored = initializeIconEditor(recreated, bundle)
+        assertEquals(LivePowerConfig(true, "sensor.boiler_power"), restored.powerEditor.config)
+        val stored = JSONObject(save(recreated).config)
+        assertTrue(stored.getBoolean("show_power"))
+        assertEquals("sensor.boiler_power", stored.getString("power_entity_id"))
+        assertEquals(LivePowerConfig(true, "sensor.boiler_power"), LivePowerConfig.read(TileManager(context).loadTiles().single().config))
+        assertEquals("gate", stored.getString("modern_icon"))
+        assertEquals(42, stored.getInt("custom"))
+    }
+
     @Test fun hiddenButtonSizeDoesNotChangeSensorBatteryOrWeatherDimensionsOnSave() {
         for (type in listOf("sensor", "battery", "weather")) {
             for (size in listOf<String?>(null, "287")) {

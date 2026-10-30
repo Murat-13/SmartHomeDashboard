@@ -462,7 +462,8 @@ internal class DashboardPanelController(
         val hint = (tile.icon as String?)?.takeIf { it.isNotBlank() }
         return ModernTileView.Model(
             tile.title, chosen ?: modernIcon(id, hint), viewModel.devices.confirmedState(id),
-            viewModel.commands.pendingFor(id)?.startedAtMs, recentFailure(id)
+            viewModel.commands.pendingFor(id)?.startedAtMs, recentFailure(id),
+            powerText = powerText(LivePowerConfig.read(tile.config))
         )
     }
 
@@ -470,8 +471,14 @@ internal class DashboardPanelController(
     private fun modernChildModel(tileId: String, entityId: String, name: String) = ModernTileView.Model(
         name, tileManager.getAllTiles().find { it.id == tileId && it.type == "group" }
             ?.let { ModernIcon.fromConfig(it.config) } ?: modernIcon(entityId), viewModel.devices.confirmedState(entityId),
-        viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId)
+        viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId),
+        powerText = powerText(tileManager.getAllTiles().find { it.id == tileId }?.let {
+            runCatching { LivePowerConfig.read(JSONObject(it.config).optJSONObject("child_power")?.optJSONObject(entityId)) }.getOrNull()
+        } ?: LivePowerConfig())
     )
+
+    private fun powerText(config: LivePowerConfig) = config.text(viewModel.devices.singleStates,
+        viewModel.devices.entityAttributes, viewModel.devices.staleEntities)
 
     private fun renderTileButton(button: Button, tile: TileEntity) {
         val ids = if (tile.type == "group") {
@@ -1008,7 +1015,7 @@ internal class DashboardPanelController(
         tiles.forEach { tile ->
             if (tile.type != "button" && tile.type != "group") return@forEach
             when (val view = viewForTile(tile.id)) {
-                is ModernTileView -> view.bind(modernModel(tile), animate = true)
+                is ModernTileView -> modernModel(tile).let { if (view.boundModel != it) view.bind(it, animate = true) }
                 is Button -> renderTileButton(view, tile)
             }
         }

@@ -16,7 +16,8 @@ internal class GroupChildren(val items: MutableList<ChildButtonData> = mutableLi
     fun replace(position: Int, entityId: String): Change {
         if (position !in items.indices || entityId.isBlank()) return Change.IGNORED
         if (items.withIndex().any { (i, item) -> i != position && item.entityId == entityId }) return Change.DUPLICATE
-        items[position] = items[position].copy(entityId = entityId)
+        if (items[position].entityId == entityId) return Change.DONE
+        items[position] = items[position].copy(entityId = entityId, showPower = false, powerEntityId = "")
         return Change.DONE
     }
 
@@ -50,6 +51,11 @@ internal class GroupChildren(val items: MutableList<ChildButtonData> = mutableLi
             ids.put(item.entityId)
             names.put(item.name.trim().ifEmpty { (index + 1).toString() })
         }
+        val powers = JSONObject()
+        items.filter { it.showPower || it.powerEntityId.isNotEmpty() }.forEach { item ->
+            powers.put(item.entityId, JSONObject().also { LivePowerConfig(item.showPower, item.powerEntityId).writeTo(it) })
+        }
+        if (powers.length() > 0) config.put("child_power", powers) else config.remove("child_power")
         config.put("entity_ids", ids)
         config.put("child_names", names)
         // Группа управляет только списком: одиночный entity_id от прежнего типа плитки не нужен.
@@ -64,7 +70,9 @@ internal class GroupChildren(val items: MutableList<ChildButtonData> = mutableLi
             if (ids != null) {
                 for (i in 0 until ids.length()) {
                     val name = if (names != null && i < names.length()) names.optString(i) else (i + 1).toString()
-                    items += ChildButtonData(ids.optString(i), name)
+                    val id = ids.optString(i)
+                    val power = LivePowerConfig.read(config.optJSONObject("child_power")?.optJSONObject(id))
+                    items += ChildButtonData(id, name, power.enabled, power.entityId)
                 }
             } else {
                 // Плитка, переделанная из обычной кнопки в группу, хранит одно устройство в entity_id.

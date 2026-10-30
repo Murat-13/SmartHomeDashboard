@@ -12,6 +12,9 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.recyclerview.widget.ItemTouchHelper
@@ -35,6 +38,13 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
     private val group = GroupChildren(childItems)
     private var changed = false
     private var replacePosition = RecyclerView.NO_POSITION
+    private var powerEditor: ModernPowerEditor? = null
+    private var powerPreview: ModernTileView? = null
+    private var powerDialog: AlertDialog? = null
+    private var powerTarget: String? = null
+    private var powerJob: Job? = null
+    private var modernStyle = false
+    private var groupIcon: ModernIcon? = null
     private val entityNames by lazy { loadEntityNames() }
 
     private val replaceLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -67,6 +77,13 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
         })
 
         loadChildButtons()
+        savedInstanceState?.getString("children_draft")?.let { draft ->
+            runCatching { GroupChildren.fromConfig(JSONObject(draft)) }.getOrNull()?.let {
+                childItems.clear(); childItems.addAll(it.items)
+            }
+        }
+        changed = savedInstanceState?.getBoolean("children_changed") == true
+        replacePosition = savedInstanceState?.getInt("replace_position", RecyclerView.NO_POSITION) ?: RecyclerView.NO_POSITION
 
         adapter = ChildButtonAdapter(
             childItems,
@@ -76,7 +93,8 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
             },
             describe = ::describeEntity,
             onReplace = ::pickReplacement,
-            onRemove = ::removeChild
+            onRemove = ::removeChild,
+            onPower = if (modernStyle) ::editPower else null
         )
         rvChildButtons.layoutManager = LinearLayoutManager(this)
         rvChildButtons.adapter = adapter
@@ -120,6 +138,83 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
             finish()
         }
         updateEmptyState()
+        savedInstanceState?.getString("power_target")?.let { id ->
+            childItems.indexOfFirst { it.entityId == id }.takeIf { it >= 0 }?.let { position ->
+                editPower(position, savedInstanceState.getString("power_draft")?.let(LivePowerConfig::read))
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        powerJob = lifecycleScope.launch {
+            TileEditorPreviewSource.states?.collect { state ->
+                powerEditor?.acceptState(state); updatePowerPreview()
+            }
+        }
+    }
+
+    override fun onStop() { powerJob?.cancel(); powerJob = null; super.onStop() }
+
+    override fun onDestroy() { powerDialog?.dismiss(); super.onDestroy() }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("children_draft", JSONObject().also(group::writeTo).put("child_names", org.json.JSONArray(childItems.map { it.name })).toString())
+        outState.putBoolean("children_changed", changed)
+        outState.putInt("replace_position", replacePosition)
+        outState.putString("power_target", powerTarget)
+        powerEditor?.config?.let { config ->
+            outState.putString("power_draft", JSONObject().also(config::writeTo).toString())
+        }
+    }
+
+    private fun editPower(position: Int) = editPower(position, null)
+
+    private fun editPower(position: Int, restored: LivePowerConfig?) {
+        val item = childItems.getOrNull(position) ?: return
+        powerTarget = item.entityId
+        val content = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val pad = (16 * resources.displayMetrics.density).toInt(); setPadding(pad, pad, pad, pad)
+        }
+        powerEditor = ModernPowerEditor(this, restored ?: LivePowerConfig(item.showPower, item.powerEntityId)) { updatePowerPreview() }
+        content.addView(powerEditor)
+        powerPreview = ModernTileView(this, ModernTileView.Kind.CHILD).also { preview ->
+            val size = (144 * resources.displayMetrics.density).toInt()
+            content.addView(preview, android.widget.LinearLayout.LayoutParams(size, size).apply { gravity = android.view.Gravity.CENTER })
+        }
+        updatePowerPreview()
+        val scroll = android.widget.ScrollView(this).apply { addView(content) }
+        powerDialog = AlertDialog.Builder(this).setTitle("Мощность: ${item.name}").setView(scroll)
+            .setNegativeButton("Отмена", null).setPositiveButton("Применить", null).create().also { dialog ->
+                dialog.setOnDismissListener { powerEditor = null; powerPreview = null; powerTarget = null; powerDialog = null }
+                dialog.show()
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val editor = powerEditor ?: return@setOnClickListener
+                    if (!editor.validate()) return@setOnClickListener
+                    val target = childItems.firstOrNull { it.entityId == powerTarget } ?: return@setOnClickListener
+                    val config = editor.config
+                    if (target.showPower != config.enabled || target.powerEntityId != config.entityId) changed = true
+                    target.showPower = config.enabled; target.powerEntityId = config.entityId
+                    adapter.notifyItemChanged(childItems.indexOf(target))
+                    dialog.dismiss()
+                }
+            }
+    }
+
+    private fun updatePowerPreview() {
+        val target = childItems.firstOrNull { it.entityId == powerTarget } ?: return
+        val state = TileEditorPreviewSource.states?.value
+        val confirmed = when {
+            target.entityId in state?.staleEntities.orEmpty() -> ConfirmedState.UNAVAILABLE
+            state?.singleStates?.get(target.entityId) == "on" -> ConfirmedState.ON
+            state?.singleStates?.get(target.entityId) == "off" -> ConfirmedState.OFF
+            else -> ConfirmedState.UNAVAILABLE
+        }
+        powerPreview?.bind(ModernTileView.Model(target.name,
+            groupIcon ?: ModernIcon.forEntity(target.entityId, state?.entityAttributes?.get(target.entityId)),
+            confirmed, powerText = powerEditor?.powerText()), animate = false)
     }
 
     private fun closeAskingAboutChanges() {
@@ -213,6 +308,8 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
     private fun loadChildButtons() {
         tileId?.let { id ->
             val tile = tileManager.loadTiles().find { it.id == id } ?: return
+            modernStyle = TileButtonStyle.of(tile.config) == TileButtonStyle.MODERN
+            groupIcon = ModernIcon.fromConfig(tile.config)
             try {
                 childItems.addAll(GroupChildren.fromConfig(JSONObject(tile.config)).items)
             } catch (_: Exception) {}
@@ -235,6 +332,12 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
                 Toast.LENGTH_SHORT).show()
             return false
         }
+        val invalid = childItems.firstOrNull { LivePowerConfig(it.showPower, it.powerEntityId)
+            .error(TileEditorPreviewSource.states?.value?.entityAttributes?.get(it.powerEntityId)) != null }
+        if (modernStyle && invalid != null) {
+            Toast.makeText(this, "Выберите сенсор мощности для «${invalid.name}»", Toast.LENGTH_SHORT).show()
+            return false
+        }
         group.writeTo(config)
         tiles[index] = oldTile.copy(config = config.toString())
         tileManager.saveTiles(tiles)
@@ -245,7 +348,9 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
 
 data class ChildButtonData(
     val entityId: String,
-    var name: String
+    var name: String,
+    var showPower: Boolean = false,
+    var powerEntityId: String = ""
 )
 
 class ChildButtonAdapter(
@@ -257,7 +362,8 @@ class ChildButtonAdapter(
     },
     private val describe: (String) -> String = { it },
     private val onReplace: (Int) -> Unit = {},
-    private val onRemove: (Int) -> Unit = {}
+    private val onRemove: (Int) -> Unit = {},
+    private val onPower: ((Int) -> Unit)? = null
 ) : RecyclerView.Adapter<ChildButtonAdapter.ViewHolder>() {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -292,6 +398,13 @@ class ChildButtonAdapter(
             holder.bindingAdapterPosition.takeIf { it != RecyclerView.NO_POSITION }?.let(onRemove)
         }
 
+        holder.power?.apply {
+            visibility = if (onPower != null) View.VISIBLE else View.GONE
+            text = if (item.showPower) "Мощность: ${item.powerEntityId}" else "Потребляемая мощность: выключено"
+            setOnClickListener {
+                holder.bindingAdapterPosition.takeIf { it != RecyclerView.NO_POSITION }?.let { onPower?.invoke(it) }
+            }
+        }
         holder.ivDrag.setOnTouchListener { _, _ ->
             // Drag handle — ItemTouchHelper обрабатывает
             false
@@ -307,6 +420,7 @@ class ChildButtonAdapter(
         val ivDrag: ImageView = view.findViewById(R.id.ivDragHandle)
         val replace: View = view.findViewById(R.id.btnReplaceChild)
         val remove: View = view.findViewById(R.id.btnRemoveChild)
+        val power: Button? = view.findViewById(R.id.btnChildPower)
         var nameWatcher: android.text.TextWatcher? = null
     }
 }

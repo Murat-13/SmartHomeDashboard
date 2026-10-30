@@ -190,6 +190,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             outState.putString(STATE_STYLE, it.style.key)
             outState.putString(STATE_ICON, it.icon?.key)
             outState.putBoolean(STATE_ICON_CHANGED, it.iconChanged)
+            outState.putString("modern_power_draft", JSONObject().also { json -> it.powerEditor.config.writeTo(json) }.toString())
+            outState.putBoolean("modern_power_changed", it.powerEditor.changed || powerDraftChanged)
         }
         sensorEditor?.let { editor ->
             outState.putString("sensor_draft", editor.draft.saveState())
@@ -300,8 +302,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             } else if (type == "group") {
                 // Имя кнопки едет вместе со своим устройством: удаление или перестановка
                 // не сдвигают имена. Новые устройства получают номер кнопки.
-                val previous = GroupChildren.fromConfig(existingConfig).items.associate { it.entityId to it.name }
-                GroupChildren(selectedSensors.mapTo(mutableListOf()) { ChildButtonData(it, previous[it].orEmpty()) })
+                val previous = GroupChildren.fromConfig(existingConfig).items.associateBy { it.entityId }
+                GroupChildren(selectedSensors.mapTo(mutableListOf()) { previous[it] ?: ChildButtonData(it, "") })
                     .writeTo(existingConfig)
             } else {
                 existingConfig.put("entity_ids", JSONArray(selectedSensors))
@@ -330,6 +332,10 @@ class TileSettingsActivity : PinProtectedActivity() {
                 TileStyleEditor.writeIfChanged(existingConfig, it.style, isNew = oldTile == null)
                 // Иконка — только если её меняли на этом экране; иначе config остаётся как был.
                 ModernIcon.writeIfChanged(existingConfig, it.icon, it.iconChanged)
+                if (type == "button") {
+                    if (it.style == TileButtonStyle.MODERN && !it.powerEditor.validate()) return false
+                    if (it.powerEditor.changed || powerDraftChanged) it.powerEditor.config.writeTo(existingConfig)
+                }
             }
         }
 
@@ -491,6 +497,8 @@ class TileSettingsActivity : PinProtectedActivity() {
 
     private fun isSensorEditorActive() = sensorEditor != null && spinnerType.selectedItemPosition == 0
 
+    private var powerDraftChanged = false
+
     private fun initializeStyleEditor(saved: Bundle?) {
         val original = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } }
         val initial = saved?.getString(STATE_STYLE)?.let { key -> TileButtonStyle.entries.find { it.key == key } }
@@ -500,7 +508,9 @@ class TileSettingsActivity : PinProtectedActivity() {
             else original?.let { ModernIcon.fromConfig(it.config) }
         val editor = TileStyleEditor(this, initial, initialIcon, { etTitle.text.toString().trim() }, { typeAt(spinnerType.selectedItemPosition) },
             { etButtonSize.text.toString().toIntOrNull() ?: TilePlacement.BUTTON_SIZE },
-            { selectedSensors.map { it to it } })
+            { selectedSensors.map { it to it } },
+            initialPower = LivePowerConfig.read(saved?.getString("modern_power_draft") ?: original?.config ?: "{}"))
+        powerDraftChanged = saved?.getBoolean("modern_power_changed") == true
         styleEditor = editor
         val watcher = object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit

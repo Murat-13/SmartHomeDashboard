@@ -188,6 +188,59 @@ class ModernButtonsTest {
         assertEquals(ModernTileView.Visual.UNAVAILABLE, modernTile("chosen").displayedVisual)
     }
 
+    @Test fun livePowerUpdatesOnlyOptedInFullSizeButtonsIndependentlyOfSwitchState() {
+        fun configured(tile: TileEntity, sensor: String) = tile.copy(config = JSONObject(tile.config)
+            .put("show_power", true).put("power_entity_id", sensor).toString())
+        val group = group("power_group", "switch.a", "light.b").let {
+            it.copy(config = JSONObject(it.config).put("child_power", JSONObject().put("switch.a",
+                JSONObject().put("show_power", true).put("power_entity_id", "sensor.child_power"))).toString())
+        }
+        open(configured(button("with_power", "switch.a"), "sensor.single_power"),
+            button("without_power", "switch.a", x = 450), group,
+            configured(button("classic", "switch.a", style = "classic", x = 650), "sensor.single_power"))
+        event("switch.a", "off")
+        fun powerEvent(id: String, value: String) {
+            invoke(activity, "updateTilesForEntity", id, value, JSONObject().put("unit_of_measurement", "W"))
+        }
+        powerEvent("sensor.single_power", "648")
+        powerEvent("sensor.child_power", "35")
+        val full = modernTile("with_power")
+        assertEquals("648 Вт", full.boundModel!!.powerText)
+        assertEquals(ModernTileView.Visual.OFF, full.displayedVisual)
+        assertNull(modernTile("without_power").boundModel!!.powerText)
+        assertTrue(tile("classic") is Button)
+        assertNull(modernTile("power_group").boundModel!!.powerText)
+        val parentModel = modernTile("power_group").boundModel
+        touch(tile("power_group"), MotionEvent.ACTION_DOWN); advance(1100)
+        touch(tile("power_group"), MotionEvent.ACTION_UP); idle()
+        val children = controller().modernGroup.children
+        assertEquals("35 Вт", children[0].boundModel!!.powerText)
+        assertNull(children[1].boundModel!!.powerText)
+        powerEvent("sensor.child_power", "42")
+        assertEquals("42 Вт", children[0].boundModel!!.powerText)
+        assertEquals(parentModel, modernTile("power_group").boundModel)
+        assertSame(full, tile("with_power"))
+        powerEvent("sensor.single_power", "unavailable")
+        assertEquals("— Вт", full.boundModel!!.powerText)
+        assertEquals(ModernTileView.Visual.OFF, full.displayedVisual)
+        powerEvent("sensor.single_power", "0")
+        assertEquals("0 Вт", full.boundModel!!.powerText)
+        assertTrue(calls().isEmpty())
+        tap(full); advance(301)
+        assertTrue(full.isSpinnerVisible)
+        assertEquals("0 Вт", full.boundModel!!.powerText)
+        ack(calls().single(), success = false)
+        assertEquals(ModernTileView.Visual.ERROR, full.displayedVisual)
+        assertEquals("0 Вт", full.boundModel!!.powerText)
+        socket.messages.clear()
+        owner().commands.disconnected()
+        assertEquals("— Вт", full.boundModel!!.powerText)
+        assertEquals("— Вт", children[0].boundModel!!.powerText)
+        powerEvent("sensor.single_power", "1820")
+        assertEquals("1,82 кВт", full.boundModel!!.powerText)
+        assertTrue(calls().isEmpty())
+    }
+
     @Test fun legacyTileRendersClassicAndModernTileRendersModernView() {
         open(button("old", "light.a", style = null), button("new", "light.a", x = 500))
         assertTrue(tile("old") is Button)

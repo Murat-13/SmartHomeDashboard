@@ -143,14 +143,15 @@ internal class ModernGroupPanel(
         if (tileId == null) return
         children.forEachIndexed { i, child ->
             val entry = entries.getOrNull(i) ?: return@forEachIndexed
-            if (changed == null || entry.entityId in changed) child.bind(host.childModel(requireNotNull(tileId), entry.entityId, entry.name), animate = true)
+            val next = host.childModel(requireNotNull(tileId), entry.entityId, entry.name)
+            if (changed == null || child.boundModel != next) child.bind(next, animate = true)
         }
         refreshParent()
     }
 
     fun refreshParent() {
         val id = tileId ?: return
-        host.parentModel(id)?.let { clone?.bind(it, animate = true) }
+        host.parentModel(id)?.let { if (clone?.boundModel != it) clone?.bind(it, animate = true) }
     }
 
     fun resetTimer() {

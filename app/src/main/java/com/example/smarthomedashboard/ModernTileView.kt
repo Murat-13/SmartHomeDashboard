@@ -46,8 +46,14 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         /** Миниатюры группы в порядке конфигурации; пустой список — пустая группа. */
         val items: List<Item> = emptyList(),
         /** Выбранная иконка группы рядом с названием; null — прежняя компоновка без иконки. */
-        val groupIcon: ModernIcon? = null
+        val groupIcon: ModernIcon? = null,
+        val powerText: String? = null
     )
+
+    private val powerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+    }
 
     private data class Palette(val background: Int, val border: Int, val icon: Int)
 
@@ -159,6 +165,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
             visual == Visual.OFF -> "выключено"
             else -> "нет связи"
         }
+        next.powerText?.let { contentDescription = "$contentDescription, мощность $it" }
         if (previous?.title != next.title || previous?.groupIcon != next.groupIcon) titleKey = null
         invalidate()
     }
@@ -295,10 +302,11 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     private fun drawSingle(canvas: Canvas, model: Model, palette: Palette) {
         val side = min(card.width(), card.height())
         val pad = side * 0.08f
-        val iconSize = side * 0.32f
-        val layout = title(model.title, card.width() - 2 * pad, card.height() - iconSize - 3 * pad, iconSize)
+        val powerHeight = if (model.powerText != null) side * 0.16f else 0f
+        val iconSize = side * if (model.powerText != null) 0.27f else 0.32f
+        val layout = title(model.title, card.width() - 2 * pad, card.height() - iconSize - 3 * pad - powerHeight, iconSize)
         val gap = side * 0.07f
-        val total = iconSize + gap + layout.height
+        val total = iconSize + gap + layout.height + powerHeight
         var top = card.centerY() - total / 2
         val icon = when (displayedVisual) {
             Visual.ERROR -> ModernIcon.WARNING
@@ -312,6 +320,20 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         canvas.translate(card.centerX() - layout.width / 2f, top)
         layout.draw(canvas)
         canvas.restore()
+        model.powerText?.let { power ->
+            val label = power
+            powerPaint.color = palette.icon
+            powerPaint.textAlign = Paint.Align.CENTER
+            powerPaint.textSize = min(side * 0.105f, android.util.TypedValue.applyDimension(
+                android.util.TypedValue.COMPLEX_UNIT_SP, 13f, resources.displayMetrics))
+            while (powerPaint.measureText(label) + powerPaint.textSize * 1.4f > card.width() - 2 * pad && powerPaint.textSize > 1f) powerPaint.textSize *= 0.95f
+            val centerY = top + layout.height + powerHeight * 0.6f
+            val flashSize = powerPaint.textSize
+            val textCenter = card.centerX() + flashSize * 0.7f
+            ModernIcon.FLASH.draw(canvas, textCenter - powerPaint.measureText(label) / 2 - flashSize * 1.4f,
+                centerY - flashSize / 2, flashSize, iconPaint)
+            canvas.drawText(label, textCenter, centerY - (powerPaint.ascent() + powerPaint.descent()) / 2, powerPaint)
+        }
     }
 
     private fun drawGroup(canvas: Canvas, model: Model, palette: Palette) {

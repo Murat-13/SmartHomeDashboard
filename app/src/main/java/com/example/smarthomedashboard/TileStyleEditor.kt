@@ -20,7 +20,8 @@ internal class TileStyleEditor(
     private val title: () -> String,
     private val type: () -> String,
     private val sizePx: () -> Int,
-    private val entities: () -> List<Pair<String, String>>
+    private val entities: () -> List<Pair<String, String>>,
+    initialPower: LivePowerConfig = LivePowerConfig()
 ) {
     var style: TileButtonStyle = initial
         private set
@@ -44,6 +45,9 @@ internal class TileStyleEditor(
     private var state: MainUiState? = null
     private var previewView: View? = null
     private var previewKey: Any? = null
+    val powerEditor = ModernPowerEditor(activity, initialPower) { update() }.also {
+        (section as? android.view.ViewGroup)?.addView(it)
+    }
 
     init {
         classic.setOnClickListener { select(TileButtonStyle.CLASSIC) }
@@ -68,6 +72,7 @@ internal class TileStyleEditor(
 
     fun acceptState(next: MainUiState) {
         state = next
+        powerEditor.acceptState(next)
         update()
     }
 
@@ -105,6 +110,7 @@ internal class TileStyleEditor(
 
     /** Иконка настраивается только у Modern; подписи зависят от типа плитки. */
     private fun updatePicker() {
+        powerEditor.visibility = if (style == TileButtonStyle.MODERN && type() == "button") View.VISIBLE else View.GONE
         val modernVisible = if (style == TileButtonStyle.MODERN) View.VISIBLE else View.GONE
         picker.visibility = modernVisible
         iconLabel?.visibility = modernVisible
@@ -127,8 +133,8 @@ internal class TileStyleEditor(
             return ModernTileView.Model(title(), ModernIcon.EMPTY_GRID, groupState(states, classic = false), items = items,
                 groupIcon = icon)
         }
-        val id = ids.firstOrNull()?.first ?: return ModernTileView.Model(title(), icon ?: ModernIcon.POWER, ConfirmedState.OFF)
-        return ModernTileView.Model(title(), icon ?: icon(id), states.first())
+        val id = ids.firstOrNull()?.first ?: return ModernTileView.Model(title(), icon ?: ModernIcon.POWER, ConfirmedState.OFF, powerText = powerEditor.powerText())
+        return ModernTileView.Model(title(), icon ?: icon(id), states.first(), powerText = powerEditor.powerText())
     }
 
     private fun groupState(states: List<ConfirmedState>, classic: Boolean) = when {
