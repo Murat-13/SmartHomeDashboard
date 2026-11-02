@@ -59,12 +59,16 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
         if (result.resultCode == Activity.RESULT_OK && chosen != null) addEntities(chosen)
     }
 
+    /** Черновик из редактора плитки; null — прежний режим с записью в хранилище. */
+    private var draft: com.example.smarthomedashboard.data.TileEntity? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_child_buttons_editor)
 
         tileManager = TileManager(this)
         tileId = intent.getStringExtra("tile_id")
+        draft = TileDraft.from(intent)
 
         rvChildButtons = findViewById(R.id.rvChildButtons)
         btnSave = findViewById(R.id.btnSave)
@@ -133,8 +137,10 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
 
         btnSave.setOnClickListener {
             if (!saveChildButtons()) return@setOnClickListener
-            setResult(Activity.RESULT_OK)
-            Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+            if (draft == null) {
+                setResult(Activity.RESULT_OK)
+                Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+            }
             finish()
         }
         updateEmptyState()
@@ -307,7 +313,7 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
 
     private fun loadChildButtons() {
         tileId?.let { id ->
-            val tile = tileManager.loadTiles().find { it.id == id } ?: return
+            val tile = draft ?: tileManager.loadTiles().find { it.id == id } ?: return
             modernStyle = TileButtonStyle.of(tile.config) == TileButtonStyle.MODERN
             groupIcon = ModernIcon.fromConfig(tile.config)
             try {
@@ -319,11 +325,10 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
     private fun saveChildButtons(): Boolean {
         val tiles = tileManager.loadTiles().toMutableList()
         val index = tiles.indexOfFirst { it.id == tileId }
-        if (index < 0) {
+        val oldTile = draft ?: tiles.getOrNull(index) ?: run {
             Toast.makeText(this, "Не удалось сохранить: плитка больше не существует.", Toast.LENGTH_SHORT).show()
             return false
         }
-        val oldTile = tiles[index]
         val config = try {
             JSONObject(oldTile.config)
         } catch (_: org.json.JSONException) {
@@ -339,7 +344,15 @@ class ChildButtonsEditorActivity : PinProtectedActivity() {
             return false
         }
         group.writeTo(config)
-        tiles[index] = oldTile.copy(config = config.toString())
+        val updated = oldTile.copy(config = config.toString())
+        if (draft != null) {
+            // Черновик возвращается редактору плитки; в хранилище пишет только его «Сохранить».
+            draft = updated
+            setResult(Activity.RESULT_OK, TileDraft.result(updated))
+            changed = false
+            return true
+        }
+        tiles[index] = updated
         tileManager.saveTiles(tiles)
         changed = false
         return true

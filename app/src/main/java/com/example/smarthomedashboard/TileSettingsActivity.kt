@@ -62,6 +62,10 @@ class TileSettingsActivity : PinProtectedActivity() {
     private val selectedSensors = mutableListOf<String>()
     // Пустой список после загрузки не равнозначен подтверждённой пользователем очистке.
     private var sensorSelectionChanged = false
+    /** Черновик сеанса после «Расширенных»/«Устройств»: в хранилище пишет только «Сохранить». */
+    private var workingTile: TileEntity? = null
+    /** Снимок формы при открытии: по нему уход спрашивает о несохранённых правках у любой плитки. */
+    private var formBaseline = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -146,32 +150,27 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         btnAdvanced.setOnClickListener {
             if (isSensorEditorActive()) return@setOnClickListener
-            if (tileId == null && !saveTileWithoutFinish()) return@setOnClickListener
-            tileId?.let { id ->
-                val intent = Intent(this, AdvancedWidgetSettingsActivity::class.java)
-                intent.putExtra("tile_id", id)
-                startActivityForResult(intent, REQUEST_ADVANCED_SETTINGS)
-            }
+            val draft = buildTile() ?: return@setOnClickListener
+            workingTile = draft
+            startActivityForResult(Intent(this, AdvancedWidgetSettingsActivity::class.java)
+                .putExtra("tile_id", draft.id).putExtra(TileDraft.EXTRA, TileDraft.encode(draft)), REQUEST_ADVANCED_SETTINGS)
         }
 
         btnEditChildren.setOnClickListener {
             // Экран устройств работает со сохранённой группой: новую или только что ставшую
             // группой плитку сначала сохраняем.
-            val savedType = tileId?.let { id -> tileManager.loadTiles().find { it.id == id }?.type }
-            if (savedType != "group" && !saveTileWithoutFinish()) return@setOnClickListener
-            tileId?.let { id ->
-                val intent = Intent(this, ChildButtonsEditorActivity::class.java)
-                intent.putExtra("tile_id", id)
-                startActivityForResult(intent, REQUEST_EDIT_CHILDREN)
-            }
+            // Экран устройств работает с черновиком этой формы; ничего не записывается до «Сохранить».
+            val draft = buildTile() ?: return@setOnClickListener
+            workingTile = draft
+            startActivityForResult(Intent(this, ChildButtonsEditorActivity::class.java)
+                .putExtra("tile_id", draft.id).putExtra(TileDraft.EXTRA, TileDraft.encode(draft)), REQUEST_EDIT_CHILDREN)
         }
 
         btnSave.setOnClickListener { saveTile() }
         btnDelete.setOnClickListener {
-            if (isSensorEditorActive()) sensorEditor?.showDialog(AlertDialog.Builder(this)
-                .setTitle("Удалить плитку?").setMessage("Устройства и цветовые правила других плиток не изменятся.")
-                .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> deleteTile() }.create())
-            else deleteTile()
+            val dialog = ModernUi.dangerDialog(this, "Удалить плитку «${etTitle.text.toString().trim()}»?",
+                "Устройства и настройки других плиток не изменятся.", "Удалить") { deleteTile() }
+            if (isSensorEditorActive()) sensorEditor?.showDialog(dialog) else dialog.show()
         }
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
@@ -181,10 +180,22 @@ class TileSettingsActivity : PinProtectedActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = leaveEditor()
         })
+        workingTile = TileDraft.decode(savedInstanceState?.getString(STATE_DRAFT))
+        formBaseline = savedInstanceState?.getString(STATE_BASELINE) ?: formSnapshot()
     }
+
+    private fun formSnapshot() = listOf(etTitle.text.toString(), spinnerType.selectedItemPosition.toString(),
+        selectedSensors.joinToString(","), etButtonSize.text.toString(), styleEditor?.style?.key.orEmpty(),
+        styleEditor?.icon?.key.orEmpty()).joinToString("\u0001")
+
+    /** Есть несохранённые правки обычной плитки (не сенсорного редактора). */
+    private fun formDirty() = workingTile != null || sensorSelectionChanged || powerDraftChanged ||
+        styleEditor?.powerEditor?.changed == true || formSnapshot() != formBaseline
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(STATE_TILE_ID, tileId)
+        workingTile?.let { outState.putString(STATE_DRAFT, TileDraft.encode(it)) }
+        outState.putString(STATE_BASELINE, formBaseline)
         outState.putStringArrayList(STATE_SELECTED_SENSORS, ArrayList(selectedSensors))
         outState.putBoolean(STATE_SELECTION_CHANGED, sensorSelectionChanged)
         styleEditor?.let {
@@ -263,14 +274,29 @@ class TileSettingsActivity : PinProtectedActivity() {
 
     /** Возвращает false, если ввод некорректен и ничего не сохранено. */
     private fun saveTileWithoutFinish(): Boolean {
+        if (isSensorEditorActive()) {
+            if (etTitle.text.toString().trim().isEmpty()) { buildTile(); return false }
+            return saveSensorDraft()
+        }
+        val tile = buildTile() ?: return false
+        lifecycleScope.launch {
+            // Одна запись за весь сеанс, включая правки «Расширенных» и «Устройств».
+            if (tileManager.loadTiles().none { it.id == tile.id }) tileManager.addTile(tile) else tileManager.updateTile(tile)
+        }
+        tileId = tile.id
+        workingTile = null
+        return true
+    }
+
+    /** Плитка по форме и черновику сеанса, без записи. null — ввод некорректен (ошибка уже показана). */
+    private fun buildTile(): TileEntity? {
         val title = etTitle.text.toString().trim()
         if (title.isEmpty()) {
             etTitle.error = "Введите название"
             Toast.makeText(this, "Введите название", Toast.LENGTH_SHORT).show()
-            return false
+            return null
         }
 
-        if (isSensorEditorActive()) return saveSensorDraft()
         val type = typeAt(spinnerType.selectedItemPosition)
 
         val container = when (type) {
@@ -279,8 +305,10 @@ class TileSettingsActivity : PinProtectedActivity() {
             else -> "grid"
         }
 
-        var oldTile: TileEntity? = null
-        val existingConfig = if (tileId != null) {
+        var oldTile: TileEntity? = workingTile
+        val existingConfig = if (oldTile != null) {
+            try { JSONObject(oldTile.config) } catch (e: Exception) { JSONObject() }
+        } else if (tileId != null) {
             try {
                 val tile = tileManager.loadTiles().find { it.id == tileId }
                 oldTile = tile
@@ -326,7 +354,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             val maximum = TilePlacement.maxButtonSize(metrics.widthPixels, metrics.heightPixels)
             if (!unchanged && (buttonSize == null || buttonSize !in 1..maximum)) {
                 etButtonSize.error = "Размер должен быть от 1 до $maximum px"
-                return false
+                return null
             }
             if (!unchanged) existingConfig.put("button_size", buttonSize)
             // Стиль записывается только у новой плитки или при фактической смене: старая запись без ключа остаётся Classic.
@@ -335,7 +363,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 // Иконка — только если её меняли на этом экране; иначе config остаётся как был.
                 ModernIcon.writeIfChanged(existingConfig, it.icon, it.iconChanged)
                 if (type == "button") {
-                    if (it.style == TileButtonStyle.MODERN && !it.powerEditor.validate()) return false
+                    if (it.style == TileButtonStyle.MODERN && !it.powerEditor.validate()) return null
                     if (it.powerEditor.changed || powerDraftChanged) it.powerEditor.config.writeTo(existingConfig)
                 }
             }
@@ -360,16 +388,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             title = title,
             config = config
         ) ?: newTile(type, container, title, config)
-
-        lifecycleScope.launch {
-            if (tileId == null) {
-                tileManager.addTile(tile)
-                tileId = tile.id
-            } else {
-                tileManager.updateTile(tile)
-            }
-        }
-        return true
+        return tile
     }
 
     /** Пункт списка типов для профиля «Электропитание Modern»: 7 — Сеть · Вход, 8 — Инвертор · Выход. */
@@ -448,9 +467,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         styleEditor?.update()
     }
 
-    /** После экрана устройств группы источник правды — сохранённая плитка, а не старый выбор этого экрана. */
-    private fun reloadGroupDevices() {
-        val tile = tileId?.let { id -> tileManager.loadTiles().find { it.id == id } } ?: return
+    /** После экрана устройств группы источник правды — его черновик, а не старый выбор этого экрана. */
+    private fun reloadGroupDevices(tile: TileEntity) {
         val ids = try { GroupChildren.fromConfig(JSONObject(tile.config)).items.map { it.entityId } } catch (_: Exception) { return }
         selectedSensors.clear()
         selectedSensors.addAll(ids)
@@ -471,13 +489,10 @@ class TileSettingsActivity : PinProtectedActivity() {
             }
         }
         if (requestCode == REQUEST_EDIT_CHILDREN && resultCode == Activity.RESULT_OK) {
-            reloadGroupDevices()
-            // Устройства уже сохранены: панель должна обновиться, даже если здесь нажмут «назад».
-            setResult(Activity.RESULT_OK)
+            TileDraft.from(data)?.let { workingTile = it; reloadGroupDevices(it) }
         }
-        if (requestCode == REQUEST_ADVANCED_SETTINGS) {
-            setResult(Activity.RESULT_OK)
-            finish()
+        if (requestCode == REQUEST_ADVANCED_SETTINGS && resultCode == Activity.RESULT_OK) {
+            TileDraft.from(data)?.let { workingTile = it }
         }
     }
 
@@ -608,13 +623,13 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     private fun leaveEditor() {
-        val dirty = isSensorEditorActive() && (sensorEditor!!.draft.isDirty || etTitle.text.toString() != initialTitle || spinnerType.selectedItemPosition != initialType)
+        val sensor = isSensorEditorActive()
+        val dirty = if (sensor) sensorEditor!!.draft.isDirty || etTitle.text.toString() != initialTitle ||
+            spinnerType.selectedItemPosition != initialType else formDirty()
         if (!dirty) { finish(); return }
-        sensorEditor?.showDialog(AlertDialog.Builder(this).setTitle("Сохранить изменения?")
-            .setMessage("Показания и цветовые правила пока не записаны.")
-            .setPositiveButton("Сохранить") { _, _ -> saveTile() }
-            .setNegativeButton("Не сохранять") { _, _ -> finish() }
-            .setNeutralButton("Продолжить редактирование", null).create())
+        val dialog = ModernUi.leaveDialog(this, if (sensor) "Показания и цветовые правила пока не записаны."
+            else "Изменения плитки пока не записаны.", onSave = { saveTile() }, onDiscard = { finish() })
+        if (sensor) sensorEditor?.showDialog(dialog) else dialog.show()
     }
 
     private fun saveSensorDraft(): Boolean {
@@ -637,6 +652,8 @@ class TileSettingsActivity : PinProtectedActivity() {
     companion object {
         const val EXTRA_PAGE = "page"
         private const val STATE_TILE_ID = "tile_settings_tile_id"
+        private const val STATE_DRAFT = "tile_settings_draft"
+        private const val STATE_BASELINE = "tile_settings_baseline"
         private const val STATE_SELECTED_SENSORS = "tile_settings_selected_sensors"
         private const val STATE_SELECTION_CHANGED = "tile_settings_selection_changed"
         private const val STATE_STYLE = "tile_settings_button_style"

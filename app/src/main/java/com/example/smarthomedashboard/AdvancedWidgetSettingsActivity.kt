@@ -50,12 +50,16 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ====================
 
+    /** Черновик из редактора плитки; null — прежний режим с записью в хранилище. */
+    private var draft: com.example.smarthomedashboard.data.TileEntity? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_advanced_widget_settings)
 
         tileManager = TileManager(this)
         tileId = intent.getStringExtra("tile_id")
+        draft = TileDraft.from(intent)
 
         // Инициализация UI
         tvCollapsedHint = findViewById(R.id.tvCollapsedHint)
@@ -77,7 +81,7 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
     // ==================== ЗАГРУЗКА ДАННЫХ ПЛИТКИ ====================
 
     private fun loadTileData() {
-        val tile = tileId?.let { tileManager.loadTiles().find { t -> t.id == it } } ?: return
+        val tile = draft ?: tileId?.let { tileManager.loadTiles().find { t -> t.id == it } } ?: return
 
         // Размер шрифта
         etFontSize.setText(tile.fontSize.toString())
@@ -245,11 +249,10 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
     private fun saveSettings() {
         val tiles = tileManager.loadTiles().toMutableList()
         val index = tiles.indexOfFirst { it.id == tileId }
-        if (index < 0) {
+        val oldTile = draft ?: tiles.getOrNull(index) ?: run {
             Toast.makeText(this, "Не удалось сохранить: плитка больше не существует.", Toast.LENGTH_SHORT).show()
             return
         }
-        val oldTile = tiles[index]
         val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
         val config = try {
             JSONObject(oldTile.config)
@@ -295,14 +298,19 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
             }
         }
 
-        // Сохраняем плитку
-        tiles[index] = oldTile.copy(
+        val updated = oldTile.copy(
             fontSize = fontSize,
             sourceType = oldTile.sourceType,
             config = config.toString(),
             colorRules = rulesArr.toString()
         )
-
+        if (draft != null) {
+            // Черновик возвращается редактору: запись — только его кнопкой «Сохранить».
+            setResult(Activity.RESULT_OK, TileDraft.result(updated))
+            finish()
+            return
+        }
+        tiles[index] = updated
         tileManager.saveTiles(tiles)
         Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show()
         setResult(Activity.RESULT_OK)
