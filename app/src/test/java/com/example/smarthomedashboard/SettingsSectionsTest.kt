@@ -61,8 +61,12 @@ class SettingsSectionsTest {
         assertEquals(7, prefs.getInt("screen_timeout_minutes", 0))
         activity.findViewById<EditText>(R.id.etScreenTimeout).setText("0")
         assertEquals(7, prefs.getInt("screen_timeout_minutes", 0))
-        activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("3")
+        activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("0")
         assertEquals(60, prefs.getInt("pin_session_minutes", 0))
+        activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("1001")
+        assertEquals(60, prefs.getInt("pin_session_minutes", 0))
+        activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("1")
+        assertEquals(1, prefs.getInt("pin_session_minutes", 0))
         activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("45")
         assertEquals(45, prefs.getInt("pin_session_minutes", 0))
         activity.findViewById<CompoundButton>(R.id.rbFahrenheit).isChecked = true

@@ -437,6 +437,7 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     private fun saveTile() {
+        if (!requireAdmin()) return
         // При ошибке остаёмся на экране: введённые данные не должны пропадать молча.
         if (!saveTileWithoutFinish()) return
         Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
@@ -445,6 +446,7 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     private fun deleteTile() {
+        if (!requireAdmin()) return
         tileId?.let { id ->
             lifecycleScope.launch {
                 tileManager.deleteTile(id)

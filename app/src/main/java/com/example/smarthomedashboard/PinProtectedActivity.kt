@@ -14,6 +14,33 @@ abstract class PinProtectedActivity : AppCompatActivity() {
     private var pinGateGeneration = 0
     private var pinGateAccess: PinAccess? = null
     private var pinGateJob: Job? = null
+    /** На этом экране доступ уже был: при истечении сессии есть несохранённые правки, которые нельзя терять. */
+    private var wasAuthorized = false
+    private var expiredDialog: android.app.AlertDialog? = null
+
+    /** PIN включён (после первой проверки на этом экране). */
+    protected val pinEnabled get() = pinRequired
+
+    /**
+     * Проверка перед сохранением/удалением: если сессия истекла после входа, ничего не записывается и
+     * предлагается «Ввести PIN» или «Выйти без сохранения».
+     */
+    internal fun requireAdmin(): Boolean {
+        if (!wasAuthorized || isPinAccessAllowed()) return true
+        showExpired()
+        return false
+    }
+
+    private fun showExpired() {
+        if (isFinishing || isDestroyed || expiredDialog?.isShowing == true) return
+        expiredDialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Сессия администратора истекла")
+            .setMessage("Изменения на экране не потеряны. Чтобы продолжить или сохранить их, введите PIN.")
+            .setCancelable(false)
+            .setPositiveButton("Ввести PIN") { _, _ -> requestPinAccess() }
+            .setNegativeButton("Выйти без сохранения") { _, _ -> finish() }
+            .create().also { it.show() }
+    }
 
     protected fun isPinAccessAllowed(): Boolean =
         pinAuthorized && (!pinRequired || PinSecurityUi.session.isValid(sessionMinutes()))
@@ -50,6 +77,9 @@ abstract class PinProtectedActivity : AppCompatActivity() {
                 if (generation != pinGateGeneration || isFinishing || isDestroyed) return
                 if (pinRequired && !PinSecurityUi.session.touch(sessionMinutes())) return
                 pinAuthorized = true
+                wasAuthorized = true
+                expiredDialog?.dismiss()
+                expiredDialog = null
                 window.decorView.findViewById<View>(android.R.id.content)?.visibility = View.VISIBLE
             }
             if (!pinRequired) allowed()
@@ -57,7 +87,8 @@ abstract class PinProtectedActivity : AppCompatActivity() {
                 PinSecurityUi.authorize(
                         this@PinProtectedActivity,
                         ::allowed,
-                        { if (generation == pinGateGeneration) finish() },
+                        // Отказ от PIN после истечения сессии не закрывает экран молча: черновик остаётся.
+                        { if (generation == pinGateGeneration) { if (wasAuthorized) showExpired() else finish() } },
                         access,
                     )
                     .join()
@@ -79,7 +110,13 @@ abstract class PinProtectedActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (!isPinAccessAllowed() && event.keyCode != KeyEvent.KEYCODE_BACK) {
+        if (!isPinAccessAllowed()) {
+            // «Назад» без доступа не открывает диалоги экрана (в них есть «Сохранить»): только выход
+            // или, если правки уже были, выбор «Ввести PIN / Выйти без сохранения».
+            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) { if (wasAuthorized && pinRequired) showExpired() else finish() }
+                return true
+            }
             requestPinAccess()
             return true
         }

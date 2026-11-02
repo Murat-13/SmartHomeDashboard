@@ -23,6 +23,9 @@ internal fun View.excludeFromAutofill() {
 
 internal object PinSecurityUi {
     val session = PinSession { android.os.SystemClock.elapsedRealtime() }
+    /** Длительность админ-сессии, решение владельца: 1–1000 минут. */
+    const val MIN_SESSION_MINUTES = 1
+    const val MAX_SESSION_MINUTES = 1000
 
     fun message(result: PinAccess.Result): String =
         when (result.status) {
@@ -43,7 +46,7 @@ internal object PinSecurityUi {
             context
                 .getSharedPreferences("dashboard_prefs", 0)
                 .getInt("pin_session_minutes", 60)
-                .coerceAtLeast(5)
+                .coerceIn(MIN_SESSION_MINUTES, MAX_SESSION_MINUTES)
         } catch (_: ClassCastException) {
             0
         }

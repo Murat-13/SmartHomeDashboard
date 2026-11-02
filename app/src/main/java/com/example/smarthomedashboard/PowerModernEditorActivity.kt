@@ -345,6 +345,7 @@ class PowerModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Edit
     // ---- Сохранение / отмена ----
 
     internal fun save(confirmedGaps: Boolean = false): Boolean {
+        if (!requireAdmin()) return false
         draft.validationError()?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show(); return false }
         val gaps = draft.config.validate().gaps
         if (gaps.isNotEmpty() && !confirmedGaps) {

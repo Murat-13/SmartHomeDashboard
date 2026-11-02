@@ -232,6 +232,7 @@ internal class ModernEditorKit(
         val title = manager.loadTiles().find { it.id == tileId }?.title.orEmpty()
         show(ModernUi.dangerDialog(activity, "Удалить плитку «$title»?", "Устройства и настройки других плиток не изменятся.",
             "Удалить") {
+            if (!activity.requireAdmin()) return@dangerDialog
             manager.deleteTile(tileId)
             activity.setResult(android.app.Activity.RESULT_OK)
             activity.finish()

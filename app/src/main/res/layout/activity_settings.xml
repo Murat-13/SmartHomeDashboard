@@ -371,7 +371,7 @@
                         android:maxLength="6"
                         android:saveEnabled="false" />
 
-                    <TextView style="@style/SettingsLabel" android:text="Время сессии PIN (минуты)" />
+                    <TextView style="@style/SettingsLabel" android:text="Время сессии PIN (1–1000 минут)" />
 
                     <EditText
                         android:id="@+id/etPinSessionMinutes"
@@ -385,6 +385,14 @@
                     <TextView
                         style="@style/SettingsHint"
                         android:text="Сессия продлевается действиями администратора. Обычное управление домом PIN не требует." />
+
+                    <Button
+                        android:id="@+id/btnEndAdmin"
+                        style="@style/Widget.Modern.Button.Secondary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_l"
+                        android:text="Завершить админ-режим" />
                 </LinearLayout>
 
                 <!-- ===== Устройство ===== -->

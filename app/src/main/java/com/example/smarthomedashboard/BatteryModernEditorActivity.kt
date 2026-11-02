@@ -210,6 +210,7 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
     // ---- Сохранение / отмена ----
 
     internal fun save(): Boolean {
+        if (!requireAdmin()) return false
         draft.validationError()?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show(); return false }
         val latest = tileManager.loadTiles().find { it.id == draft.original.id }
         if (latest == null || latest != draft.original) {

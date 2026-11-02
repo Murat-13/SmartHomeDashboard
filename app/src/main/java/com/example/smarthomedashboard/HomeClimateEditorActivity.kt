@@ -466,6 +466,7 @@ class HomeClimateEditorActivity : PinProtectedActivity() {
     // ---- Сохранение / отмена ----
 
     internal fun save(): Boolean {
+        if (!requireAdmin()) return false
         draft.validationError()?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show(); return false }
         draft.config.rooms.forEach { room ->
             val error = HomeClimateConfig.roomUnitError(room.temperatureEntity, model.entityAttributes[room.temperatureEntity])

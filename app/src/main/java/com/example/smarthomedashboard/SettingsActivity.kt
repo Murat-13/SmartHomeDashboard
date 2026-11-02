@@ -114,7 +114,8 @@ class SettingsActivity : PinProtectedActivity() {
         etAdminPin.isFocusable=false
         etAdminPin.hint="Управление PIN и восстановлением"
         etAdminPin.setOnClickListener { PinSecurityUi.manage(this) }
-        etPinSessionMinutes.setText(prefs.getInt("pin_session_minutes", 60).coerceAtLeast(5).toString())
+        etPinSessionMinutes.setText(prefs.getInt("pin_session_minutes", 60)
+            .coerceIn(PinSecurityUi.MIN_SESSION_MINUTES, PinSecurityUi.MAX_SESSION_MINUTES).toString())
         
         val motionSensorId = prefs.getString("motion_sensor_id", "")
         tvMotionSensor.text = if (motionSensorId.isNullOrEmpty()) "Датчик движения: Не выбран" else "Датчик: $motionSensorId"
@@ -161,6 +162,14 @@ class SettingsActivity : PinProtectedActivity() {
         setupHomeScreenMode()
 
         findViewById<TextView>(R.id.tvAppVersion).text = versionText()
+        findViewById<Button?>(R.id.btnEndAdmin)?.setOnClickListener {
+            if (!pinEnabled) {
+                Toast.makeText(this, "PIN отключён — админ-режим не используется", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            PinSecurityUi.session.revoke()
+            Toast.makeText(this, "Админ-режим завершён. Следующее изменение попросит PIN", Toast.LENGTH_LONG).show()
+        }
         setupNavigation(savedInstanceState?.getInt(STATE_SECTION) ?: 0)
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener { leave() }
@@ -242,7 +251,8 @@ class SettingsActivity : PinProtectedActivity() {
         })
         etPinSessionMinutes.addTextChangedListener(afterText {
             val minutes = it.toIntOrNull()
-            if (minutes == null || minutes < 5) etPinSessionMinutes.error = "Минимальное время повторного запроса — 5 минут"
+            if (minutes == null || minutes !in PinSecurityUi.MIN_SESSION_MINUTES..PinSecurityUi.MAX_SESSION_MINUTES)
+                etPinSessionMinutes.error = SESSION_RANGE_ERROR
             else apply { putInt("pin_session_minutes", minutes) }
         })
         findViewById<EditText?>(R.id.etHomeTimeout)?.let { field ->
@@ -469,8 +479,8 @@ class SettingsActivity : PinProtectedActivity() {
         val haToken = etHaToken.text.toString().trim()
 
         val sessionMinutes = etPinSessionMinutes.text.toString().toIntOrNull()
-        if(sessionMinutes==null || sessionMinutes<5){
-            etPinSessionMinutes.error="Минимальное время повторного запроса — 5 минут"
+        if (sessionMinutes == null || sessionMinutes !in PinSecurityUi.MIN_SESSION_MINUTES..PinSecurityUi.MAX_SESSION_MINUTES) {
+            etPinSessionMinutes.error = SESSION_RANGE_ERROR
             return
         }
         val screenTimeout = etScreenTimeout.text.toString().toIntOrNull() ?: 5
@@ -733,6 +743,7 @@ class SettingsActivity : PinProtectedActivity() {
     companion object {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
         private const val STATE_SECTION = "settings_section"
+        private const val SESSION_RANGE_ERROR = "Время сессии — от 1 до 1000 минут"
         private const val PROBE_TIMEOUT_MS = 20_000L
         private val CONFIG_STRING_DEFAULTS = linkedMapOf(
             "motion_sensor_id" to "", "app_theme" to "system"
