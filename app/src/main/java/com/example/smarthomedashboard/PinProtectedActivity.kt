@@ -18,14 +18,7 @@ abstract class PinProtectedActivity : AppCompatActivity() {
     protected fun isPinAccessAllowed(): Boolean =
         pinAuthorized && (!pinRequired || PinSecurityUi.session.isValid(sessionMinutes()))
 
-    private fun sessionMinutes(): Int =
-        try {
-            getSharedPreferences("dashboard_prefs", 0)
-                .getInt("pin_session_minutes", 60)
-                .coerceAtLeast(5)
-        } catch (_: ClassCastException) {
-            0
-        }
+    private fun sessionMinutes(): Int = PinSecurityUi.sessionMinutes(this)
 
     private fun hide() {
         pinAuthorized = false

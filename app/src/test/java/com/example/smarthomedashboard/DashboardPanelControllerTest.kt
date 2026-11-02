@@ -41,6 +41,7 @@ class DashboardPanelControllerTest {
         override fun exitEdit() = Unit
         override fun settings() { settings++ }
         override fun addTile() { additions++ }
+        override fun adminAction(retry: () -> Unit) = true
     })
 
     @Test fun navigationIsDelegatedAndKeepsOriginalActivityContext() {

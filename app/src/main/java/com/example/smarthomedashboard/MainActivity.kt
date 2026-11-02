@@ -73,11 +73,12 @@ class MainActivity : AppCompatActivity() {
             override fun settings() = openWithPinCheck {
                 startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
             }
-            override fun addTile() {
+            override fun addTile() = openWithPinCheck {
                 TileEditorPreviewSource.attach(viewModel)
                 startActivityForResult(Intent(this@MainActivity, TileSettingsActivity::class.java)
                     .putExtra("container", "grid"), REQUEST_TILE_SETTINGS)
             }
+            override fun adminAction(retry: () -> Unit) = this@MainActivity.adminAction(retry)
         })
     }
 
@@ -149,6 +150,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (!::tileManager.isInitialized) return
+        refreshPinState()
         refreshBottomPanel()
         // Удаляем устаревшие данные подключения без доступа к сети и без блокировки UI.
         lifecycleScope.launch {
@@ -171,6 +173,8 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         pendingPin?.cancel()
         pendingPin = null
+        pinStateRequest?.cancel()
+        pinDisabled = null
         haTokenRequest++
         super.onPause()
         clockHandler.removeCallbacks(clockRunnable)
@@ -249,10 +253,37 @@ class MainActivity : AppCompatActivity() {
      */
     private var pinAccess: PinAccess? = null
     private var pendingPin: Job? = null
+    /** Уже прочитано, что PIN отключён; null — состояние неизвестно и доступ не предполагается. */
+    private var pinDisabled: Boolean? = null
+    private var pinStateRequest: Job? = null
     private fun openWithPinCheck(action: () -> Unit) {
         if (pendingPin?.isActive == true) return
         val access = pinAccess ?: AndroidPinAccess.create(this).also { pinAccess = it }
-        pendingPin = PinSecurityUi.authorize(this, action, access = access)
+        pendingPin = PinSecurityUi.authorize(this, action, access = access,
+            onStatus = { pinDisabled = it == PinAccess.Status.DISABLED })
+    }
+
+    /**
+     * Сохранение из режима редактирования разрешено сразу, если PIN отключён или сессия жива
+     * (админ-действие её продлевает). Иначе действие не сохраняется и запрашивается PIN;
+     * [retry] выполняется, только если проверка показала, что PIN отключён.
+     */
+    private fun adminAction(retry: () -> Unit): Boolean {
+        if (pinDisabled == true || PinSecurityUi.session.touch(PinSecurityUi.sessionMinutes(this))) return true
+        openWithPinCheck {
+            if (pinDisabled == true) retry()
+            else Toast.makeText(this, "PIN подтверждён — повторите действие", Toast.LENGTH_SHORT).show()
+        }
+        return false
+    }
+
+    /** В других экранах PIN могли включить или отключить: состояние перечитывается после возврата. */
+    private fun refreshPinState() {
+        val access = pinAccess ?: return
+        pinStateRequest = lifecycleScope.launch {
+            val status = withContext(Dispatchers.IO) { access.status() }.status
+            pinDisabled = status == PinAccess.Status.DISABLED
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")

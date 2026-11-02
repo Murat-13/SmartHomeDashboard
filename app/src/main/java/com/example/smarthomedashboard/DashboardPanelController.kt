@@ -38,6 +38,8 @@ internal class DashboardPanelController(
         fun exitEdit()
         fun settings()
         fun addTile()
+        /** Админ-действие режима редактирования: true — можно сохранить сейчас; [retry] — если позже выяснится, что PIN отключён. */
+        fun adminAction(retry: () -> Unit): Boolean
     }
     private val bottomPanel get() = host.panel
     private val dimOverlay get() = host.dim
@@ -256,6 +258,12 @@ internal class DashboardPanelController(
     }
 
     private fun saveSensorSize(tileId: String, width: Int, height: Int): Boolean {
+        // Без действующего доступа размер откатывается (false); при отключённом PIN применяется после проверки.
+        if (!host.adminAction { if (writeSensorSize(tileId, width, height)) refreshBottomPanel() }) return false
+        return writeSensorSize(tileId, width, height)
+    }
+
+    private fun writeSensorSize(tileId: String, width: Int, height: Int): Boolean {
         // Читаем актуальную плитку на UP, не сохраняя старую копию из начала жеста.
         val tiles = tileManager.loadTiles().toMutableList()
         val idx = tiles.indexOfFirst { it.id == tileId }
@@ -643,7 +651,14 @@ internal class DashboardPanelController(
         ).also { editDragHandlers[view] = it }
     }
 
-    private fun savePosition(id: String, x: Int, y: Int) {
+    /** false — перенос не сохранён (нет доступа), плитка возвращается на место. */
+    private fun savePosition(id: String, x: Int, y: Int): Boolean {
+        if (!host.adminAction { writePosition(id, x, y); refreshBottomPanel() }) return false
+        writePosition(id, x, y)
+        return true
+    }
+
+    private fun writePosition(id: String, x: Int, y: Int) {
         val tiles = tileManager.loadTiles().toMutableList()
         val idx = tiles.indexOfFirst { it.id == id }
         if (idx >= 0) {

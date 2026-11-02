@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit
 class WeatherCardIntegrationTest {
     private val activity by lazy {
         Robolectric.buildActivity(MainActivity::class.java).get().apply {
+            pinGestureFixture(this)
             setTheme(android.R.style.Theme_Material_Light_NoActionBar)
             resources.displayMetrics.widthPixels = 1920
             resources.displayMetrics.heightPixels = 1200

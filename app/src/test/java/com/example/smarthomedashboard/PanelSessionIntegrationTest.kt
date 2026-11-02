@@ -53,7 +53,7 @@ class PanelSessionResources : ShadowResources() {
 @LooperMode(LooperMode.Mode.PAUSED)
 class PanelSessionIntegrationTest {
     private val controller by lazy { Robolectric.buildActivity(MainActivity::class.java) }
-    private val activity get() = controller.get()
+    private val activity get() = controller.get().apply { pinGestureFixture(this) }
     private val manager by lazy { TileManager(activity) }
     private val panel by lazy { FrameLayout(activity) }
     private val dim by lazy { View(activity).apply { visibility = View.GONE } }

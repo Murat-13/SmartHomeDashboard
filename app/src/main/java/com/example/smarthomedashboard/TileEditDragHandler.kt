@@ -12,11 +12,12 @@ internal class TileEditDragHandler(
     private val screenW: Int,
     private val screenH: Int,
     onTap: () -> Unit,
-    onDrop: (Int, Int) -> Unit
+    /** false — положение не сохранено, плитка возвращается на место. */
+    onDrop: (Int, Int) -> Boolean
 ) {
     private var view: View? = view
     private var onTap: (() -> Unit)? = onTap
-    private var onDrop: ((Int, Int) -> Unit)? = onDrop
+    private var onDrop: ((Int, Int) -> Boolean)? = onDrop
     private var pending: Runnable? = null
     private var active = false
     private var dragging = false
@@ -71,7 +72,11 @@ internal class TileEditDragHandler(
                 if (dragging && moved) {
                     target.alpha = 1f
                     target.elevation = 8f
-                    onDrop?.invoke(target.x.toInt(), target.y.toInt())
+                    // Отказ в сохранении (нет доступа) возвращает плитку туда, где начался жест.
+                    if (onDrop?.invoke(target.x.toInt(), target.y.toInt()) == false) {
+                        target.x = originalX
+                        target.y = originalY
+                    }
                 } else if (!moved) onTap?.invoke()
                 dragging = false
                 moved = false

@@ -37,24 +37,30 @@ internal object PinSecurityUi {
                 "Защита PIN недоступна. Доступ не предоставлен; данные не удалялись"
         }
 
+    /** Длительность админ-сессии из настроек; повреждённое значение закрывает доступ. */
+    fun sessionMinutes(context: android.content.Context): Int =
+        try {
+            context
+                .getSharedPreferences("dashboard_prefs", 0)
+                .getInt("pin_session_minutes", 60)
+                .coerceAtLeast(5)
+        } catch (_: ClassCastException) {
+            0
+        }
+
     fun authorize(
         activity: AppCompatActivity,
         onSuccess: () -> Unit,
         onCancel: () -> Unit = {},
         access: PinAccess = AndroidPinAccess.create(activity),
+        /** Прочитанное состояние PIN, до решения о доступе. */
+        onStatus: (PinAccess.Status) -> Unit = {},
     ): kotlinx.coroutines.Job {
         return activity.lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { access.status() }
             if (activity.isFinishing || activity.isDestroyed) return@launch
-            val minutes =
-                try {
-                    activity
-                        .getSharedPreferences("dashboard_prefs", 0)
-                        .getInt("pin_session_minutes", 60)
-                        .coerceAtLeast(5)
-                } catch (_: ClassCastException) {
-                    0
-                }
+            onStatus(result.status)
+            val minutes = sessionMinutes(activity)
             when {
                 result.status == PinAccess.Status.DISABLED -> onSuccess()
                 result.status == PinAccess.Status.SUCCESS && session.isValid(minutes) -> onSuccess()

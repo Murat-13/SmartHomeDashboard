@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
 @Config(manifest = Config.NONE, sdk = [28], shadows = [PanelSessionResources::class])
 @LooperMode(LooperMode.Mode.PAUSED)
 class PowerModernPanelIntegrationTest {
-    private val activity by lazy { Robolectric.buildActivity(MainActivity::class.java).get() }
+    private val activity by lazy { Robolectric.buildActivity(MainActivity::class.java).get().apply { pinGestureFixture(this) } }
     private val manager by lazy { TileManager(activity) }
     private val panel by lazy { FrameLayout(activity) }
     private val viewModel get() = MainActivity::class.java.getDeclaredMethod("getViewModel")

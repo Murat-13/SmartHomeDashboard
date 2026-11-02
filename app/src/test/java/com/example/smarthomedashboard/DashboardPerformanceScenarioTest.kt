@@ -124,6 +124,7 @@ class DashboardPerformanceScenarioTest {
             override fun exitEdit() = Unit
             override fun settings() = Unit
             override fun addTile() = Unit
+            override fun adminAction(retry: () -> Unit) = true
         })
         try {
             repeat(20) { owner.onEntityStateChanged("sensor.artificial_$it", "0") }

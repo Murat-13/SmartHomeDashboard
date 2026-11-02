@@ -27,8 +27,9 @@ class TileEditDragHandlerTest {
     }
     private var taps = 0
     private val drops = mutableListOf<Pair<Int, Int>>()
+    private var saveAllowed = true
     private val drag = TileEditDragHandler(view, Handler(Looper.getMainLooper()), 400, 300,
-        { taps++ }, { x, y -> drops.add(x to y) })
+        { taps++ }, { x, y -> drops.add(x to y); saveAllowed })
 
     private fun send(action: Int, x: Float = 0f, y: Float = 0f) {
         val event = MotionEvent.obtain(0, 0, action, x, y, 0)
@@ -67,6 +68,19 @@ class TileEditDragHandlerTest {
         assertEquals(listOf(300 to 160), drops)
         assertEquals(1f, view.alpha, 0f)
         assertEquals(8f, view.elevation, 0f)
+        assertEquals(0, taps)
+    }
+
+    @Test fun rejectedDropReturnsTileToGestureStart() {
+        saveAllowed = false
+        send(MotionEvent.ACTION_DOWN)
+        advance(500)
+        send(MotionEvent.ACTION_MOVE, 100f, 50f)
+        send(MotionEvent.ACTION_UP, 100f, 50f)
+        assertEquals(listOf(120 to 80), drops)
+        assertEquals(20f, view.x, 0f)
+        assertEquals(30f, view.y, 0f)
+        assertEquals(1f, view.alpha, 0f)
         assertEquals(0, taps)
     }
 

@@ -4,6 +4,8 @@ import kotlinx.coroutines.Job
 
 /** Existing gesture tests use an explicitly disabled isolated credential store, never production IO. */
 internal fun pinGestureFixture(activity:MainActivity) {
+ // Как после входа в режим редактирования: панель уже прочитала, что PIN отключён.
+ ArchitectureTestAccess.setField(activity,"pinDisabled",true)
  if(ArchitectureTestAccess.getField<PinAccess?>(activity,"pinAccess")!=null)return
  val access=PinAccess(object:PinAccess.Storage {
   override fun read()=PinAccess.State(null,null)
