@@ -246,6 +246,14 @@
                         android:text="Датчик движения и затемнение"
                         android:textAppearance="@style/TextAppearance.Modern.Title" />
 
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/cbMotionEnabled"
+                        style="@style/Widget.Modern.Switch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_s"
+                        android:text="Использовать датчик движения" />
+
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -292,7 +300,7 @@
 
                     <TextView
                         style="@style/SettingsHint"
-                        android:text="Без движения экран тускнеет до минимума, при движении или касании возвращается системная яркость." />
+                        android:text="Без движения экран тускнеет до минимума, при движении или касании возвращается системная яркость. Если датчик выключен, экран всегда с обычной яркостью." />
 
                     <TextView style="@style/SettingsLabel" android:text="Возврат на главную страницу (секунды без касаний)" />
 

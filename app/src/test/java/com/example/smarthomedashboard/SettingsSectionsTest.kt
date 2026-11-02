@@ -74,6 +74,10 @@ class SettingsSectionsTest {
         val haptics = activity.findViewById<CompoundButton>(R.id.cbModernHaptics)
         haptics.isChecked = !haptics.isChecked
         assertEquals(haptics.isChecked, prefs.getBoolean(ModernHaptics.PREF, !haptics.isChecked))
+        val motion = activity.findViewById<CompoundButton>(R.id.cbMotionEnabled)
+        assertTrue(motion.isChecked) // по умолчанию — как раньше
+        motion.isChecked = false
+        assertFalse(prefs.getBoolean(MainActivity.PREF_MOTION_ENABLED, true))
         // Адрес HA так не применяется: только через проверку.
         activity.findViewById<EditText>(R.id.etHaLocalHost).setText("http://other.example.invalid")
         assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))

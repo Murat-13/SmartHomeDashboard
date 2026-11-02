@@ -120,6 +120,7 @@ class SettingsActivity : PinProtectedActivity() {
         val motionSensorId = prefs.getString("motion_sensor_id", "")
         tvMotionSensor.text = if (motionSensorId.isNullOrEmpty()) "Датчик движения: Не выбран" else "Датчик: $motionSensorId"
         etScreenTimeout.setText(prefs.getInt("screen_timeout_minutes", 5).toString())
+        findViewById<CompoundButton?>(R.id.cbMotionEnabled)?.isChecked = prefs.getBoolean(MainActivity.PREF_MOTION_ENABLED, true)
         findViewById<EditText?>(R.id.etHomeTimeout)?.setText(prefs.getInt(MainActivity.PREF_HOME_SECONDS, 60).toString())
 
         prepareWeatherInput()
@@ -266,6 +267,9 @@ class SettingsActivity : PinProtectedActivity() {
             apply { putString("temp_unit", if (id == R.id.rbFahrenheit) "F" else "C") }
         }
         cbKioskMode.setOnCheckedChangeListener { _, checked -> apply { putBoolean("kiosk_mode", checked) } }
+        findViewById<CompoundButton?>(R.id.cbMotionEnabled)?.setOnCheckedChangeListener { _, checked ->
+            apply { putBoolean(MainActivity.PREF_MOTION_ENABLED, checked) }
+        }
         findViewById<CompoundButton?>(R.id.cbModernHaptics)?.setOnCheckedChangeListener { _, checked ->
             apply { putBoolean(ModernHaptics.PREF, checked) }
         }

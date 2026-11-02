@@ -120,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         private const val DOTS_VISIBLE_MS = 2_000L
         private const val PEEK_FALLBACK_MS = 400L
         internal const val PREF_HOME_SECONDS = "page_home_seconds"
+        internal const val PREF_MOTION_ENABLED = "motion_enabled"
 
         /** Панель уже создана: по кнопке «Домой» заставка не нужна. */
         @Volatile internal var isAlive = false
@@ -648,7 +649,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun readPanelPreferences() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        motionSensorId = prefs.getString("motion_sensor_id", null)
+        // Выключенный датчик движения: экран всегда с рабочей яркостью, выбранная сущность сохраняется.
+        motionSensorId = prefs.getString("motion_sensor_id", null)?.takeIf { prefs.getBoolean(PREF_MOTION_ENABLED, true) }
         screenTimeoutMinutes = prefs.getInt("screen_timeout_minutes", 5)
         tempUnit = prefs.getString("temp_unit", "C") ?: "C"
     }
