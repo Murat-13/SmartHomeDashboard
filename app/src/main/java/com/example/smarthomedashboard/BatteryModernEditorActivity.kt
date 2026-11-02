@@ -127,10 +127,7 @@ class BatteryModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Ed
         body.addView(sideScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
-        footer.addView(button("Отмена", "bm_cancel") { leave() })
-        footer.addView(button("Сохранить", "bm_save") { save() })
-        root.addView(footer)
+        root.addView(kit.footer("bm", { leave() }, { save() }))
         setContentView(root)
     }
 

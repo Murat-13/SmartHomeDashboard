@@ -309,14 +309,15 @@ class SensorEditorUiTest {
             for (type in 1..5) {
                 spinner.setSelection(type)
                 shadowOf(Looper.getMainLooper()).idle()
-                assertEquals(View.GONE, a.findViewById<View>(R.id.sensorEditorFooter).visibility)
+                // Единая нижняя панель: «Сохранить» всегда в ней и не дублируется при смене типа.
+                assertEquals(View.VISIBLE, a.findViewById<View>(R.id.sensorEditorFooter).visibility)
                 assertEquals(View.VISIBLE, a.findViewById<Button>(R.id.btnAdvanced).visibility)
-                assertTrue(button.parent !== a.findViewById<View>(R.id.sensorEditorFooter))
+                assertSame(a.findViewById<View>(R.id.sensorEditorFooter), button.parent)
             }
             spinner.setSelection(0)
             shadowOf(Looper.getMainLooper()).idle()
             assertSame(a.findViewById<View>(R.id.sensorEditorFooter), button.parent)
-            assertEquals(2, a.findViewById<LinearLayout>(R.id.sensorEditorFooter).childCount)
+            assertEquals(4, a.findViewById<LinearLayout>(R.id.sensorEditorFooter).childCount)
         }
         assertTrue(manager.loadTiles().isEmpty())
     }

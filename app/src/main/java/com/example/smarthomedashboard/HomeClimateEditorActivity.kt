@@ -118,11 +118,8 @@ class HomeClimateEditorActivity : PinProtectedActivity() {
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "hc_section" }
         root.addView(ScrollView(this).apply { addView(content) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
-        footer.addView(kit.button("Тип и размер…", "hc_tile_settings") { openTileSettings() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        footer.addView(kit.button("Отмена", "hc_cancel") { leave() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        footer.addView(kit.button("Сохранить", "hc_save") { save() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(footer)
+        root.addView(kit.footer("hc", { leave() }, { save() },
+            extra = ModernUi.secondaryButton(this, "Тип и размер…") { openTileSettings() }.apply { tag = "hc_tile_settings" }))
         setContentView(root)
     }
 

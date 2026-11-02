@@ -202,6 +202,42 @@ internal class ModernEditorKit(
         dialogs.clear()
     }
 
+    /**
+     * Единые действия Modern-редактора: «Удалить» слева (с подтверждением), [extra] рядом, «Отмена» и «Сохранить»
+     * справа. Теги кнопок прежние, чтобы тесты и подсказки находили их как раньше.
+     */
+    fun footer(prefix: String, onCancel: () -> Unit, onSave: () -> Unit, extra: View? = null): LinearLayout =
+        LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setBackgroundColor(ModernUi.color(activity, R.color.modern_surface))
+            val tileId = activity.intent.getStringExtra("tile_id")
+            // С дополнительной кнопкой ширина делится поровну: на узком экране «Сохранить» не уходит за край.
+            val shared = extra != null
+            fun params(first: Boolean) = (if (shared) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                else LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                .apply { if (!first) marginStart = dp(if (shared) 6 else 12) }
+            if (tileId != null) addView(ModernUi.dangerButton(activity, "Удалить") { confirmDelete(tileId) }
+                .apply { tag = "${prefix}_delete" }, params(first = true))
+            extra?.let { addView(it, params(first = tileId == null)) }
+            if (!shared) addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
+            addView(ModernUi.secondaryButton(activity, "Отмена", onCancel).apply { tag = "${prefix}_cancel" }, params(first = !shared))
+            addView(ModernUi.primaryButton(activity, "Сохранить", onSave).apply { tag = "${prefix}_save" }, params(first = false))
+        }
+
+    /** Удаление плитки только после подтверждения; соседние плитки не меняются. */
+    private fun confirmDelete(tileId: String) {
+        val manager = com.example.smarthomedashboard.data.TileManager(activity)
+        val title = manager.loadTiles().find { it.id == tileId }?.title.orEmpty()
+        show(ModernUi.dangerDialog(activity, "Удалить плитку «$title»?", "Устройства и настройки других плиток не изменятся.",
+            "Удалить") {
+            manager.deleteTile(tileId)
+            activity.setResult(android.app.Activity.RESULT_OK)
+            activity.finish()
+        })
+    }
+
     fun hintBar(hint: UserHints.Hint, message: String): View {
         val bar = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL

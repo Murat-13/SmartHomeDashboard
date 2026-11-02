@@ -113,6 +113,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 updateSelectedSensorsText()
                 setSensorMode(position == 0)
+                refreshTabs()
                 if (isModern) btnAdvanced.visibility = View.GONE
                 // Новая плитка профиля получает стандартное название, если пользователь его ещё не ввёл.
                 if (tileId == null && (position == 7 || position == 8) && etTitle.text.isBlank()) {
@@ -181,6 +182,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             override fun handleOnBackPressed() = leaveEditor()
         })
         workingTile = TileDraft.decode(savedInstanceState?.getString(STATE_DRAFT))
+        currentTab = savedInstanceState?.getInt(STATE_TAB, R.id.tabMain) ?: R.id.tabMain
+        refreshTabs()
         formBaseline = savedInstanceState?.getString(STATE_BASELINE) ?: formSnapshot()
     }
 
@@ -196,6 +199,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         outState.putString(STATE_TILE_ID, tileId)
         workingTile?.let { outState.putString(STATE_DRAFT, TileDraft.encode(it)) }
         outState.putString(STATE_BASELINE, formBaseline)
+        outState.putInt(STATE_TAB, currentTab)
         outState.putStringArrayList(STATE_SELECTED_SENSORS, ArrayList(selectedSensors))
         outState.putBoolean(STATE_SELECTION_CHANGED, sensorSelectionChanged)
         styleEditor?.let {
@@ -608,18 +612,39 @@ class TileSettingsActivity : PinProtectedActivity() {
         val visible = if (enabled) View.VISIBLE else View.GONE
         if (enabled) TileEditorPreviewSource.states?.value?.let { sensorEditor?.acceptState(it) }
         findViewById<View>(R.id.sensorEditorContainer).visibility = visible
-        findViewById<View>(R.id.sensorEditorFooter).visibility = visible
         listOf(R.id.legacySourcesLabel, R.id.legacySourceButtons, R.id.tvSelectedSensors, R.id.btnAdvanced).forEach {
             findViewById<View>(it).visibility = if (enabled) View.GONE else View.VISIBLE
         }
-        val footer = findViewById<LinearLayout>(R.id.sensorEditorFooter)
-        if (enabled && btnSave.parent !== footer) {
-            (btnSave.parent as android.view.ViewGroup).removeView(btnSave)
-            footer.addView(btnSave, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f))
-        } else if (!enabled && btnSave.parent !== saveParent) {
-            (btnSave.parent as android.view.ViewGroup).removeView(btnSave)
-            saveParent?.addView(btnSave, savePosition, saveParameters)
+        // «Сохранить» и «Отмена» всегда в нижней панели — переносить кнопку больше не нужно.
+    }
+
+    private val tabSections = listOf(R.id.tabMain to "Основное", R.id.tabLook to "Вид", R.id.tabData to "Данные")
+    private var currentTab = R.id.tabMain
+
+    /** Вкладки только нужные типу: «Вид» — у кнопок и групп (стиль, иконка, предпросмотр). */
+    private fun refreshTabs() {
+        val tabs = findViewById<com.google.android.material.tabs.TabLayout?>(R.id.editorTabs) ?: return
+        val look = findViewById<View?>(R.id.buttonStyleSection)?.visibility == View.VISIBLE
+        val available = tabSections.filter { it.first != R.id.tabLook || look }
+        if (available.none { it.first == currentTab }) currentTab = R.id.tabMain
+        val same = tabs.tabCount == available.size && available.indices.all { tabs.getTabAt(it)?.tag == available[it].first }
+        if (!same) {
+            tabs.clearOnTabSelectedListeners()
+            tabs.removeAllTabs()
+            available.forEach { (id, label) -> tabs.addTab(tabs.newTab().setText(label).setTag(id), id == currentTab) }
+            tabs.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
+                override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) = showTab(tab.tag as Int)
+                override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
+                override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
+            })
         }
+        showTab(currentTab)
+    }
+
+    private fun showTab(id: Int) {
+        currentTab = id
+        tabSections.forEach { (section, _) -> findViewById<View?>(section)?.visibility = if (section == id) View.VISIBLE else View.GONE }
+        findViewById<View?>(R.id.editorScroll)?.scrollTo(0, 0)
     }
 
     private fun leaveEditor() {
@@ -654,6 +679,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         private const val STATE_TILE_ID = "tile_settings_tile_id"
         private const val STATE_DRAFT = "tile_settings_draft"
         private const val STATE_BASELINE = "tile_settings_baseline"
+        private const val STATE_TAB = "tile_settings_tab"
         private const val STATE_SELECTED_SENSORS = "tile_settings_selected_sensors"
         private const val STATE_SELECTION_CHANGED = "tile_settings_selection_changed"
         private const val STATE_STYLE = "tile_settings_button_style"
