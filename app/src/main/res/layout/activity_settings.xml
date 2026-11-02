@@ -480,8 +480,41 @@
                         </LinearLayout>
 
                         <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_l"
+                            android:text="Автоматические копии"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+
+                        <TextView
+                            android:id="@+id/tvBackupStatus"
+                            style="@style/SettingsHint" />
+
+                        <TextView
                             style="@style/SettingsHint"
-                            android:text="Автоматические копии появятся в одном из следующих обновлений." />
+                            android:text="Раз в сутки ночью, только если что-то изменилось; хранятся 3 последние. Выбранная папка сохраняется даже при удалении приложения." />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_m"
+                            android:orientation="horizontal">
+
+                            <Button
+                                android:id="@+id/btnBackupFolder"
+                                style="@style/Widget.Modern.Button.Secondary"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Папка для копий" />
+
+                            <Button
+                                android:id="@+id/btnBackupNow"
+                                style="@style/Widget.Modern.Button.Secondary"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="@dimen/modern_space_m"
+                                android:text="Сделать копию сейчас" />
+                        </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
 

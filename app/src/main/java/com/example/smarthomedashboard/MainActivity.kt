@@ -150,6 +150,7 @@ class MainActivity : AppCompatActivity() {
 
         setupBottomPanel()
         setupSystemPanel()
+        AutoBackup.schedule(applicationContext)
         setupWebSocket()
         showWelcomeOnFirstLaunch()
     }
@@ -578,6 +579,7 @@ class MainActivity : AppCompatActivity() {
             false -> ModernUi.setStatus(side.internetRow, ModernUi.Status.ERROR, "Интернет: нет")
             null -> ModernUi.setStatus(side.internetRow, ModernUi.Status.UNKNOWN, "Интернет: неизвестно")
         }
+        AutoBackup.statusText(this).let { (state, text) -> ModernUi.setStatus(side.backupRow, state, text) }
         side.refreshAdmin()
         side.refreshPage()
     }

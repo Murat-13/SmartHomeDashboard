@@ -97,8 +97,11 @@ class SettingsConfigTransferTest {
         val oldTiles = tiles.all.toMap()
         val text = export()
         val json = JSONObject(text)
-        assertEquals(setOf("pin_session_minutes", "screen_timeout_minutes",
-            "motion_sensor_id", "app_theme", "kiosk_mode", "tiles_json"), json.keys().asSequence().toSet())
+        // Состав расширен несекретными полями (этап 08); токен, ключ Яндекса и PIN по-прежнему не входят.
+        assertEquals(setOf("pin_session_minutes", "screen_timeout_minutes", "motion_sensor_id", "app_theme", "kiosk_mode",
+            "tiles_json", "temp_unit", "yandex_lat", "yandex_lon", "use_yandex_weather", "page_count", "page_home_seconds",
+            "modern_haptics", "motion_enabled", "ha_local_host", "ha_remote_host"), json.keys().asSequence().toSet())
+        assertEquals("http://ha.example.invalid", json.getString("ha_local_host"))
         for (key in forbidden) assertFalse(key, json.has(key))
         assertFalse(text.contains("FAKE-"))
         assertEquals(17, json.getInt("pin_session_minutes"))
@@ -149,6 +152,18 @@ class SettingsConfigTransferTest {
         import(JSONObject().put("tiles_json",
             """[{"id":"bad","type":"sensor","container":"grid","title":"Bad","x":1,"y":1,"width":1,"height":1,"page":-1}]""").toString())
         assertEquals(before, tiles.getString("tiles", null))
+    }
+
+    @Test fun differentHaAddressInFileIsOfferedButNotAppliedWithoutProbe() {
+        seed()
+        import(JSONObject().put("ha_local_host", "http://other.example.invalid").put("temp_unit", "F").toString())
+        assertEquals("F", prefs.getString("temp_unit", null))
+        assertEquals("http://ha.example.invalid", prefs.getString("ha_local_host", null))
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(dialog.isShowing)
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("http://ha.example.invalid", prefs.getString("ha_local_host", null))
     }
 
     @Test fun newImportPreservesSecretsAndUnspecifiedSettings() {

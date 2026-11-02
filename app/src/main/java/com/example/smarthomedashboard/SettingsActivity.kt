@@ -163,6 +163,7 @@ class SettingsActivity : PinProtectedActivity() {
         setupHomeScreenMode()
 
         findViewById<TextView>(R.id.tvAppVersion).text = versionText()
+        setupBackups()
         findViewById<Button?>(R.id.btnEndAdmin)?.setOnClickListener {
             if (!pinEnabled) {
                 Toast.makeText(this, "PIN отключён — админ-режим не используется", Toast.LENGTH_SHORT).show()
@@ -225,6 +226,35 @@ class SettingsActivity : PinProtectedActivity() {
             for (i in 0 until nav.childCount) nav.getChildAt(i).isSelected = i == index
         }
         findViewById<View?>(R.id.settingsScroll)?.scrollTo(0, 0)
+    }
+
+    private fun setupBackups() {
+        updateBackupStatus()
+        findViewById<Button?>(R.id.btnBackupFolder)?.setOnClickListener {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), REQUEST_BACKUP_FOLDER)
+        }
+        findViewById<Button?>(R.id.btnBackupNow)?.setOnClickListener { button ->
+            if (!isPinAccessAllowed()) return@setOnClickListener
+            button.isEnabled = false
+            lifecycleScope.launch {
+                val outcome = withContext(Dispatchers.IO) { AutoBackup.run(applicationContext) }
+                button.isEnabled = true
+                updateBackupStatus()
+                Toast.makeText(this@SettingsActivity, when (outcome) {
+                    AutoBackup.Outcome.CREATED -> "Копия создана"
+                    AutoBackup.Outcome.UNCHANGED -> "Изменений нет — последняя копия актуальна"
+                    AutoBackup.Outcome.FAILED -> "Не удалось записать копию; прежние копии сохранены"
+                }, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun updateBackupStatus() {
+        val place = if (getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getString(AutoBackup.PREF_TREE, null) != null)
+            "в выбранной папке" else "внутри приложения (выберите папку, чтобы копии пережили удаление)"
+        findViewById<TextView?>(R.id.tvBackupStatus)?.text = "${AutoBackup.statusText(this).second} · $place"
     }
 
     private fun versionText(): String = try {
@@ -604,17 +634,7 @@ class SettingsActivity : PinProtectedActivity() {
             .show()
     }
 
-    private fun buildExportConfig(): JSONObject {
-        val mainPrefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        val tilePrefs = getSharedPreferences("tiles_prefs", MODE_PRIVATE)
-        // Разрешены только прежние несекретные поля; новые prefs не попадают в экспорт автоматически.
-        return JSONObject().apply {
-            CONFIG_STRING_DEFAULTS.forEach { (key, default) -> put(key, mainPrefs.getString(key, default)) }
-            CONFIG_INT_DEFAULTS.forEach { (key, default) -> put(key, mainPrefs.getInt(key, default)) }
-            put("kiosk_mode", mainPrefs.getBoolean("kiosk_mode", false))
-            put("tiles_json", tilePrefs.getString("tiles", "[]"))
-        }
-    }
+    private fun buildExportConfig(): JSONObject = ConfigBackup.build(this)
 
     private fun parseConfigObject(text: String): JSONObject {
         val tokener = JSONTokener(text)
@@ -646,36 +666,79 @@ class SettingsActivity : PinProtectedActivity() {
         }
     }
 
-    private fun applyImportedConfig(json: JSONObject): Boolean {
+    /** Итог импорта: пропущены ли поля и какой адрес HA предложить (если он отличается от текущего). */
+    private class ImportOutcome(val skipped: Boolean, val local: String?, val remote: String?)
+
+    private fun applyImportedConfig(json: JSONObject): Boolean = applyImport(json).skipped
+
+    private fun applyImport(json: JSONObject): ImportOutcome {
         val strings = linkedMapOf<String, String>()
         val integers = linkedMapOf<String, Int>()
-        CONFIG_STRING_DEFAULTS.keys.forEach { key ->
+        val booleans = linkedMapOf<String, Boolean>()
+        ConfigBackup.STRING_DEFAULTS.keys.forEach { key ->
             if (json.has(key)) strings[key] = json.get(key) as? String ?: throw JSONException("Неверный тип настройки")
         }
-        CONFIG_INT_DEFAULTS.keys.forEach { key ->
+        ConfigBackup.INT_DEFAULTS.keys.forEach { key ->
             if (json.has(key)) integers[key] = configInt(json.get(key))
         }
-        val kiosk = if (json.has("kiosk_mode")) {
-            json.get("kiosk_mode") as? Boolean ?: throw JSONException("Неверный тип настройки")
-        } else null
+        ConfigBackup.BOOLEAN_DEFAULTS.keys.forEach { key ->
+            if (json.has(key)) booleans[key] = json.get(key) as? Boolean ?: throw JSONException("Неверный тип настройки")
+        }
+        val address = ConfigBackup.ADDRESS_KEYS.associateWith { key ->
+            if (json.has(key)) (json.get(key) as? String ?: throw JSONException("Неверный тип настройки")).trim() else null
+        }
         val tiles = if (json.has("tiles_json")) {
             (json.get("tiles_json") as? String ?: throw JSONException("Неверный тип списка плиток"))
                 .also { validateImportedTiles(it) }
         } else null
-        val skipped = json.keys().asSequence().any { it !in CONFIG_ALLOWED_KEYS }
+        val skipped = json.keys().asSequence().any { it !in ConfigBackup.ALLOWED_KEYS }
 
-        // Вся проверка завершена до первой записи. Отсутствующие поля, секреты и допуск не изменяем.
-        if (strings.isNotEmpty() || integers.isNotEmpty() || kiosk != null) {
-            getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
+        // Вся проверка завершена до первой записи. Отсутствующие поля, секреты, допуск и адрес HA не изменяем.
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        if (strings.isNotEmpty() || integers.isNotEmpty() || booleans.isNotEmpty()) {
+            prefs.edit {
                 strings.forEach { (key, value) -> putString(key, value) }
                 integers.forEach { (key, value) -> putInt(key, value) }
-                kiosk?.let { putBoolean("kiosk_mode", it) }
+                booleans.forEach { (key, value) -> putBoolean(key, value) }
             }
         }
         if (tiles != null) {
             getSharedPreferences("tiles_prefs", MODE_PRIVATE).edit { putString("tiles", tiles) }
         }
-        return skipped
+        val local = address[ConfigBackup.HA_LOCAL]
+        val remote = address[ConfigBackup.HA_REMOTE]
+        val currentLocal = prefs.getString(ConfigBackup.HA_LOCAL, "").orEmpty().trim()
+        val currentRemote = prefs.getString(ConfigBackup.HA_REMOTE, "").orEmpty().trim()
+        val differs = (local != null && local != currentLocal) || (remote != null && remote != currentRemote)
+        return if (differs && (!local.isNullOrEmpty() || !remote.isNullOrEmpty()))
+            ImportOutcome(skipped, local ?: currentLocal, remote ?: currentRemote) else ImportOutcome(skipped, null, null)
+    }
+
+    /** Перезапуск панели после импорта, как раньше. */
+    private fun restartAfterImport() {
+        val restartIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        restartIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        startActivity(restartIntent)
+        finishAffinity()
+    }
+
+    /**
+     * Другой адрес HA из файла применяется только по согласию и после успешной проверки подключения
+     * (тот же путь, что «Проверить и сохранить»); при отказе остаётся текущий адрес.
+     */
+    private fun offerImportedAddress(local: String, remote: String) {
+        AlertDialog.Builder(this).setTitle("В файле другой адрес Home Assistant")
+            .setMessage("Плитки и настройки уже восстановлены. Применить адрес из файла? Он будет сохранён, " +
+                "только если подключение к нему удастся.")
+            .setCancelable(false)
+            .setPositiveButton("Проверить и применить") { _, _ ->
+                showSection(0)
+                etHaLocalHost.setText(local)
+                etHaRemoteHost.setText(remote)
+                saveConnections()
+            }
+            .setNegativeButton("Оставить текущий") { _, _ -> restartAfterImport() }
+            .show()
     }
 
     private fun importConfig() {
@@ -691,6 +754,17 @@ class SettingsActivity : PinProtectedActivity() {
         if (resultCode != Activity.RESULT_OK) return
 
         when (requestCode) {
+            REQUEST_BACKUP_FOLDER -> {
+                val tree = data?.data ?: return
+                try {
+                    contentResolver.takePersistableUriPermission(tree,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit { putString(AutoBackup.PREF_TREE, tree.toString()) }
+                } catch (_: SecurityException) {
+                    Toast.makeText(this, "Нет доступа к этой папке", Toast.LENGTH_LONG).show()
+                }
+                updateBackupStatus()
+            }
             REQUEST_SELECT_MOTION_SENSOR -> {
                 val selected = data?.getStringArrayListExtra("selected_sensors")
                 if (!selected.isNullOrEmpty()) {
@@ -719,26 +793,24 @@ class SettingsActivity : PinProtectedActivity() {
                     try {
                         val input = contentResolver.openInputStream(uri) ?: throw IOException()
                         val json = input.bufferedReader(Charsets.UTF_8).use { parseConfigObject(it.readText()) }
-                        val skipped = applyImportedConfig(json)
-                        val message = if (skipped) {
-                            "Настройки импортированы. Данные доступа, PIN и другие неподдерживаемые поля пропущены. Перезагрузка..."
+                        val outcome = applyImport(json)
+                        val message = if (outcome.skipped) {
+                            "Настройки импортированы. Данные доступа, PIN и другие неподдерживаемые поля пропущены."
                         } else {
-                            "Конфиг успешно импортирован. Перезагрузка..."
+                            "Конфиг успешно импортирован."
                         }
                         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                        if (outcome.local != null || outcome.remote != null) {
+                            offerImportedAddress(outcome.local.orEmpty(), outcome.remote.orEmpty())
+                            return
+                        }
                     } catch (e: Exception) {
                         if (e !is IOException && e !is JSONException && e !is IllegalArgumentException && e !is SecurityException) throw e
                         // Сообщение парсера может содержать секрет из старого файла, поэтому его не показываем.
                         Toast.makeText(this, "Не удалось импортировать файл: проверьте формат настроек", Toast.LENGTH_LONG).show()
                         return
                     }
-
-                    val restartIntent = packageManager.getLaunchIntentForPackage(packageName)
-                    if (restartIntent != null) {
-                        restartIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        startActivity(restartIntent)
-                        finishAffinity()
-                    }
+                    restartAfterImport()
                 }
             }
         }
@@ -746,16 +818,9 @@ class SettingsActivity : PinProtectedActivity() {
 
     companion object {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
+        private const val REQUEST_BACKUP_FOLDER = 1005
         private const val STATE_SECTION = "settings_section"
         private const val SESSION_RANGE_ERROR = "Время сессии — от 1 до 1000 минут"
         private const val PROBE_TIMEOUT_MS = 20_000L
-        private val CONFIG_STRING_DEFAULTS = linkedMapOf(
-            "motion_sensor_id" to "", "app_theme" to "system"
-        )
-        private val CONFIG_INT_DEFAULTS = linkedMapOf(
-            "pin_session_minutes" to 60, "screen_timeout_minutes" to 5
-        )
-        private val CONFIG_ALLOWED_KEYS = CONFIG_STRING_DEFAULTS.keys + CONFIG_INT_DEFAULTS.keys +
-            setOf("kiosk_mode", "tiles_json")
     }
 }
