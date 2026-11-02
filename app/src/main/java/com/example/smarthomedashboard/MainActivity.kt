@@ -151,6 +151,7 @@ class MainActivity : AppCompatActivity() {
         setupBottomPanel()
         setupSystemPanel()
         AutoBackup.schedule(applicationContext)
+        AppUpdater.schedule(applicationContext)
         setupWebSocket()
         showWelcomeOnFirstLaunch()
     }
@@ -580,6 +581,9 @@ class MainActivity : AppCompatActivity() {
             null -> ModernUi.setStatus(side.internetRow, ModernUi.Status.UNKNOWN, "Интернет: неизвестно")
         }
         AutoBackup.statusText(this).let { (state, text) -> ModernUi.setStatus(side.backupRow, state, text) }
+        val update = AppUpdater.drawerText(this)
+        if (update != null) ModernUi.setStatus(side.updateRow, ModernUi.Status.PROGRESS, update)
+        side.updateRow.visibility = if (update == null) View.GONE else View.VISIBLE
         side.refreshAdmin()
         side.refreshPage()
     }

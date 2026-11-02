@@ -540,11 +540,61 @@
                         android:textAppearance="@style/TextAppearance.Modern.Secondary" />
 
                     <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_xl"
+                        android:text="Обновления"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                    <TextView
+                        android:id="@+id/tvUpdateStatus"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/modern_space_s"
-                        android:text="Обновления: проверка пока не настроена"
                         android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_m"
+                        android:text="Канал обновлений"
+                        android:textAppearance="@style/TextAppearance.Modern.Body" />
+
+                    <RadioGroup
+                        android:id="@+id/rgUpdateChannel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <RadioButton
+                            android:id="@+id/rbUpdateStable"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minHeight="@dimen/modern_touch_target"
+                            android:text="Стабильный"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+
+                        <RadioButton
+                            android:id="@+id/rbUpdateTest"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/modern_space_l"
+                            android:minHeight="@dimen/modern_touch_target"
+                            android:text="Тестовый"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+                    </RadioGroup>
+
+                    <TextView
+                        style="@style/SettingsHint"
+                        android:text="Тестовый — новые версии сразу после выпуска. Стабильный — только проверенные. Проверка — раз в 6 часов при наличии интернета; найденное обновление скачивается и проверяется (SHA-256 и подпись), само приложение пока не устанавливается." />
+
+                    <Button
+                        android:id="@+id/btnCheckUpdates"
+                        style="@style/Widget.Modern.Button.Secondary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_m"
+                        android:text="Проверить сейчас" />
 
                     <TextView
                         android:layout_width="wrap_content"

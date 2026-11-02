@@ -59,6 +59,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
     val routeRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Адрес: —")
     val internetRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Интернет: нет данных")
     val backupRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Бэкап: не настроен")
+    /** Видна, только когда обновление скачано и проверено. */
+    val updateRow = ModernUi.statusRow(context, ModernUi.Status.PROGRESS, "").apply { visibility = View.GONE }
     private val pageLabel = ModernUi.caption(context, "")
     private val endAdmin = ModernUi.secondaryButton(context, "Завершить админ-режим") { host.endAdmin(); refreshAdmin() }
 
@@ -76,7 +78,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(16), dp(12), dp(16))
             addView(ModernUi.caption(context, "Состояние"))
-            listOf(haRow, routeRow, internetRow, backupRow).forEach { addView(it) }
+            listOf(haRow, routeRow, internetRow, backupRow, updateRow).forEach { addView(it) }
             fun action(view: View) = addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
             addView(View(context), LinearLayout.LayoutParams(1, dp(8)))

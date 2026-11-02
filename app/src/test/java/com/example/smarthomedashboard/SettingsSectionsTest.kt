@@ -106,6 +106,33 @@ class SettingsSectionsTest {
         assertTrue(activity.isFinishing)
     }
 
+    @Test fun aboutShowsVersionChannelAndUpdateStatusWithoutRealGithub() {
+        val original = AppUpdater.depsFactory
+        // Адрес не HTTPS GitHub: политика загрузчика отказывает до сети, настоящий GitHub не вызывается.
+        AppUpdater.depsFactory = { ctx ->
+            AppUpdater.Deps(UpdateHttp(okhttp3.OkHttpClient(), "http://127.0.0.1:9/releases"), PackageApkCheck(ctx), File(ctx.cacheDir, "u"))
+        }
+        try {
+            nav().getChildAt(4).performClick()
+            assertTrue(visible(R.id.sectionAbout))
+            assertEquals("Версия 0.9.0 · сборка 900", activity.findViewById<TextView>(R.id.tvAppVersion).text.toString())
+            assertTrue(activity.findViewById<CompoundButton>(R.id.rbUpdateStable).isChecked)
+            val status = activity.findViewById<TextView>(R.id.tvUpdateStatus)
+            assertEquals("Канал: стабильный · Обновления ещё не проверялись", status.text.toString())
+            activity.findViewById<CompoundButton>(R.id.rbUpdateTest).isChecked = true
+            assertEquals("test", prefs.getString(AppUpdater.PREF_CHANNEL, null))
+            val deadline = System.currentTimeMillis() + 10_000
+            while (!status.text.contains("нет связи с GitHub") && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20)
+                shadowOf(Looper.getMainLooper()).idle()
+            }
+            assertTrue(status.text.toString(), status.text.startsWith("Канал: тестовый · Обновления: нет связи с GitHub"))
+            assertTrue(activity.findViewById<View>(R.id.btnCheckUpdates).isEnabled)
+        } finally {
+            AppUpdater.depsFactory = original
+        }
+    }
+
     @Test fun cleanFormLeavesWithoutQuestion() {
         invoke("leave")
         assertTrue(activity.isFinishing)
@@ -117,7 +144,7 @@ class SettingsSectionsTest {
     @Test fun rendersSectionsPortrait() = render("portrait", 800, 1232)
 
     private fun render(name: String, width: Int, height: Int) {
-        for (index in listOf(0, 1, 3)) {
+        for (index in listOf(0, 1, 3, 4)) {
             nav().getChildAt(index).performClick()
             val root = activity.findViewById<View>(android.R.id.content)
             root.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),

@@ -163,6 +163,7 @@ class SettingsActivity : PinProtectedActivity() {
         setupHomeScreenMode()
 
         findViewById<TextView>(R.id.tvAppVersion).text = versionText()
+        setupUpdates()
         setupBackups()
         findViewById<Button?>(R.id.btnEndAdmin)?.setOnClickListener {
             if (!pinEnabled) {
@@ -249,6 +250,39 @@ class SettingsActivity : PinProtectedActivity() {
                 }, Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    /** Канал и ручная проверка обновлений; установка — следующим этапом. */
+    private fun setupUpdates() {
+        updateUpdateStatus()
+        val group = findViewById<RadioGroup?>(R.id.rgUpdateChannel) ?: return
+        group.check(if (AppUpdater.channel(this) == UpdateChannel.TEST) R.id.rbUpdateTest else R.id.rbUpdateStable)
+        group.setOnCheckedChangeListener { _, id ->
+            val chosen = if (id == R.id.rbUpdateTest) UpdateChannel.TEST else UpdateChannel.STABLE
+            if (chosen == AppUpdater.channel(this)) return@setOnCheckedChangeListener
+            if (!isPinAccessAllowed()) return@setOnCheckedChangeListener
+            AppUpdater.setChannel(this, chosen)
+            checkUpdatesNow()
+        }
+        findViewById<Button?>(R.id.btnCheckUpdates)?.setOnClickListener {
+            if (isPinAccessAllowed()) checkUpdatesNow()
+        }
+    }
+
+    private fun checkUpdatesNow() {
+        val button = findViewById<Button?>(R.id.btnCheckUpdates)
+        button?.isEnabled = false
+        findViewById<TextView?>(R.id.tvUpdateStatus)?.text = "Проверка обновлений…"
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { AppUpdater.check(applicationContext) }
+            button?.isEnabled = true
+            updateUpdateStatus()
+        }
+    }
+
+    private fun updateUpdateStatus() {
+        findViewById<TextView?>(R.id.tvUpdateStatus)?.text =
+            "Канал: ${AppUpdater.channel(this).label} · ${AppUpdater.statusText(this).second}"
     }
 
     private fun updateBackupStatus() {

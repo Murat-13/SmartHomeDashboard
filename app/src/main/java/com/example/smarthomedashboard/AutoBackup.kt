@@ -26,6 +26,8 @@ import java.util.concurrent.TimeUnit
 internal object AutoBackup {
     const val KEEP = 3
     const val PREFIX = "smarthome_auto_"
+    const val PRE_UPDATE_PREFIX = "smarthome_preupdate_"
+    const val PRE_UPDATE_KEEP = 2
     const val PREF_TREE = "backup_tree_uri"
     const val PREF_LAST_FP = "backup_last_fingerprint"
     const val PREF_LAST_TIME = "backup_last_time"
@@ -103,6 +105,23 @@ internal object AutoBackup {
         prefs.edit().putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok").apply()
         return Outcome.CREATED
     }
+
+    /**
+     * Копия «перед обновлением» на версию [versionName]: создаётся всегда (даже без изменений), засчитывается
+     * только после проверки чтением. Хранятся [PRE_UPDATE_KEEP] последние; ежедневные копии не затрагиваются.
+     * false — установка обновления должна встать на паузу.
+     */
+    fun beforeUpdate(context: Context, versionName: String, store: Store = store(context),
+                     now: Long = System.currentTimeMillis()): Boolean = runCatching {
+        val text = ConfigBackup.build(context).toString(2)
+        val safeVersion = versionName.replace(Regex("[^0-9A-Za-z.]"), "_")
+        val name = PRE_UPDATE_PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + "_to_$safeVersion.json"
+        val verified = store.write(name, text) && store.read(name) == text
+        if (!verified) { store.delete(name); return@runCatching false }
+        store.names().filter { it.startsWith(PRE_UPDATE_PREFIX) && it.endsWith(".json") }.sorted()
+            .dropLast(PRE_UPDATE_KEEP).forEach { store.delete(it) }
+        true
+    }.getOrDefault(false)
 
     /** Короткий статус для «Устройства» и боковой панели. */
     fun statusText(context: Context): Pair<ModernUi.Status, String> {
