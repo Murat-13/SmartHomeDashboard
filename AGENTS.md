@@ -91,6 +91,21 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 02.11.2026 — Claude Code: этап 09а — версии и release-подпись
+
+- Решения владельца: versionCode выводится из версии (мажор·10000+минор·100+патч), при наличии ключа debug
+  тоже подписывается release-ключом, пароли — в `keystore.properties` (вне Git), CI не меняется.
+- `app/build.gradle.kts`: версия 0.9.0 (versionCode 900, было 1/«1.0»); `signingConfigs.release` из
+  `keystore.properties` — нет файла/неполный/нет ключа → предупреждение, release неподписан, debug на отладочном ключе.
+  `.gitignore`: `keystore.properties`, `*.jks`, `*.keystore`. Инструкция владельцу (создание ключа, резервная копия,
+  сборка, проверка подписи, переустановка, предупреждение про «Uninstall and continue») —
+  [docs/release-signing.md](docs/release-signing.md). Публичность репозитория: API GitHub без авторизации отвечает 200.
+- Проверено: `testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease --offline` — 1077 тестов,
+  0 failures/errors/skips (новый `AppVersionTest`); `aapt2` — versionCode 900 / 0.9.0. Одноразовым синтетическим ключом
+  во временной папке: release и debug подписаны им; ошибочный путь — предупреждение без падения; без файла — Android
+  Debug и `app-release-unsigned.apk`. Синтетический ключ и файл удалены. Не проверено: ключ владельца, планшет.
+- Осталось: владелец создаёт ключ и переустанавливает московский планшет; 09б (проверка обновлений), 09в (установщик).
+
 ### 02.11.2026 — Claude Code: передача этапа 09 новой сессии
 
 - По просьбе владельца подготовлена записка [docs/stage09-handoff.md](docs/stage09-handoff.md): откуда начать, где ТЗ

@@ -16,3 +16,8 @@ local.properties
 
 # Local IDE metadata
 /.idea/
+
+# Ключ подписи и пароли владельца (docs/release-signing.md) — никогда не в Git
+keystore.properties
+*.jks
+*.keystore

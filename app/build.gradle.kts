@@ -1,5 +1,36 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
+}
+
+// Версия «мажор.минор.патч» (0.9.x до полной регрессии, затем 1.0.0). versionCode выводится из неё:
+// 0.9.0 → 900, 0.9.1 → 901, 1.0.0 → 10000, поэтому растёт вместе с версией. Минор и патч — 0–99.
+val appVersionName = "0.9.0"
+val appVersionCode = appVersionName.split('.').map { it.toInt() }.let { parts ->
+    require(parts.size == 3 && parts[1] in 0..99 && parts[2] in 0..99) {
+        "versionName должен быть вида мажор.минор.патч, минор и патч 0–99: $appVersionName"
+    }
+    parts[0] * 10000 + parts[1] * 100 + parts[2]
+}
+
+// Release-ключ владельца: keystore.properties в корне проекта (вне Git, см. docs/release-signing.md).
+// Нет файла или ключа — release собирается неподписанным, debug подписывается обычным отладочным ключом.
+val releaseSigning: Properties? = rootProject.file("keystore.properties").takeIf { it.isFile }?.let { propsFile ->
+    val props = Properties().apply { propsFile.inputStream().use { load(it) } }
+    val required = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    val storePath = props.getProperty("storeFile")?.trim()?.replaceFirst(Regex("^~(?=/)"), System.getProperty("user.home"))
+    when {
+        required.any { props.getProperty(it).isNullOrBlank() } -> {
+            logger.warn("keystore.properties: не заполнены поля ${required.filter { props.getProperty(it).isNullOrBlank() }}; release-подпись не настроена")
+            null
+        }
+        !rootProject.file(storePath!!).isFile -> {
+            logger.warn("keystore.properties: файл ключа не найден; release-подпись не настроена")
+            null
+        }
+        else -> props.apply { setProperty("storeFile", rootProject.file(storePath).absolutePath) }
+    }
 }
 
 android {
@@ -10,8 +41,19 @@ android {
         applicationId = "com.example.smarthomedashboard"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+
+    signingConfigs {
+        if (releaseSigning != null) {
+            create("release") {
+                storeFile = file(releaseSigning.getProperty("storeFile"))
+                storePassword = releaseSigning.getProperty("storePassword")
+                keyAlias = releaseSigning.getProperty("keyAlias")
+                keyPassword = releaseSigning.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -21,6 +63,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (releaseSigning != null) signingConfig = signingConfigs.getByName("release")
+        }
+        // Решение владельца: при наличии ключа debug из Android Studio подписывается им же,
+        // чтобы после переустановки «Run» ставил приложение поверх, без удаления данных.
+        debug {
+            if (releaseSigning != null) signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
