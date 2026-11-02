@@ -115,7 +115,10 @@ class SettingsSectionsTest {
         try {
             nav().getChildAt(4).performClick()
             assertTrue(visible(R.id.sectionAbout))
-            assertEquals("Версия 0.9.0 · сборка 900", activity.findViewById<TextView>(R.id.tvAppVersion).text.toString())
+            // Номер версии меняется с каждым выпуском (формула — AppVersionTest); здесь — что на экране именно она.
+            val info = activity.packageManager.getPackageInfo(activity.packageName, 0)
+            assertEquals("Версия ${info.versionName} · сборка ${info.longVersionCode}",
+                activity.findViewById<TextView>(R.id.tvAppVersion).text.toString())
             assertTrue(activity.findViewById<CompoundButton>(R.id.rbUpdateStable).isChecked)
             val status = activity.findViewById<TextView>(R.id.tvUpdateStatus)
             assertEquals("Канал: стабильный · Обновления ещё не проверялись", status.text.toString())
