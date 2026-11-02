@@ -162,6 +162,48 @@ class PressCancelIntegrationTest {
         assertTrue(get<SideDrawer?>("drawer")!!.isOpen)
     }
 
+    private fun swipe(dx: Float, x: Float = 900f, y: Float = 600f) {
+        val second = MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        val secondUp = MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        multi(MotionEvent.ACTION_DOWN, x to y)
+        multi(second, x to y, x to y + 60f)
+        multi(MotionEvent.ACTION_MOVE, x + dx / 2 to y, x + dx / 2 to y + 60f)
+        multi(MotionEvent.ACTION_MOVE, x + dx to y, x + dx to y + 60f)
+        multi(secondUp, x + dx to y, x + dx to y + 60f)
+        multi(MotionEvent.ACTION_UP, x + dx to y)
+        advance(1200)
+    }
+
+    private fun page() = androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java].currentPage
+
+    @Test fun pagesSwipeShowOnlyTheirTilesWithoutCommandsAndReturnHomeWhenIdle() {
+        open()
+        manager.saveTiles(manager.loadTiles() + TileEntity("second", "button", "bottom_panel", "Вторая", 300, 350, 1, 1,
+            config = """{"entity_id":"light.second"}""", page = 1))
+        invoke("refreshBottomPanel")
+        invoke("setupSystemPanel")
+        val client = ArchitectureTestAccess.getField<Any>(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], "webSocket")
+        assertNull(panel.findViewWithTag<View?>("second"))
+        swipe(-700f, x = view("button").x + 10f, y = view("button").y + 10f) // жест начат на кнопке
+        assertEquals(1, page())
+        assertNotNull(panel.findViewWithTag<View?>("second"))
+        assertNull(panel.findViewWithTag<View?>("button"))
+        assertTrue(calls().isEmpty())
+        assertSame(client, ArchitectureTestAccess.getField<Any>(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], "webSocket"))
+        // Справа больше страниц нет: жест не листает.
+        swipe(-700f)
+        assertEquals(1, page())
+        // Через 60 секунд без касаний — на главную.
+        advance(61_000)
+        assertEquals(0, page())
+        assertNotNull(panel.findViewWithTag<View?>("button"))
+        // Слева направо на главной — боковая панель, а не страница.
+        swipe(700f)
+        assertEquals(0, page())
+        assertTrue(get<SideDrawer?>("drawer")!!.isOpen)
+        assertTrue(calls().isEmpty())
+    }
+
     @Test fun groupCancelBeforeThresholdNeverExpandsOrSendsCommandEvenAfterStrayUp() {
         open()
         val before = prefs()

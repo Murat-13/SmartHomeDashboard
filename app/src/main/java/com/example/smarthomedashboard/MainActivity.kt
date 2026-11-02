@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
     }
     private val hidePill = Runnable { findViewById<View?>(R.id.statusPill)?.visibility = View.GONE }
 
-    private val panelController by lazy {
+    private val panelController: DashboardPanelController by lazy {
         DashboardPanelController(this, viewModel, object : DashboardPanelController.Host {
             override val panel get() = bottomPanel
             override val dim get() = dimOverlay
@@ -92,9 +92,15 @@ class MainActivity : AppCompatActivity() {
             override fun addTile() = openWithPinCheck {
                 TileEditorPreviewSource.attach(viewModel)
                 startActivityForResult(Intent(this@MainActivity, TileSettingsActivity::class.java)
-                    .putExtra("container", "grid"), REQUEST_TILE_SETTINGS)
+                    .putExtra("container", "grid")
+                    .putExtra(TileSettingsActivity.EXTRA_PAGE, panelController.currentPage), REQUEST_TILE_SETTINGS)
             }
             override fun adminAction(retry: () -> Unit) = this@MainActivity.adminAction(retry)
+            override fun pageChanged() {
+                showDots(highlight = panelController.currentPage)
+                drawer?.refreshPage()
+                scheduleAutoHome()
+            }
         })
     }
 
@@ -110,6 +116,9 @@ class MainActivity : AppCompatActivity() {
         private const val PILL_LOSS_DELAY_MS = 5_000L
         private const val PILL_START_DELAY_MS = 15_000L
         private const val PILL_RECOVERED_MS = 3_000L
+        private const val PAGE_FLING = 1000f
+        private const val DOTS_VISIBLE_MS = 2_000L
+        internal const val PREF_HOME_SECONDS = "page_home_seconds"
 
         /** Панель уже создана: по кнопке «Домой» заставка не нужна. */
         @Volatile internal var isAlive = false
@@ -267,6 +276,8 @@ class MainActivity : AppCompatActivity() {
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
         super.onDestroy()
         drawer?.dispose()
+        pageRunner.cancel()
+        pageHandler.removeCallbacksAndMessages(null)
         pillHandler.removeCallbacksAndMessages(null)
         panelController.clearPanelInteractions()
         idleHandler.removeCallbacks(idleRunnable)
@@ -324,6 +335,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         resetIdleTimer()
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) scheduleAutoHome()
         val side = drawer
         val swipe = navigation
         if (side != null && swipe != null) {
@@ -351,11 +363,7 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, back)
         val side = SideDrawer(root, object : SideDrawer.Host {
             override fun settings() = openWithPinCheck { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
-            override fun addTile() = openWithPinCheck {
-                TileEditorPreviewSource.attach(viewModel)
-                startActivityForResult(Intent(this@MainActivity, TileSettingsActivity::class.java)
-                    .putExtra("container", "grid"), REQUEST_TILE_SETTINGS)
-            }
+            override fun addTile() = openWithPinCheck { chooseAddition() }
             override fun edit() = openWithPinCheck { enterEditMode() }
             override fun endAdmin() {
                 PinSecurityUi.session.revoke()
@@ -368,19 +376,145 @@ class MainActivity : AppCompatActivity() {
                 back.isEnabled = open
                 if (open) updateSystemStatus()
             }
+            override fun pageText() = "Страница ${panelController.currentPage + 1} из ${panelController.pageCount()}"
         })
         drawer = side
         val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
-        navigation = TwoFingerSwipe(slop, { !isEditMode && !panelController.hasExpansion() && !side.isOpen },
+        navigation = TwoFingerSwipe(slop, { !isEditMode && !panelController.hasExpansion() && !side.isOpen && !pageRunner.running },
             object : TwoFingerSwipe.Listener {
-                // Пока страниц нет: слева направо открывает панель, справа налево не занято.
-                override fun onStart(direction: Int) = direction > 0
+                private var pages = false
+                // На главной слева направо — панель; иначе листание на соседнюю существующую страницу.
+                override fun onStart(direction: Int): Boolean {
+                    val page = panelController.currentPage
+                    pages = !(direction > 0 && page == 0)
+                    if (!pages) return true
+                    val target = page - direction
+                    if (target < 0 || target >= panelController.pageCount()) return false
+                    beginPageDrag(target)
+                    return true
+                }
                 override fun onClaim() = cancelPanelTouches()
-                override fun onDrag(dx: Float) = side.dragOpen(dx)
-                override fun onEnd(dx: Float, velocityX: Float) = side.release(velocityX)
-                override fun onCancel() = side.release(0f)
+                override fun onDrag(dx: Float) = if (pages) dragPage(dx) else side.dragOpen(dx)
+                override fun onEnd(dx: Float, velocityX: Float) = if (pages) releasePage(velocityX) else side.release(velocityX)
+                override fun onCancel() = if (pages) releasePage(0f) else side.release(0f)
             })
+        pagePeek = FrameLayout(this).apply { visibility = View.GONE }
+        root.addView(pagePeek, root.indexOfChild(bottomPanel) + 1,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        pageDots = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER; visibility = View.GONE }
+        root.addView(pageDots, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(10) })
         internet = InternetMonitor(this) { updateSystemStatus() }
+    }
+
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    // ===== Страницы =====
+    private var pagePeek: FrameLayout? = null
+    private var pageDots: LinearLayout? = null
+    private var pageTarget = 0
+    private var pageOffset = 0f
+    private var pageCommit = false
+    private val pageHandler = Handler(Looper.getMainLooper())
+    private val pageRunner = SpringMotion.Runner(::applyPageOffset) { pageSettled() }
+    private val hideDots = Runnable { pageDots?.visibility = View.GONE }
+    private val autoHome = Runnable { goHomeIfIdle() }
+
+    /** «+» в панели: плитка на текущую страницу или новая пустая страница. */
+    private fun chooseAddition() {
+        android.app.AlertDialog.Builder(this).setTitle("Добавить")
+            .setItems(arrayOf("Плитку на эту страницу", "Новую страницу")) { _, which ->
+                if (which == 0) {
+                    TileEditorPreviewSource.attach(viewModel)
+                    startActivityForResult(Intent(this, TileSettingsActivity::class.java)
+                        .putExtra("container", "grid")
+                        .putExtra(TileSettingsActivity.EXTRA_PAGE, panelController.currentPage), REQUEST_TILE_SETTINGS)
+                } else {
+                    val page = panelController.addPage()
+                    panelController.showPage(page)
+                    enterEditMode()
+                    Toast.makeText(this, "Страница ${page + 1} создана", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    private fun beginPageDrag(target: Int) {
+        pageRunner.cancel()
+        pageTarget = target
+        pagePeek?.let { panelController.renderPeek(target, it); it.visibility = View.VISIBLE }
+        showDots(highlight = panelController.currentPage)
+    }
+
+    /** Соседняя страница выезжает вслед за пальцами; дальше её края движения нет. */
+    private fun dragPage(dx: Float) {
+        val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
+        applyPageOffset(if (pageTarget < panelController.currentPage) dx.coerceIn(0f, width) else dx.coerceIn(-width, 0f))
+    }
+
+    private fun releasePage(velocityX: Float) {
+        val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
+        val toLeftPage = pageTarget < panelController.currentPage
+        pageCommit = kotlin.math.abs(pageOffset) > width / 3 ||
+            (toLeftPage && velocityX > PAGE_FLING) || (!toLeftPage && velocityX < -PAGE_FLING)
+        val end = if (!pageCommit) 0f else if (toLeftPage) width else -width
+        pageRunner.start(pageOffset, end, velocityX)
+    }
+
+    private fun applyPageOffset(offset: Float) {
+        pageOffset = offset
+        val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
+        bottomPanel.translationX = offset
+        pagePeek?.translationX = offset + if (pageTarget < panelController.currentPage) -width else width
+    }
+
+    private fun pageSettled() {
+        if (pageCommit) panelController.showPage(pageTarget)
+        pageCommit = false
+        pageOffset = 0f
+        bottomPanel.translationX = 0f
+        pagePeek?.let { it.removeAllViews(); it.visibility = View.GONE; it.translationX = 0f }
+        showDots(highlight = panelController.currentPage)
+        scheduleAutoHome()
+    }
+
+    /** Точки страниц видны во время листания и ~2 с после; при одной странице не показываются. */
+    private fun showDots(highlight: Int) {
+        val dots = pageDots ?: return
+        val count = panelController.pageCount()
+        pageHandler.removeCallbacks(hideDots)
+        if (count < 2) { dots.visibility = View.GONE; return }
+        dots.removeAllViews()
+        repeat(count) { index ->
+            dots.addView(View(this).apply {
+                background = androidx.core.content.ContextCompat.getDrawable(this@MainActivity, R.drawable.modern_status_dot)?.mutate()
+                    ?.apply { setTint(if (index == highlight) ModernUi.color(this@MainActivity, R.color.modern_accent) else 0x66FFFFFF) }
+            }, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginStart = dp(5); marginEnd = dp(5) })
+        }
+        dots.visibility = View.VISIBLE
+        pageHandler.postDelayed(hideDots, DOTS_VISIBLE_MS)
+    }
+
+    /** Отсчёт автовозврата на главную; любое касание на второстепенной странице начинает его заново. */
+    private fun scheduleAutoHome() {
+        pageHandler.removeCallbacks(autoHome)
+        if (panelController.currentPage == 0) return
+        val seconds = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getInt(PREF_HOME_SECONDS, 60).coerceAtLeast(10)
+        pageHandler.postDelayed(autoHome, seconds * 1000L)
+    }
+
+    /** Не возвращаемся посреди редактирования, раскрытого виджета, открытой панели или жеста. */
+    private fun goHomeIfIdle() {
+        if (panelController.currentPage == 0) return
+        if (isEditMode || panelController.hasExpansion() || drawer?.isOpen == true || navigation?.active == true ||
+            pendingPin?.isActive == true || pageRunner.running) {
+            scheduleAutoHome()
+            return
+        }
+        beginPageDrag(0)
+        val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
+        pageCommit = true
+        pageRunner.start(0f, width, 0f)
     }
 
     /** Начатые касания плиток отменяются: кнопка не отправит команду, долгое нажатие не сработает. */
@@ -409,6 +543,7 @@ class MainActivity : AppCompatActivity() {
             null -> ModernUi.setStatus(side.internetRow, ModernUi.Status.UNKNOWN, "Интернет: неизвестно")
         }
         side.refreshAdmin()
+        side.refreshPage()
     }
 
     /**

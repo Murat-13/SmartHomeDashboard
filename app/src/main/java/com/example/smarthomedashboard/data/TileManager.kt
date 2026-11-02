@@ -24,7 +24,9 @@ data class TileEntity(
     val colorRules: String = "[]",
     val fontSize: Int = 16,
     val icon: String = "",
-    val sourceType: String = "auto"
+    val sourceType: String = "auto",
+    /** Страница панели: 0 — главная. В старых данных поля нет, Gson даёт 0 — плитки остаются на главной. */
+    val page: Int = 0
 )
 
 class TileManager(context: Context) {

@@ -28,8 +28,9 @@ class TileEditDragHandlerTest {
     private var taps = 0
     private val drops = mutableListOf<Pair<Int, Int>>()
     private var saveAllowed = true
+    private val edges = mutableListOf<Int>()
     private val drag = TileEditDragHandler(view, Handler(Looper.getMainLooper()), 400, 300,
-        { taps++ }, { x, y -> drops.add(x to y); saveAllowed })
+        { taps++ }, { x, y -> drops.add(x to y); saveAllowed }, { edges += it })
 
     private fun send(action: Int, x: Float = 0f, y: Float = 0f) {
         val event = MotionEvent.obtain(0, 0, action, x, y, 0)
@@ -82,6 +83,20 @@ class TileEditDragHandlerTest {
         assertEquals(30f, view.y, 0f)
         assertEquals(1f, view.alpha, 0f)
         assertEquals(0, taps)
+    }
+
+    @Test fun holdingAtEdgeAsksForNeighbourPageOnlyAfterDelay() {
+        send(MotionEvent.ACTION_DOWN)
+        advance(500)
+        send(MotionEvent.ACTION_MOVE, 900f, 0f)
+        advance(TileEditDragHandler.EDGE_HOLD_MS - 100)
+        send(MotionEvent.ACTION_MOVE, 100f, 0f) // ушли от края — отсчёт сброшен
+        advance(1000)
+        assertTrue(edges.isEmpty())
+        send(MotionEvent.ACTION_MOVE, -900f, 0f)
+        advance(TileEditDragHandler.EDGE_HOLD_MS + 50)
+        assertEquals(listOf(-1), edges)
+        send(MotionEvent.ACTION_UP, -900f, 0f)
     }
 
     @Test fun disposalRestoresActiveGestureAndIgnoresRetainedListener() {

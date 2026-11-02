@@ -119,6 +119,7 @@ class SettingsActivity : PinProtectedActivity() {
         val motionSensorId = prefs.getString("motion_sensor_id", "")
         tvMotionSensor.text = if (motionSensorId.isNullOrEmpty()) "Датчик движения: Не выбран" else "Датчик: $motionSensorId"
         etScreenTimeout.setText(prefs.getInt("screen_timeout_minutes", 5).toString())
+        findViewById<EditText?>(R.id.etHomeTimeout)?.setText(prefs.getInt(MainActivity.PREF_HOME_SECONDS, 60).toString())
 
         prepareWeatherInput()
         loadWeatherConfiguration()
@@ -244,6 +245,13 @@ class SettingsActivity : PinProtectedActivity() {
             if (minutes == null || minutes < 5) etPinSessionMinutes.error = "Минимальное время повторного запроса — 5 минут"
             else apply { putInt("pin_session_minutes", minutes) }
         })
+        findViewById<EditText?>(R.id.etHomeTimeout)?.let { field ->
+            field.addTextChangedListener(afterText {
+                val seconds = it.toIntOrNull()
+                if (seconds == null || seconds < 10) field.error = "Не меньше 10 секунд"
+                else apply { putInt(MainActivity.PREF_HOME_SECONDS, seconds) }
+            })
+        }
         rgTempUnit.setOnCheckedChangeListener { _, id ->
             apply { putString("temp_unit", if (id == R.id.rbFahrenheit) "F" else "C") }
         }
@@ -620,6 +628,7 @@ class SettingsActivity : PinProtectedActivity() {
             }
             if (tile.has("fontSize")) configInt(tile.opt("fontSize"))
             if (tile.has("enabled")) require(tile.opt("enabled") is Boolean)
+            if (tile.has("page")) require(configInt(tile.opt("page")) >= 0)
         }
     }
 

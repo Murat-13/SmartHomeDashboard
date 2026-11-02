@@ -394,8 +394,10 @@ class TileSettingsActivity : PinProtectedActivity() {
         // x/y — пиксели панели, а не номер ячейки: иначе все новые плитки ложатся в угол.
         val size = TilePlacement.size(container, config)
         val metrics = resources.displayMetrics
+        // Новая плитка — на ту страницу, с которой её добавили; место ищется только среди её плиток.
+        val page = intent.getIntExtra(EXTRA_PAGE, 0).coerceAtLeast(0)
         val (x, y) = TilePlacement.findFreeSpot(
-            tileManager.getAllTiles(), size.width, size.height, metrics.widthPixels, metrics.heightPixels
+            tileManager.getAllTiles().filter { it.page == page }, size.width, size.height, metrics.widthPixels, metrics.heightPixels
         )
         return TileEntity(
             id = tileId ?: UUID.randomUUID().toString(),
@@ -406,7 +408,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             y = y,
             width = 1,
             height = 1,
-            config = config
+            config = config,
+            page = page
         )
     }
 
@@ -632,6 +635,7 @@ class TileSettingsActivity : PinProtectedActivity() {
     }
 
     companion object {
+        const val EXTRA_PAGE = "page"
         private const val STATE_TILE_ID = "tile_settings_tile_id"
         private const val STATE_SELECTED_SENSORS = "tile_settings_selected_sensors"
         private const val STATE_SELECTION_CHANGED = "tile_settings_selection_changed"

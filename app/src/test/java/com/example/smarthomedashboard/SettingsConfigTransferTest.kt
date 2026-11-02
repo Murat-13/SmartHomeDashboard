@@ -125,6 +125,32 @@ class SettingsConfigTransferTest {
         assertNull(shadowOf(activity).nextStartedActivityForResult)
     }
 
+    @Test fun pagesSurviveExportImportAndOldTilesStayOnMainPage() {
+        seed()
+        // Старая плитка без поля page и плитка второй страницы.
+        tiles.edit().putString("tiles", """[{"id":"old","type":"sensor","container":"grid","title":"Old","x":10,"y":20,"width":1,"height":1},""" +
+            """{"id":"p2","type":"sensor","container":"grid","title":"P2","x":30,"y":40,"width":1,"height":1,"page":1}]""").commit()
+        val loaded = TileManager(context).loadTiles().associateBy { it.id }
+        assertEquals(0, loaded.getValue("old").page)
+        assertEquals(10 to 20, loaded.getValue("old").x to loaded.getValue("old").y)
+        assertEquals(1, loaded.getValue("p2").page)
+        val exported = export()
+        tiles.edit().putString("tiles", "[]").commit()
+        import(exported)
+        val restored = TileManager(context).loadTiles().associateBy { it.id }
+        assertEquals(0, restored.getValue("old").page)
+        assertEquals(1, restored.getValue("p2").page)
+        assertEquals(30 to 40, restored.getValue("p2").x to restored.getValue("p2").y)
+    }
+
+    @Test fun negativePageRejectsWholeImport() {
+        seed()
+        val before = tiles.getString("tiles", null)
+        import(JSONObject().put("tiles_json",
+            """[{"id":"bad","type":"sensor","container":"grid","title":"Bad","x":1,"y":1,"width":1,"height":1,"page":-1}]""").toString())
+        assertEquals(before, tiles.getString("tiles", null))
+    }
+
     @Test fun newImportPreservesSecretsAndUnspecifiedSettings() {
         seed()
         val before = prefs.all.toMap()

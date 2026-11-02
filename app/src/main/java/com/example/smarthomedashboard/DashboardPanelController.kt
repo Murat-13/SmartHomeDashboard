@@ -40,6 +40,8 @@ internal class DashboardPanelController(
         fun addTile()
         /** Админ-действие режима редактирования: true — можно сохранить сейчас; [retry] — если позже выяснится, что PIN отключён. */
         fun adminAction(retry: () -> Unit): Boolean
+        /** Сменилась текущая страница (точки, панель). */
+        fun pageChanged() {}
     }
     private val bottomPanel get() = host.panel
     private val dimOverlay get() = host.dim
@@ -124,6 +126,7 @@ internal class DashboardPanelController(
     companion object {
         /** Вход в редактирование долгим нажатием на пустое место (было 3 с). */
         internal const val EDIT_LONG_PRESS_MS = 1500L
+        internal const val PREF_PAGE_COUNT = "page_count"
     }
 
     fun dispatchTouch(event: MotionEvent): Boolean? =
@@ -146,6 +149,73 @@ internal class DashboardPanelController(
 
     /** Под точкой есть плитка (а не пустое место или затемнение). */
     fun hasTileAt(x: Float, y: Float) = findViewAt(x, y).let { it != null && it != dimOverlay }
+
+    /** Текущая страница (0 — главная); хранится во ViewModel и переживает поворот. */
+    var currentPage: Int
+        get() = viewModel.currentPage
+        private set(value) { viewModel.currentPage = value }
+
+    /** Число страниц: явно созданные (в том числе пустые) и все, где есть плитки; минимум одна. */
+    fun pageCount(): Int = maxOf(1, pagePrefs().getInt(PREF_PAGE_COUNT, 1),
+        (tileManager.getAllTiles().maxOfOrNull { it.page } ?: 0) + 1)
+
+    /** Новая пустая страница справа; возвращает её номер. */
+    fun addPage(): Int {
+        val index = pageCount()
+        pagePrefs().edit().putInt(PREF_PAGE_COUNT, index + 1).apply()
+        return index
+    }
+
+    private fun pagePrefs() = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
+
+    fun showPage(page: Int) {
+        currentPage = page.coerceIn(0, pageCount() - 1)
+        refreshBottomPanel()
+        host.pageChanged()
+    }
+
+    /**
+     * Превью соседней страницы на время листания: те же плитки и уже известные данные, но без регистрации
+     * в панели — после листания страница строится заново обычным путём.
+     */
+    fun renderPeek(page: Int, container: FrameLayout) {
+        container.removeAllViews()
+        tileManager.getTilesByContainer("grid").filter { it.page == page }.forEach { tile ->
+            val card = createSensorView(tile)
+            placeTile(card, tile.x.toFloat(), tile.y.toFloat(), card.layoutParams.width, card.layoutParams.height)
+            container.addView(card)
+        }
+        tileManager.getTilesByContainer("bottom_panel").filter { it.page == page }.forEach { tile ->
+            val button = createTileButton(tile)
+            val size = getButtonSize(tile)
+            button.layoutParams = FrameLayout.LayoutParams(size, size)
+            placeTile(button, tile.x.toFloat(), tile.y.toFloat(), size, size)
+            container.addView(button)
+        }
+        contentController.updateSensorDisplay(container)
+        contentController.updateClockViews(container)
+    }
+
+    /** Перенос плитки на соседнюю страницу (удержание у края в режиме редактирования). */
+    private fun moveTileToPage(id: String, direction: Int) {
+        val target = currentPage + direction
+        if (target < 0 || target >= pageCount()) return
+        if (!host.adminAction { if (writePage(id, target, direction)) showPage(target) }) return
+        if (writePage(id, target, direction)) showPage(target)
+    }
+
+    /** Страница и x — одной записью; на новой странице плитка встаёт у края, с которого пришла. */
+    private fun writePage(id: String, target: Int, direction: Int): Boolean {
+        val tiles = tileManager.loadTiles().toMutableList()
+        val index = tiles.indexOfFirst { it.id == id }
+        if (index < 0) return false
+        val tile = tiles[index]
+        val width = TilePlacement.displaySize(tile.container, tile.config, screenW, screenH).width
+        val x = if (direction > 0) 20 else screenW - width - 20
+        tiles[index] = tile.copy(page = target, x = x)
+        tileManager.saveTiles(tiles)
+        return true
+    }
 
     /** Раскрыт виджет или идёт изменение размера: навигационные жесты в это время не работают. */
     fun hasExpansion() = isResizing || expandedGroupId != null || expandedSensorView != null ||
@@ -172,12 +242,13 @@ internal class DashboardPanelController(
         clearPanel(keepModernGroup = keepModernGroup != null && modernGroup.isOpen)
         bottomPanel.removeAllViews()
 
-        val tiles = tileManager.getTilesByContainer("bottom_panel")
+        val page = currentPage
+        val tiles = tileManager.getTilesByContainer("bottom_panel").filter { it.page == page }
         // Состояния удалённых плиток «Электропитание Modern» не накапливаются.
         viewModel.retainPowerTrackers(tileManager.getAllTiles().filter { it.type == PowerModernConfig.TYPE }.mapTo(HashSet()) { it.id })
 
         // Сенсоры
-        tileManager.getTilesByContainer("grid").forEach { tile ->
+        tileManager.getTilesByContainer("grid").filter { it.page == page }.forEach { tile ->
             val card = createSensorView(tile)
             placeTile(card, tile.x.toFloat(), tile.y.toFloat(), card.layoutParams.width, card.layoutParams.height)
             bottomPanel.addView(card)
@@ -642,7 +713,8 @@ internal class DashboardPanelController(
         editDragHandlers.remove(view)?.dispose()
         return TileEditDragHandler(view, handler, screenW, screenH,
             onTap = { host.editTile(tileId) },
-            onDrop = { x, y -> savePosition(tileId, x, y) }
+            onDrop = { x, y -> savePosition(tileId, x, y) },
+            onEdge = { direction -> handler.post { moveTileToPage(tileId, direction) } }
         ).also { editDragHandlers[view] = it }
     }
 

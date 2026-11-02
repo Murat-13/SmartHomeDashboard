@@ -29,6 +29,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         /** Открыт диалог (PIN и т. п.): автозакрытие ждёт. */
         fun busy(): Boolean
         fun stateChanged(open: Boolean) {}
+        /** Подпись текущей страницы, например «Страница 2 из 3»; null — не показывать. */
+        fun pageText(): String? = null
     }
 
     private val context = root.context
@@ -57,6 +59,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
     val routeRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Адрес: —")
     val internetRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Интернет: нет данных")
     val backupRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Бэкап: не настроен")
+    private val pageLabel = ModernUi.caption(context, "")
     private val endAdmin = ModernUi.secondaryButton(context, "Завершить админ-режим") { host.endAdmin(); refreshAdmin() }
 
     val panel: View = ScrollView(context).apply {
@@ -81,6 +84,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
             action(ModernUi.secondaryButton(context, "+  Добавить") { close(); host.addTile() })
             action(ModernUi.secondaryButton(context, "Редактировать панель") { close(); host.edit() })
             action(endAdmin)
+            addView(pageLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
         }
         addView(column)
     }
@@ -127,7 +132,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
 
     private fun settle(target: Float, velocity: Float) {
         prepare()
-        if (target == 0f) refreshAdmin()
+        if (target == 0f) { refreshAdmin(); refreshPage() }
         runner.start(offset, target, velocity)
     }
 
@@ -162,6 +167,12 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
     private fun scheduleAutoClose() {
         handler.removeCallbacks(autoClose)
         handler.postDelayed(autoClose, AUTO_CLOSE_MS)
+    }
+
+    fun refreshPage() {
+        val text = host.pageText()
+        pageLabel.text = text.orEmpty()
+        pageLabel.visibility = if (text == null) View.GONE else View.VISIBLE
     }
 
     fun refreshAdmin() {

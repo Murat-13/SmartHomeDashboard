@@ -294,6 +294,16 @@
                         style="@style/SettingsHint"
                         android:text="Без движения экран тускнеет до минимума, при движении или касании возвращается системная яркость." />
 
+                    <TextView style="@style/SettingsLabel" android:text="Возврат на главную страницу (секунды без касаний)" />
+
+                    <EditText
+                        android:id="@+id/etHomeTimeout"
+                        style="@style/Widget.Modern.Input"
+                        android:layout_width="160dp"
+                        android:layout_height="wrap_content"
+                        android:importantForAutofill="no"
+                        android:inputType="number" />
+
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"

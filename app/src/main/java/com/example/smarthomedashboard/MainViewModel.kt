@@ -24,6 +24,8 @@ class MainViewModel : ViewModel() {
 
     // Открытая Modern-группа остаётся открытой после поворота и изменения размера окна.
     internal var openModernGroup: String? = null
+    /** Текущая страница панели (0 — главная); переживает пересоздание экрана, но не перезапуск. */
+    internal var currentPage = 0
     internal val commands = DashboardDeviceCommands(
         devices, ::callService, ::publishDevices,
         render = { id -> commandStateCallback?.invoke(id) },

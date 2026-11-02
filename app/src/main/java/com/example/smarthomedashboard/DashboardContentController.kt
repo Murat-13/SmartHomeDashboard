@@ -36,27 +36,28 @@ internal class DashboardContentController(
     val weatherForecastScroll = WeatherForecastScrollState()
     private fun resetSensorCollapseTimer() = touch()
 
-    fun updateClockViews() {
+    /** [panel] — текущая страница или соседняя при листании (её превью). */
+    fun updateClockViews(panel: android.view.ViewGroup = bottomPanel) {
         val now = Date()
         val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
         val date = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now)
-        for (i in 0 until bottomPanel.childCount) {
-            val v = bottomPanel.getChildAt(i)
+        for (i in 0 until panel.childCount) {
+            val v = panel.getChildAt(i)
             v.findViewWithTag<TextView>("clock_text")?.text = time
             v.findViewWithTag<TextView>("clock_date")?.text = date
         }
         // Тик часов не приносит новых данных подробного прогноза.
-        updateWeatherViews(refreshExpanded = false)
+        updateWeatherViews(refreshExpanded = false, panel = panel)
     }
 
     fun updateWeatherViews() {
         updateWeatherViews(refreshExpanded = true)
     }
 
-    fun updateWeatherViews(refreshExpanded: Boolean) {
+    fun updateWeatherViews(refreshExpanded: Boolean, panel: android.view.ViewGroup = bottomPanel) {
         val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
-        for (i in 0 until bottomPanel.childCount) {
-            val view = bottomPanel.getChildAt(i)
+        for (i in 0 until panel.childCount) {
+            val view = panel.getChildAt(i)
             val tile = (view.tag as? String)?.let { id -> tileManager.getAllTiles().find { it.id == id } } ?: continue
             if (tile.type == "weather") updateWeatherCard(tile, view, refreshExpanded, useYandex)
         }
@@ -121,10 +122,10 @@ internal class DashboardContentController(
         )
     }
 
-    fun updateSensorDisplay() {
+    fun updateSensorDisplay(panel: android.view.ViewGroup = bottomPanel) {
         val tiles = tileManager.getTilesByContainer("grid").associateBy { it.id }
-        for (i in 0 until bottomPanel.childCount) {
-            val child = bottomPanel.getChildAt(i) as? FrameLayout ?: continue
+        for (i in 0 until panel.childCount) {
+            val child = panel.getChildAt(i) as? FrameLayout ?: continue
             val tile = tiles[child.tag as? String] ?: continue
             updateSensorCard(tile, child)
         }

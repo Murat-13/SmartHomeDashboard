@@ -13,11 +13,16 @@ internal class TileEditDragHandler(
     private val screenH: Int,
     onTap: () -> Unit,
     /** false — положение не сохранено, плитка возвращается на место. */
-    onDrop: (Int, Int) -> Boolean
+    onDrop: (Int, Int) -> Boolean,
+    /** Плитку держат у левого (-1) или правого (+1) края — перенести на соседнюю страницу. */
+    onEdge: ((Int) -> Unit)? = null
 ) {
     private var view: View? = view
     private var onTap: (() -> Unit)? = onTap
     private var onDrop: ((Int, Int) -> Boolean)? = onDrop
+    private var onEdge: ((Int) -> Unit)? = onEdge
+    private var edgeDirection = 0
+    private var edgeHold: Runnable? = null
     private var pending: Runnable? = null
     private var active = false
     private var dragging = false
@@ -62,10 +67,12 @@ internal class TileEditDragHandler(
                     )
                     target.x = x
                     target.y = y
+                    trackEdge(target, x)
                 }
             }
             MotionEvent.ACTION_UP -> {
                 if (!active) return true
+                stopEdge()
                 active = false
                 target.performClick()
                 stopPending()
@@ -92,9 +99,33 @@ internal class TileEditDragHandler(
         pending = null
     }
 
+    /** У края экрана удержание [EDGE_HOLD_MS] переносит плитку на соседнюю страницу. */
+    private fun trackEdge(target: View, x: Float) {
+        if (onEdge == null) return
+        val minX = TilePlacement.position(-1e6f, 0f, target.width, target.height, screenW, screenH).first
+        val maxX = TilePlacement.position(1e6f, 0f, target.width, target.height, screenW, screenH).first
+        val edge = when {
+            x <= minX + 1f -> -1
+            x >= maxX - 1f -> 1
+            else -> 0
+        }
+        if (edge == edgeDirection) return
+        stopEdge()
+        edgeDirection = edge
+        if (edge != 0) edgeHold = Runnable { if (dragging && edgeDirection == edge) onEdge?.invoke(edge) }
+            .also { handler.postDelayed(it, EDGE_HOLD_MS) }
+    }
+
+    private fun stopEdge() {
+        edgeHold?.let(handler::removeCallbacks)
+        edgeHold = null
+        edgeDirection = 0
+    }
+
     /** Отмена не записывает координаты и возвращает фактический вид начала жеста. */
     private fun cancel() {
         stopPending()
+        stopEdge()
         if (active) view?.let {
             it.x = originalX
             it.y = originalY
@@ -112,5 +143,10 @@ internal class TileEditDragHandler(
         view = null
         onTap = null
         onDrop = null
+        onEdge = null
+    }
+
+    companion object {
+        const val EDGE_HOLD_MS = 700L
     }
 }
