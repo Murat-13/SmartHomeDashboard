@@ -54,6 +54,22 @@ class MainActivity : AppCompatActivity() {
         get() = viewModel.uiState.value.isEditMode
         set(value) { viewModel.setEditMode(value) }
 
+    // Боковая панель, жест двумя пальцами и события связи. Соединение HA не дублируется.
+    private var drawer: SideDrawer? = null
+    private var navigation: TwoFingerSwipe? = null
+    private var internet: InternetMonitor? = null
+    /** Через какой адрес подключён HA: true — локальный, false — удалённый, null — нет связи. */
+    private var localRoute: Boolean? = null
+    private var touchEvent: MotionEvent? = null
+    private val pillHandler = Handler(Looper.getMainLooper())
+    private var everConnected = false
+    private var lossShown = false
+    private val showLoss = Runnable {
+        lossShown = true
+        showPill(ModernUi.Status.ERROR, "Нет связи с Home Assistant · переподключение…")
+    }
+    private val hidePill = Runnable { findViewById<View?>(R.id.statusPill)?.visibility = View.GONE }
+
     private val panelController by lazy {
         DashboardPanelController(this, viewModel, object : DashboardPanelController.Host {
             override val panel get() = bottomPanel
@@ -90,6 +106,10 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
         internal const val WEATHER_REFRESH_MS = 60 * 60 * 1000L
+        // Короткое переподключение не показываем; при запуске даём время на первое подключение.
+        private const val PILL_LOSS_DELAY_MS = 5_000L
+        private const val PILL_START_DELAY_MS = 15_000L
+        private const val PILL_RECOVERED_MS = 3_000L
 
         /** Панель уже создана: по кнопке «Домой» заставка не нужна. */
         @Volatile internal var isAlive = false
@@ -118,6 +138,7 @@ class MainActivity : AppCompatActivity() {
         createStarterTilesOnFirstLaunch()
 
         setupBottomPanel()
+        setupSystemPanel()
         setupWebSocket()
         showWelcomeOnFirstLaunch()
     }
@@ -138,12 +159,18 @@ class MainActivity : AppCompatActivity() {
                     if (::tileManager.isInitialized) panelController.renderSessionState()
                 }
             }
+            launch {
+                viewModel.uiState.map { it.connectionStatus }.distinctUntilChanged().collect { onConnectionStatus(it) }
+            }
         }
+        internet?.start()
     }
 
     override fun onStop() {
         uiStateJob?.cancel()
         uiStateJob = null
+        internet?.stop()
+        pillHandler.removeCallbacks(showLoss)
         super.onStop()
     }
 
@@ -239,6 +266,8 @@ class MainActivity : AppCompatActivity() {
         clockHandler.removeCallbacks(weatherRefreshRunnable)
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
         super.onDestroy()
+        drawer?.dispose()
+        pillHandler.removeCallbacksAndMessages(null)
         panelController.clearPanelInteractions()
         idleHandler.removeCallbacks(idleRunnable)
         clockHandler.removeCallbacks(clockRunnable)
@@ -295,7 +324,121 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         resetIdleTimer()
+        val side = drawer
+        val swipe = navigation
+        if (side != null && swipe != null) {
+            touchEvent = event
+            // Распознанный жест двумя пальцами ведёт себя сам до отпускания пальцев.
+            if (swipe.active) {
+                swipe.onTouch(event)
+                touchEvent = null
+                return true
+            }
+            if (side.isOpen) return side.handleTouch(event) || super.dispatchTouchEvent(event)
+            if (side.edgeTap(event, panelController::hasTileAt)) return true
+            if (swipe.onTouch(event)) return true
+            touchEvent = null
+        }
         return panelController.dispatchTouch(event) ?: super.dispatchTouchEvent(event)
+    }
+
+    /** Боковая панель, жест двумя пальцами и монитор интернета. */
+    private fun setupSystemPanel() {
+        val root = findViewById<FrameLayout?>(R.id.mainRoot) ?: return
+        val back = object : androidx.activity.OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() { drawer?.close() }
+        }
+        onBackPressedDispatcher.addCallback(this, back)
+        val side = SideDrawer(root, object : SideDrawer.Host {
+            override fun settings() = openWithPinCheck { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
+            override fun addTile() = openWithPinCheck {
+                TileEditorPreviewSource.attach(viewModel)
+                startActivityForResult(Intent(this@MainActivity, TileSettingsActivity::class.java)
+                    .putExtra("container", "grid"), REQUEST_TILE_SETTINGS)
+            }
+            override fun edit() = openWithPinCheck { enterEditMode() }
+            override fun endAdmin() {
+                PinSecurityUi.session.revoke()
+                Toast.makeText(this@MainActivity, "Админ-режим завершён", Toast.LENGTH_SHORT).show()
+            }
+            override fun adminActive() = pinDisabled != true &&
+                PinSecurityUi.session.isValid(PinSecurityUi.sessionMinutes(this@MainActivity))
+            override fun busy() = pendingPin?.isActive == true
+            override fun stateChanged(open: Boolean) {
+                back.isEnabled = open
+                if (open) updateSystemStatus()
+            }
+        })
+        drawer = side
+        val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        navigation = TwoFingerSwipe(slop, { !isEditMode && !panelController.hasExpansion() && !side.isOpen },
+            object : TwoFingerSwipe.Listener {
+                // Пока страниц нет: слева направо открывает панель, справа налево не занято.
+                override fun onStart(direction: Int) = direction > 0
+                override fun onClaim() = cancelPanelTouches()
+                override fun onDrag(dx: Float) = side.dragOpen(dx)
+                override fun onEnd(dx: Float, velocityX: Float) = side.release(velocityX)
+                override fun onCancel() = side.release(0f)
+            })
+        internet = InternetMonitor(this) { updateSystemStatus() }
+    }
+
+    /** Начатые касания плиток отменяются: кнопка не отправит команду, долгое нажатие не сработает. */
+    private fun cancelPanelTouches() {
+        val source = touchEvent ?: return
+        val cancel = MotionEvent.obtain(source).apply { action = MotionEvent.ACTION_CANCEL }
+        try { panelController.dispatchTouch(cancel) ?: super.dispatchTouchEvent(cancel) } finally { cancel.recycle() }
+    }
+
+    private fun updateSystemStatus() {
+        val side = drawer ?: return
+        val status = viewModel.uiState.value.connectionStatus
+        val (haState, haText) = when (status) {
+            ConnectionStatus.Connected -> ModernUi.Status.OK to "HA: подключено"
+            is ConnectionStatus.Connecting -> ModernUi.Status.PROGRESS to "HA: подключение…"
+            is ConnectionStatus.Error -> ModernUi.Status.ERROR to "HA: ошибка подключения"
+            ConnectionStatus.Disconnected -> ModernUi.Status.ERROR to "HA: нет связи"
+        }
+        ModernUi.setStatus(side.haRow, haState, haText)
+        val route = localRoute.takeIf { status == ConnectionStatus.Connected }
+        ModernUi.setStatus(side.routeRow, if (route == null) ModernUi.Status.UNKNOWN else ModernUi.Status.OK,
+            when (route) { true -> "Адрес: локальный"; false -> "Адрес: удалённый"; null -> "Адрес: —" })
+        when (internet?.available) {
+            true -> ModernUi.setStatus(side.internetRow, ModernUi.Status.OK, "Интернет: есть")
+            false -> ModernUi.setStatus(side.internetRow, ModernUi.Status.ERROR, "Интернет: нет")
+            null -> ModernUi.setStatus(side.internetRow, ModernUi.Status.UNKNOWN, "Интернет: неизвестно")
+        }
+        side.refreshAdmin()
+    }
+
+    /**
+     * События связи вместо постоянной строки: потеря показывается, если связи нет дольше короткого
+     * переподключения, и висит до восстановления; затем коротко «Связь восстановлена».
+     */
+    private fun onConnectionStatus(status: ConnectionStatus) {
+        if (status == ConnectionStatus.Connected) {
+            pillHandler.removeCallbacks(showLoss)
+            if (lossShown) {
+                lossShown = false
+                showPill(ModernUi.Status.OK, "Связь с Home Assistant восстановлена")
+                pillHandler.postDelayed(hidePill, PILL_RECOVERED_MS)
+            }
+            everConnected = true
+        } else if (!lossShown) {
+            pillHandler.removeCallbacks(showLoss)
+            pillHandler.postDelayed(showLoss, if (everConnected) PILL_LOSS_DELAY_MS else PILL_START_DELAY_MS)
+        }
+        updateSystemStatus()
+    }
+
+    private fun showPill(state: ModernUi.Status, text: String) {
+        val pill = findViewById<TextView?>(R.id.statusPill) ?: return
+        pillHandler.removeCallbacks(hidePill)
+        pill.text = text
+        val dot = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.modern_status_dot)?.mutate()
+        dot?.setTint(ModernUi.color(this, state.color))
+        pill.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null)
+        pill.visibility = View.VISIBLE
     }
 
     private fun enterEditMode() {
@@ -530,9 +673,9 @@ class MainActivity : AppCompatActivity() {
             onConnectedCallback = {
                 if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) {
                     val active = viewModel.getWebSocket()?.getHost().orEmpty()
-                    val network = if (local.isNotEmpty() && active == local) "Локальная сеть" else "Интернет"
+                    localRoute = local.isNotEmpty() && active == local
+                    val network = if (localRoute == true) "Локальная сеть" else "Интернет"
                     viewModel.publishStatus("$network ($active)")
-                    Toast.makeText(this, "Подключено: $network", Toast.LENGTH_SHORT).show()
                     subscribeToNeededEntities()
                     viewModel.getEntities()
                 }

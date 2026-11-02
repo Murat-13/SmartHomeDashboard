@@ -197,15 +197,14 @@ class OnboardingTest {
 
         set("pinAccess", null)
         invoke("enterEditMode")
-        // В редактировании выше всех кнопки «+» и «⚙»: верх на 1200 − 160 − 80 = 960.
+        // «+» и «⚙» теперь в боковой панели: и в редактировании плашка над самой кнопкой.
         assertEquals(UserHints.EDIT_MODE, hintText.text.toString())
-        assertEquals(1200 - 960 + gap, margin())
+        assertEquals(1200 - 980 + gap, margin())
 
-        // Snackbar «Отменить» показывается над самой высокой кнопкой нижнего ряда («+»/«⚙»).
+        // Snackbar «Отменить» показывается над самой высокой кнопкой нижнего ряда.
         hintClose.performClick()
-        val above = noticeAnchors.single() as android.widget.Button
-        assertEquals(960f, above.y, 0f)
-        assertTrue(above.text.toString() in listOf("+", "⚙"))
+        val above = noticeAnchors.single()!!
+        assertEquals(980f, above.y, 0f)
     }
 
     @Test fun undoRightAfterClosingBringsHintBack() {

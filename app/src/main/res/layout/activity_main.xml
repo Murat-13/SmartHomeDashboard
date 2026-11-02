@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/mainRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#1A1A1A">
@@ -27,7 +28,27 @@
         android:textColor="#CCCCCC"
         android:background="#801A1A1A"
         android:textSize="12sp"
-        android:maxLines="2" />
+        android:maxLines="2"
+        android:visibility="gone" />
+
+    <!-- Событие связи с HA: потеря и восстановление. Постоянный статус — в боковой панели. -->
+    <TextView
+        android:id="@+id/statusPill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/modern_bg_pill"
+        android:drawablePadding="8dp"
+        android:elevation="8dp"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp"
+        android:textColor="@color/modern_text_primary"
+        android:textSize="14sp"
+        android:visibility="gone" />
 
     <!-- Подсказка: как войти в редактирование и что в нём можно. Ширина по экрану,
          но не больше 720dp. Текст занимает оставшееся место, крестик всегда 48×48dp

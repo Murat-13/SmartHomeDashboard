@@ -121,7 +121,10 @@ internal class DashboardPanelController(
     private var panelEntityTiles: List<TileEntity>? = null
     private var panelEntityMotionSensor: String? = null
     private var panelEntityIds: Set<String> = emptySet()
-    companion object { private const val DEFAULT_BUTTON_SIZE = 160 }
+    companion object {
+        /** Вход в редактирование долгим нажатием на пустое место (было 3 с). */
+        internal const val EDIT_LONG_PRESS_MS = 1500L
+    }
 
     fun dispatchTouch(event: MotionEvent): Boolean? =
         modernWindowInput.dispatch(event) ?: sensorWindowInput.dispatch(event)
@@ -133,13 +136,20 @@ internal class DashboardPanelController(
                 if (isEditMode) host.exitEdit()
                 else {
                     longPressRunnable = Runnable { host.requestEdit() }
-                    handler.postDelayed(longPressRunnable!!, 3000L)
+                    handler.postDelayed(longPressRunnable!!, EDIT_LONG_PRESS_MS)
                 }
             }
         } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
             longPressRunnable?.let { handler.removeCallbacks(it) }
         }
     }
+
+    /** Под точкой есть плитка (а не пустое место или затемнение). */
+    fun hasTileAt(x: Float, y: Float) = findViewAt(x, y).let { it != null && it != dimOverlay }
+
+    /** Раскрыт виджет или идёт изменение размера: навигационные жесты в это время не работают. */
+    fun hasExpansion() = isResizing || expandedGroupId != null || expandedSensorView != null ||
+        modernExpansion.isOpen || modernGroup.isOpen
 
     private fun findViewAt(x: Float, y: Float): View? {
         for (i in bottomPanel.childCount - 1 downTo 0) {
@@ -184,22 +194,7 @@ internal class DashboardPanelController(
             renderedViews[tile.id] = btn
         }
 
-        // Кнопки управления (Настройки и +) только в режиме редактирования
-        if (isEditMode) {
-            val btnS = createSettingsButton().apply {
-                layoutParams = FrameLayout.LayoutParams(DEFAULT_BUTTON_SIZE, DEFAULT_BUTTON_SIZE)
-                x = (screenW - DEFAULT_BUTTON_SIZE - 20).toFloat()
-                y = (screenH - DEFAULT_BUTTON_SIZE - 80).toFloat()
-            }
-            bottomPanel.addView(btnS)
-
-            val btnA = createAddButton().apply {
-                layoutParams = FrameLayout.LayoutParams(DEFAULT_BUTTON_SIZE, DEFAULT_BUTTON_SIZE)
-                x = (screenW - DEFAULT_BUTTON_SIZE * 2 - 40).toFloat()
-                y = (screenH - DEFAULT_BUTTON_SIZE - 80).toFloat()
-            }
-            bottomPanel.addView(btnA)
-        }
+        // Настройки и «+» теперь в боковой панели (SideDrawer), поверх плиток их больше нет.
 
         if (keepModernGroup == null) {
             viewModel.openModernGroup = null

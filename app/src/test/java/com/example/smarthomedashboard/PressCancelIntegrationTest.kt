@@ -76,7 +76,7 @@ class PressCancelIntegrationTest {
         set(activity, "dimOverlay", dim)
         set(activity, "yandexWeatherManager", YandexWeatherManager(activity))
         set(activity, "isEditMode", edit)
-        val root = FrameLayout(activity)
+        val root = FrameLayout(activity).apply { id = R.id.mainRoot }
         (panel.parent as? ViewGroup)?.removeView(panel)
         root.addView(panel)
         root.addView(dim)
@@ -133,6 +133,33 @@ class PressCancelIntegrationTest {
         assertTrue(get<List<Button>>("expandedChildButtons").isEmpty())
         assertNull(sensorSessionFixture(activity).current)
         assertNull(shadowOf(activity).nextStartedActivity)
+    }
+
+    private fun multi(action: Int, vararg points: Pair<Float, Float>) {
+        val properties = Array(points.size) { i -> MotionEvent.PointerProperties().apply { id = i; toolType = MotionEvent.TOOL_TYPE_FINGER } }
+        val coords = Array(points.size) { i -> MotionEvent.PointerCoords().apply { x = points[i].first; y = points[i].second; pressure = 1f; size = 1f } }
+        val now = android.os.SystemClock.uptimeMillis()
+        val e = MotionEvent.obtain(now, now, action, points.size, properties, coords, 0, 0, 1f, 1f, 0, 0, 0, 0)
+        try { activity.dispatchTouchEvent(e) } finally { e.recycle() }
+    }
+
+    @Test fun twoFingerSwipeStartedOnButtonOpensPanelWithoutCommand() {
+        open()
+        invoke("setupSystemPanel")
+        val button = view("button")
+        val x = button.x + 10f
+        val y = button.y + 10f
+        val second = MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        val secondUp = MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        multi(MotionEvent.ACTION_DOWN, x to y)
+        multi(second, x to y, x to y + 60f)
+        multi(MotionEvent.ACTION_MOVE, x + 120f to y, x + 120f to y + 60f)
+        multi(MotionEvent.ACTION_MOVE, x + 260f to y, x + 260f to y + 60f)
+        multi(secondUp, x + 260f to y, x + 260f to y + 60f)
+        multi(MotionEvent.ACTION_UP, x + 260f to y)
+        advance(1200)
+        assertTrue(calls().isEmpty())
+        assertTrue(get<SideDrawer?>("drawer")!!.isOpen)
     }
 
     @Test fun groupCancelBeforeThresholdNeverExpandsOrSendsCommandEvenAfterStrayUp() {
