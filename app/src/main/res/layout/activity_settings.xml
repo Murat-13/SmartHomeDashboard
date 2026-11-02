@@ -1,539 +1,526 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Настройки: слева пять разделов, справа содержимое выбранного. ID полей прежние. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#1A1A1A">
+    android:background="@color/modern_background"
+    android:orientation="vertical">
 
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="#2A2A2A"
+        android:background="@color/modern_background"
+        app:navigationContentDescription="Назад"
         app:navigationIcon="?attr/homeAsUpIndicator"
         app:title="@string/settings_title"
-        app:titleTextColor="#FFFFFF" />
+        app:titleTextColor="@color/modern_text_primary" />
 
-    <ScrollView
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:padding="16dp">
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
+        <ScrollView
+            android:id="@+id/settingsNavScroll"
+            android:layout_width="@dimen/modern_nav_width"
+            android:layout_height="match_parent">
 
-            <!-- Home Assistant Settings -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Home Assistant"
-                android:textColor="#4CAF50"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="8dp" />
-
-            <TextView
-                android:id="@+id/tvHaConnectionStatus"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Статус: Неизвестно"
-                android:textColor="#BBBBBB"
-                android:textSize="14sp"
-                android:layout_marginBottom="8dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/local_host_label"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="4dp" />
-
-            <EditText
-                android:id="@+id/etHaLocalHost"
+            <LinearLayout
+                android:id="@+id/settingsNav"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="text"
-                android:hint="@string/local_host_hint" />
+                android:orientation="vertical"
+                android:paddingStart="@dimen/modern_space_m"
+                android:paddingEnd="@dimen/modern_space_m"
+                android:paddingBottom="@dimen/modern_space_l" />
+        </ScrollView>
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/remote_host_label"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="4dp" />
-
-            <EditText
-                android:id="@+id/etHaRemoteHost"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="text"
-                android:hint="@string/remote_host_hint" />
-
-            <TextView
-                android:id="@+id/tvHaTransportWarning"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:padding="8dp"
-                android:visibility="gone"
-                android:textSize="13sp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/ha_token_label"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:id="@+id/tvHaTokenStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Проверка токена HA..."
-                android:textColor="#BBBBBB" />
-
-            <EditText
-                android:id="@+id/etHaToken"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="textPassword"
-                android:saveEnabled="false"
-                android:importantForAutofill="no"
-                android:hint="Новый токен; пусто — оставить сохранённый" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="#444444"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="16dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Безопасность"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <EditText
-                android:id="@+id/etAdminPin"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="numberPassword"
-                android:hint="Установите PIN для защиты настроек"
-                android:maxLength="6" android:saveEnabled="false"
-                android:importantForAutofill="noExcludeDescendants"
-                />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Время сессии PIN (минуты)"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="4dp" />
-
-            <EditText
-                android:id="@+id/etPinSessionMinutes"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="12dp"
-                android:inputType="number"
-                android:hint="Через сколько минут снова спросить PIN"
-                android:text="60" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Энергосбережение и движение"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
+        <ScrollView
+            android:id="@+id/settingsScroll"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:orientation="vertical"
+                android:paddingStart="@dimen/modern_space_l"
+                android:paddingEnd="@dimen/modern_space_xl"
+                android:paddingBottom="@dimen/modern_space_xl">
 
-                <TextView
-                    android:id="@+id/tvMotionSensor"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Датчик движения: Не выбран"
-                    android:textColor="#BBBBBB" />
-
-                <Button
-                    android:id="@+id/btnSelectMotionSensor"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Выбрать"
-                    android:textSize="12sp"
-                    android:backgroundTint="#444444" />
-
-                <Button
-                    android:id="@+id/btnClearMotionSensor"
-                    android:layout_width="40dp"
-                    android:layout_height="wrap_content"
-                    android:text="✕"
-                    android:textSize="12sp"
-                    android:layout_marginStart="4dp"
-                    android:backgroundTint="#B3261E" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Таймер отключения (минуты)"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:layout_marginTop="8dp" />
-
-            <EditText
-                android:id="@+id/etScreenTimeout"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:padding="12dp"
-                android:inputType="number"
-                android:hint="Напр. 5"
-                android:text="5" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/temp_unit_label"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <RadioGroup
-                android:id="@+id/rgTempUnit"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:background="#2A2A2A"
-                android:padding="8dp">
-
-                <RadioButton
-                    android:id="@+id/rbCelsius"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/unit_celsius"
-                    android:textColor="#FFFFFF"
-                    android:buttonTint="#4CAF50" />
-
-                <RadioButton
-                    android:id="@+id/rbFahrenheit"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/unit_fahrenheit"
-                    android:textColor="#FFFFFF"
-                    android:buttonTint="#4CAF50" />
-            </RadioGroup>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Тема оформления"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <Spinner
-                android:id="@+id/spinnerTheme"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:background="#2A2A2A"
-                android:entries="@array/theme_options" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Режим киоска (закрепление)"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <CheckBox
-                android:id="@+id/cbKioskMode"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Включить блокировку экрана"
-                android:textColor="#BBBBBB"
-                android:buttonTint="#4CAF50" />
-
-            <!-- Применяется сразу, без «Сохранить»: это системная настройка Android. -->
-            <CheckBox
-                android:id="@+id/cbHomeScreen"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Открывать панель автоматически (главный экран)"
-                android:textColor="#BBBBBB"
-                android:buttonTint="#4CAF50" />
-
-            <TextView
-                android:id="@+id/tvHomeScreenStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="32dp"
-                android:minHeight="48dp"
-                android:gravity="center_vertical"
-                android:textColor="#9E9E9E"
-                android:textSize="14sp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Кнопки Modern"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <!-- Только для кнопок и групп в стиле Modern; Classic настройку не читает. -->
-            <CheckBox
-                android:id="@+id/cbModernHaptics"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Виброотклик Modern"
-                android:textColor="#BBBBBB"
-                android:buttonTint="#4CAF50" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Резервное копирование"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/btnExport"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Экспорт"
-                    android:layout_marginEnd="4dp"
-                    android:backgroundTint="#2196F3" />
-
-                <Button
-                    android:id="@+id/btnImport"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Импорт"
-                    android:layout_marginStart="4dp"
-                    android:backgroundTint="#FF9800" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Подсказки и справка"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Закрытые крестиком подсказки можно вернуть здесь"
-                android:textColor="#9E9E9E"
-                android:textSize="14sp"
-                android:layout_marginBottom="4dp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/btnHelp"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="4dp"
-                    android:text="Как пользоваться"
-                    android:backgroundTint="#616161" />
-
-                <Button
-                    android:id="@+id/btnRestoreHints"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="4dp"
-                    android:text="Вернуть скрытые подсказки"
-                    android:backgroundTint="#616161" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="#444444"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="16dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Погода (Яндекс)"
-                android:textColor="#FFEB3B"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="8dp" />
-
-            <CheckBox
-                android:id="@+id/cbUseYandexWeather"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Использовать Яндекс.Погоду"
-                android:textColor="#FFFFFF"
-                android:buttonTint="#FFEB3B" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="API Ключ Яндекса"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:id="@+id/tvYandexKeyStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Чтение настроек Яндекса..."
-                android:textColor="#FFFFFF" />
-
-            <EditText
-                android:id="@+id/etYandexApiKey"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:padding="12dp"
-                android:inputType="textPassword"
-                android:saveEnabled="false"
-                android:importantForAutofill="no"
-                android:hint="Новый ключ; пусто — оставить сохранённый" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="16dp">
-
+                <!-- ===== Соединения ===== -->
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:id="@+id/sectionConnections"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:layout_marginEnd="8dp">
+                    android:orientation="vertical">
+
+                    <LinearLayout style="@style/Widget.Modern.Section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Home Assistant"
+                            android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                        <TextView
+                            android:id="@+id/tvHaConnectionStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:text="Статус: Неизвестно"
+                            android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                        <TextView style="@style/SettingsLabel" android:text="@string/local_host_label" />
+
+                        <EditText
+                            android:id="@+id/etHaLocalHost"
+                            style="@style/Widget.Modern.Input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:hint="@string/local_host_hint"
+                            android:importantForAutofill="no"
+                            android:inputType="textUri" />
+
+                        <TextView style="@style/SettingsLabel" android:text="@string/remote_host_label" />
+
+                        <EditText
+                            android:id="@+id/etHaRemoteHost"
+                            style="@style/Widget.Modern.Input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:hint="@string/remote_host_hint"
+                            android:importantForAutofill="no"
+                            android:inputType="textUri" />
+
+                        <TextView
+                            android:id="@+id/tvHaTransportWarning"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:textColor="@color/modern_warning"
+                            android:textSize="@dimen/modern_text_caption"
+                            android:visibility="gone" />
+
+                        <TextView style="@style/SettingsLabel" android:text="@string/ha_token_label" />
+
+                        <TextView
+                            android:id="@+id/tvHaTokenStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Проверка токена HA..."
+                            android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                        <EditText
+                            android:id="@+id/etHaToken"
+                            style="@style/Widget.Modern.Input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:fontFamily="sans-serif"
+                            android:hint="Новый токен; пусто — оставить сохранённый"
+                            android:importantForAutofill="no"
+                            android:inputType="textPassword"
+                            android:saveEnabled="false" />
+
+                        <Button
+                            android:id="@+id/btnSave"
+                            style="@style/Widget.Modern.Button.Primary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_l"
+                            android:text="Проверить и сохранить" />
+
+                        <TextView
+                            style="@style/SettingsHint"
+                            android:text="Новый адрес и токен сохраняются только после успешного подключения. Если проверка не прошла, остаётся прежнее подключение." />
+                    </LinearLayout>
+
+                    <LinearLayout style="@style/Widget.Modern.Section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_l">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Яндекс Погода"
+                            android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/cbUseYandexWeather"
+                            style="@style/Widget.Modern.Switch"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:text="Использовать Яндекс Погоду" />
+
+                        <TextView
+                            android:id="@+id/tvYandexKeyStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Чтение настроек Яндекса..."
+                            android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                        <TextView style="@style/SettingsLabel" android:text="Ключ API Яндекса" />
+
+                        <EditText
+                            android:id="@+id/etYandexApiKey"
+                            style="@style/Widget.Modern.Input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="sans-serif"
+                            android:hint="Новый ключ; пусто — оставить сохранённый"
+                            android:importantForAutofill="no"
+                            android:inputType="textPassword"
+                            android:saveEnabled="false" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginEnd="@dimen/modern_space_m"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView style="@style/SettingsLabel" android:text="Широта" />
+
+                                <EditText
+                                    android:id="@+id/etYandexLat"
+                                    style="@style/Widget.Modern.Input"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:importantForAutofill="no"
+                                    android:inputType="numberDecimal" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView style="@style/SettingsLabel" android:text="Долгота" />
+
+                                <EditText
+                                    android:id="@+id/etYandexLon"
+                                    style="@style/Widget.Modern.Input"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:importantForAutofill="no"
+                                    android:inputType="numberDecimal" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <Button
+                            android:id="@+id/btnSaveWeather"
+                            style="@style/Widget.Modern.Button.Primary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_l"
+                            android:text="Сохранить" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- ===== Экран ===== -->
+                <LinearLayout
+                    android:id="@+id/sectionScreen"
+                    style="@style/Widget.Modern.Section"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Широта (Lat)"
-                        android:textColor="#FFFFFF"
-                        android:textSize="14sp" />
+                        android:text="Датчик движения и затемнение"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
 
-                    <EditText
-                        android:id="@+id/etYandexLat"
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:background="#2A2A2A"
-                        android:textColor="#FFFFFF"
-                        android:padding="12dp"
-                        android:inputType="numberDecimal"
-                        android:hint="" />
-                </LinearLayout>
+                        android:layout_marginTop="@dimen/modern_space_s"
+                        android:gravity="center_vertical"
+                        android:minHeight="@dimen/modern_touch_target"
+                        android:orientation="horizontal">
 
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:layout_marginStart="8dp">
+                        <TextView
+                            android:id="@+id/tvMotionSensor"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Датчик движения: Не выбран"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+
+                        <Button
+                            android:id="@+id/btnSelectMotionSensor"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Выбрать" />
+
+                        <Button
+                            android:id="@+id/btnClearMotionSensor"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/modern_space_s"
+                            android:contentDescription="Убрать датчик движения"
+                            android:text="Убрать" />
+                    </LinearLayout>
+
+                    <TextView style="@style/SettingsLabel" android:text="Затемнение после бездействия (минуты)" />
+
+                    <EditText
+                        android:id="@+id/etScreenTimeout"
+                        style="@style/Widget.Modern.Input"
+                        android:layout_width="160dp"
+                        android:layout_height="wrap_content"
+                        android:importantForAutofill="no"
+                        android:inputType="number"
+                        android:text="5" />
+
+                    <TextView
+                        style="@style/SettingsHint"
+                        android:text="Без движения экран тускнеет до минимума, при движении или касании возвращается системная яркость." />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Долгота (Lon)"
-                        android:textColor="#FFFFFF"
-                        android:textSize="14sp" />
+                        android:layout_marginTop="@dimen/modern_space_xl"
+                        android:text="Отображение"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
 
-                    <EditText
-                        android:id="@+id/etYandexLon"
+                    <TextView style="@style/SettingsLabel" android:text="Единицы температуры" />
+
+                    <RadioGroup
+                        android:id="@+id/rgTempUnit"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <RadioButton
+                            android:id="@+id/rbCelsius"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minHeight="@dimen/modern_touch_target"
+                            android:text="°C"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+
+                        <RadioButton
+                            android:id="@+id/rbFahrenheit"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/modern_space_l"
+                            android:minHeight="@dimen/modern_touch_target"
+                            android:text="°F"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+                    </RadioGroup>
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/cbModernHaptics"
+                        style="@style/Widget.Modern.Switch"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:background="#2A2A2A"
-                        android:textColor="#FFFFFF"
-                        android:padding="12dp"
-                        android:inputType="numberDecimal"
-                        android:hint="" />
+                        android:layout_marginTop="@dimen/modern_space_s"
+                        android:text="Виброотклик кнопок Modern" />
+                </LinearLayout>
+
+                <!-- ===== Безопасность ===== -->
+                <LinearLayout
+                    android:id="@+id/sectionSecurity"
+                    style="@style/Widget.Modern.Section"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="PIN администратора"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                    <EditText
+                        android:id="@+id/etAdminPin"
+                        style="@style/Widget.Modern.Input"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_s"
+                        android:importantForAutofill="noExcludeDescendants"
+                        android:inputType="numberPassword"
+                        android:maxLength="6"
+                        android:saveEnabled="false" />
+
+                    <TextView style="@style/SettingsLabel" android:text="Время сессии PIN (минуты)" />
+
+                    <EditText
+                        android:id="@+id/etPinSessionMinutes"
+                        style="@style/Widget.Modern.Input"
+                        android:layout_width="160dp"
+                        android:layout_height="wrap_content"
+                        android:importantForAutofill="no"
+                        android:inputType="number"
+                        android:text="60" />
+
+                    <TextView
+                        style="@style/SettingsHint"
+                        android:text="Сессия продлевается действиями администратора. Обычное управление домом PIN не требует." />
+                </LinearLayout>
+
+                <!-- ===== Устройство ===== -->
+                <LinearLayout
+                    android:id="@+id/sectionDevice"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <LinearLayout style="@style/Widget.Modern.Section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Планшет"
+                            android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/cbKioskMode"
+                            style="@style/Widget.Modern.Switch"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:text="Режим киоска (закрепление экрана)" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/cbHomeScreen"
+                            style="@style/Widget.Modern.Switch"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Открывать панель автоматически (главный экран)" />
+
+                        <TextView
+                            android:id="@+id/tvHomeScreenStatus"
+                            style="@style/SettingsHint"
+                            android:minHeight="@dimen/modern_touch_target" />
+                    </LinearLayout>
+
+                    <LinearLayout style="@style/Widget.Modern.Section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_l">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Резервные копии"
+                            android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                        <TextView
+                            style="@style/SettingsHint"
+                            android:text="В файл входят плитки и часть настроек панели. Токен Home Assistant, ключ Яндекса и PIN в файл не входят — после восстановления на новом планшете их нужно ввести заново." />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_m"
+                            android:orientation="horizontal">
+
+                            <Button
+                                android:id="@+id/btnExport"
+                                style="@style/Widget.Modern.Button.Secondary"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Экспорт в файл" />
+
+                            <Button
+                                android:id="@+id/btnImport"
+                                style="@style/Widget.Modern.Button.Secondary"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="@dimen/modern_space_m"
+                                android:text="Импорт из файла" />
+                        </LinearLayout>
+
+                        <TextView
+                            style="@style/SettingsHint"
+                            android:text="Автоматические копии появятся в одном из следующих обновлений." />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- ===== О приложении ===== -->
+                <LinearLayout
+                    android:id="@+id/sectionAbout"
+                    style="@style/Widget.Modern.Section"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="SmartHomeDashboard"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                    <TextView
+                        android:id="@+id/tvAppVersion"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_s"
+                        android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_s"
+                        android:text="Обновления: проверка пока не настроена"
+                        android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_xl"
+                        android:text="Подсказки и справка"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                    <TextView
+                        style="@style/SettingsHint"
+                        android:text="Закрытые крестиком подсказки можно вернуть здесь." />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_m"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnHelp"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Как пользоваться" />
+
+                        <Button
+                            android:id="@+id/btnRestoreHints"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/modern_space_m"
+                            android:text="Вернуть скрытые подсказки" />
+                    </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
-
-            <Button
-                android:id="@+id/btnSave"
-                android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:layout_marginTop="32dp"
-                android:text="@string/save"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#4CAF50"
-                android:textSize="16sp" />
-
-        </LinearLayout>
-    </ScrollView>
-
+        </ScrollView>
+    </LinearLayout>
 </LinearLayout>

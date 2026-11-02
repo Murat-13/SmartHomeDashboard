@@ -4,13 +4,19 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
+import android.content.res.Configuration
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
+import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
+import android.widget.CompoundButton
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
-import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
@@ -41,9 +47,8 @@ class SettingsActivity : PinProtectedActivity() {
     private lateinit var tvMotionSensor: TextView
     private lateinit var btnSelectMotionSensor: Button
     private lateinit var btnClearMotionSensor: Button
-    private lateinit var spinnerTheme: Spinner
-    private lateinit var cbKioskMode: CheckBox
-    private lateinit var cbUseYandexWeather: CheckBox
+    private lateinit var cbKioskMode: CompoundButton
+    private lateinit var cbUseYandexWeather: CompoundButton
     private lateinit var etYandexApiKey: EditText
     private lateinit var tvYandexKeyStatus: TextView
     private var weatherKeys: WeatherKeyAccess? = null
@@ -58,6 +63,14 @@ class SettingsActivity : PinProtectedActivity() {
     private lateinit var btnExport: Button
     private lateinit var btnImport: Button
     private lateinit var btnSave: Button
+    private var btnSaveWeather: Button? = null
+    /** Пробное подключение к новому адресу/токену до сохранения; без переподключений. */
+    private var probe: HomeAssistantWebSocket? = null
+    private var probeAttempt = 0
+    private val probeHandler = Handler(Looper.getMainLooper())
+    private var section = 0
+    private val sectionIds = intArrayOf(R.id.sectionConnections, R.id.sectionScreen, R.id.sectionSecurity,
+        R.id.sectionDevice, R.id.sectionAbout)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +88,6 @@ class SettingsActivity : PinProtectedActivity() {
         tvMotionSensor = findViewById(R.id.tvMotionSensor)
         btnSelectMotionSensor = findViewById(R.id.btnSelectMotionSensor)
         btnClearMotionSensor = findViewById(R.id.btnClearMotionSensor)
-        spinnerTheme = findViewById(R.id.spinnerTheme)
         cbKioskMode = findViewById(R.id.cbKioskMode)
         cbUseYandexWeather = findViewById(R.id.cbUseYandexWeather)
         etYandexApiKey = findViewById(R.id.etYandexApiKey)
@@ -85,6 +97,7 @@ class SettingsActivity : PinProtectedActivity() {
         btnExport = findViewById(R.id.btnExport)
         btnImport = findViewById(R.id.btnImport)
         btnSave = findViewById(R.id.btnSave)
+        btnSaveWeather = findViewById(R.id.btnSaveWeather)
 
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
 
@@ -111,7 +124,7 @@ class SettingsActivity : PinProtectedActivity() {
         loadWeatherConfiguration()
 
         cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
-        findViewById<CheckBox?>(R.id.cbModernHaptics)?.isChecked = prefs.getBoolean(ModernHaptics.PREF, true)
+        findViewById<CompoundButton?>(R.id.cbModernHaptics)?.isChecked = prefs.getBoolean(ModernHaptics.PREF, true)
 
         val tempUnit = prefs.getString("temp_unit", "C") ?: "C"
         if (tempUnit == "F") {
@@ -120,16 +133,9 @@ class SettingsActivity : PinProtectedActivity() {
             findViewById<RadioButton>(R.id.rbCelsius).isChecked = true
         }
 
-        val theme = prefs.getString("app_theme", "system") ?: "system"
-        spinnerTheme.setSelection(
-            when (theme) {
-                "light" -> 1
-                "dark" -> 2
-                else -> 0
-            }
-        )
-
-        btnSave.setOnClickListener { saveCurrentSettings() }
+        btnSave.setOnClickListener { saveConnections() }
+        btnSaveWeather?.setOnClickListener { saveConnections() }
+        applyImmediately()
 
         btnSelectMotionSensor.setOnClickListener {
             val intent = Intent(this, SensorPickerActivity::class.java)
@@ -148,19 +154,192 @@ class SettingsActivity : PinProtectedActivity() {
         findViewById<Button>(R.id.btnRestoreHints).setOnClickListener {
             UserHints.restoreAll(this)
             updateRestoreHintsButton()
-        setupHomeScreenMode()
             Toast.makeText(this, "Подсказки снова будут показываться", Toast.LENGTH_SHORT).show()
         }
         updateRestoreHintsButton()
         setupHomeScreenMode()
 
-        findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener {
-            finish()
+        findViewById<TextView>(R.id.tvAppVersion).text = versionText()
+        setupNavigation(savedInstanceState?.getInt(STATE_SECTION) ?: 0)
+
+        findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener { leave() }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = leave()
+        })
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_SECTION, section)
+    }
+
+    /** Левое меню пяти разделов; в книжной ориентации — узкое, иконка над подписью. */
+    private fun setupNavigation(initial: Int) {
+        val nav = findViewById<LinearLayout?>(R.id.settingsNav) ?: return
+        val compact = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        if (compact) findViewById<View>(R.id.settingsNavScroll).layoutParams.width =
+            resources.getDimensionPixelSize(R.dimen.modern_nav_width_compact)
+        val items = listOf(
+            "Соединения" to R.drawable.ic_settings_connections,
+            "Экран" to R.drawable.ic_settings_screen,
+            "Безопасность" to R.drawable.ic_settings_security,
+            "Устройство" to R.drawable.ic_settings_device,
+            "О приложении" to R.drawable.ic_settings_about,
+        )
+        items.forEachIndexed { index, (label, icon) ->
+            val item = ModernUi.navItem(this, label, icon).apply {
+                if (compact) {
+                    val drawable = compoundDrawables[0]
+                    setCompoundDrawablesWithIntrinsicBounds(null, drawable, null, null)
+                    gravity = Gravity.CENTER
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                    textSize = 11f
+                    val pad = resources.getDimensionPixelSize(R.dimen.modern_space_s)
+                    setPadding(0, pad, 0, pad)
+                }
+                setOnClickListener { showSection(index) }
+            }
+            nav.addView(item, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = resources.getDimensionPixelSize(R.dimen.modern_space_xs)
+            })
+        }
+        showSection(initial.coerceIn(sectionIds.indices))
+    }
+
+    private fun showSection(index: Int) {
+        section = index
+        sectionIds.forEachIndexed { i, id -> findViewById<View?>(id)?.visibility = if (i == index) View.VISIBLE else View.GONE }
+        findViewById<LinearLayout?>(R.id.settingsNav)?.let { nav ->
+            for (i in 0 until nav.childCount) nav.getChildAt(i).isSelected = i == index
+        }
+        findViewById<View?>(R.id.settingsScroll)?.scrollTo(0, 0)
+    }
+
+    private fun versionText(): String = try {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        @Suppress("DEPRECATION")
+        val build = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+        "Версия ${info.versionName} · сборка $build"
+    } catch (_: Exception) {
+        "Версия неизвестна"
+    }
+
+    /**
+     * Безопасные параметры применяются сразу; адрес HA, токен и ключ погоды — только кнопкой своего блока.
+     * Подключается после заполнения полей, чтобы начальные значения не записывались повторно.
+     */
+    private fun applyImmediately() {
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        fun apply(block: android.content.SharedPreferences.Editor.() -> Unit) {
+            if (isPinAccessAllowed()) prefs.edit(action = block)
+        }
+        etScreenTimeout.addTextChangedListener(afterText {
+            val minutes = it.toIntOrNull()
+            if (minutes == null || minutes < 1) etScreenTimeout.error = "Не меньше 1 минуты"
+            else apply { putInt("screen_timeout_minutes", minutes) }
+        })
+        etPinSessionMinutes.addTextChangedListener(afterText {
+            val minutes = it.toIntOrNull()
+            if (minutes == null || minutes < 5) etPinSessionMinutes.error = "Минимальное время повторного запроса — 5 минут"
+            else apply { putInt("pin_session_minutes", minutes) }
+        })
+        rgTempUnit.setOnCheckedChangeListener { _, id ->
+            apply { putString("temp_unit", if (id == R.id.rbFahrenheit) "F" else "C") }
+        }
+        cbKioskMode.setOnCheckedChangeListener { _, checked -> apply { putBoolean("kiosk_mode", checked) } }
+        findViewById<CompoundButton?>(R.id.cbModernHaptics)?.setOnCheckedChangeListener { _, checked ->
+            apply { putBoolean(ModernHaptics.PREF, checked) }
         }
     }
 
+    private fun afterText(action: (String) -> Unit) = object : android.text.TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+        override fun afterTextChanged(s: android.text.Editable?) = action(s.toString().trim())
+    }
+
+    private fun haChanged(): Boolean {
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        return etHaLocalHost.text.toString().trim() != prefs.getString("ha_local_host", "").orEmpty().trim() ||
+            etHaRemoteHost.text.toString().trim() != prefs.getString("ha_remote_host", "").orEmpty().trim() ||
+            etHaToken.text.toString().isNotBlank()
+    }
+
+    /** Есть несохранённые данные подключения или погоды (остальное уже применено). */
+    private fun hasUnsavedChanges(): Boolean {
+        if (haChanged() || etYandexApiKey.text.toString().isNotBlank()) return true
+        val loaded = weatherFormConfiguration ?: return false
+        return etYandexLat.text.toString() != loaded.latitude || etYandexLon.text.toString() != loaded.longitude ||
+            cbUseYandexWeather.isChecked != loaded.enabled
+    }
+
+    private fun leave() {
+        if (!hasUnsavedChanges()) { finish(); return }
+        ModernUi.leaveDialog(this, "Адрес, токен или настройки погоды ещё не записаны.",
+            onSave = { saveConnections() }, onDiscard = { finish() }).show()
+    }
+
+    /**
+     * Сохранение блоков «Соединения»: если адрес или токен HA изменены, сначала пробное
+     * подключение (как в SetupActivity), и только после auth_ok — прежнее защищённое сохранение.
+     */
+    private fun saveConnections() {
+        if (!isPinAccessAllowed()) return
+        if (!haChanged()) { saveCurrentSettings(); return }
+        val local = etHaLocalHost.text.toString().trim()
+        val remote = etHaRemoteHost.text.toString().trim()
+        val replacement = etHaToken.text.toString().trim()
+        val hosts = listOf(local, remote).filter { it.isNotEmpty() }.distinct()
+        if (hosts.isEmpty()) {
+            tvHaConnectionStatus.text = "Укажите локальный или внешний адрес Home Assistant"
+            return
+        }
+        cancelProbe()
+        val attempt = probeAttempt
+        setSavePending(true)
+        tvHaConnectionStatus.text = "Проверка подключения…"
+        fun active() = attempt == probeAttempt && !isFinishing && !isDestroyed
+        fun fail(message: String) {
+            if (!active()) return
+            cancelProbe()
+            setSavePending(false)
+            tvHaConnectionStatus.text = "$message. Прежнее подключение не изменено"
+        }
+        lifecycleScope.launch {
+            val stored = withContext(Dispatchers.IO) { tokens().read() }
+            if (!active()) return@launch
+            val token = replacement.ifEmpty { stored.value.orEmpty() }
+            if (token.isBlank()) { fail(if (HaTokenAccess.isCurrent(stored)) stored.message else "Токен HA изменён"); return@launch }
+            probe = HomeAssistantWebSocket(
+                host = hosts.first(), token = token, alternateHosts = hosts.drop(1), autoReconnect = false,
+                onStateChanged = { _, _, _ -> },
+                onConnected = {
+                    if (active()) {
+                        cancelProbe()
+                        tvHaConnectionStatus.text = "Подключение проверено"
+                        setSavePending(false)
+                        saveCurrentSettings()
+                    }
+                },
+                onDisconnected = {},
+                onError = { fail(it) },
+                onStatus = { if (it.startsWith("Ошибка:")) fail(it) else if (active()) tvHaConnectionStatus.text = it }
+            )
+            probe?.connect()
+            probeHandler.postDelayed({ fail("Нет ответа от Home Assistant") }, PROBE_TIMEOUT_MS)
+        }
+    }
+
+    private fun cancelProbe() {
+        probeAttempt++
+        probeHandler.removeCallbacksAndMessages(null)
+        probe?.disconnect()
+        probe = null
+    }
+
     private fun setupHomeScreenMode() {
-        findViewById<CheckBox>(R.id.cbHomeScreen).setOnCheckedChangeListener { _, checked ->
+        findViewById<CompoundButton>(R.id.cbHomeScreen).setOnCheckedChangeListener { _, checked ->
             HomeScreenMode.setEnabled(this, checked)
             if (checked && !HomeScreenMode.isDefaultHome(this)) {
                 Toast.makeText(this, "Выберите SmartHomeDashboard главным экраном", Toast.LENGTH_LONG).show()
@@ -176,7 +355,7 @@ class SettingsActivity : PinProtectedActivity() {
 
     /** Состояние может измениться в системных настройках, поэтому перечитываем его при возврате. */
     private fun updateHomeScreenStatus() {
-        val checkBox = findViewById<CheckBox>(R.id.cbHomeScreen) ?: return
+        val checkBox = findViewById<CompoundButton>(R.id.cbHomeScreen) ?: return
         val enabled = HomeScreenMode.isEnabled(this)
         if (checkBox.isChecked != enabled) {
             // Программная синхронизация не должна снова открывать системный выбор.
@@ -229,6 +408,7 @@ class SettingsActivity : PinProtectedActivity() {
 
     private fun setSavePending(pending: Boolean) {
         btnSave.isEnabled = !pending
+        btnSaveWeather?.isEnabled = !pending
         etHaToken.isEnabled = !pending
         etHaLocalHost.isEnabled = !pending
         etHaRemoteHost.isEnabled = !pending
@@ -287,12 +467,6 @@ class SettingsActivity : PinProtectedActivity() {
         }
         val screenTimeout = etScreenTimeout.text.toString().toIntOrNull() ?: 5
 
-        val selectedTheme = when (spinnerTheme.selectedItemPosition) {
-            1 -> "light"
-            2 -> "dark"
-            else -> "system"
-        }
-
         val tempUnit = if (rgTempUnit.checkedRadioButtonId == R.id.rbFahrenheit) "F" else "C"
 
         val request = ++tokenRequest
@@ -328,10 +502,9 @@ class SettingsActivity : PinProtectedActivity() {
                 putString("ha_remote_host", haRemote)
                 putInt("pin_session_minutes", sessionMinutes)
                 putInt("screen_timeout_minutes", screenTimeout)
-                putString("app_theme", selectedTheme)
                 putString("temp_unit", tempUnit)
                 putBoolean("kiosk_mode", cbKioskMode.isChecked)
-                findViewById<CheckBox?>(R.id.cbModernHaptics)?.let { putBoolean(ModernHaptics.PREF, it.isChecked) }
+                findViewById<CompoundButton?>(R.id.cbModernHaptics)?.let { putBoolean(ModernHaptics.PREF, it.isChecked) }
             }
 
             etHaToken.text.clear()
@@ -364,6 +537,8 @@ class SettingsActivity : PinProtectedActivity() {
     override fun onPause() {
         tokenRequest++
         weatherRequest++
+        // Незавершённая проверка не сохраняет адрес после ухода с экрана.
+        if (probe != null) { cancelProbe(); setSavePending(false) }
         super.onPause()
     }
 
@@ -385,13 +560,16 @@ class SettingsActivity : PinProtectedActivity() {
     override fun onDestroy() {
         tokenRequest++
         weatherRequest++
+        cancelProbe()
         super.onDestroy()
     }
 
     private fun exportConfig() {
         AlertDialog.Builder(this)
             .setTitle("Экспорт настроек")
-            .setMessage("Данные доступа и PIN не входят в файл. Персональные параметры, например адрес сервера, названия и настройки плиток, могут входить.")
+            .setMessage("Данные доступа и PIN не входят в файл: токен Home Assistant, ключ Яндекса и PIN на новом планшете вводятся заново. " +
+                "В файл входят плитки (названия и связанные устройства дома) и часть настроек панели; " +
+                "адрес Home Assistant в файл пока не входит.")
             .setPositiveButton("Продолжить") { _, _ ->
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -545,6 +723,8 @@ class SettingsActivity : PinProtectedActivity() {
 
     companion object {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
+        private const val STATE_SECTION = "settings_section"
+        private const val PROBE_TIMEOUT_MS = 20_000L
         private val CONFIG_STRING_DEFAULTS = linkedMapOf(
             "motion_sensor_id" to "", "app_theme" to "system"
         )

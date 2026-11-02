@@ -1,0 +1,126 @@
+package com.example.smarthomedashboard
+
+import android.app.AlertDialog
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Looper
+import android.view.View
+import android.widget.CompoundButton
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import org.robolectric.annotation.LooperMode
+import org.robolectric.shadows.ShadowAlertDialog
+import java.io.File
+import java.lang.reflect.InvocationTargetException
+
+// Пять разделов, немедленное применение безопасных параметров и защита адреса HA до проверки.
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [28], qualifiers = "ru-rRU-w1280dp-h800dp-land-mdpi")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@LooperMode(LooperMode.Mode.PAUSED)
+class SettingsSectionsTest {
+    private val prefs = RuntimeEnvironment.getApplication().getSharedPreferences("dashboard_prefs", 0)
+    private val activity by lazy {
+        prefs.edit().clear().putString("ha_local_host", "http://previous.example.invalid")
+            .putInt("screen_timeout_minutes", 5).putInt("pin_session_minutes", 60).commit()
+        Robolectric.buildActivity(SettingsActivity::class.java).create().get().also {
+            allowSettingsTestAccess(it)
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+    }
+    private fun nav() = activity.findViewById<LinearLayout>(R.id.settingsNav)
+    private fun visible(id: Int) = activity.findViewById<View>(id).visibility == View.VISIBLE
+    private fun invoke(name: String) = try {
+        SettingsActivity::class.java.declaredMethods.single { it.name == name }.apply { isAccessible = true }.invoke(activity)
+    } catch (e: InvocationTargetException) { throw e.targetException }
+
+    @Test fun navigationShowsOneSectionInAgreedOrder() {
+        assertEquals(listOf("Соединения", "Экран", "Безопасность", "Устройство", "О приложении"),
+            (0 until nav().childCount).map { (nav().getChildAt(it) as TextView).text.toString() })
+        assertTrue(visible(R.id.sectionConnections))
+        assertTrue(nav().getChildAt(0).isSelected)
+        nav().getChildAt(3).performClick()
+        assertTrue(visible(R.id.sectionDevice))
+        listOf(R.id.sectionConnections, R.id.sectionScreen, R.id.sectionSecurity, R.id.sectionAbout).forEach { assertFalse(visible(it)) }
+        assertTrue(nav().getChildAt(3).isSelected)
+        assertFalse(nav().getChildAt(0).isSelected)
+    }
+
+    @Test fun safeSettingsApplyImmediatelyAndInvalidValuesAreNotWritten() {
+        activity.findViewById<EditText>(R.id.etScreenTimeout).setText("7")
+        assertEquals(7, prefs.getInt("screen_timeout_minutes", 0))
+        activity.findViewById<EditText>(R.id.etScreenTimeout).setText("0")
+        assertEquals(7, prefs.getInt("screen_timeout_minutes", 0))
+        activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("3")
+        assertEquals(60, prefs.getInt("pin_session_minutes", 0))
+        activity.findViewById<EditText>(R.id.etPinSessionMinutes).setText("45")
+        assertEquals(45, prefs.getInt("pin_session_minutes", 0))
+        activity.findViewById<CompoundButton>(R.id.rbFahrenheit).isChecked = true
+        assertEquals("F", prefs.getString("temp_unit", null))
+        val haptics = activity.findViewById<CompoundButton>(R.id.cbModernHaptics)
+        haptics.isChecked = !haptics.isChecked
+        assertEquals(haptics.isChecked, prefs.getBoolean(ModernHaptics.PREF, !haptics.isChecked))
+        // Адрес HA так не применяется: только через проверку.
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText("http://other.example.invalid")
+        assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
+    }
+
+    @Test fun changedAddressIsNotSavedBeforeSuccessfulProbe() {
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText("http://new.example.invalid")
+        invoke("saveConnections")
+        assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
+        assertFalse(activity.findViewById<View>(R.id.btnSave).isEnabled)
+        invoke("cancelProbe")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
+        assertFalse(activity.isFinishing)
+    }
+
+    @Test fun leavingAsksOnlyWhenConnectionDataIsUnsaved() {
+        activity.findViewById<EditText>(R.id.etHaToken).setText("FAKE-UNSAVED")
+        invoke("leave")
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(dialog.isShowing)
+        assertEquals("Продолжить редактирование", dialog.getButton(AlertDialog.BUTTON_NEUTRAL).text)
+        assertFalse(activity.isFinishing)
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(activity.isFinishing)
+    }
+
+    @Test fun cleanFormLeavesWithoutQuestion() {
+        invoke("leave")
+        assertTrue(activity.isFinishing)
+    }
+
+    @Test fun rendersSectionsLandscape() = render("landscape", 1280, 752)
+
+    @Config(qualifiers = "ru-rRU-w800dp-h1280dp-port-mdpi")
+    @Test fun rendersSectionsPortrait() = render("portrait", 800, 1232)
+
+    private fun render(name: String, width: Int, height: Int) {
+        for (index in listOf(0, 1, 3)) {
+            nav().getChildAt(index).performClick()
+            val root = activity.findViewById<View>(android.R.id.content)
+            root.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+            root.layout(0, 0, width, height)
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            root.draw(Canvas(bitmap))
+            val file = File("build/reports/settings-sections/$name-$index.png")
+            file.parentFile!!.mkdirs()
+            file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            bitmap.recycle()
+        }
+    }
+}

@@ -41,8 +41,6 @@ class WeatherConsumerIntegrationTest {
             set(activity, "tvHaTokenStatus", TextView(activity))
             set(activity, "btnSave", Button(activity))
             set(activity, "rgTempUnit", RadioGroup(activity))
-            set(activity, "spinnerTheme", Spinner(activity).apply { adapter = ArrayAdapter(activity,
-                android.R.layout.simple_spinner_item, listOf("system", "light", "dark")) })
             set(activity, "cbKioskMode", CheckBox(activity))
             weatherInvoke(activity, "prepareTokenInput")
             allowSettingsTestAccess(activity)

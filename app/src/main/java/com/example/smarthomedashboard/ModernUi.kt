@@ -155,7 +155,7 @@ internal object ModernUi {
         icon?.let { res ->
             ContextCompat.getDrawable(context, res)?.mutate()?.let { drawable ->
                 drawable.setTintList(ContextCompat.getColorStateList(context, R.color.modern_nav_text))
-                setCompoundDrawablesRelativeWithIntrinsicBounds(drawable, null, null, null)
+                setCompoundDrawablesWithIntrinsicBounds(drawable, null, null, null)
             }
         }
         isClickable = true
