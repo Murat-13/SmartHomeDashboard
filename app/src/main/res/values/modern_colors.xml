@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Палитра Modern для настроек и редакторов. Значения взяты из уже работающих Modern-плиток
+     (BatteryModernCard, Modern-редакторы); ModernDesignSystemTest следит, чтобы они не разошлись. -->
+<resources>
+    <color name="modern_background">#FF0A1014</color>
+    <color name="modern_surface">#FF0E1E26</color>
+    <color name="modern_surface_input">#FF0F1A20</color>
+    <color name="modern_border">#6E347880</color>
+    <color name="modern_accent">#FF26C6DA</color>
+    <color name="modern_accent_pressed">#FF1FA3B4</color>
+    <color name="modern_accent_soft">#3C26C6DA</color>
+    <color name="modern_on_accent">#FF062A30</color>
+    <color name="modern_text_primary">#FFFFFFFF</color>
+    <color name="modern_text_secondary">#FFC8D6DE</color>
+    <color name="modern_text_hint">#FF788C96</color>
+    <color name="modern_disabled">#FF2A3A42</color>
+    <color name="modern_pressed_overlay">#1AFFFFFF</color>
+    <color name="modern_success">#FF34E89E</color>
+    <color name="modern_warning">#FFFFCD78</color>
+    <color name="modern_error">#FFFF7878</color>
+    <color name="modern_danger">#FFFF5252</color>
+    <color name="modern_danger_soft">#33FF5252</color>
+    <color name="modern_neutral">#FF78909C</color>
+</resources>

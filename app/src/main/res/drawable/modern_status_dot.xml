@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Точка статуса; цвет задаётся tint по состоянию (ModernUi.Status). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@android:color/white" />
+    <size android:width="@dimen/modern_status_dot" android:height="@dimen/modern_status_dot" />
+</shape>

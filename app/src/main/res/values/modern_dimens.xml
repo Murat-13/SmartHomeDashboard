@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Размеры Modern-настроек и редакторов: умеренные отступы, касание не меньше 48dp. -->
+<resources>
+    <dimen name="modern_space_xs">4dp</dimen>
+    <dimen name="modern_space_s">8dp</dimen>
+    <dimen name="modern_space_m">12dp</dimen>
+    <dimen name="modern_space_l">16dp</dimen>
+    <dimen name="modern_space_xl">24dp</dimen>
+    <dimen name="modern_radius_control">12dp</dimen>
+    <dimen name="modern_radius_section">16dp</dimen>
+    <dimen name="modern_touch_target">48dp</dimen>
+    <dimen name="modern_status_dot">10dp</dimen>
+    <dimen name="modern_nav_width">220dp</dimen>
+    <dimen name="modern_nav_width_compact">88dp</dimen>
+    <dimen name="modern_text_caption">13sp</dimen>
+    <dimen name="modern_text_body">15sp</dimen>
+    <dimen name="modern_text_title">17sp</dimen>
+    <dimen name="modern_text_header">20sp</dimen>
+</resources>
