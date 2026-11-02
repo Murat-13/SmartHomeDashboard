@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Самообновление из GitHub Releases (этап 09): установка проверенного APK через PackageInstaller;
+         на Android 12+ — без окна подтверждения, если система разрешит. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <application
         android:allowBackup="true"
@@ -70,6 +74,19 @@
         <activity android:name=".BatteryModernEditorActivity" android:exported="false" />
         <activity android:name=".PowerModernEditorActivity" android:exported="false" />
         <activity android:name=".HomeClimateEditorActivity" android:exported="false" />
+
+        <!-- Результат сессии установки обновления (PendingIntent от PackageInstaller). -->
+        <receiver
+            android:name=".UpdateInstaller$StatusReceiver"
+            android:exported="false" />
+        <!-- После замены приложения новой версией: журнал и повторное открытие панели. -->
+        <receiver
+            android:name=".UpdateInstaller$ReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

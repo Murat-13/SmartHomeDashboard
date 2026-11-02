@@ -586,15 +586,56 @@
 
                     <TextView
                         style="@style/SettingsHint"
-                        android:text="Тестовый — новые версии сразу после выпуска. Стабильный — только проверенные. Проверка — раз в 6 часов при наличии интернета; найденное обновление скачивается и проверяется (SHA-256 и подпись), само приложение пока не устанавливается." />
+                        android:text="Тестовый — новые версии сразу после выпуска. Стабильный — только проверенные. Проверка — раз в 6 часов при наличии интернета; найденное обновление скачивается и проверяется (SHA-256 и подпись). Перед установкой делается копия настроек." />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_m"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnCheckUpdates"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Проверить сейчас" />
+
+                        <Button
+                            android:id="@+id/btnInstallUpdate"
+                            style="@style/Widget.Modern.Button.Primary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/modern_space_m"
+                            android:text="Установить обновление"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvUpdateInstall"
+                        style="@style/SettingsHint"
+                        android:visibility="gone" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/cbNightInstall"
+                        style="@style/Widget.Modern.Switch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_m"
+                        android:text="Устанавливать ночью автоматически" />
+
+                    <TextView
+                        android:id="@+id/tvNightInstallHint"
+                        style="@style/SettingsHint"
+                        android:text="Около 3:30: только без окна подтверждения Android и только после удачной копии настроек. Включайте после того, как установка по кнопке прошла без окна." />
 
                     <Button
-                        android:id="@+id/btnCheckUpdates"
+                        android:id="@+id/btnUpdateLog"
                         style="@style/Widget.Modern.Button.Secondary"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/modern_space_m"
-                        android:text="Проверить сейчас" />
+                        android:text="Журнал обновлений" />
 
                     <TextView
                         android:layout_width="wrap_content"

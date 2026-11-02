@@ -267,6 +267,21 @@ class SettingsActivity : PinProtectedActivity() {
         findViewById<Button?>(R.id.btnCheckUpdates)?.setOnClickListener {
             if (isPinAccessAllowed()) checkUpdatesNow()
         }
+        findViewById<Button?>(R.id.btnInstallUpdate)?.setOnClickListener {
+            if (requireAdmin()) UpdateInstallUi.start(this) { updateUpdateStatus() }
+        }
+        findViewById<Button?>(R.id.btnUpdateLog)?.setOnClickListener { UpdateInstallUi.showLog(this) }
+        findViewById<CompoundButton?>(R.id.cbNightInstall)?.let { night ->
+            night.isChecked = UpdateInstaller.nightEnabled(this)
+            if (!UpdateInstaller.silentSupported()) {
+                night.isEnabled = false
+                findViewById<TextView?>(R.id.tvNightInstallHint)?.text = "Недоступно: тихая установка работает с Android 12."
+            }
+            night.setOnCheckedChangeListener { button, checked ->
+                if (checked == UpdateInstaller.nightEnabled(this)) return@setOnCheckedChangeListener
+                if (isPinAccessAllowed()) UpdateInstaller.setNightEnabled(this, checked) else button.isChecked = !checked
+            }
+        }
     }
 
     private fun checkUpdatesNow() {
@@ -283,6 +298,13 @@ class SettingsActivity : PinProtectedActivity() {
     private fun updateUpdateStatus() {
         findViewById<TextView?>(R.id.tvUpdateStatus)?.text =
             "Канал: ${AppUpdater.channel(this).label} · ${AppUpdater.statusText(this).second}"
+        findViewById<View?>(R.id.btnInstallUpdate)?.visibility =
+            if (AppUpdater.status(this).state == AppUpdater.State.READY) View.VISIBLE else View.GONE
+        findViewById<TextView?>(R.id.tvUpdateInstall)?.let { line ->
+            val text = UpdateInstaller.statusLine(this)
+            line.text = text.orEmpty()
+            line.visibility = if (text == null) View.GONE else View.VISIBLE
+        }
     }
 
     private fun updateBackupStatus() {
@@ -641,6 +663,8 @@ class SettingsActivity : PinProtectedActivity() {
             loadHaTokenStatus()
         }
         if (::tvYandexKeyStatus.isInitialized) loadWeatherConfiguration()
+        // Возврат из настроек Android или окна установки: статус обновления мог измениться.
+        updateUpdateStatus()
     }
 
     override fun onDestroy() {

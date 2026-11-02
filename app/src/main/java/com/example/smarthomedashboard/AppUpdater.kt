@@ -295,10 +295,18 @@ internal object AppUpdater {
         if (problem != null) {
             file.delete()
             prefs.edit().putString(PREF_REJECTED, rejection).apply()
+            UpdateLog.add(context, "Выпуск ${release.versionName} отвергнут: $problem", now)
             return save(context, Status(State.ERROR, problem, release.versionName, release.versionCode, now), sha = null)
         }
         prefs.edit().remove(PREF_REJECTED).apply()
+        UpdateLog.add(context, "Найдено обновление ${release.versionName} (${channel(context).label} канал): скачано, SHA-256 и подпись проверены", now)
         return save(context, ready, expected)
+    }
+
+    /** Новая версия установлена: скачанный файл больше не нужен, следующая проверка начнётся заново. */
+    fun afterUpdate(context: Context, deps: Deps = deps(context)) {
+        clean(deps.dir)
+        save(context, Status(State.NONE, ""), sha = null)
     }
 
     private fun apkName(code: Long) = "update-$code.apk"

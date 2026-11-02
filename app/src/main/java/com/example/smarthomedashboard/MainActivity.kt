@@ -152,6 +152,7 @@ class MainActivity : AppCompatActivity() {
         setupSystemPanel()
         AutoBackup.schedule(applicationContext)
         AppUpdater.schedule(applicationContext)
+        UpdateInstaller.schedule(applicationContext)
         setupWebSocket()
         showWelcomeOnFirstLaunch()
     }
@@ -371,6 +372,7 @@ class MainActivity : AppCompatActivity() {
             override fun settings() = openWithPinCheck { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
             override fun addTile() = openWithPinCheck { chooseAddition() }
             override fun edit() = openWithPinCheck { enterEditMode() }
+            override fun installUpdate() = openWithPinCheck { UpdateInstallUi.start(this@MainActivity) }
             override fun endAdmin() {
                 PinSecurityUi.session.revoke()
                 Toast.makeText(this@MainActivity, "Админ-режим завершён", Toast.LENGTH_SHORT).show()
@@ -584,6 +586,7 @@ class MainActivity : AppCompatActivity() {
         val update = AppUpdater.drawerText(this)
         if (update != null) ModernUi.setStatus(side.updateRow, ModernUi.Status.PROGRESS, update)
         side.updateRow.visibility = if (update == null) View.GONE else View.VISIBLE
+        side.updateButton.visibility = side.updateRow.visibility
         side.refreshAdmin()
         side.refreshPage()
     }

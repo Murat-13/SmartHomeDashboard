@@ -25,6 +25,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         fun addTile()
         fun edit()
         fun endAdmin()
+        /** «Установить обновление» (через PIN). */
+        fun installUpdate() {}
         fun adminActive(): Boolean
         /** Открыт диалог (PIN и т. п.): автозакрытие ждёт. */
         fun busy(): Boolean
@@ -61,6 +63,9 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
     val backupRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Бэкап: не настроен")
     /** Видна, только когда обновление скачано и проверено. */
     val updateRow = ModernUi.statusRow(context, ModernUi.Status.PROGRESS, "").apply { visibility = View.GONE }
+    /** Видна вместе с [updateRow]. */
+    val updateButton = ModernUi.secondaryButton(context, "Установить обновление") { close(); host.installUpdate() }
+        .apply { visibility = View.GONE }
     private val pageLabel = ModernUi.caption(context, "")
     private val endAdmin = ModernUi.secondaryButton(context, "Завершить админ-режим") { host.endAdmin(); refreshAdmin() }
 
@@ -81,6 +86,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
             listOf(haRow, routeRow, internetRow, backupRow, updateRow).forEach { addView(it) }
             fun action(view: View) = addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+            action(updateButton)
             addView(View(context), LinearLayout.LayoutParams(1, dp(8)))
             action(ModernUi.secondaryButton(context, "⚙  Настройки") { close(); host.settings() })
             action(ModernUi.secondaryButton(context, "+  Добавить") { close(); host.addTile() })
