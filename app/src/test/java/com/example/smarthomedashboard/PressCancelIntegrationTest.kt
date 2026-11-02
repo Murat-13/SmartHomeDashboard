@@ -187,6 +187,8 @@ class PressCancelIntegrationTest {
         swipe(-700f, x = view("button").x + 10f, y = view("button").y + 10f) // жест начат на кнопке
         assertEquals(1, page())
         assertNotNull(panel.findViewWithTag<View?>("second"))
+        // Превью, прикрывавшее подгонку свежих карточек, убрано.
+        assertEquals(View.GONE, get<FrameLayout?>("pagePeek")!!.visibility)
         assertNull(panel.findViewWithTag<View?>("button"))
         assertTrue(calls().isEmpty())
         assertSame(client, ArchitectureTestAccess.getField<Any>(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], "webSocket"))

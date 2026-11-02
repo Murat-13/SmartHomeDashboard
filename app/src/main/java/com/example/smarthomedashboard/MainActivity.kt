@@ -118,6 +118,7 @@ class MainActivity : AppCompatActivity() {
         private const val PILL_RECOVERED_MS = 3_000L
         private const val PAGE_FLING = 1000f
         private const val DOTS_VISIBLE_MS = 2_000L
+        private const val PEEK_FALLBACK_MS = 400L
         internal const val PREF_HOME_SECONDS = "page_home_seconds"
 
         /** Панель уже создана: по кнопке «Домой» заставка не нужна. */
@@ -346,6 +347,8 @@ class MainActivity : AppCompatActivity() {
                 touchEvent = null
                 return true
             }
+            // Превью страницы ещё прикрывает новую (доли секунды): его кнопки не нажимаются.
+            if (pagePeek?.visibility == View.VISIBLE) return true
             if (side.isOpen) return side.handleTouch(event) || super.dispatchTouchEvent(event)
             if (side.edgeTap(event, panelController::hasTileAt)) return true
             if (swipe.onTouch(event)) return true
@@ -441,6 +444,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun beginPageDrag(target: Int) {
         pageRunner.cancel()
+        pageHandler.removeCallbacks(peekFallback)
         pageTarget = target
         pagePeek?.let { panelController.renderPeek(target, it); it.visibility = View.VISIBLE }
         showDots(highlight = panelController.currentPage)
@@ -469,13 +473,44 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pageSettled() {
-        if (pageCommit) panelController.showPage(pageTarget)
+        val committed = pageCommit
+        if (committed) panelController.showPage(pageTarget)
         pageCommit = false
         pageOffset = 0f
         bottomPanel.translationX = 0f
-        pagePeek?.let { it.removeAllViews(); it.visibility = View.GONE; it.translationX = 0f }
+        val peek = pagePeek
+        if (committed && peek != null) {
+            // Свежие Modern-карточки подгоняют масштаб и цифры после первого layout (post): пока они
+            // не дорисованы, такая же страница-превью остаётся поверх, и рывка не видно.
+            peek.translationX = 0f
+            revealPageAfterFit(peek)
+        } else peek?.let { clearPeek(it) }
         showDots(highlight = panelController.currentPage)
         scheduleAutoHome()
+    }
+
+    private fun clearPeek(peek: FrameLayout) {
+        pageHandler.removeCallbacks(peekFallback)
+        peek.removeAllViews()
+        peek.visibility = View.GONE
+        peek.translationX = 0f
+    }
+
+    private val peekFallback = Runnable { pagePeek?.let(::clearPeek) }
+
+    /** Превью убирается через два кадра после первой отрисовки новой страницы (запасной таймаут — 400 мс). */
+    private fun revealPageAfterFit(peek: FrameLayout) {
+        pageHandler.removeCallbacks(peekFallback)
+        pageHandler.postDelayed(peekFallback, PEEK_FALLBACK_MS)
+        val observer = bottomPanel.viewTreeObserver
+        observer.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (bottomPanel.viewTreeObserver.isAlive) bottomPanel.viewTreeObserver.removeOnPreDrawListener(this)
+                bottomPanel.postOnAnimation { bottomPanel.postOnAnimation { if (!pageRunner.running) clearPeek(peek) } }
+                return true
+            }
+        })
+        bottomPanel.invalidate()
     }
 
     /** Точки страниц видны во время листания и ~2 с после; при одной странице не показываются. */
