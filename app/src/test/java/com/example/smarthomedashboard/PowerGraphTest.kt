@@ -33,11 +33,11 @@ class PowerGraphTest {
     private val zone = TimeZone.getTimeZone("Europe/Moscow")
     /** 14:50 по Москве. */
     private var now = 1_793_706_600_000L
-    private val recorder = PowerHistoryRecorder(store, io = { it.run() }, post = { it() }, clock = { now })
+    private val recorder = PowerHistoryRecorder(store, worker = { it.run() }, post = { it() }, clock = { now })
     private val prefs = context.getSharedPreferences("dashboard_prefs", 0)
     private val hour = PowerHistory.HOUR_MS
 
-    @After fun close() = store.close()
+    @After fun close() { recorder.stop(); store.close() }
 
     /** Час данных: потребление с провалом в отдачу и разрывом связи 3 минуты. */
     private fun seed(entity: String = "sensor.inv"): List<PowerSample> {

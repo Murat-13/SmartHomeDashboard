@@ -21,14 +21,16 @@ class PowerHistoryRecorderTest {
     private val reads = mutableListOf<Pair<String, JSONObject>>()
     private var answer: (String, JSONObject) -> Any? = { _, _ -> null }
 
-    private fun recorder() = PowerHistoryRecorder(store, io = { it.run() }, post = { it() }, clock = { now }).also { r ->
+    private val made = mutableListOf<PowerHistoryRecorder>()
+    private fun recorder() = PowerHistoryRecorder(store, worker = { it.run() }, post = { it() }, clock = { now }).also { r ->
+        made += r
         r.reader = { type, params, result -> reads += type to params; result(answer(type, params)) }
     }
     private fun w(unit: String = "W") = JSONObject().put("unit_of_measurement", unit)
     private fun samples(instance: String, id: String) =
         store.sourceId(instance, id, create = false)?.let { store.series(it, 0, Long.MAX_VALUE).samples } ?: emptyList()
 
-    @After fun close() = store.close()
+    @After fun close() { made.forEach { it.stop() }; store.close() }
 
     @Test fun recordsOnlySourcesConvertsUnitsAndMarksUnavailableAsBreak() {
         val r = recorder()

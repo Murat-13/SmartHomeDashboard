@@ -22,10 +22,15 @@ import java.util.concurrent.Executors
 internal class PowerHistoryRecorder(
     /** Общая база процесса: её же читает и пополняет отдельный бэкап истории. */
     internal val store: PowerHistoryStore,
-    private val io: Executor = Executors.newSingleThreadExecutor { Thread(it, "power-history").apply { priority = Thread.MIN_PRIORITY } },
-    private val post: (() -> Unit) -> Unit = { block -> MAIN.post(block) },
+    worker: Executor = Executors.newSingleThreadExecutor { Thread(it, "power-history").apply { priority = Thread.MIN_PRIORITY } },
+    /** Свой планировщик у каждого регистратора (а не общий статический): остановка снимает всё запланированное. */
+    private val scheduler: Handler = Handler(Looper.getMainLooper()),
+    post: ((() -> Unit) -> Unit)? = null,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
+    private val post: (() -> Unit) -> Unit = post ?: { block -> scheduler.post(block) }
+    /** Фоновая работа с базой никогда не роняет приложение: ошибка записи — лишь пропущенные точки. */
+    private val io = Executor { task -> runCatching { worker.execute { runCatching(task::run) } } }
     /** Живые обновления для открытого графика: новое значение или «данные перечитать» (sample = null). */
     fun interface Listener { fun changed(entityId: String, sample: PowerSample?) }
 
@@ -73,13 +78,22 @@ internal class PowerHistoryRecorder(
             flush()
             val now = clock()
             if (now - lastCompact >= PowerHistory.HOUR_MS) { lastCompact = now; compact() }
-            MAIN.postDelayed(this, HEARTBEAT_MS)
+            scheduler.postDelayed(this, HEARTBEAT_MS)
         }
     }
 
     private fun startHeartbeat() {
-        MAIN.removeCallbacks(heartbeat)
-        MAIN.post(heartbeat)
+        scheduler.removeCallbacks(heartbeat)
+        scheduler.post(heartbeat)
+    }
+
+    /** Остановить всё запланированное (тесты, замена регистратора). Данные не теряются: накопленное записывается. */
+    fun stop() {
+        flush()
+        connected = false
+        scheduler.removeCallbacksAndMessages(null)
+        flushScheduled = false
+        listeners.clear()
     }
 
     fun setSources(entityIds: Set<String>) {
@@ -116,7 +130,7 @@ internal class PowerHistoryRecorder(
     fun onDisconnected() {
         if (connected) breakAll()
         connected = false
-        MAIN.removeCallbacks(heartbeat)
+        scheduler.removeCallbacks(heartbeat)
         snapshotDone = false
         importRequested = false
         flush()
@@ -141,7 +155,7 @@ internal class PowerHistoryRecorder(
     private fun scheduleFlush() {
         if (flushScheduled) return
         flushScheduled = true
-        MAIN.postDelayed({ flushScheduled = false; flush() }, FLUSH_MS)
+        scheduler.postDelayed({ flushScheduled = false; flush() }, FLUSH_MS)
     }
 
     /** Пишет накопленное; до определения сервера HA данные ждут в памяти. */
@@ -253,7 +267,6 @@ internal class PowerHistoryRecorder(
     }
 
     companion object {
-        private val MAIN by lazy { Handler(Looper.getMainLooper()) }
         const val HISTORY = "history/history_during_period"
         const val FLUSH_MS = 2_000L
         const val HEARTBEAT_MS = 60_000L
@@ -269,7 +282,11 @@ internal class PowerHistoryRecorder(
         fun get(context: Context): PowerHistoryRecorder = synchronized(this) {
             val app = context.applicationContext
             shared?.takeIf { it.first === app }?.second
-                ?: PowerHistoryRecorder(PowerHistoryStore(app)).also { shared = app to it }
+                ?: PowerHistoryRecorder(PowerHistoryStore(app)).also { next ->
+                    // Другое приложение (только в тестах): прежний регистратор останавливается.
+                    shared?.second?.stop()
+                    shared = app to next
+                }
         }
 
         /**
