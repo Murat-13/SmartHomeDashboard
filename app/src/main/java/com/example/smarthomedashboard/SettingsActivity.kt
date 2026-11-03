@@ -57,6 +57,16 @@ class SettingsActivity : PinProtectedActivity() {
     private var weatherRevision = -1L
     private var weatherLoading = false
     private var weatherConfigurationLoaded = false
+    /** Идёт чтение настроек Яндекса; сохранение в это время откладывается до его окончания. */
+    private var weatherReading = false
+    private var saveAfterWeatherRead = false
+
+    /**
+     * Откуда запущено сохранение «Соединений»: от этого зависит, что делать при неудаче (0.9.2, этап 4).
+     * Раньше неудача при выходе или при адресе из импорта лишь писала строку статуса, и «Сохранить» повторялось по кругу.
+     */
+    private enum class SaveFlow { NORMAL, LEAVING, IMPORT_ADDRESS }
+    private var saveFlow = SaveFlow.NORMAL
     private var weatherFormConfiguration: WeatherKeyAccess.Configuration? = null
     private lateinit var etYandexLat: EditText
     private lateinit var etYandexLon: EditText
@@ -354,6 +364,7 @@ class SettingsActivity : PinProtectedActivity() {
     private fun importText(text: String) {
         try {
             val outcome = applyImport(parseConfigObject(text))
+            refreshFormAfterImport()
             val message = if (outcome.skipped) {
                 "Настройки импортированы. Данные доступа, PIN и другие неподдерживаемые поля пропущены."
             } else {
@@ -451,7 +462,64 @@ class SettingsActivity : PinProtectedActivity() {
     private fun leave() {
         if (!hasUnsavedChanges()) { finish(); return }
         ModernUi.leaveDialog(this, "Адрес, токен или настройки погоды ещё не записаны.",
-            onSave = { saveConnections() }, onDiscard = { finish() }).show()
+            onSave = { saveFlow = SaveFlow.LEAVING; saveConnections() }, onDiscard = { finish() }).show()
+    }
+
+    /** Сохранение не удалось: причина видна всегда, а при выходе и импорте есть понятный следующий шаг. */
+    private fun saveFailed(message: String) {
+        val flow = saveFlow
+        saveFlow = SaveFlow.NORMAL
+        if (isFinishing || isDestroyed) return
+        when (flow) {
+            SaveFlow.IMPORT_ADDRESS -> {
+                // Адрес из файла применяется только после успешной проверки: форма возвращается к сохранённому.
+                val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+                etHaLocalHost.setText(prefs.getString(ConfigBackup.HA_LOCAL, ""))
+                etHaRemoteHost.setText(prefs.getString(ConfigBackup.HA_REMOTE, ""))
+                AlertDialog.Builder(this).setTitle("Адрес из файла не применён")
+                    .setMessage("$message.\n\nОстаётся текущий адрес Home Assistant. Плитки и настройки из файла уже " +
+                        "восстановлены — панель перезапустится.")
+                    .setCancelable(false)
+                    .setPositiveButton("Продолжить") { _, _ -> restartAfterImport() }
+                    .show()
+            }
+            SaveFlow.LEAVING -> AlertDialog.Builder(this).setTitle("Не удалось сохранить")
+                .setMessage(message)
+                .setPositiveButton("Остаться", null)
+                .setNegativeButton("Выйти без сохранения") { _, _ -> finish() }
+                .show()
+            SaveFlow.NORMAL -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Сохранение прошло: после импорта — перезапуск панели с восстановленными данными, иначе выход. */
+    private fun saveSucceeded() {
+        val flow = saveFlow
+        saveFlow = SaveFlow.NORMAL
+        if (flow == SaveFlow.IMPORT_ADDRESS) restartAfterImport() else finish()
+    }
+
+    /**
+     * После импорта форма показывает импортированные значения: иначе «Сохранить» записало бы поверх них
+     * устаревшие значения полей, открытых до импорта. Адрес HA здесь не трогается — у него своя проверка.
+     */
+    private fun refreshFormAfterImport() {
+        // Форма ещё не построена (импорт без экрана) — обновлять нечего.
+        if (!::etPinSessionMinutes.isInitialized || !::tvYandexKeyStatus.isInitialized) return
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        etPinSessionMinutes.setText(prefs.getInt("pin_session_minutes", 60)
+            .coerceIn(PinSecurityUi.MIN_SESSION_MINUTES, PinSecurityUi.MAX_SESSION_MINUTES).toString())
+        etScreenTimeout.setText(prefs.getInt("screen_timeout_minutes", 5).toString())
+        findViewById<EditText?>(R.id.etHomeTimeout)?.setText(prefs.getInt(MainActivity.PREF_HOME_SECONDS, 60).toString())
+        rgTempUnit.check(if (prefs.getString("temp_unit", "C") == "F") R.id.rbFahrenheit else R.id.rbCelsius)
+        cbKioskMode.isChecked = prefs.getBoolean("kiosk_mode", false)
+        findViewById<CompoundButton?>(R.id.cbModernHaptics)?.isChecked = prefs.getBoolean(ModernHaptics.PREF, true)
+        findViewById<CompoundButton?>(R.id.cbMotionEnabled)?.isChecked = prefs.getBoolean(MainActivity.PREF_MOTION_ENABLED, true)
+        val motion = prefs.getString("motion_sensor_id", "")
+        tvMotionSensor.text = if (motion.isNullOrEmpty()) "Датчик движения: Не выбран" else "Датчик: $motion"
+        // Координаты и флаг Яндекса — перечитать заново (тот же путь, что при открытии экрана).
+        weatherConfigurationLoaded = false
+        loadWeatherConfiguration()
     }
 
     /**
@@ -467,6 +535,7 @@ class SettingsActivity : PinProtectedActivity() {
         val hosts = listOf(local, remote).filter { it.isNotEmpty() }.distinct()
         if (hosts.isEmpty()) {
             tvHaConnectionStatus.text = "Укажите локальный или внешний адрес Home Assistant"
+            saveFailed(tvHaConnectionStatus.text.toString())
             return
         }
         cancelProbe()
@@ -479,6 +548,7 @@ class SettingsActivity : PinProtectedActivity() {
             cancelProbe()
             setSavePending(false)
             tvHaConnectionStatus.text = "$message. Прежнее подключение не изменено"
+            saveFailed(tvHaConnectionStatus.text.toString())
         }
         lifecycleScope.launch {
             val stored = withContext(Dispatchers.IO) { tokens().read() }
@@ -591,33 +661,51 @@ class SettingsActivity : PinProtectedActivity() {
 
     private fun loadWeatherConfiguration() {
         val request = ++weatherRequest
+        weatherReading = true
         setWeatherPending(true)
         tvYandexKeyStatus.text = "Чтение настроек Яндекса..."
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { weatherAccess().read() }
             if (request != weatherRequest || isFinishing || isDestroyed) return@launch
+            weatherReading = false
             setWeatherPending(false)
-            if (!WeatherKeyAccess.isCurrent(result) ||
-                weatherConfigurationLoaded && result.revision != weatherRevision) {
-                tvYandexKeyStatus.text = "Настройки Яндекса изменились. Откройте экран повторно"
-                return@launch
+            applyWeatherResult(result)
+            // Отложенное сохранение — только после того, как прочитанные значения попали в форму.
+            if (saveAfterWeatherRead) {
+                saveAfterWeatherRead = false
+                saveCurrentSettings()
             }
-            weatherRevision = result.revision
-            tvYandexKeyStatus.text = result.message
-            if (!weatherConfigurationLoaded && result.configuration != null) {
-                etYandexLat.setText(result.configuration.latitude)
-                etYandexLon.setText(result.configuration.longitude)
-                cbUseYandexWeather.isChecked = result.configuration.enabled
-                weatherConfigurationLoaded = true
-                weatherFormConfiguration = result.configuration
-            }
+        }
+    }
+
+    private fun applyWeatherResult(result: WeatherKeyAccess.Result) {
+        if (!WeatherKeyAccess.isCurrent(result) ||
+            weatherConfigurationLoaded && result.revision != weatherRevision) {
+            tvYandexKeyStatus.text = "Настройки Яндекса изменились. Откройте экран повторно"
+            return
+        }
+        weatherRevision = result.revision
+        tvYandexKeyStatus.text = result.message
+        if (!weatherConfigurationLoaded && result.configuration != null) {
+            etYandexLat.setText(result.configuration.latitude)
+            etYandexLon.setText(result.configuration.longitude)
+            cbUseYandexWeather.isChecked = result.configuration.enabled
+            weatherConfigurationLoaded = true
+            weatherFormConfiguration = result.configuration
         }
     }
 
     private fun saveCurrentSettings() {
         if(!isPinAccessAllowed())return
+        // Чтение ещё идёт (например, после импорта) — сохранение продолжится, когда оно закончится.
+        if (weatherReading) {
+            saveAfterWeatherRead = true
+            setSavePending(true)
+            return
+        }
         if (weatherLoading || !weatherConfigurationLoaded) {
             tvYandexKeyStatus.text = "Дождитесь чтения корректных настроек Яндекса"
+            saveFailed("Настройки Яндекса не прочитаны: ${tvYandexKeyStatus.text}")
             return
         }
         val newWeatherKey = etYandexApiKey.text.toString().trim().takeIf { it.isNotEmpty() }
@@ -637,6 +725,7 @@ class SettingsActivity : PinProtectedActivity() {
         val sessionMinutes = etPinSessionMinutes.text.toString().toIntOrNull()
         if (sessionMinutes == null || sessionMinutes !in PinSecurityUi.MIN_SESSION_MINUTES..PinSecurityUi.MAX_SESSION_MINUTES) {
             etPinSessionMinutes.error = SESSION_RANGE_ERROR
+            saveFailed("Безопасность: $SESSION_RANGE_ERROR")
             return
         }
         val screenTimeout = etScreenTimeout.text.toString().toIntOrNull() ?: 5
@@ -655,6 +744,7 @@ class SettingsActivity : PinProtectedActivity() {
                 result.status !in listOf(HaTokenAccess.Status.READY, HaTokenAccess.Status.ABSENT)) {
                 setSavePending(false)
                 tvHaTokenStatus.text = if (HaTokenAccess.isCurrent(result)) result.message else "Токен HA изменён. Повторите сохранение"
+                saveFailed(tvHaTokenStatus.text.toString())
                 return@launch
             }
             val weather = withContext(Dispatchers.IO) {
@@ -667,6 +757,7 @@ class SettingsActivity : PinProtectedActivity() {
                 }
                 tvYandexKeyStatus.text = if (WeatherKeyAccess.isCurrent(weather)) weather.message else "Настройки Яндекса изменились"
                 setSavePending(false)
+                saveFailed("Погода: ${tvYandexKeyStatus.text}")
                 return@launch
             }
             weatherRevision = weather.revision
@@ -686,7 +777,7 @@ class SettingsActivity : PinProtectedActivity() {
             tvYandexKeyStatus.text = weather.message
             tvHaTokenStatus.text = result.message
             Toast.makeText(this@SettingsActivity, "Настройки сохранены", Toast.LENGTH_SHORT).show()
-            finish()
+            saveSucceeded()
         }
 
     }
@@ -743,9 +834,10 @@ class SettingsActivity : PinProtectedActivity() {
     private fun exportConfig() {
         AlertDialog.Builder(this)
             .setTitle("Экспорт настроек")
-            .setMessage("Данные доступа и PIN не входят в файл: токен Home Assistant, ключ Яндекса и PIN на новом планшете вводятся заново. " +
-                "В файл входят плитки (названия и связанные устройства дома) и часть настроек панели; " +
-                "адрес Home Assistant в файл пока не входит.")
+            .setMessage("В файл входят плитки (названия и связанные устройства дома), адреса Home Assistant (локальный и " +
+                "внешний), координаты погоды и настройки панели. Не входят: токен Home Assistant, ключ Яндекса и PIN — " +
+                "на новом планшете их нужно ввести заново. Храните файл как личные данные: по адресам и координатам можно " +
+                "найти дом.")
             .setPositiveButton("Продолжить") { _, _ ->
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -859,6 +951,7 @@ class SettingsActivity : PinProtectedActivity() {
                 showSection(0)
                 etHaLocalHost.setText(local)
                 etHaRemoteHost.setText(remote)
+                saveFlow = SaveFlow.IMPORT_ADDRESS
                 saveConnections()
             }
             .setNegativeButton("Оставить текущий") { _, _ -> restartAfterImport() }

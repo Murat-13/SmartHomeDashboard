@@ -455,7 +455,7 @@
 
                         <TextView
                             style="@style/SettingsHint"
-                            android:text="В файл входят плитки и часть настроек панели. Токен Home Assistant, ключ Яндекса и PIN в файл не входят — после восстановления на новом планшете их нужно ввести заново." />
+                            android:text="В файл входят плитки, адреса Home Assistant, координаты погоды и настройки панели. Токен Home Assistant, ключ Яндекса и PIN в файл не входят — после восстановления на новом планшете их нужно ввести заново." />
 
                         <LinearLayout
                             android:layout_width="match_parent"
