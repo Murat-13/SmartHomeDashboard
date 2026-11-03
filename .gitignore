@@ -21,3 +21,6 @@ local.properties
 keystore.properties
 *.jks
 *.keystore
+
+# Служебные журналы и сессии компилятора Kotlin 2.x
+.kotlin/

@@ -97,6 +97,19 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 03.11.2026 — Claude Code: 0.9.2, этап 7 — CI: release и lint
+
+- `android-ci.yml`: к тестам и debug/androidTest добавлен `assembleRelease` (неподписанный, ключа в CI нет), отдельный
+  шаг `lintDebug` (выполняется и при упавших тестах) и артефакт `lint-report` при падении.
+- Решение владельца: CI роняют только ошибки lint. Исправлены обе (одна строка `ModernPowerEditor`:
+  `importantForAutofill` без проверки API 26 при minSdk 24) — baseline не нужен и не создавался; `abortOnError`
+  и категории не тронуты. 317 предупреждений — в отчёте, разбор — [docs/ci.md](docs/ci.md).
+  Проверено локально: временный файл с тем же вызовом → `lintDebug` падает (NewApi), файл удалён.
+  `.gitignore`: `.kotlin/` (служебные журналы компилятора).
+- Проверено: `testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease lintDebug --offline` — 1153
+  теста, 0 failures/errors/skips, все сборки и lint успешны; YAML workflow разбирается. Не проверено: запуск
+  на GitHub Actions (нужен push).
+
 ### 03.11.2026 — Claude Code: 0.9.2, этап 6 — Modern-оформление расширенных настроек
 
 - `AdvancedWidgetSettingsActivity` получила тему `Theme.SmartHomeDashboard.Modern` (манифест);

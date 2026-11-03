@@ -1,6 +1,8 @@
-# Проверка проекта на GitHub Actions: юнит-тесты (Robolectric),
-# сборка debug-APK и сборка инструментальных тестов.
+# Проверка проекта на GitHub Actions: юнит-тесты (Robolectric), сборка debug-APK,
+# инструментальных тестов и release-APK, Android Lint.
 # Запускается на каждом PR и при каждом push в main.
+# Release здесь собирается НЕподписанным: ключа подписи в CI нет и не будет
+# (app/build.gradle.kts без keystore.properties подпись не настраивает).
 name: Android CI
 
 on:
@@ -41,7 +43,13 @@ jobs:
       # Android SDK уже есть на ubuntu-latest (ANDROID_HOME), лицензии приняты.
       # Недостающую платформу android-34 AGP скачает сам.
       - name: Тесты и сборка
-        run: ./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest --stacktrace
+        run: ./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease --stacktrace
+
+      # CI роняют только ошибки lint (решение владельца 03.11.2026); предупреждения — в отчёте.
+      # Отдельным шагом, чтобы lint проверялся и при упавших тестах.
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: ./gradlew lintDebug --stacktrace
 
       - name: Отчёты тестов при падении
         if: failure()
@@ -51,5 +59,18 @@ jobs:
           path: |
             app/build/reports/tests/
             app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Отчёт lint при падении
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: lint-report
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+            app/build/reports/lint-results-debug.txt
+            app/build/intermediates/lint_intermediate_text_report/
           if-no-files-found: ignore
           retention-days: 14

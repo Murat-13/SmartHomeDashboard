@@ -15,7 +15,9 @@ internal class ModernPowerEditor(context: Context, initial: LivePowerConfig, pri
     private val sensor = AutoCompleteTextView(context).apply {
         hint = "Сущность мощности Home Assistant"; setTextColor(Color.WHITE); setHintTextColor(0xFFB6C3D1.toInt()); setText(initial.entityId); threshold = 0
         inputType = android.text.InputType.TYPE_CLASS_TEXT
-        setSingleLine(); importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        setSingleLine()
+        // Свойство есть только с Android 8 (minSdk 24): без проверки — NoSuchMethodError на Android 7.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
     }
     private val choose = Button(context).apply { text = "Выбрать сенсор • поиск по имени или entity_id" }
     private var state: MainUiState? = null
