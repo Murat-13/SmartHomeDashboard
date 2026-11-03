@@ -37,7 +37,16 @@ class EditModePinGateTest {
     private val manager by lazy { TileManager(activity) }
     private val panel by lazy { FrameLayout(activity) }
 
+    // Сессия — общий объект процесса: сбрасывается и до, и после теста, порядок классов не влияет (CI 0.9.2).
+    @org.junit.Before fun noSessionBefore() = PinSecurityUi.session.revoke()
     @After fun revokeSession() = PinSecurityUi.session.revoke()
+
+    /** Изолированное хранилище с включённым PIN: проверка PIN не может «разрешить» действие сама. */
+    private fun pinEnabledAccess() = PinAccess(object : PinAccess.Storage {
+        override fun read() = PinAccess.State("test-pin-hash", null)
+        override fun write(state: PinAccess.State) = true
+    }, object : PinAccess.Legacy { override fun read(): String? = null; override fun remove() = true },
+        clock = object : PinAccess.Clock { override fun elapsed() = 0L; override fun boot() = "test" }, worker = {})
 
     private fun open(): FrameLayout {
         val tile = TileEntity("card", "sensor", "grid", "Датчик", 20, 30, 1, 1,
@@ -87,12 +96,19 @@ class EditModePinGateTest {
     @Test fun expiredSessionRollsBackResizeWithoutWritingAndAsksForPin() {
         val card = open()
         ArchitectureTestAccess.setField(activity, "pinDisabled", false)
+        // PIN включён и в хранилище, а не только в кеше экрана: раньше изолированное хранилище говорило
+        // «отключён», и успевшая завершиться фоновая проверка законно сохраняла размер (упало в CI).
+        ArchitectureTestAccess.setField(activity, "pinAccess", pinEnabledAccess())
         val before = prefs()
         resize(card)
         assertEquals(before, prefs())
         assertEquals(220, card.width)
         assertEquals(180, card.height)
         assertTrue(pinRequested())
+        // Проверка PIN завершилась — размер так и не записан, нужен ввод PIN.
+        awaitPinGate(activity)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(before, prefs())
     }
 
     @Test fun liveSessionSavesAndEditActionExtendsIt() {
