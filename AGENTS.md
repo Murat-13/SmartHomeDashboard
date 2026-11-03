@@ -102,6 +102,12 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 03.11.2026 — Claude Code: CI 0.9.2 зелёный
+
+- Push `d1e5ad4..2deee33` (исправление теста). GitHub Actions run 41606591915 — **success** (тесты, debug, androidTest,
+  release, lint): https://github.com/Murat-13/SmartHomeDashboard/actions/runs/41606591915. Выпуск `v0.9.2` не создан —
+  только по отдельному слову владельца; файлы выпуска — на рабочем столе. Планшеты не трогались.
+
 ### 03.11.2026 — Claude Code: публикация 0.9.2 и исправление нестабильного теста CI
 
 - Владелец разрешил push («разрешаю»). Push `881f95d..d1e5ad4`. GitHub Actions run 41604838656 — failure: lint, сборки успешны,
