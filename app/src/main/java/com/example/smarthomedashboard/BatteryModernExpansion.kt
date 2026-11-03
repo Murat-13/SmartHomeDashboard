@@ -17,6 +17,13 @@ import androidx.annotation.RequiresApi
 /** Карточка, которую раскрытие показывает поверх панели и освобождает при закрытии. */
 internal interface ModernOverlayCard {
     fun dispose()
+    /** Началось сворачивание (таймер, касание снаружи): закрыть свои слои поверх приложения. */
+    fun collapsing() {}
+}
+
+/** Раскрытая карточка с областью собственных жестов (график); координаты — оконные. */
+internal interface ModernInteractiveArea {
+    fun interactiveAt(windowX: Float, windowY: Float): Boolean
 }
 
 /**
@@ -121,6 +128,7 @@ internal class BatteryModernExpansion(
         val start = checkNotNull(original)
         closing = true
         stopTimer()
+        (expandedCard as? ModernOverlayCard)?.collapsing()
         val from = Frame(expandedCard.x, expandedCard.y, expandedCard.scaleX, expandedCard.scaleY, expandedCard.alpha,
             expandedCard.elevation)
         val sx = start.width / expandedCard.layoutParams.width.toFloat().coerceAtLeast(1f)

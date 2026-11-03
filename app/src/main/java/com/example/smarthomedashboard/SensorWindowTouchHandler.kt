@@ -11,10 +11,17 @@ internal class SensorWindowTouchHandler(
     private val touch: () -> Unit,
     private val clearExpansion: () -> Unit,
     private val collapse: () -> Unit,
-    private val sensorTouchSlop: Int
+    private val sensorTouchSlop: Int,
+    /**
+     * Область раскрытой карточки со своими жестами (график мощности): жест, начатый в ней, целиком
+     * идёт штатной диспетчеризацией (касание не сворачивает карточку, два пальца работают), таймер перезапускается.
+     * Координаты — оконные.
+     */
+    private val interactiveAt: (View, Float, Float) -> Boolean = { _, _, _ -> false }
 ) {
     private var sensorWindowGesture: SensorWindowGesture? = null
     private var consumeSensorWindowGesture = false
+    private var passThrough = false
 
     private class SensorWindowGesture(
         val source: View,
@@ -33,7 +40,13 @@ internal class SensorWindowTouchHandler(
         if (action == MotionEvent.ACTION_DOWN) {
             cancelSensorWindowGesture()
             consumeSensorWindowGesture = false
+            passThrough = false
             val source = expanded() ?: return null
+            if (interactiveAt(source, event.x, event.y)) {
+                passThrough = true
+                touch()
+                return null
+            }
             val location = IntArray(2)
             source.getLocationInWindow(location)
             val inside = event.x >= location[0] && event.x < location[0] + source.width &&
@@ -42,6 +55,11 @@ internal class SensorWindowTouchHandler(
             consumeSensorWindowGesture = true
             if (inside) touch()
             return true
+        }
+        if (passThrough) {
+            if (expanded() != null) touch()
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) passThrough = false
+            return null
         }
         if (!consumeSensorWindowGesture) return null
 
@@ -124,5 +142,8 @@ internal class SensorWindowTouchHandler(
         gesture.down.recycle()
     }
 
-    fun clear() = cancelSensorWindowGesture()
+    fun clear() {
+        passThrough = false
+        cancelSensorWindowGesture()
+    }
 }

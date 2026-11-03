@@ -32,7 +32,7 @@ internal class PowerModernCard(
     context: Context,
     val expanded: Boolean,
     private val editor: BatteryModernCard.Editor? = null
-) : FrameLayout(context), ModernOverlayCard, ModernHideAware {
+) : FrameLayout(context), ModernOverlayCard, ModernHideAware, ModernInteractiveArea {
     private val scaled = mutableListOf<Pair<TextView, Float>>()
     private var scale = 1f
     /** Ширина кольца ореола снаружи тёмного тела, внутри собственных границ карточки (px). */
@@ -90,6 +90,16 @@ internal class PowerModernCard(
     private val powerLine = line(power, powerUnit)
     private val divider = View(context)
     val scroll: ScrollView? = if (expanded) ScrollView(context).apply { tag = "pm_scroll" } else null
+    /** Правая колонка раскрытой карточки: строки сверху, под ними — «История мощности». */
+    private val rightColumn = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; tag = "pm_right" }
+    private var leftColumn: View? = null
+    /** Блок графика (только у раскрытой карточки на панели; в редакторе его нет). */
+    var graph: PowerGraphPanel? = null
+        private set
+    /** Полноэкранный график поверх приложения, если открыт. */
+    var fullscreen: View? = null
+    /** Закрыть полноэкранный график (задаёт панель, которая его открыла). */
+    var closeFullscreen: (() -> Unit)? = null
     private val extrasBody = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; tag = "pm_extras" }
     private val extraValues = mutableMapOf<String, TextView>()
     /** Иконки строк: меняются на месте, без пересоздания строк. */
@@ -141,9 +151,11 @@ internal class PowerModernCard(
         } else {
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             row.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.46f))
+            leftColumn = left
             row.addView(divider, LinearLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT))
             scroll.addView(extrasBody, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            row.addView(scroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.54f))
+            rightColumn.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            row.addView(rightColumn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.54f))
             addView(row, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         }
         setAccentNow(PowerModernConfig.NEUTRAL)
@@ -423,7 +435,7 @@ internal class PowerModernCard(
         super.onSizeChanged(w, h, oldw, oldh)
         if (w <= 0 || h <= 0) return
         updateShader()
-        val next = (if (expanded) minOf(w / 1100f, h / 640f) else minOf(w / 300f, h / 360f)).coerceIn(0.35f, 2.6f)
+        val next = scaleFor(w, h)
         if (next != scale) post { applyScale(next) }
     }
 
@@ -503,6 +515,41 @@ internal class PowerModernCard(
         requestLayout()
     }
 
+    /** С графиком карточка выше: шрифты считаются от большей базовой высоты, чтобы место осталось графику. */
+    private fun scaleFor(w: Int, h: Int) = (if (expanded) minOf(w / 1100f, h / if (graph != null) 1000f else 640f)
+        else minOf(w / 300f, h / 360f)).coerceIn(0.35f, 2.6f)
+
+    /**
+     * Добавляет «Историю мощности» под строки справа (docs/power-graph.md); все прежние показания
+     * остаются, строки при нехватке места прокручиваются.
+     */
+    fun attachGraph(panel: PowerGraphPanel) {
+        if (scroll == null || graph != null) return
+        graph = panel
+        (scroll.layoutParams as LinearLayout.LayoutParams).weight = EXTRAS_WEIGHT
+        rightColumn.addView(panel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, GRAPH_WEIGHT)
+            .apply { topMargin = (12 * density).toInt() })
+        (leftColumn?.layoutParams as? LinearLayout.LayoutParams)?.weight = 0.40f
+        (rightColumn.layoutParams as? LinearLayout.LayoutParams)?.weight = 0.60f
+        if (width > 0 && height > 0) applyScale(scaleFor(width, height))
+    }
+
+    override fun interactiveAt(windowX: Float, windowY: Float): Boolean {
+        if (fullscreen?.isAttachedToWindow == true) return true
+        val panel = graph ?: return false
+        if (!panel.isShown) return false
+        val location = IntArray(2)
+        panel.getLocationInWindow(location)
+        // Раскрытие движет карточку масштабом: размер на экране учитывает scale карточки.
+        val w = panel.width * scaleX
+        val h = panel.height * scaleY
+        return windowX >= location[0] && windowX < location[0] + w && windowY >= location[1] && windowY < location[1] + h
+    }
+
+    override fun collapsing() {
+        closeFullscreen?.invoke()
+    }
+
     /** Компакт совпадает со скруглением плитки панели (32 px); раскрытая карточка масштабируется. */
     private fun radius() = if (expanded) 40f * scale.coerceAtLeast(0.6f) else 32f
 
@@ -526,6 +573,8 @@ internal class PowerModernCard(
     }
 
     override fun dispose() {
+        closeFullscreen?.invoke()
+        closeFullscreen = null
         stopPulse()
         wantPulse = false
         colorAnimator?.let { it.removeAllUpdateListeners(); it.cancel() }
@@ -588,6 +637,10 @@ internal class PowerModernCard(
         fun compactScale(width: Int, height: Int) = minOf(width / 300f, height / 360f).coerceIn(0.35f, 2.6f)
         val SECONDARY = Color.rgb(170, 186, 196)
         val UNIT_COLOR = Color.argb(225, 255, 255, 255)
+
+        /** Доли высоты правой колонки: строки показателей и график. */
+        const val EXTRAS_WEIGHT = 0.38f
+        const val GRAPH_WEIGHT = 0.62f
 
         /** Только отображение: единицы HA на русском (W → Вт и т. п.), без пересчёта в кВт/кВ. */
         fun unitRu(unit: String): String = when (unit.trim()) {

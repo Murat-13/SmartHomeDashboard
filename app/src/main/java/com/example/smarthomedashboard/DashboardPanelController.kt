@@ -101,7 +101,8 @@ internal class DashboardPanelController(
             { modernExpansion.card?.takeIf { modernExpansion.isOpen } },
             { view -> view.parent != null && tileManager.getAllTiles().any { it.id == modernExpansion.tileId } },
             modernExpansion::touch, ::clearModernExpansion, ::collapseModernBattery,
-            android.view.ViewConfiguration.get(activity).scaledTouchSlop
+            android.view.ViewConfiguration.get(activity).scaledTouchSlop,
+            { card, x, y -> (card as? ModernInteractiveArea)?.interactiveAt(x, y) == true }
         )
     }
     private val weatherForecastScroll get() = contentController.weatherForecastScroll
@@ -953,7 +954,10 @@ internal class DashboardPanelController(
         val visual = PowerVisual.of(config, voltage, readings, confirmed)
         view?.findViewWithTag<PowerModernCard>("pm_compact")?.bind(tile.title, config, readings, visual, animate)
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
-            (modernExpansion.card as? PowerModernCard)?.bind(tile.title, config, readings, visual, animate)
+            (modernExpansion.card as? PowerModernCard)?.let { card ->
+                card.bind(tile.title, config, readings, visual, animate)
+                card.graph?.bind(config.graphSource)
+            }
         }
         powerChecks.remove(tile.id)?.let(handler::removeCallbacks)
         val at = tracker.nextCheckAt ?: return
@@ -992,11 +996,18 @@ internal class DashboardPanelController(
             return
         }
         if (tile.type == PowerModernConfig.TYPE) {
-            // Компоновка по эскизу: широкая карточка, слева линия и главные цифры, справа строки.
-            val width = minOf((screenW * 0.86f).toInt(), 1500)
-            val height = (width * 0.46f).toInt().coerceIn(screenH / 3, (screenH * 0.86f).toInt())
+            // Компоновка по эскизу: слева линия и главные цифры, справа строки и «История мощности».
+            // С графиком карточка выше (до 90% экрана), центр панели под камеры не затрагивается.
+            val width = minOf((screenW * 0.9f).toInt(), 1700)
+            val height = minOf((screenH * 0.9f).toInt(), (width * 0.68f).toInt()).coerceAtLeast(screenH / 2)
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             val card = PowerModernCard(activity, expanded = true)
+            val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
+            val state = PowerGraphState(PowerGraphPanel.savedPeriod(prefs, tile.id))
+            val panel = PowerGraphPanel(activity, viewModel.powerHistory, tile.id, state, prefs,
+                onExpand = { openPowerGraph(card, tile.id, state) }, onTouch = modernExpansion::touch)
+            card.attachGraph(panel)
+            panel.bind(PowerModernConfig.from(tile.config).graphSource)
             modernExpansion.expand(tile.id, source, card, target)
             renderModern(tile, null, animate = false)
             return
@@ -1008,6 +1019,67 @@ internal class DashboardPanelController(
         card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit)
         modernExpansion.expand(tile.id, source, card, target)
     }
+
+    /**
+     * Полноэкранный график — слой поверх приложения (не Activity) с тем же состоянием просмотра:
+     * период, позиция, масштаб, курсор. Закрывается кнопкой ✕, «Назад» и вместе с карточкой.
+     */
+    private fun openPowerGraph(card: PowerModernCard, tileId: String, state: PowerGraphState) {
+        if (card.fullscreen != null) return
+        val host = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
+        val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
+        val overlay = FrameLayout(activity).apply {
+            tag = "pg_overlay"
+            isClickable = true
+            setBackgroundColor(android.graphics.Color.argb(245, 6, 18, 30))
+            val pad = (24 * activity.resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            elevation = 40f
+            alpha = 0f
+        }
+        lateinit var back: androidx.activity.OnBackPressedCallback
+        fun close() {
+            if (card.fullscreen !== overlay) return
+            card.fullscreen = null
+            card.closeFullscreen = null
+            back.remove()
+            fade(overlay, 0f, BatteryModernExpansion.CLOSE_MS) { (overlay.parent as? ViewGroup)?.removeView(overlay) }
+            // Возврат к карточке с тем же периодом, позицией и масштабом.
+            card.graph?.refresh()
+            modernExpansion.touch()
+        }
+        back = object : androidx.activity.OnBackPressedCallback(true) { override fun handleOnBackPressed() = close() }
+        val panel = PowerGraphPanel(activity, viewModel.powerHistory, tileId, state, prefs, fullscreen = true,
+            onExpand = { close() }, onTouch = modernExpansion::touch)
+        overlay.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        tileManager.getAllTiles().find { it.id == tileId }?.let { panel.bind(PowerModernConfig.from(it.config).graphSource) }
+        host.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        card.fullscreen = overlay
+        card.closeFullscreen = ::close
+        // Снимается в close(); без привязки к жизненному циклу — «Назад» работает сразу после открытия.
+        (activity as? androidx.activity.ComponentActivity)?.onBackPressedDispatcher?.addCallback(back)
+        fade(overlay, 1f, BatteryModernExpansion.OPEN_MS) {}
+        modernExpansion.touch()
+    }
+
+    /** Плавная смена прозрачности слоя; предыдущая анимация этого слоя отменяется. */
+    private fun fade(view: View, to: Float, duration: Long, end: () -> Unit) {
+        graphFade?.let { it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
+        val animator = android.animation.ValueAnimator.ofFloat(view.alpha, to).setDuration(duration)
+        animator.addUpdateListener { view.alpha = it.animatedValue as Float }
+        animator.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (graphFade === animator) graphFade = null
+                view.alpha = to
+                end()
+            }
+        })
+        graphFade = animator
+        animator.start()
+    }
+
+    /** Анимация полноэкранного графика (одновременно открыт не больше одного). */
+    private var graphFade: android.animation.ValueAnimator? = null
 
     private fun collapseModernBattery() {
         modernWindowInput.clear()

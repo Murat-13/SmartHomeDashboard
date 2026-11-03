@@ -242,6 +242,49 @@ class PowerModernPanelIntegrationTest {
         assertEquals(40f, source.x, 0f)
     }
 
+    @Test fun expandedCardHasGraphAndFullscreenSharesViewState() {
+        open(gridV = "228", invV = "230")
+        advance(2_500)
+        tap(panel.findViewWithTag<FrameLayout>("inverter"))
+        advance(400)
+        val expansion = controller.modernExpansion
+        val card = expansion.card as PowerModernCard
+        val graph = checkNotNull(card.graph) { "У раскрытой карточки есть история мощности" }
+        assertEquals(GraphPeriod.HOUR, graph.state.period)
+        // Все прежние показания на месте.
+        assertEquals("230", text(card, "pm_voltage"))
+        assertNotNull(card.findViewWithTag<View>("pm_row_energy"))
+        graph.findViewWithTag<View>("pg_expand").performClick()
+        advance(400)
+        val content = activity.findViewById<FrameLayout>(android.R.id.content)
+        val overlay = content.findViewWithTag<FrameLayout>("pg_overlay")
+        assertNotNull(overlay)
+        assertSame(overlay, card.fullscreen)
+        val full = overlay.findViewWithTag<PowerGraphPanel>("pg_fullscreen_panel")
+        assertSame("Одно состояние просмотра", graph.state, full.state)
+        full.findViewWithTag<View>("pg_period_day").performClick()
+        assertEquals(GraphPeriod.DAY, graph.state.period)
+        // «Назад» закрывает только полноэкранный график, карточка остаётся с тем же периодом.
+        activity.onBackPressedDispatcher.onBackPressed()
+        advance(400)
+        assertNull(card.fullscreen)
+        assertNull(content.findViewWithTag<View>("pg_overlay"))
+        assertTrue(expansion.isOpen)
+        assertEquals(GraphPeriod.DAY, card.graph!!.state.period)
+        // Снова открыть и дождаться автозакрытия: слой уходит вместе с карточкой.
+        graph.findViewWithTag<View>("pg_expand").performClick()
+        advance(400)
+        assertNotNull(card.fullscreen)
+        advance(30_500)
+        advance(600)
+        assertFalse(expansion.isOpen)
+        assertNull(content.findViewWithTag<View>("pg_overlay"))
+        // Вкладка запомнена для этой карточки.
+        val prefs = activity.getSharedPreferences("dashboard_prefs", 0)
+        assertEquals(GraphPeriod.DAY, PowerGraphPanel.savedPeriod(prefs, "inverter"))
+        assertEquals(GraphPeriod.HOUR, PowerGraphPanel.savedPeriod(prefs, "grid"))
+    }
+
     private fun touch(view: View, action: Int, x: Float, y: Float, down: Long) {
         val e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
         try { view.dispatchTouchEvent(e) } finally { e.recycle() }
