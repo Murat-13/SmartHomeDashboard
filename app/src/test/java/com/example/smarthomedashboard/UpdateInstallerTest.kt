@@ -31,9 +31,13 @@ class UpdateInstallerTest {
     private var granted = true
     private var commitOk = true
 
+    private var archiveDebuggable = false
+
     private val apk = object : ApkCheck {
         override fun installed() = ApkFacts(context.packageName, 900, setOf("cert"))
-        override fun archive(file: File): ApkFacts? = null
+        // Готовый файл перед установкой перепроверяется (0.9.2): здесь это пригодная release-сборка 0.9.1.
+        override fun archive(file: File): ApkFacts? =
+            ApkFacts(context.packageName, 901, setOf("cert"), debuggable = archiveDebuggable).takeIf { file.isFile }
     }
     // Адрес не HTTPS GitHub: проверка отказывает до сети, готовое обновление остаётся готовым.
     private val deps = AppUpdater.Deps(UpdateHttp(OkHttpClient(), "http://127.0.0.1:9/releases"), apk, dir)
@@ -85,6 +89,16 @@ class UpdateInstallerTest {
         assertTrue(log().contains("Копия перед обновлением до 0.9.1 создана"))
         assertTrue(log().contains("Установка 0.9.1 запущена"))
         assertEquals("Установка: выполняется…", UpdateInstaller.statusLine(context))
+    }
+
+    @Test fun debugFileMarkedReadyIsNeverCommitted() {
+        val file = ready()
+        archiveDebuggable = true
+        assertEquals(UpdateInstaller.Outcome.NO_UPDATE, UpdateInstaller.install(context, updaterDeps = deps))
+        assertTrue(commits.isEmpty())
+        assertTrue(preUpdateCopies().isEmpty())
+        assertFalse(file.exists())
+        assertEquals("Отладочная сборка не устанавливается", AppUpdater.status(context).message)
     }
 
     @Test fun missingAndroidPermissionStopsBeforeBackup() {

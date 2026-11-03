@@ -1,6 +1,7 @@
 package com.example.smarthomedashboard
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.Signature
@@ -106,8 +107,12 @@ internal class UpdateHttp(
     }
 }
 
-/** Пакет, версия и отпечатки (SHA-256) сертификатов подписи. */
-internal data class ApkFacts(val packageName: String, val versionCode: Long, val signers: Set<String>)
+/**
+ * Пакет, версия, отпечатки (SHA-256) сертификатов подписи и признак отладочной сборки
+ * (`ApplicationInfo.FLAG_DEBUGGABLE`): debug при наличии ключа подписан тем же ключом, что release.
+ */
+internal data class ApkFacts(val packageName: String, val versionCode: Long, val signers: Set<String>,
+                             val debuggable: Boolean = false)
 
 /** Сведения об установленном приложении и о скачанном APK. */
 internal interface ApkCheck {
@@ -120,16 +125,21 @@ internal class PackageApkCheck(private val context: Context) : ApkCheck {
 
     override fun installed() = runCatching { facts(pm.getPackageInfo(context.packageName, FLAGS)) }.getOrNull()
 
-    override fun archive(file: File) = runCatching { pm.getPackageArchiveInfo(file.absolutePath, FLAGS)?.let(::facts) }.getOrNull()
-
     @Suppress("DEPRECATION")
-    private fun facts(info: PackageInfo): ApkFacts {
+    private fun PackageManager.archiveInfo(file: File) = getPackageArchiveInfo(file.absolutePath, FLAGS)
+
+    override fun archive(file: File) = runCatching { pm.archiveInfo(file)?.let(::facts) }.getOrNull()
+
+    /** Нет `applicationInfo` — свойства файла не определить: такой APK считается непригодным (null). */
+    @Suppress("DEPRECATION")
+    private fun facts(info: PackageInfo): ApkFacts? {
+        val app = info.applicationInfo ?: return null
         val signatures: Array<Signature>? = if (Build.VERSION.SDK_INT >= 28) {
             info.signingInfo?.let { if (it.hasMultipleSigners()) it.apkContentsSigners else it.signingCertificateHistory }
         } else info.signatures
         val code = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
         val signers = signatures.orEmpty().map { UpdateHttp.hex(MessageDigest.getInstance("SHA-256").digest(it.toByteArray())) }
-        return ApkFacts(info.packageName, code, signers.toSet())
+        return ApkFacts(info.packageName, code, signers.toSet(), (app.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
     }
 
     private companion object {
@@ -202,13 +212,44 @@ internal object AppUpdater {
             prefs.getLong(PREF_VERSION_CODE, 0), prefs.getLong(PREF_LAST_CHECK, 0), prefs.getString(PREF_NOTES, "").orEmpty())
     }
 
-    /** Готовый проверенный файл (для установки на этапе 09в); null — нет или изменился после проверки. */
+    /**
+     * Готовый файл для установки; null — нет, изменился после проверки или больше не проходит проверку
+     * ([problemOf]): ранее скачанный файл (в том числе принятый старой версией без новых правил) каждый раз
+     * проверяется заново и при отказе отвергается так же, как свежая загрузка.
+     */
     fun readyFile(context: Context, deps: Deps = deps(context)): File? {
         val status = status(context)
         if (status.state != State.READY) return null
         val file = File(deps.dir, apkName(status.versionCode))
         val sha = prefs(context).getString(PREF_SHA, null) ?: return null
-        return file.takeIf { it.isFile && runCatching { sha256(it) }.getOrNull() == sha }
+        if (!file.isFile || runCatching { sha256(file) }.getOrNull() != sha) return null
+        val installed = deps.apk.installed() ?: return null
+        val problem = problemOf(deps.apk.archive(file), installed, status.versionCode, status.versionName.orEmpty())
+        if (problem != null) {
+            reject(context, file, "${status.versionCode}:$sha", status.versionName.orEmpty(), status.versionCode, problem,
+                System.currentTimeMillis())
+            return null
+        }
+        return file
+    }
+
+    /** Причина, по которой скачанный APK нельзя ставить; null — пригоден. */
+    private fun problemOf(facts: ApkFacts?, installed: ApkFacts, versionCode: Long, versionName: String): String? = when {
+        facts == null -> "скачанный файл не является приложением"
+        facts.packageName != installed.packageName -> "файл от другого приложения"
+        facts.debuggable -> "Отладочная сборка не устанавливается"
+        facts.versionCode != versionCode -> "версия в файле не совпадает с выпуском $versionName"
+        facts.signers.isEmpty() || facts.signers != installed.signers -> "подпись $versionName не совпадает с установленным приложением"
+        else -> null
+    }
+
+    /** Отказ: файл удаляется, тот же «код:хэш» повторно не скачивается, причина — в статусе и журнале. */
+    private fun reject(context: Context, file: File, rejection: String, versionName: String, versionCode: Long,
+                       problem: String, now: Long): Status {
+        file.delete()
+        prefs(context).edit().putString(PREF_REJECTED, rejection).apply()
+        UpdateLog.add(context, "Выпуск $versionName отвергнут: $problem", now)
+        return save(context, Status(State.ERROR, problem, versionName, versionCode, now), sha = null)
     }
 
     private val lock = ReentrantLock()
@@ -256,12 +297,14 @@ internal object AppUpdater {
 
         val file = File(deps.dir, apkName(release.versionCode))
         val ready = Status(State.READY, "готово к установке", release.versionName, release.versionCode, now, release.notes)
+        // Уже скачанный файл повторно проверяется целиком (readyFile): отказ записывает отвергнутый «код:хэш».
         if (previous.state == State.READY && previous.versionCode == release.versionCode &&
-            prefs.getString(PREF_SHA, null) == expected && file.isFile && sha256(file) == expected) {
+            prefs.getString(PREF_SHA, null) == expected && readyFile(context, deps) != null) {
             return save(context, ready, expected)
         }
         val rejection = "${release.versionCode}:$expected"
-        if (prefs.getString(PREF_REJECTED, null) == rejection && previous.state == State.ERROR && previous.versionCode == release.versionCode) {
+        val current = status(context)
+        if (prefs.getString(PREF_REJECTED, null) == rejection && current.state == State.ERROR && current.versionCode == release.versionCode) {
             prefs.edit().putLong(PREF_LAST_CHECK, now).apply()
             return status(context)
         }
@@ -284,20 +327,8 @@ internal object AppUpdater {
         }
         if (!part.renameTo(file)) { part.delete(); return fail(context, now, "не удалось сохранить файл обновления") }
 
-        val facts = deps.apk.archive(file)
-        val problem = when {
-            facts == null -> "скачанный файл не является приложением"
-            facts.packageName != installed.packageName -> "файл от другого приложения"
-            facts.versionCode != release.versionCode -> "версия в файле не совпадает с выпуском ${release.versionName}"
-            facts.signers.isEmpty() || facts.signers != installed.signers -> "подпись ${release.versionName} не совпадает с установленным приложением"
-            else -> null
-        }
-        if (problem != null) {
-            file.delete()
-            prefs.edit().putString(PREF_REJECTED, rejection).apply()
-            UpdateLog.add(context, "Выпуск ${release.versionName} отвергнут: $problem", now)
-            return save(context, Status(State.ERROR, problem, release.versionName, release.versionCode, now), sha = null)
-        }
+        val problem = problemOf(deps.apk.archive(file), installed, release.versionCode, release.versionName)
+        if (problem != null) return reject(context, file, rejection, release.versionName, release.versionCode, problem, now)
         prefs.edit().remove(PREF_REJECTED).apply()
         UpdateLog.add(context, "Найдено обновление ${release.versionName} (${channel(context).label} канал): скачано, SHA-256 и подпись проверены", now)
         return save(context, ready, expected)

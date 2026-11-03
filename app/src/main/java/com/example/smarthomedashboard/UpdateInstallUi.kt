@@ -44,8 +44,12 @@ internal object UpdateInstallUi {
             when (outcome) {
                 UpdateInstaller.Outcome.STARTED ->
                     Toast.makeText(activity, "Установка обновления…", Toast.LENGTH_LONG).show()
-                UpdateInstaller.Outcome.NO_UPDATE ->
-                    Toast.makeText(activity, "Файл обновления не найден или изменился — дождитесь новой проверки", Toast.LENGTH_LONG).show()
+                UpdateInstaller.Outcome.NO_UPDATE -> {
+                    // Файл мог быть отвергнут при повторной проверке (например, отладочная сборка) — показываем причину.
+                    val rejected = AppUpdater.status(activity).takeIf { it.state == AppUpdater.State.ERROR }?.message
+                    Toast.makeText(activity, rejected?.let { "Обновление отклонено: $it" }
+                        ?: "Файл обновления не найден или изменился — дождитесь новой проверки", Toast.LENGTH_LONG).show()
+                }
                 UpdateInstaller.Outcome.NEEDS_PERMISSION -> AlertDialog.Builder(activity)
                     .setTitle("Нужно разрешение Android")
                     .setMessage("Один раз разрешите панели устанавливать приложения: в открывшихся настройках включите " +

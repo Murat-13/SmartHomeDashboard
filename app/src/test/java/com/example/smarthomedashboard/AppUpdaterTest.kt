@@ -155,6 +155,53 @@ class AppUpdaterTest {
         assertEquals("тот же отвергнутый файл не качается каждые 6 часов", 1, downloads())
     }
 
+    @Test fun debugApkWithCorrectSignatureIsRejectedDeletedLoggedAndNotRedownloaded() {
+        File(context.filesDir, "update_log.txt").delete()
+        releasesJson = "[${release("v0.9.1")}]"
+        archiveFacts = ApkFacts(context.packageName, 901, setOf("cert-release"), debuggable = true)
+        val status = AppUpdater.check(context, deps())
+        assertEquals(AppUpdater.State.ERROR, status.state)
+        assertEquals("Отладочная сборка не устанавливается", status.message)
+        assertTrue("отвергнутый файл удалён", dir.list().isNullOrEmpty())
+        assertNull(AppUpdater.readyFile(context, deps()))
+        assertTrue(UpdateLog.lines(context).first().endsWith("Выпуск 0.9.1 отвергнут: Отладочная сборка не устанавливается"))
+        AppUpdater.check(context, deps())
+        assertEquals("тот же файл повторно не скачивается", 1, downloads())
+    }
+
+    @Test fun releaseApkWithSameSignatureIsAccepted() {
+        releasesJson = "[${release("v0.9.1")}]"
+        archiveFacts = ApkFacts(context.packageName, 901, setOf("cert-release"), debuggable = false)
+        assertEquals(AppUpdater.State.READY, AppUpdater.check(context, deps()).state)
+        assertNotNull(AppUpdater.readyFile(context, deps()))
+    }
+
+    @Test fun previouslyAcceptedFileCannotBypassNewCheck() {
+        // Состояние, оставленное версией без проверки debuggable: файл скачан, хэш совпадает, статус «готово».
+        dir.mkdirs()
+        val file = File(dir, "update-901.apk").apply { writeBytes(apkBytes) }
+        prefs.edit().putString(AppUpdater.PREF_STATE, "READY").putString(AppUpdater.PREF_VERSION_NAME, "0.9.1")
+            .putLong(AppUpdater.PREF_VERSION_CODE, 901).putString(AppUpdater.PREF_SHA, apkSha).commit()
+        archiveFacts = ApkFacts(context.packageName, 901, setOf("cert-release"), debuggable = true)
+
+        assertNull("установка не получит файл", AppUpdater.readyFile(context, deps()))
+        assertFalse(file.exists())
+        assertEquals(AppUpdater.State.ERROR, AppUpdater.status(context).state)
+        assertEquals("Отладочная сборка не устанавливается", AppUpdater.status(context).message)
+        assertNull(AppUpdater.drawerText(context))
+
+        releasesJson = "[${release("v0.9.1")}]"
+        assertEquals(AppUpdater.State.ERROR, AppUpdater.check(context, deps()).state)
+        assertEquals("отвергнутый «код:хэш» не перекачивается", 0, downloads())
+    }
+
+    @Test fun realPackageCheckTreatsNonApkAsUnusable() {
+        dir.mkdirs()
+        val junk = File(dir, "junk.apk").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        assertNull(PackageApkCheck(context).archive(junk))
+        assertNull(PackageApkCheck(context).archive(File(dir, "missing.apk")))
+    }
+
     @Test fun wrongPackageOrVersionInsideApkIsRejected() {
         releasesJson = "[${release("v0.9.1")}]"
         archiveFacts = ApkFacts("com.example.other", 901, setOf("cert-release"))
