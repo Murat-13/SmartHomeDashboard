@@ -20,7 +20,8 @@ import java.util.concurrent.Executors
  * (только чтение). Команд HA не отправляет.
  */
 internal class PowerHistoryRecorder(
-    private val store: PowerHistoryStore,
+    /** Общая база процесса: её же читает и пополняет отдельный бэкап истории. */
+    internal val store: PowerHistoryStore,
     private val io: Executor = Executors.newSingleThreadExecutor { Thread(it, "power-history").apply { priority = Thread.MIN_PRIORITY } },
     private val post: (() -> Unit) -> Unit = { block -> MAIN.post(block) },
     private val clock: () -> Long = System::currentTimeMillis
@@ -173,6 +174,11 @@ internal class PowerHistoryRecorder(
                 store.insert(source, listOf(PowerSample(until + 1, null)))
             }
         }
+    }
+
+    /** Данные обновились извне (восстановление из копии): открытые графики перечитывают базу. */
+    fun reloadAll() {
+        sources.forEach { id -> listeners.toList().forEach { it.changed(id, null) } }
     }
 
     fun compact() {

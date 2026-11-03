@@ -523,6 +523,29 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="@dimen/modern_space_m"
                             android:text="Восстановить из копии" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_l"
+                            android:text="История мощности"
+                            android:textAppearance="@style/TextAppearance.Modern.Body" />
+
+                        <TextView
+                            android:id="@+id/tvPowerBackupStatus"
+                            style="@style/SettingsHint" />
+
+                        <TextView
+                            style="@style/SettingsHint"
+                            android:text="Отдельная копия графиков электропитания: раз в сутки около 4:00 в ту же папку, хранятся 3 последние. Настройки в неё не входят." />
+
+                        <Button
+                            android:id="@+id/btnPowerHistoryRestore"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_m"
+                            android:text="Восстановить историю мощности" />
                     </LinearLayout>
                 </LinearLayout>
 

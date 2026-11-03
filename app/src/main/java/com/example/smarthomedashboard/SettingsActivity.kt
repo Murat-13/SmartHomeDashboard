@@ -242,6 +242,7 @@ class SettingsActivity : PinProtectedActivity() {
     private fun setupBackups() {
         updateBackupStatus()
         findViewById<Button?>(R.id.btnBackupRestore)?.setOnClickListener { chooseCopyToRestore() }
+        findViewById<Button?>(R.id.btnPowerHistoryRestore)?.setOnClickListener { choosePowerHistoryCopy() }
         findViewById<Button?>(R.id.btnBackupFolder)?.setOnClickListener {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
@@ -388,6 +389,60 @@ class SettingsActivity : PinProtectedActivity() {
         val place = if (getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getString(AutoBackup.PREF_TREE, null) != null)
             "в выбранной папке" else "внутри приложения (выберите папку, чтобы копии пережили удаление)"
         findViewById<TextView?>(R.id.tvBackupStatus)?.text = "${AutoBackup.statusText(this).second} · $place"
+        findViewById<TextView?>(R.id.tvPowerBackupStatus)?.text = PowerHistoryBackup.statusText(this)
+    }
+
+    /**
+     * Восстановление истории мощности — отдельно от настроек: выбор копии → проверка файла и перечень
+     * датчиков → подтверждение → добавление без перезаписи имеющихся данных.
+     */
+    private fun choosePowerHistoryCopy() {
+        if (!requireAdmin()) return
+        val store = AutoBackup.store(applicationContext)
+        lifecycleScope.launch {
+            val copies = withContext(Dispatchers.IO) { PowerHistoryBackup.copies(store) }
+            if (isFinishing || isDestroyed) return@launch
+            if (copies.isEmpty()) {
+                Toast.makeText(this@SettingsActivity, "Копий истории мощности не найдено", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            AlertDialog.Builder(this@SettingsActivity).setTitle("Восстановить историю мощности")
+                .setItems(copies.map(PowerHistoryBackup::label).toTypedArray()) { _, index -> confirmPowerHistory(store, copies[index]) }
+                .setNegativeButton("Отмена", null).show()
+        }
+    }
+
+    private fun confirmPowerHistory(store: AutoBackup.Store, name: String) {
+        lifecycleScope.launch {
+            val summary = withContext(Dispatchers.IO) { PowerHistoryBackup.summary(store, name) }
+            if (isFinishing || isDestroyed) return@launch
+            if (summary == null) {
+                Toast.makeText(this@SettingsActivity, "Копия повреждена или другого формата — ничего не изменено", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val server = PowerHistoryRecorder.get(applicationContext).instance
+            val format = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale("ru"))
+            val period = if (summary.from != null && summary.to != null)
+                "${format.format(java.util.Date(summary.from))} — ${format.format(java.util.Date(summary.to))}" else "—"
+            val sensors = summary.sources.joinToString("\n") { (instance, entity) ->
+                "• $entity" + if (server != null && instance != server) " (другой сервер HA)" else ""
+            }
+            ModernUi.dangerDialog(this@SettingsActivity, "Восстановить историю?",
+                "${PowerHistoryBackup.label(name)}\nПериод: $period\nДатчики:\n$sensors\n\n" +
+                    "Записи добавляются к имеющимся; уже сохранённые и более новые данные не заменяются. " +
+                    "Настройки и плитки не меняются.", "Восстановить") {
+                if (!requireAdmin()) return@dangerDialog
+                lifecycleScope.launch {
+                    val history = PowerHistoryRecorder.get(applicationContext)
+                    val added = withContext(Dispatchers.IO) { PowerHistoryBackup.restore(store, name, history.store) }
+                    if (isFinishing || isDestroyed) return@launch
+                    history.reloadAll()
+                    Toast.makeText(this@SettingsActivity,
+                        if (added == null) "Не удалось восстановить — копия повреждена" else "История восстановлена: добавлено записей $added",
+                        Toast.LENGTH_LONG).show()
+                }
+            }.show()
+        }
     }
 
     private fun versionText(): String = try {

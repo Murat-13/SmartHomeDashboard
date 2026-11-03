@@ -265,6 +265,47 @@ internal class PowerHistoryStore(context: Context, name: String? = DB_NAME) :
         }
     }
 
+    // ---- Для отдельного бэкапа истории (потоком, без загрузки всего в память) ----
+
+    fun forEachRaw(source: Long, block: (Long, Double?) -> Unit) {
+        readableDatabase.rawQuery("SELECT ts, value FROM raw WHERE source = ? ORDER BY ts", arrayOf(source.toString())).use {
+            while (it.moveToNext()) block(it.getLong(0), if (it.isNull(1)) null else it.getDouble(1))
+        }
+    }
+
+    fun forEachMinute(source: Long, block: (PowerBucket) -> Unit) {
+        readableDatabase.rawQuery("SELECT start, min, max, avg, covered, count FROM minute WHERE source = ? ORDER BY start", arrayOf(source.toString())).use {
+            while (it.moveToNext()) block(PowerBucket(it.getLong(0), it.getDouble(1), it.getDouble(2), it.getDouble(3), it.getLong(4), it.getInt(5)))
+        }
+    }
+
+    /** Вставка минутных агрегатов без перезаписи имеющихся (восстановление из копии). */
+    fun insertMinutes(source: Long, buckets: List<PowerBucket>): Int {
+        if (buckets.isEmpty()) return 0
+        val db = writableDatabase
+        var added = 0
+        db.beginTransaction()
+        try {
+            val insert = db.compileStatement("INSERT OR IGNORE INTO minute (source, start, min, max, avg, covered, count) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            buckets.forEach { b ->
+                insert.bindLong(1, source); insert.bindLong(2, b.start)
+                insert.bindDouble(3, b.min); insert.bindDouble(4, b.max); insert.bindDouble(5, b.avg)
+                insert.bindLong(6, b.coveredMs); insert.bindLong(7, b.count.toLong())
+                if (insert.executeInsert() != -1L) added++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return added
+    }
+
+    /** Изменилась ли история с прошлой копии (число и последние метки строк). */
+    fun fingerprint(): String = readableDatabase.rawQuery(
+        "SELECT (SELECT COUNT(*) FROM raw), (SELECT MAX(ts) FROM raw), (SELECT COUNT(*) FROM minute), (SELECT MAX(start) FROM minute)", null).use {
+        if (it.moveToFirst()) (0..3).joinToString(":") { i -> if (it.isNull(i)) "-" else it.getLong(i).toString() } else ""
+    }
+
     companion object {
         const val DB_NAME = "power_history.db"
         const val VERSION = 1

@@ -154,6 +154,7 @@ class MainActivity : AppCompatActivity() {
         if (savedInstanceState == null) showTileIssue()
         setupSystemPanel()
         AutoBackup.schedule(applicationContext)
+        PowerHistoryBackup.schedule(applicationContext)
         AppUpdater.schedule(applicationContext)
         UpdateInstaller.schedule(applicationContext)
         setupWebSocket()

@@ -45,6 +45,9 @@ internal object AutoBackup {
         fun write(name: String, text: String): Boolean
         fun read(name: String): String?
         fun delete(name: String): Boolean
+        /** Потоковая запись/чтение больших файлов (история мощности); null — недоступно. */
+        fun output(name: String): java.io.OutputStream? = null
+        fun input(name: String): java.io.InputStream? = null
     }
 
     private class InternalStore(context: Context) : Store {
@@ -57,6 +60,8 @@ internal object AutoBackup {
         }.getOrDefault(false)
         override fun read(name: String) = runCatching { File(dir, name).readText(Charsets.UTF_8) }.getOrNull()
         override fun delete(name: String) = File(dir, name).delete()
+        override fun output(name: String) = runCatching { dir.mkdirs(); File(dir, name).outputStream() }.getOrNull()
+        override fun input(name: String) = runCatching { File(dir, name).inputStream() }.getOrNull()
     }
 
     private class FolderStore(private val context: Context, private val tree: Uri) : Store {
@@ -79,6 +84,10 @@ internal object AutoBackup {
             runCatching { resolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull()
         }
         override fun delete(name: String) = children()[name]?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) }.getOrDefault(false) } ?: false
+        override fun output(name: String) = runCatching {
+            DocumentsContract.createDocument(resolver, root, "application/gzip", name)?.let { resolver.openOutputStream(it, "wt") }
+        }.getOrNull()
+        override fun input(name: String) = children()[name]?.let { runCatching { resolver.openInputStream(it) }.getOrNull() }
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
