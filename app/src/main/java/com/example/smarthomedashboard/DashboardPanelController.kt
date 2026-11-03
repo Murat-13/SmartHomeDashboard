@@ -614,6 +614,17 @@ internal class DashboardPanelController(
         var startY = 0f
         var hasMoved = false
         var gestureActive = false
+        var holdFired = false
+        // Системная длительность долгого нажатия (меняется в специальных возможностях Android).
+        val holdMs = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        fun hold(view: View) {
+            holdFired = true
+            if (view is ModernTileView) {
+                if (modernGroup.isOpen && modernGroup.tileId == tile.id) modernGroup.close()
+                else expandModernGroup(tile, view)
+            } else if (expandedGroupId == tile.id) collapseChildButtons()
+            else expandChildButtons(tile, view as Button)
+        }
 
         button.setOnTouchListener { view, event ->
             if (isEditMode) return@setOnTouchListener editDrag.onTouch(event)
@@ -622,17 +633,13 @@ internal class DashboardPanelController(
                     pressRunnable?.let { handler.removeCallbacks(it) }
                     gestureActive = true
                     hasMoved = false
+                    holdFired = false
                     startX = event.rawX
                     startY = event.rawY
                     if (modern) ModernPress.handle(view, event, enabled = true)
                     pressRunnable = Runnable {
-                        if (!gestureActive) return@Runnable
-                        if (view is ModernTileView) {
-                            if (modernGroup.isOpen && modernGroup.tileId == tile.id) modernGroup.close()
-                            else expandModernGroup(tile, view)
-                        } else if (expandedGroupId == tile.id) collapseChildButtons()
-                        else expandChildButtons(tile, view as Button)
-                    }.also { handler.postDelayed(it, 1000L) }
+                        if (gestureActive) hold(view)
+                    }.also { handler.postDelayed(it, holdMs) }
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -652,8 +659,11 @@ internal class DashboardPanelController(
                     view.performClick()
                     pressRunnable?.let { handler.removeCallbacks(it) }
                     pressRunnable = null
+                    // Удержание дольше порога — всегда раскрытие, даже если главный поток не успел выполнить таймер;
+                    // иначе долгое нажатие переключало бы устройства группы.
+                    if (!hasMoved && !holdFired && event.eventTime - event.downTime >= holdMs) hold(view)
                     val expanded = if (modern) modernGroup.tileId == tile.id else expandedGroupId == tile.id
-                    if (!hasMoved && !expanded) {
+                    if (!hasMoved && !expanded && !holdFired) {
                         if (modern) ModernPress.haptic(view)
                         toggleGroup(tile.id)
                     }

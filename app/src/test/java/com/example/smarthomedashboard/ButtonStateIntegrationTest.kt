@@ -154,6 +154,10 @@ class ButtonStateIntegrationTest {
         val event = MotionEvent.obtain(0, 1, action, 5f, 5f, 0)
         try { view.dispatchTouchEvent(event) } finally { event.recycle() }
     }
+    private fun sendAt(view: View, action: Int, eventTime: Long) {
+        val event = MotionEvent.obtain(0, eventTime, action, 5f, 5f, 0)
+        try { view.dispatchTouchEvent(event) } finally { event.recycle() }
+    }
     private fun tap(id: String) {
         val button = view(id)
         button.measure(View.MeasureSpec.makeMeasureSpec(160, View.MeasureSpec.EXACTLY),
@@ -319,6 +323,31 @@ class ButtonStateIntegrationTest {
         assertEquals("turn_off", calls().single().getString("service"))
         assertEquals("light.a", calls().single().getJSONObject("service_data").getString("entity_id"))
         assertEquals(ButtonCommandAppearance.PENDING, color("group"))
+    }
+
+    @Test fun holdForSystemLongPressTimeoutExpandsGroupWithoutCommand() {
+        open(group("group", "light.a"))
+        event("light.a", "off")
+        socket.messages.clear()
+        val hold = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        send(view("group"), MotionEvent.ACTION_DOWN)
+        shadowOf(Looper.getMainLooper()).idleFor(hold, TimeUnit.MILLISECONDS)
+        send(view("group"), MotionEvent.ACTION_UP)
+        assertEquals("group", ArchitectureTestAccess.getField<String>(activity, "expandedGroupId"))
+        assertTrue(calls().isEmpty())
+    }
+
+    @Test fun lateHoldTimerStillExpandsInsteadOfTogglingGroup() {
+        // Главный поток занят: отпускание пришло после порога, но до срабатывания таймера.
+        open(group("group", "light.a"))
+        event("light.a", "off")
+        socket.messages.clear()
+        val hold = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        sendAt(view("group"), MotionEvent.ACTION_DOWN, eventTime = 0)
+        sendAt(view("group"), MotionEvent.ACTION_UP, eventTime = hold + 1)
+        assertEquals("group", ArchitectureTestAccess.getField<String>(activity, "expandedGroupId"))
+        shadowOf(Looper.getMainLooper()).idleFor(2, TimeUnit.SECONDS)
+        assertTrue(calls().isEmpty())
     }
 
     @Test fun realUnknownAndUnavailableUpdateStateAndRemainInactive() {

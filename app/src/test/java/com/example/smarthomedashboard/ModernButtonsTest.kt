@@ -377,6 +377,35 @@ class ModernButtonsTest {
         assertEquals(1, activity.findViewById<FrameLayout>(android.R.id.content).childCount)
     }
 
+    @Test fun holdUsesSystemLongPressTimeoutAndNeverTogglesGroup() {
+        open(group("g", "light.a"))
+        event("light.a", "off")
+        socket.messages.clear()
+        val hold = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        assertTrue(hold < 1000)
+        touch(tile("g"), MotionEvent.ACTION_DOWN)
+        advance(hold)
+        touch(tile("g"), MotionEvent.ACTION_UP)
+        idle()
+        assertTrue(controller().modernGroup.isOpen)
+
+        // Повторное удержание закрывает панель и тоже не переключает группу.
+        touch(tile("g"), MotionEvent.ACTION_DOWN)
+        advance(hold)
+        touch(tile("g"), MotionEvent.ACTION_UP)
+        advance(500)
+        assertFalse(controller().modernGroup.isOpen)
+
+        // Таймер не успел (занятый главный поток), но палец держали дольше порога — раскрытие.
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 5f, 5f, 0)
+        val up = MotionEvent.obtain(0, hold + 1, MotionEvent.ACTION_UP, 5f, 5f, 0)
+        try { tile("g").dispatchTouchEvent(down); tile("g").dispatchTouchEvent(up) } finally { down.recycle(); up.recycle() }
+        idle()
+        assertTrue(controller().modernGroup.isOpen)
+        advance(2000)
+        assertTrue(calls().isEmpty())
+    }
+
     @Test fun panelAutoCollapsesAfterTenSecondsAndEmptyGroupShowsMessage() {
         open(group("g"))
         touch(tile("g"), MotionEvent.ACTION_DOWN)
