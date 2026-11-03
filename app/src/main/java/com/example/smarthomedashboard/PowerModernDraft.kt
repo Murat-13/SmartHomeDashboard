@@ -36,6 +36,9 @@ internal class PowerModernDraft(val original: TileEntity, initial: PowerModernCo
 
     fun setTitle(value: String) { title = value }
 
+    /** Пусто — график по датчику строки «Мощность». Прошлая история других датчиков не удаляется. */
+    fun setGraphEntity(entityId: String) { config = config.copy(graphEntityId = entityId.trim()) }
+
     // ---- Правила ----
 
     fun updateRule(index: Int, rule: PowerModernConfig.Rule) {

@@ -36,6 +36,26 @@ class MainViewModel : ViewModel() {
 
     private var webSocket: HomeAssistantWebSocket? = null
 
+    /** История мощности для графика (docs/power-graph.md); задаёт экран, в тестах может отсутствовать. */
+    internal var powerHistory: PowerHistoryRecorder? = null
+        set(value) {
+            field = value
+            value?.reader = { type, params, result -> webSocket?.read(type, params, result = result) ?: result(null) }
+        }
+
+    /** Текущие источники графиков: пишется только их история. */
+    internal fun setPowerSources(entityIds: Set<String>) {
+        powerHistory?.setSources(entityIds)
+    }
+
+    /** Сервер HA определяется по get_config (только чтение), чтобы истории разных домов не смешивались. */
+    private fun identifyServer(currentGeneration: Int) {
+        val history = powerHistory ?: return
+        webSocket?.read("get_config") { config ->
+            if (generation == currentGeneration) PowerHistoryRecorder.instanceKey(config)?.let(history::setInstance)
+        }
+    }
+
     internal var tokenRevision = -1L
     private var generation = 0
     private var configuration: List<String>? = null
@@ -97,6 +117,7 @@ class MainViewModel : ViewModel() {
             return
         }
         commands.disconnected()
+        powerHistory?.onDisconnected()
         val currentGeneration = ++generation
         webSocket?.disconnect()
         configuration = nextConfiguration
@@ -111,6 +132,7 @@ class MainViewModel : ViewModel() {
             onStateChanged = { entityId, state, attributes ->
                 if (generation == currentGeneration) {
                     onEntityStateChanged(entityId, state, attributes)
+                    powerHistory?.onState(entityId, state, attributes)
                     stateCallback?.invoke(entityId, state, attributes)
                 }
             },
@@ -119,6 +141,10 @@ class MainViewModel : ViewModel() {
                     snapshotDepth++
                     try {
                         onStatesSnapshot(states)
+                        powerHistory?.let { history ->
+                            states.forEach { history.onState(it.entityId, it.state, it.attributes) }
+                            history.onSnapshotDone()
+                        }
                         // Снимок текущей сессии принят до отрисовки: карточки видят данные достоверными.
                         _uiState.update { it.copy(haSession = it.haSession.copy(synced = it.haSession.connected)) }
                         val callback = snapshotCallback
@@ -135,12 +161,14 @@ class MainViewModel : ViewModel() {
                     _uiState.update {
                         it.copy(connectionStatus = ConnectionStatus.Connected, haSession = HaSession(connected = true))
                     }
+                    identifyServer(currentGeneration)
                     connectedCallback?.invoke()
                 }
             },
             onDisconnected = {
                 if (generation == currentGeneration) {
                     commands.disconnected()
+                    powerHistory?.onDisconnected()
                     _uiState.update { it.copy(connectionStatus = ConnectionStatus.Disconnected, haSession = HaSession()) }
                 }
             },
@@ -184,6 +212,7 @@ class MainViewModel : ViewModel() {
 
     fun disconnectWebSocket() {
         commands.disconnected()
+        powerHistory?.onDisconnected()
         generation++
         configuration = null
         webSocket?.disconnect()

@@ -60,6 +60,8 @@ class HomeAssistantWebSocket(
     private companion object {
         const val DAILY = "daily"
         const val HOURLY = "hourly"
+        /** Единственные команды [read]: только чтение конфигурации и истории. */
+        val READ_ONLY = setOf("get_config", "history/history_during_period")
     }
     private val forecastEntities = linkedSetOf<String>()
     private val hourlyForecastEntities = linkedSetOf<String>()
@@ -83,6 +85,9 @@ class HomeAssistantWebSocket(
         val timeout: Runnable
     )
     private var stateRequest: StateRequest? = null
+    /** Разовые запросы чтения ([read]): ответ или null при ошибке/разрыве/тайм-ауте. */
+    private data class ReadRequest(val result: (Any?) -> Unit, val timeout: Runnable)
+    private val readRequests = mutableMapOf<Int, ReadRequest>()
     private val registryRequests = linkedSetOf<Int>()
     private var registryTimeout: Runnable? = null
     private var inboundGate: HaMessageGate? = null
@@ -191,6 +196,7 @@ class HomeAssistantWebSocket(
         webSocket = null
         authenticated = false
         finishServiceRequests()
+        finishReadRequests()
         forecastSubscriptions.clear()
         if (permanent || tokenRejected) rejectedHosts.add(getHost())
         if (tokenRejected) tokenRejectedHosts.add(getHost())
@@ -255,6 +261,11 @@ class HomeAssistantWebSocket(
                     return
                 }
                 if (json.optInt("id") in retiredServiceIds) return
+                readRequests.remove(json.optInt("id"))?.let { request ->
+                    handler.removeCallbacks(request.timeout)
+                    request.result(if (json.optBoolean("success", false)) json.opt("result") else null)
+                    return
+                }
                 forecastSubscriptions[json.optInt("id")]?.let {
                     handleForecastResult(json, it)
                     return
@@ -377,6 +388,28 @@ class HomeAssistantWebSocket(
         stateRequest = StateRequest(id, serviceRequests.values.mapTo(HashSet()) { it.entityId }, HashSet(), timeout)
         if (sendMessage(message)) handler.postDelayed(timeout, 30_000L)
         else stateRequest = null
+    }
+
+    /**
+     * Разовое чтение из HA для истории мощности. Разрешены только команды из [READ_ONLY]: через этот
+     * метод невозможно отправить управляющий вызов. [result] — на главном потоке, null при отказе.
+     */
+    fun read(type: String, params: JSONObject = JSONObject(), timeoutMs: Long = 60_000L, result: (Any?) -> Unit) = onMain {
+        require(type in READ_ONLY) { "Не команда чтения: $type" }
+        if (!authenticated) { result(null); return@onMain }
+        val message = command(type)
+        params.keys().forEach { key -> if (key != "id" && key != "type") message.put(key, params.get(key)) }
+        val id = message.getInt("id")
+        val timeout = Runnable { readRequests.remove(id)?.result?.invoke(null) }
+        readRequests[id] = ReadRequest(result, timeout)
+        if (sendMessage(message)) handler.postDelayed(timeout, timeoutMs)
+        else readRequests.remove(id)?.result?.invoke(null)
+    }
+
+    private fun finishReadRequests() {
+        val pending = readRequests.values.toList()
+        readRequests.clear()
+        pending.forEach { handler.removeCallbacks(it.timeout); it.result(null) }
     }
 
     // Прежний добавляющий API оставлен для существующих вызывающих экранов.
@@ -677,6 +710,7 @@ class HomeAssistantWebSocket(
         timeoutTask = null
         authenticated = false
         finishServiceRequests()
+        finishReadRequests()
         webSocket?.cancel()
         webSocket = null
         forecastSubscriptions.clear()

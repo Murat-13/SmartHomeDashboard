@@ -47,7 +47,9 @@ class MainActivity : AppCompatActivity() {
     private val idleRunnable = Runnable { dimScreen() }
 
     private val viewModel: MainViewModel by lazy {
-        androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java]
+        androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java].also { model ->
+            if (model.powerHistory == null) model.powerHistory = PowerHistoryRecorder.get(applicationContext)
+        }
     }
 
     private var isEditMode: Boolean
@@ -907,6 +909,7 @@ class MainActivity : AppCompatActivity() {
         val useYandex = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean("use_yandex_weather", false)
         val plan = PanelSubscriptionPlan.create(tileManager.getAllTiles(), motionSensorId, useYandex)
         viewModel.subscribeEntities(plan.entityIds)
+        viewModel.setPowerSources(PowerModernConfig.graphSources(tileManager.getAllTiles()))
         // Передаём весь актуальный набор, включая пустой при выборе Яндекса.
         viewModel.syncForecastSubscriptions(plan.forecastIds)
         viewModel.syncHourlyForecastSubscriptions(plan.hourlyForecastIds)

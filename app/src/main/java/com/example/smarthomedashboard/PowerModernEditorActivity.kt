@@ -40,6 +40,7 @@ class PowerModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Edit
     private var previewJob: Job? = null
     private val kit = ModernEditorKit(this) { model }
     private lateinit var rulesList: LinearLayout
+    private lateinit var graphSource: TextView
     private lateinit var testInput: android.widget.EditText
     internal lateinit var testResult: TextView
         private set
@@ -116,6 +117,18 @@ class PowerModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Edit
         testResult = kit.label("", 14f).apply { tag = "pm_test_result" }
         side.addView(testResult)
 
+        side.addView(kit.label("Источник графика мощности", 16f, bold = true))
+        graphSource = kit.label("", 14f).apply { tag = "pm_graph_source" }
+        side.addView(graphSource)
+        val graphButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        graphButtons.addView(kit.button("Выбрать…", "pm_graph_pick") {
+            kit.pickEntityWhere(draft.config.graphSource, ::graphCandidate) { draft.setGraphEntity(it); render() }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        graphButtons.addView(kit.button("Как «Мощность»", "pm_graph_default") {
+            draft.setGraphEntity(""); render()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        side.addView(graphButtons)
+
         side.addView(kit.label("Цветовые правила напряжения", 16f, bold = true))
         side.addView(kit.label("Цифры всегда белые; правило задаёт фон, рамку, свечение, иконку и статус. " +
             "Это визуальные предупреждения, а не оценка электробезопасности.", 13f))
@@ -151,8 +164,32 @@ class PowerModernEditorActivity : PinProtectedActivity(), BatteryModernCard.Edit
         val visual = if (readings.status == null && number != null) PowerVisual.preview(config, number)
             else PowerVisual.of(config, voltage, readings, null)
         preview.bind(draft.title, config, readings, visual, animate = false)
+        renderGraphSource()
         renderRules()
         renderTest()
+    }
+
+    /**
+     * Только мощность в Вт/кВт. Если атрибуты сущности ещё не получены (нет связи), предлагаем датчики
+     * `sensor.*`: единица проверится при первом значении, неподходящее не пишется.
+     */
+    internal fun graphCandidate(entityId: String): Boolean {
+        val unit = model.entityAttributes[entityId]?.optString("unit_of_measurement")
+        return if (unit.isNullOrBlank()) entityId.startsWith("sensor.") && model.entityAttributes[entityId] == null
+            else PowerHistory.toWatts("0", unit) != null
+    }
+
+    private fun renderGraphSource() {
+        if (!::graphSource.isInitialized) return
+        val config = draft.config
+        val source = config.graphSource
+        val unit = model.entityAttributes[source]?.optString("unit_of_measurement")
+        graphSource.text = when {
+            source.isEmpty() -> "Не выбран: у строки «Мощность» нет датчика. График покажет подсказку."
+            config.graphEntityId.isEmpty() -> "Как у «Мощности»: ${kit.entityName(source)}\n$source"
+            else -> "${kit.entityName(source)}\n$source"
+        } + if (!unit.isNullOrBlank() && PowerHistory.toWatts("0", unit) == null)
+            "\n⚠ Единица «$unit» — не Вт/кВт: такие значения график не покажет." else ""
     }
 
     /** Тестовое значение подставляется вместо источника напряжения только в этой карточке. */

@@ -4,13 +4,18 @@
          Плитки из tiles_prefs.xml остаются доступны для резервирования.
          files/backups/ — внутренние автокопии, копии «перед обновлением» и сохранённые повреждённые плитки:
          в них адреса Home Assistant и координаты дома, поэтому они не уходят ни в облако, ни при переносе.
-         Выбранная владельцем папка копий (SAF) здесь не затрагивается. -->
+         Выбранная владельцем папка копий (SAF) здесь не затрагивается.
+         История мощности (power_history.db) велика для облачной квоты; у неё свой бэкап в папку копий. -->
     <cloud-backup>
         <exclude domain="sharedpref" path="dashboard_prefs.xml" />
         <exclude domain="file" path="backups/" />
+        <exclude domain="database" path="power_history.db" />
+        <exclude domain="database" path="power_history.db-journal" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="dashboard_prefs.xml" />
         <exclude domain="file" path="backups/" />
+        <exclude domain="database" path="power_history.db" />
+        <exclude domain="database" path="power_history.db-journal" />
     </device-transfer>
 </data-extraction-rules>

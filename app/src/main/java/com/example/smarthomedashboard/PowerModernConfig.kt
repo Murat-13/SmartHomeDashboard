@@ -21,8 +21,13 @@ internal data class PowerModernConfig(
     /** Длительность плавной смены цвета. */
     val transitionMs: Long = DEFAULT_TRANSITION_MS,
     /** Насколько напряжение должно выйти за границу текущего диапазона, чтобы начать смену. */
-    val hysteresis: Double = DEFAULT_HYSTERESIS
+    val hysteresis: Double = DEFAULT_HYSTERESIS,
+    /** Источник графика мощности; пусто — датчик строки «Мощность» этой карточки (docs/power-graph.md). */
+    val graphEntityId: String = ""
 ) {
+    /** Датчик, по которому строится и пишется история; пусто — источника нет. */
+    val graphSource: String get() = graphEntityId.trim().ifEmpty { row(ROLE_POWER)?.entityId?.trim().orEmpty() }
+
     /**
      * Визуальное правило напряжения. Границы с явным включением: так 150 В относится
      * к «очень низкому» (с пульсацией), а 200 В — к «норме». [to] = null — без верхней границы.
@@ -94,6 +99,7 @@ internal data class PowerModernConfig(
         put("confirm_ms", confirmMs)
         put("transition_ms", transitionMs)
         put("hysteresis", hysteresis)
+        if (graphEntityId.isNotBlank()) put("graph_entity_id", graphEntityId.trim())
         put("rows", JSONArray().also { array -> rows.forEach { array.put(rowJson(it)) } })
         put("rules", JSONArray().also { array ->
             rules.forEach { rule ->
@@ -194,6 +200,10 @@ internal data class PowerModernConfig(
         val CYAN = 0xFF22D3EE.toInt()
         val NEUTRAL = 0xFF6B7A86.toInt()
 
+        /** Источники графиков всех плиток «Электропитание Modern» (пустые пропускаются). */
+        fun graphSources(tiles: List<com.example.smarthomedashboard.data.TileEntity>): Set<String> =
+            tiles.filter { it.type == TYPE }.mapNotNull { from(it.config).graphSource.takeIf(String::isNotEmpty) }.toSet()
+
         fun title(profile: String) = if (profile == PROFILE_INVERTER) "Инвертор · Выход" else "Сеть · Вход"
 
         fun profile(profile: String) = PowerModernConfig(
@@ -276,7 +286,8 @@ internal data class PowerModernConfig(
                 rules = rules,
                 confirmMs = json.optLong("confirm_ms", DEFAULT_CONFIRM_MS).coerceIn(0L, 60_000L),
                 transitionMs = json.optLong("transition_ms", DEFAULT_TRANSITION_MS).coerceIn(0L, 5_000L),
-                hysteresis = if (hysteresis.isFinite() && hysteresis >= 0) hysteresis else DEFAULT_HYSTERESIS
+                hysteresis = if (hysteresis.isFinite() && hysteresis >= 0) hysteresis else DEFAULT_HYSTERESIS,
+                graphEntityId = json.optString("graph_entity_id").trim()
             )
         }
 
