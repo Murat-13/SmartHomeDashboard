@@ -73,4 +73,18 @@
 
 ## Ход работ
 
-(дополняется по этапам)
+Файлы: `PowerHistoryModel.kt` (модель, единицы, статистика, периоды), `PowerHistoryStore.kt` (SQLite),
+`PowerHistoryRecorder.kt` (запись, разрывы, подгрузка из HA), `PowerGraphState.kt`, `PowerGraphView.kt`, `PowerGraphPanel.kt`,
+`PowerHistoryBackup.kt`; изменены `PowerModernCard`/`Config`/`Draft`/`EditorActivity`, `DashboardPanelController`
+(размер раскрытия, полноэкранный слой), `SensorWindowTouchHandler` (область жестов графика),
+`HomeAssistantWebSocket.read` (только `get_config` и `history/history_during_period`), `MainViewModel`, `MainActivity`,
+`AutoBackup.Store` (потоковая запись), настройки «Устройство», правила Android Backup (база исключена).
+
+Тесты: `PowerHistoryTest` (10), `PowerHistoryRecorderTest` (8), `PowerGraphTest` (10, снимки в
+`app/build/reports/power-graph/`), `PowerHistoryBackupTest` (5), сценарий в `PowerModernPanelIntegrationTest`
+(раскрытие с графиком, полный экран, «Назад», автозакрытие, запомненная вкладка). Всё — на поддельных
+данных и изолированной базе в памяти, без реального HA.
+
+Не проверено автоматически: настоящий ответ HA на `history_during_period` (формат разобран по документации
+сжатого ответа: `s`, `lc`/`lu` в секундах), жест двумя пальцами на планшете (в тестах — логика
+масштаба), запись в реальную SAF-папку Samsung, 35 дней накопления, системные отступы в полноэкранном режиме.
