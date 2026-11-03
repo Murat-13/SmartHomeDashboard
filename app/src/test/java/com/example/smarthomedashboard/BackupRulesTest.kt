@@ -26,6 +26,15 @@ class BackupRulesTest {
     private fun assertPrefsRules(root: Element) {
         assertFalse("Открытые dashboard_prefs не должны резервироваться", rulesPermit(root, "dashboard_prefs.xml"))
         assertTrue("Плитки должны оставаться в backup", rulesPermit(root, "tiles_prefs.xml"))
+        assertExcludesInternalCopies(root)
+    }
+    /** Внутренние копии (адреса HA, координаты) — files/backups/, там же, где их пишет AutoBackup. */
+    private fun assertExcludesInternalCopies(root: Element) {
+        val excludes = root.getElementsByTagName("exclude").let { nodes ->
+            (0 until nodes.length).map { nodes.item(it) as Element }.map { it.getAttribute("domain") to it.getAttribute("path") }
+        }
+        assertTrue("files/backups/ исключена: $excludes", ("file" to "backups/") in excludes)
+        assertTrue("других файлов приложения исключение не касается", excludes.none { it.first == "file" && it.second != "backups/" })
     }
     @Test fun legacyBackupExcludesOnlySensitivePrefsAndKeepsTiles() {
         assertPrefsRules(xml("res/xml/backup_rules.xml"))

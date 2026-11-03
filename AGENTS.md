@@ -97,6 +97,16 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 03.11.2026 — Claude Code: 0.9.2, этап 3 — внутренние копии вне Android Backup
+
+- `files/backups/` (автокопии, копии «перед обновлением», сохранённые повреждённые плитки — адреса HA и
+  координаты) исключена в `backup_rules.xml` и в `cloud-backup`/`device-transfer` `data_extraction_rules.xml`, с
+  комментариями. Папка SAF, ротация, расписание и состав копий не менялись; `tiles_prefs.xml` по-прежнему
+  в бэкапе. Новая сводка копий — [docs/backups.md](docs/backups.md).
+- Проверено: `testDebugUnitTest assembleDebug assembleDebugAndroidTest --offline` — 1137 тестов, 0 failures/errors/
+  skips; `BackupRulesTest` теперь проверяет исключение `backups/` во всех трёх секциях и отсутствие других
+  файловых исключений. Не проверено: реальное резервное копирование Google (`bmgr`) на устройстве.
+
 ### 03.11.2026 — Claude Code: 0.9.2, этап 2 — запрет установки debug APK через самообновление
 
 - Причина: debug при наличии ключа подписан release-ключом (решение владельца сохранено), `AppUpdater` проверял
