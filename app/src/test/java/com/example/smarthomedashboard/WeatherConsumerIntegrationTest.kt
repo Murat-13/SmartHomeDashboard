@@ -371,11 +371,13 @@ class WeatherConsumerIntegrationTest {
             assertFalse(prefs.contains("yandex_last_temp"))
         } finally { release.countDown(); scope.cancel(); manager.cancelPendingRequests() }
     }
-    @Test fun sessionDurationBelowFiveMinutesCannotBeSaved() {
+    // Длительность сессии — 1–1000 минут (решение владельца, этап 04): «4» допустимо и раньше ожидалось
+    // отказом лишь случайно (состояние PIN от других тестов). Проверяются действительно недопустимые.
+    @Test fun sessionDurationOutsideAllowedRangeCannotBeSaved() {
         val activity=settings()
         val input=get<EditText>(activity,"etPinSessionMinutes")
         val before=prefs.all.toMap()
-        for(value in listOf("0","4","-1","")) {
+        for(value in listOf("0","-1","","1001")) {
             input.setText(value)
             weatherInvoke(activity,"saveCurrentSettings")
             assertNotNull(input.error)
