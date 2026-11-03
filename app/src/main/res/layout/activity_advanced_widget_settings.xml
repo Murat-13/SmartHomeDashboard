@@ -1,24 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Расширенные настройки плитки — оформление Modern (0.9.2, этап 6): те же поля, ID и логика, что раньше. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#1A1A1A">
+    android:background="@color/modern_background">
 
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="#2A2A2A"
+        android:background="@color/modern_background"
+        app:navigationContentDescription="Назад"
         app:navigationIcon="?attr/homeAsUpIndicator"
         app:title="Расширенные настройки"
-        app:titleTextColor="#FFFFFF" />
+        app:titleTextColor="@color/modern_text_primary" />
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:padding="16dp">
+        android:paddingStart="@dimen/modern_space_l"
+        android:paddingEnd="@dimen/modern_space_l"
+        android:paddingBottom="@dimen/modern_space_l">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -26,162 +30,184 @@
             android:orientation="vertical">
 
             <!-- Размер шрифта -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Размер шрифта (sp)"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginBottom="8dp" />
-
-            <EditText
-                android:id="@+id/etFontSize"
+            <LinearLayout style="@style/Widget.Modern.Section"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#2A2A2A"
-                android:textColor="#FFFFFF"
-                android:padding="12dp"
-                android:inputType="number"
-                android:text="16" />
+                android:layout_height="wrap_content">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:labelFor="@id/etFontSize"
+                    android:text="Размер шрифта (sp)"
+                    android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                <EditText
+                    android:id="@+id/etFontSize"
+                    style="@style/Widget.Modern.Input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/modern_space_s"
+                    android:autofillHints=""
+                    android:importantForAutofill="no"
+                    android:inputType="number"
+                    android:text="16" />
+            </LinearLayout>
 
             <!-- Датчики в свёрнутом виде -->
-            <LinearLayout
+            <LinearLayout style="@style/Widget.Modern.Section"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="24dp"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:layout_marginTop="@dimen/modern_space_l">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Датчики в свёрнутом виде"
-                    android:textColor="#FFFFFF"
-                    android:textSize="16sp" />
-                <Button
-                    android:id="@+id/btnAddCollapsed"
-                    android:layout_width="wrap_content"
-                    android:layout_height="36dp"
-                    android:text="+"
-                    android:textSize="18sp"
-                    android:backgroundTint="#424242"
-                    android:padding="0dp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Датчики в свёрнутом виде"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                    <Button
+                        android:id="@+id/btnAddCollapsed"
+                        style="@style/Widget.Modern.Button.Secondary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:contentDescription="Добавить датчик в свёрнутый вид"
+                        android:text="+ Добавить" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvCollapsedHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/modern_space_s"
+                    android:background="@drawable/modern_bg_input"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/modern_touch_target"
+                    android:paddingStart="@dimen/modern_space_m"
+                    android:paddingEnd="@dimen/modern_space_m"
+                    android:text="Список пуст"
+                    android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvCollapsedSensors"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/modern_space_s"
+                    android:visibility="gone" />
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/tvCollapsedHint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Список пуст"
-                android:textColor="#888888"
-                android:textSize="14sp"
-                android:padding="12dp"
-                android:background="#2A2A2A"
-                android:layout_marginTop="8dp" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvCollapsedSensors"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:visibility="gone" />
 
             <!-- Датчики в развёрнутом виде -->
-            <LinearLayout
+            <LinearLayout style="@style/Widget.Modern.Section"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="24dp"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:layout_marginTop="@dimen/modern_space_l">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Датчики в развёрнутом виде"
-                    android:textColor="#FFFFFF"
-                    android:textSize="16sp" />
-                <Button
-                    android:id="@+id/btnAddExpanded"
-                    android:layout_width="wrap_content"
-                    android:layout_height="36dp"
-                    android:text="+"
-                    android:textSize="18sp"
-                    android:backgroundTint="#424242"
-                    android:padding="0dp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Датчики в развёрнутом виде"
+                        android:textAppearance="@style/TextAppearance.Modern.Title" />
+
+                    <Button
+                        android:id="@+id/btnAddExpanded"
+                        style="@style/Widget.Modern.Button.Secondary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:contentDescription="Добавить датчик в развёрнутый вид"
+                        android:text="+ Добавить" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvExpandedHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/modern_space_s"
+                    android:background="@drawable/modern_bg_input"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/modern_touch_target"
+                    android:paddingStart="@dimen/modern_space_m"
+                    android:paddingEnd="@dimen/modern_space_m"
+                    android:text="Список пуст"
+                    android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvExpandedSensors"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/modern_space_s"
+                    android:visibility="gone" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/tvExpandedHint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Список пуст"
-                android:textColor="#888888"
-                android:textSize="14sp"
-                android:padding="12dp"
-                android:background="#2A2A2A"
-                android:layout_marginTop="8dp" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvExpandedSensors"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:visibility="gone" />
-
             <!-- Условия смены цвета -->
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout style="@style/Widget.Modern.Section"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Условия смены цвета"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="8dp" />
+                android:layout_marginTop="@dimen/modern_space_l">
 
-            <Button
-                android:id="@+id/btnAddColorRule"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:text="+ Добавить условие"
-                android:backgroundTint="#424242" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Условия смены цвета"
+                    android:textAppearance="@style/TextAppearance.Modern.Title" />
 
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvColorRules"
-                android:layout_width="match_parent"
-                android:layout_height="300dp"
-                android:layout_marginTop="8dp"
-                android:nestedScrollingEnabled="true" />
+                <TextView
+                    style="@style/SettingsHint"
+                    android:text="Если значение датчика попадает в диапазон «от — до», фон плитки окрашивается выбранным цветом. Цвет — нажмите на квадрат." />
 
-            <!-- Источник данных -->
+                <Button
+                    android:id="@+id/btnAddColorRule"
+                    style="@style/Widget.Modern.Button.Secondary"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/modern_space_m"
+                    android:text="+ Добавить условие" />
 
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvColorRules"
+                    android:layout_width="match_parent"
+                    android:layout_height="300dp"
+                    android:layout_marginTop="@dimen/modern_space_s"
+                    android:nestedScrollingEnabled="true" />
+            </LinearLayout>
 
             <!-- Кнопки -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="32dp">
+                android:layout_marginTop="@dimen/modern_space_xl"
+                android:orientation="horizontal">
 
                 <Button
                     android:id="@+id/btnCancel"
+                    style="@style/Widget.Modern.Button.Secondary"
                     android:layout_width="0dp"
-                    android:layout_height="56dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="@dimen/modern_space_s"
                     android:layout_weight="1"
-                    android:layout_marginEnd="8dp"
-                    android:text="Отмена"
-                    android:backgroundTint="#555555" />
+                    android:text="Отмена" />
 
                 <Button
                     android:id="@+id/btnSave"
+                    style="@style/Widget.Modern.Button.Primary"
                     android:layout_width="0dp"
-                    android:layout_height="56dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/modern_space_s"
                     android:layout_weight="1"
-                    android:layout_marginStart="8dp"
-                    android:text="Сохранить"
-                    android:backgroundTint="#4CAF50" />
-
+                    android:text="Сохранить" />
             </LinearLayout>
-
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

@@ -1,85 +1,88 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<!-- Правило цвета — оформление Modern (0.9.2, этап 6); ID и поля прежние. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_margin="4dp"
-    app:cardBackgroundColor="#2A2A2A"
-    app:cardCornerRadius="8dp">
+    android:layout_marginTop="@dimen/modern_space_xs"
+    android:layout_marginBottom="@dimen/modern_space_xs"
+    android:background="@drawable/modern_bg_section"
+    android:orientation="vertical"
+    android:padding="@dimen/modern_space_m">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="12dp">
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
 
-        <LinearLayout
-            android:layout_width="match_parent"
+        <TextView
+            android:id="@+id/btnSelectEntity"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:id="@+id/btnSelectEntity"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Нажмите для выбора"
-                android:textColor="#4CAF50"
-                android:textSize="14sp"
-                android:background="#1A1A1A"
-                android:padding="8dp" />
-
-            <Button
-                android:id="@+id/btnDeleteRule"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:layout_marginStart="8dp"
-                android:text="✕"
-                android:backgroundTint="#FF5555" />
-
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:layout_weight="1"
+            android:background="@drawable/modern_bg_input"
+            android:ellipsize="middle"
             android:gravity="center_vertical"
-            android:layout_marginTop="8dp">
+            android:minHeight="@dimen/modern_touch_target"
+            android:paddingStart="@dimen/modern_space_m"
+            android:paddingEnd="@dimen/modern_space_m"
+            android:singleLine="true"
+            android:text="Нажмите для выбора"
+            android:textColor="@color/modern_accent"
+            android:textSize="@dimen/modern_text_body" />
 
-            <EditText
-                android:id="@+id/etFrom"
-                android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_weight="1"
-                android:background="#1A1A1A"
-                android:textColor="#FFFFFF"
-                android:hint="От"
-                android:padding="4dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text=" — "
-                android:textColor="#FFFFFF" />
-
-            <EditText
-                android:id="@+id/etTo"
-                android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_weight="1"
-                android:background="#1A1A1A"
-                android:textColor="#FFFFFF"
-                android:hint="До"
-                android:padding="4dp" />
-
-            <View
-                android:id="@+id/vColorPreview"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:layout_marginStart="8dp"
-                android:background="#4CAF50" />
-
-        </LinearLayout>
+        <Button
+            android:id="@+id/btnDeleteRule"
+            style="@style/Widget.Modern.Button.Danger"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/modern_space_s"
+            android:contentDescription="Удалить условие"
+            android:minWidth="@dimen/modern_touch_target"
+            android:text="✕" />
     </LinearLayout>
-</androidx.cardview.widget.CardView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/modern_space_s"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/etFrom"
+            style="@style/Widget.Modern.Input"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="От"
+            android:importantForAutofill="no"
+            android:inputType="text" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="@dimen/modern_space_s"
+            android:paddingEnd="@dimen/modern_space_s"
+            android:text="—"
+            android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+        <EditText
+            android:id="@+id/etTo"
+            style="@style/Widget.Modern.Input"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="До"
+            android:importantForAutofill="no"
+            android:inputType="text" />
+
+        <View
+            android:id="@+id/vColorPreview"
+            android:layout_width="@dimen/modern_touch_target"
+            android:layout_height="@dimen/modern_touch_target"
+            android:layout_marginStart="@dimen/modern_space_s"
+            android:background="@color/modern_success"
+            android:contentDescription="Цвет условия" />
+    </LinearLayout>
+</LinearLayout>

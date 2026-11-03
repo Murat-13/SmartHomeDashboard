@@ -98,11 +98,13 @@ class ColorRuleAdapter(
     private fun updateColorPreview(view: View, colorHex: String) {
         try {
             val color = colorHex.toColorInt()
+            // Скругление и рамка — как у полей Modern (0.9.2, этап 6).
+            val res = view.resources
             val drawable = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 setColor(color)
-                setStroke(2, Color.WHITE)
-                cornerRadius = 8f
+                setStroke((2 * res.displayMetrics.density).toInt(), Color.WHITE)
+                cornerRadius = res.getDimension(R.dimen.modern_radius_control)
             }
             view.background = drawable
         } catch (_: Exception) {

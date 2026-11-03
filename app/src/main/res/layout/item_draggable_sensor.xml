@@ -1,20 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Строка датчика расширенных настроек — оформление Modern (0.9.2, этап 6); ID и поля прежние. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="horizontal"
-    android:padding="8dp"
+    android:layout_marginTop="@dimen/modern_space_xs"
+    android:layout_marginBottom="@dimen/modern_space_xs"
+    android:background="@drawable/modern_bg_input"
     android:gravity="center_vertical"
-    android:background="#2A2A2A"
-    android:layout_margin="2dp">
+    android:orientation="horizontal"
+    android:padding="@dimen/modern_space_s">
 
     <ImageView
         android:id="@+id/ivDragHandle"
         android:layout_width="24dp"
         android:layout_height="24dp"
+        android:layout_marginEnd="@dimen/modern_space_s"
+        android:contentDescription="Перетащите, чтобы изменить порядок"
         android:src="@drawable/ic_drag_handle"
-        android:layout_marginEnd="8dp" />
+        app:tint="@color/modern_text_hint" />
 
     <LinearLayout
         android:layout_width="0dp"
@@ -27,60 +31,64 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Sensor"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp" />
+            android:textAppearance="@style/TextAppearance.Modern.Body" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="4dp">
+            android:layout_marginTop="@dimen/modern_space_xs"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
             <EditText
                 android:id="@+id/etDisplayName"
+                style="@style/Widget.Modern.Input"
                 android:layout_width="0dp"
-                android:layout_height="36dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:background="#1A1A1A"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#888888"
-                android:padding="4dp"
                 android:hint="Название"
-                android:textSize="12sp"
+                android:importantForAutofill="no"
+                android:inputType="text"
                 android:maxLines="1" />
 
             <Spinner
                 android:id="@+id/spinnerDecimals"
-                android:layout_width="80dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="4dp"
-                android:background="#1A1A1A" />
-
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/modern_touch_target"
+                android:layout_marginStart="@dimen/modern_space_s"
+                android:background="@drawable/modern_bg_input"
+                android:contentDescription="Знаков после запятой"
+                android:minWidth="120dp"
+                android:paddingStart="@dimen/modern_space_s"
+                android:paddingEnd="@dimen/modern_space_s" />
         </LinearLayout>
 
         <TextView
             android:id="@+id/tvSensorId"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/modern_space_xs"
             android:text="sensor.id"
-            android:textColor="#888888"
-            android:textSize="10sp"
-            android:layout_marginTop="2dp" />
-
+            android:textAppearance="@style/TextAppearance.Modern.Caption" />
     </LinearLayout>
 
     <ImageView
         android:id="@+id/btnRemoveSensor"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="@dimen/modern_touch_target"
+        android:layout_height="@dimen/modern_touch_target"
+        android:layout_marginStart="@dimen/modern_space_xs"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="Убрать датчик"
+        android:padding="@dimen/modern_space_m"
         android:src="@android:drawable/ic_menu_close_clear_cancel"
-        app:tint="#B3261E"
-        android:layout_marginStart="8dp" />
+        app:tint="@color/modern_danger" />
 
     <CheckBox
         android:id="@+id/cbVisible"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="4dp" />
-
+        android:layout_marginStart="@dimen/modern_space_xs"
+        android:contentDescription="Показывать датчик"
+        android:minHeight="@dimen/modern_touch_target"
+        app:buttonTint="@color/modern_accent" />
 </LinearLayout>

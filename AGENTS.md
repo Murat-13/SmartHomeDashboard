@@ -97,6 +97,19 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 03.11.2026 — Claude Code: 0.9.2, этап 6 — Modern-оформление расширенных настроек
+
+- `AdvancedWidgetSettingsActivity` получила тему `Theme.SmartHomeDashboard.Modern` (манифест);
+  `activity_advanced_widget_settings.xml`, `item_color_rule.xml`, `item_draggable_sensor.xml` переведены на ресурсы
+  Modern (разделы `Widget.Modern.Section`, поля `Widget.Modern.Input`, кнопки Primary/Secondary/Danger, типографика
+  `TextAppearance.Modern.*`, цвета `modern_*`, касания ≥ 48dp, подписи для спецвозможностей); жёсткие цвета #1A1A1A/#2A2A2A/
+  #4CAF50/#FF5555 убраны; превью цвета — скругление Modern. Все ID, настройки, JSON, перетаскивание, правила цвета
+  и сохранение прежние; главная панель не тронута. Изменения надписей: «+» → «+ Добавить», подсказка
+  к правилам цвета.
+- Проверено: `testDebugUnitTest assembleDebug assembleDebugAndroidTest --offline` — 1153 теста, 0 failures/errors/
+  skips (новый `AdvancedSettingsLookTest` ×4: тема/стили/48dp/все настройки, сохранение в прежнем формате, рендеры
+  альбом/книжная — просмотрены). Не проверено: планшет.
+
 ### 03.11.2026 — Claude Code: 0.9.2, этап 5 — рывки в конце раскрытия/закрытия карточек
 
 - Найдено: Modern-карточки (`BatteryModernExpansion`) в конце закрытия — скачок с 60%-ной уменьшенной карточки

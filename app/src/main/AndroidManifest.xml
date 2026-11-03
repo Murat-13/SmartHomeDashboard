@@ -69,7 +69,8 @@
 
         <activity
             android:name=".AdvancedWidgetSettingsActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
         <activity android:name=".ChildButtonsEditorActivity" android:exported="false" />
         <activity android:name=".BatteryModernEditorActivity" android:exported="false" />
         <activity android:name=".PowerModernEditorActivity" android:exported="false" />
