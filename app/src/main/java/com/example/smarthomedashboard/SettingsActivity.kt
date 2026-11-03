@@ -173,7 +173,7 @@ class SettingsActivity : PinProtectedActivity() {
             PinSecurityUi.session.revoke()
             Toast.makeText(this, "Админ-режим завершён. Следующее изменение попросит PIN", Toast.LENGTH_LONG).show()
         }
-        setupNavigation(savedInstanceState?.getInt(STATE_SECTION) ?: 0)
+        setupNavigation(savedInstanceState?.getInt(STATE_SECTION) ?: intent.getIntExtra(EXTRA_SECTION, 0))
 
         findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar).setNavigationOnClickListener { leave() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -231,6 +231,7 @@ class SettingsActivity : PinProtectedActivity() {
 
     private fun setupBackups() {
         updateBackupStatus()
+        findViewById<Button?>(R.id.btnBackupRestore)?.setOnClickListener { chooseCopyToRestore() }
         findViewById<Button?>(R.id.btnBackupFolder)?.setOnClickListener {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
@@ -247,6 +248,7 @@ class SettingsActivity : PinProtectedActivity() {
                     AutoBackup.Outcome.CREATED -> "Копия создана"
                     AutoBackup.Outcome.UNCHANGED -> "Изменений нет — последняя копия актуальна"
                     AutoBackup.Outcome.FAILED -> "Не удалось записать копию; прежние копии сохранены"
+                    AutoBackup.Outcome.DAMAGED -> "Плитки повреждены — копия не создана, прежние копии сохранены"
                 }, Toast.LENGTH_SHORT).show()
             }
         }
@@ -305,6 +307,70 @@ class SettingsActivity : PinProtectedActivity() {
             line.text = text.orEmpty()
             line.visibility = if (text == null) View.GONE else View.VISIBLE
         }
+    }
+
+    /** Восстановление из автокопии или копии «перед обновлением»: выбор → подтверждение → тот же путь, что импорт файла. */
+    private fun chooseCopyToRestore() {
+        if (!requireAdmin()) return
+        lifecycleScope.launch {
+            val copies = withContext(Dispatchers.IO) { AutoBackup.restorableCopies(applicationContext) }
+            if (isFinishing || isDestroyed) return@launch
+            if (copies.isEmpty()) {
+                AlertDialog.Builder(this@SettingsActivity).setTitle("Копий нет")
+                    .setMessage("Автокопий на планшете не найдено. Можно восстановить настройки из файла.")
+                    .setPositiveButton("Импорт из файла") { _, _ -> importConfig() }
+                    .setNegativeButton("Отмена", null).show()
+                return@launch
+            }
+            AlertDialog.Builder(this@SettingsActivity).setTitle("Восстановить из копии")
+                .setItems(copies.map { it.label }.toTypedArray()) { _, index -> confirmRestore(copies[index]) }
+                .setNegativeButton("Отмена", null).show()
+        }
+    }
+
+    private fun confirmRestore(copy: AutoBackup.Copy) {
+        ModernUi.dangerDialog(this, "Восстановить настройки?",
+            "${copy.label}\n\nПлитки и настройки панели будут заменены содержимым копии; панель перезапустится. " +
+                "Токен Home Assistant, ключ Яндекса и PIN не меняются. Другой адрес HA из копии применяется только " +
+                "по вашему согласию и после проверки подключения.", "Восстановить") {
+            if (!requireAdmin()) return@dangerDialog
+            lifecycleScope.launch {
+                val text = withContext(Dispatchers.IO) {
+                    // Перед заменой — копия текущего состояния (если плитки целы и что-то изменилось).
+                    AutoBackup.run(applicationContext)
+                    runCatching { copy.store.read(copy.name) }.getOrNull()
+                }
+                if (isFinishing || isDestroyed) return@launch
+                if (text == null) {
+                    Toast.makeText(this@SettingsActivity, "Не удалось прочитать копию", Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                importText(text)
+            }
+        }.show()
+    }
+
+    /** Применение текста настроек (файл или копия). Неверный формат — сообщение, ничего не записывается. */
+    private fun importText(text: String) {
+        try {
+            val outcome = applyImport(parseConfigObject(text))
+            val message = if (outcome.skipped) {
+                "Настройки импортированы. Данные доступа, PIN и другие неподдерживаемые поля пропущены."
+            } else {
+                "Конфиг успешно импортирован."
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            if (outcome.local != null || outcome.remote != null) {
+                offerImportedAddress(outcome.local.orEmpty(), outcome.remote.orEmpty())
+                return
+            }
+        } catch (e: Exception) {
+            if (e !is JSONException && e !is IllegalArgumentException) throw e
+            // Сообщение парсера может содержать секрет из старого файла, поэтому его не показываем.
+            Toast.makeText(this, "Не удалось импортировать файл: проверьте формат настроек", Toast.LENGTH_LONG).show()
+            return
+        }
+        restartAfterImport()
     }
 
     private fun updateBackupStatus() {
@@ -848,27 +914,15 @@ class SettingsActivity : PinProtectedActivity() {
             }
             201 -> {
                 data?.data?.let { uri ->
-                    try {
+                    val text = try {
                         val input = contentResolver.openInputStream(uri) ?: throw IOException()
-                        val json = input.bufferedReader(Charsets.UTF_8).use { parseConfigObject(it.readText()) }
-                        val outcome = applyImport(json)
-                        val message = if (outcome.skipped) {
-                            "Настройки импортированы. Данные доступа, PIN и другие неподдерживаемые поля пропущены."
-                        } else {
-                            "Конфиг успешно импортирован."
-                        }
-                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-                        if (outcome.local != null || outcome.remote != null) {
-                            offerImportedAddress(outcome.local.orEmpty(), outcome.remote.orEmpty())
-                            return
-                        }
+                        input.bufferedReader(Charsets.UTF_8).use { it.readText() }
                     } catch (e: Exception) {
-                        if (e !is IOException && e !is JSONException && e !is IllegalArgumentException && e !is SecurityException) throw e
-                        // Сообщение парсера может содержать секрет из старого файла, поэтому его не показываем.
+                        if (e !is IOException && e !is SecurityException) throw e
                         Toast.makeText(this, "Не удалось импортировать файл: проверьте формат настроек", Toast.LENGTH_LONG).show()
                         return
                     }
-                    restartAfterImport()
+                    importText(text)
                 }
             }
         }
@@ -878,6 +932,9 @@ class SettingsActivity : PinProtectedActivity() {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
         private const val REQUEST_BACKUP_FOLDER = 1005
         private const val STATE_SECTION = "settings_section"
+        /** Открыть раздел по номеру (3 — «Устройство», где восстановление из копий). */
+        const val EXTRA_SECTION = "settings_section_extra"
+        const val SECTION_DEVICE = 3
         private const val SESSION_RANGE_ERROR = "Время сессии — от 1 до 1000 минут"
         private const val PROBE_TIMEOUT_MS = 20_000L
     }

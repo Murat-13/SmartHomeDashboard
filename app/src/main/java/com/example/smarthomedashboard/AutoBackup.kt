@@ -8,6 +8,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.example.smarthomedashboard.data.TileParser
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -35,7 +36,8 @@ internal object AutoBackup {
     const val PREF_LAST_CHECK = "backup_last_check"
     private const val WORK = "daily_auto_backup"
 
-    enum class Outcome { CREATED, UNCHANGED, FAILED }
+    /** DAMAGED — плитки повреждены: копия не создаётся, чтобы не вытеснить исправные. */
+    enum class Outcome { CREATED, UNCHANGED, FAILED, DAMAGED }
 
     /** Место хранения копий: папка владельца (SAF) или каталог приложения. */
     internal interface Store {
@@ -84,12 +86,48 @@ internal object AutoBackup {
     fun store(context: Context): Store =
         prefs(context).getString(PREF_TREE, null)?.let { FolderStore(context, Uri.parse(it)) } ?: InternalStore(context)
 
+    /** Плитки, которые сейчас попали бы в копию, читаются без потерь. */
+    private fun tilesIntact(context: Context): Boolean =
+        TileParser.parse(context.getSharedPreferences("tiles_prefs", Context.MODE_PRIVATE).getString("tiles", "[]")).issue == null
+
+    /** Копия, из которой можно восстановить настройки (ежедневная или «перед обновлением»). */
+    class Copy(val store: Store, val name: String, val label: String)
+
+    /**
+     * Все копии, новые сверху: в текущем месте хранения и во внутренней папке приложения (там лежат копии,
+     * сделанные до выбора папки, и при недоступной папке). Тот же формат, что у ручного экспорта.
+     */
+    fun restorableCopies(context: Context): List<Copy> {
+        val stores = listOfNotNull(store(context), InternalStore(context).takeIf { prefs(context).getString(PREF_TREE, null) != null })
+        val parse = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT)
+        val show = SimpleDateFormat("d MMM yyyy, HH:mm", Locale("ru"))
+        return stores.flatMapIndexed { index, store ->
+            runCatching { store.names() }.getOrDefault(emptyList()).mapNotNull { name ->
+                if (!name.endsWith(".json")) return@mapNotNull null
+                val (prefix, kind) = when {
+                    name.startsWith(PREFIX) -> PREFIX to "Автокопия"
+                    name.startsWith(PRE_UPDATE_PREFIX) -> PRE_UPDATE_PREFIX to "Перед обновлением"
+                    else -> return@mapNotNull null
+                }
+                val stamp = name.removePrefix(prefix).take(15)
+                val time = runCatching { parse.parse(stamp)?.time }.getOrNull() ?: return@mapNotNull null
+                val version = name.substringAfter("_to_", "").removeSuffix(".json").takeIf { it.isNotEmpty() }
+                val place = if (stores.size > 1 && index == 1) " · внутри приложения" else ""
+                time to Copy(store, name, kind + (version?.let { " до $it" } ?: "") + " · ${show.format(Date(time))}$place")
+            }
+        }.sortedByDescending { it.first }.map { it.second }
+    }
+
     /** Одна проверка: копия создаётся только при изменении содержимого. [now] — для имени файла и статуса. */
     fun run(context: Context, store: Store = store(context), now: Long = System.currentTimeMillis()): Outcome {
         val prefs = prefs(context)
+        prefs.edit().putLong(PREF_LAST_CHECK, now).apply()
+        if (!tilesIntact(context)) {
+            prefs.edit().putString(PREF_LAST_RESULT, "damaged").apply()
+            return Outcome.DAMAGED
+        }
         val text = ConfigBackup.build(context).toString(2)
         val fingerprint = ConfigBackup.fingerprint(text)
-        prefs.edit().putLong(PREF_LAST_CHECK, now).apply()
         if (fingerprint == prefs.getString(PREF_LAST_FP, null) && store.names().any { it.startsWith(PREFIX) }) {
             return Outcome.UNCHANGED
         }
@@ -113,6 +151,8 @@ internal object AutoBackup {
      */
     fun beforeUpdate(context: Context, versionName: String, store: Store = store(context),
                      now: Long = System.currentTimeMillis()): Boolean = runCatching {
+        // Повреждённые плитки не считаются копией: установка встаёт на паузу, как при ошибке записи.
+        if (!tilesIntact(context)) return@runCatching false
         val text = ConfigBackup.build(context).toString(2)
         val safeVersion = versionName.replace(Regex("[^0-9A-Za-z.]"), "_")
         val name = PRE_UPDATE_PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + "_to_$safeVersion.json"
@@ -129,6 +169,8 @@ internal object AutoBackup {
         val time = prefs.getLong(PREF_LAST_TIME, 0L)
         val format = SimpleDateFormat("d MMM, HH:mm", Locale("ru"))
         return when {
+            prefs.getString(PREF_LAST_RESULT, null) == "damaged" ->
+                ModernUi.Status.ERROR to "Бэкап: пропущен — плитки повреждены" + if (time > 0) " (прошлый — ${format.format(Date(time))})" else ""
             prefs.getString(PREF_LAST_RESULT, null) == "error" ->
                 ModernUi.Status.ERROR to "Бэкап: ошибка записи" + if (time > 0) " (прошлый — ${format.format(Date(time))})" else ""
             time > 0 -> ModernUi.Status.OK to "Бэкап: ${format.format(Date(time))}"

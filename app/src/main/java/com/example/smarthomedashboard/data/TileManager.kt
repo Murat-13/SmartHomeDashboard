@@ -4,7 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class TileEntity(
     val id: String,
@@ -31,8 +34,11 @@ data class TileEntity(
 
 class TileManager(context: Context) {
 
+    private val appContext = context.applicationContext ?: context
     private val prefs: SharedPreferences = context.getSharedPreferences("tiles_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
+    /** Повреждение последнего прочитанного списка; null — всё прочитано. */
+    private var cachedIssue: TileParser.Issue? = null
 
     // Плитки читаются на каждое событие HA, а разбор JSON дорог. Кеш привязан к строке
     // из prefs: любая запись (другим экземпляром, импортом настроек) меняет строку и сбрасывает его.
@@ -42,23 +48,40 @@ class TileManager(context: Context) {
     private var cachedEnabled: List<TileEntity>? = null
     private val cachedByContainer = mutableMapOf<String, List<TileEntity>>()
 
-    fun saveTiles(tiles: List<TileEntity>) {
+    /**
+     * Запись списка. Если сохранённые сейчас данные повреждены, они сначала копируются в отдельный файл
+     * ([preserveDamaged]); не удалось — запись не выполняется, чтобы не уничтожить единственный оригинал.
+     */
+    @Synchronized
+    fun saveTiles(tiles: List<TileEntity>): Boolean {
+        val current = prefs.getString("tiles", null)
+        if (current != null && TileParser.parse(current).issue != null && !preserveDamaged(appContext, current)) return false
         val json = gson.toJson(tiles)
         prefs.edit { putString("tiles", json) }
+        return true
     }
 
+    /** Чтение без исключений: повреждения не роняют панель и не перезаписывают сохранённый JSON. */
     @Synchronized
     fun loadTiles(): List<TileEntity> {
         val json = prefs.getString("tiles", "[]") ?: "[]"
         if (json != cachedJson) {
-            val type = object : TypeToken<List<TileEntity>>() {}.type
-            val parsed: List<TileEntity> = gson.fromJson(json, type)
-            cachedTiles = java.util.Collections.unmodifiableList(ArrayList(parsed))
+            val result = TileParser.parse(json)
+            if (result.issue != null) preserveDamaged(appContext, json)
+            cachedTiles = java.util.Collections.unmodifiableList(ArrayList(result.tiles))
+            cachedIssue = result.issue
             cachedJson = json
             cachedEnabled = null
             cachedByContainer.clear()
         }
         return cachedTiles
+    }
+
+    /** Повреждение сохранённого списка (после [loadTiles]); null — данные в порядке. */
+    @Synchronized
+    fun loadIssue(): TileParser.Issue? {
+        loadTiles()
+        return cachedIssue
     }
 
     fun addTile(tile: TileEntity) {
@@ -104,5 +127,26 @@ class TileManager(context: Context) {
         val tiles = loadTiles()
         return cachedEnabled ?: java.util.Collections.unmodifiableList(tiles.filter { it.enabled }
             .sortedWith(compareBy({ it.container }, { it.y }, { it.x }))).also { cachedEnabled = it }
+    }
+
+    companion object {
+        const val DAMAGED_PREFIX = "tiles_damaged_"
+        const val DAMAGED_KEEP = 3
+
+        /**
+         * Исходная строка повреждённых плиток — во внутреннюю папку копий (`files/backups`, вне облачного
+         * бэкапа Android и вне ротации автокопий). Та же строка повторно не пишется. true — оригинал сохранён.
+         */
+        fun preserveDamaged(context: Context, raw: String, now: Long = System.currentTimeMillis()): Boolean = runCatching {
+            val dir = File(context.filesDir, "backups").apply { mkdirs() }
+            val existing = dir.listFiles { file -> file.name.startsWith(DAMAGED_PREFIX) }.orEmpty().sortedBy { it.name }
+            if (existing.any { it.readText(Charsets.UTF_8) == raw }) return@runCatching true
+            val name = DAMAGED_PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.ROOT).format(Date(now)) + ".json"
+            val file = File(dir, name)
+            file.writeText(raw, Charsets.UTF_8)
+            if (file.readText(Charsets.UTF_8) != raw) return@runCatching false
+            (existing + file).sortedBy { it.name }.dropLast(DAMAGED_KEEP).forEach { it.delete() }
+            true
+        }.getOrDefault(false)
     }
 }

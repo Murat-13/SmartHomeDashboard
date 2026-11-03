@@ -149,6 +149,7 @@ class MainActivity : AppCompatActivity() {
         createStarterTilesOnFirstLaunch()
 
         setupBottomPanel()
+        if (savedInstanceState == null) showTileIssue()
         setupSystemPanel()
         AutoBackup.schedule(applicationContext)
         AppUpdater.schedule(applicationContext)
@@ -680,6 +681,12 @@ class MainActivity : AppCompatActivity() {
     private fun createStarterTilesOnFirstLaunch() {
         val prefs = onboardingPrefs()
         if (prefs.getBoolean(PREF_STARTER_TILES_DONE, false)) return
+        // Пустой список из-за повреждения — не «первый запуск»: стартовые плитки не пишутся поверх данных,
+        // приветствие нового пользователя не показывается поверх сообщения о восстановлении.
+        if (tileManager.loadIssue() != null) {
+            prefs.edit { putBoolean(PREF_WELCOME_SHOWN, true) }
+            return
+        }
         if (tileManager.loadTiles().isEmpty()) {
             val tiles = mutableListOf<TileEntity>()
             for ((type, title) in listOf("clock" to "Часы", "weather" to "Погода")) {
@@ -696,6 +703,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
         prefs.edit { putBoolean(PREF_STARTER_TILES_DONE, true) }
+    }
+
+    /**
+     * Сохранённые плитки повреждены: исправные показаны, исходные данные уже сохранены отдельным файлом
+     * (TileManager). Предлагаем восстановление из копии через PIN; панель продолжает работать.
+     */
+    private fun showTileIssue() {
+        val issue = tileManager.loadIssue() ?: return
+        val what = if (issue.unreadable) "Сохранённые плитки не удалось прочитать, поэтому панель пуста."
+            else "Не удалось прочитать плиток: ${issue.skipped} из ${issue.total}. Остальные работают."
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Плитки повреждены")
+            .setMessage("$what\n\nИсходные данные сохранены и не будут потеряны. Восстановите панель из автокопии " +
+                "или файла: Настройки → Устройство → «Восстановить из копии».")
+            .setPositiveButton("Восстановить…") { _, _ ->
+                openWithPinCheck {
+                    startActivity(Intent(this, SettingsActivity::class.java)
+                        .putExtra(SettingsActivity.EXTRA_SECTION, SettingsActivity.SECTION_DEVICE))
+                }
+            }
+            .setNegativeButton("Позже", null)
+            .show()
     }
 
     private fun showWelcomeOnFirstLaunch() {

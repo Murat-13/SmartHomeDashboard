@@ -515,6 +515,14 @@
                                 android:layout_marginStart="@dimen/modern_space_m"
                                 android:text="Сделать копию сейчас" />
                         </LinearLayout>
+
+                        <Button
+                            android:id="@+id/btnBackupRestore"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_m"
+                            android:text="Восстановить из копии" />
                     </LinearLayout>
                 </LinearLayout>
 
