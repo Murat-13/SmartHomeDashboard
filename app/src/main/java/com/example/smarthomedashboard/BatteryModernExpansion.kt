@@ -108,28 +108,41 @@ internal class BatteryModernExpansion(
         scheduleTimer()
     }
 
-    /** Плавно возвращает карточку к сохранённым размерам/координатам и удаляет overlay. */
+    /**
+     * Плавно возвращает карточку к сохранённым размерам/координатам и удаляет overlay (0.9.2, этап 5):
+     * - движение начинается с текущего состояния карточки (закрытие во время раскрытия не прыгает к полному размеру);
+     * - в последней части карточка уходит в прозрачность, а компактная плитка проявляется на своём месте, тень
+     *   гаснет: в конце удаляется уже невидимая карточка (раньше — скачок 60% уменьшенной карточки с тенью
+     *   к 100% компактной плитки за один кадр).
+     */
     fun collapse() {
         val expandedCard = card ?: return
         if (closing) return
         val start = checkNotNull(original)
         closing = true
         stopTimer()
-        val target = Bounds(expandedCard.x, expandedCard.y, expandedCard.layoutParams.width, expandedCard.layoutParams.height)
-        val sx = start.width / target.width.toFloat().coerceAtLeast(1f)
-        val sy = start.height / target.height.toFloat().coerceAtLeast(1f)
+        val from = Frame(expandedCard.x, expandedCard.y, expandedCard.scaleX, expandedCard.scaleY, expandedCard.alpha,
+            expandedCard.elevation)
+        val sx = start.width / expandedCard.layoutParams.width.toFloat().coerceAtLeast(1f)
+        val sy = start.height / expandedCard.layoutParams.height.toFloat().coerceAtLeast(1f)
         val dim = scrim
         val dimStart = dim?.alpha ?: 0f
+        val compact = source
         run(CLOSE_MS, onEnd = ::clear) { t ->
-            expandedCard.x = target.x + (start.x - target.x) * t
-            expandedCard.y = target.y + (start.y - target.y) * t
-            expandedCard.scaleX = 1f + (sx - 1f) * t
-            expandedCard.scaleY = 1f + (sy - 1f) * t
-            expandedCard.alpha = 1f - 0.4f * t
+            expandedCard.x = from.x + (start.x - from.x) * t
+            expandedCard.y = from.y + (start.y - from.y) * t
+            expandedCard.scaleX = from.scaleX + (sx - from.scaleX) * t
+            expandedCard.scaleY = from.scaleY + (sy - from.scaleY) * t
+            val fade = crossfade(t)
+            expandedCard.alpha = from.alpha * (1f - fade)
+            expandedCard.elevation = from.elevation * (1f - t)
+            compact?.alpha = fade
             dim?.alpha = dimStart * (1f - t)
             blur(1f - t)
         }
     }
+
+    private data class Frame(val x: Float, val y: Float, val scaleX: Float, val scaleY: Float, val alpha: Float, val elevation: Float)
 
     /** Взаимодействие пользователя с открытой карточкой: перезапуск таймера. */
     fun touch() {
@@ -245,6 +258,11 @@ internal class BatteryModernExpansion(
         const val OPEN_MS = 300L
         const val CLOSE_MS = 250L
         const val BLUR_RADIUS = 28f
+        /** Доля закрытия, с которой карточка и компактная плитка плавно меняются местами. */
+        const val CROSSFADE_FROM = 0.6f
+
+        /** 0 до [CROSSFADE_FROM], затем равномерно до 1 к концу анимации. */
+        internal fun crossfade(t: Float) = ((t - CROSSFADE_FROM) / (1f - CROSSFADE_FROM)).coerceIn(0f, 1f)
 
         /**
          * RenderEffect (API 31+) — штатное размытие Android. На слабых устройствах (low-RAM)

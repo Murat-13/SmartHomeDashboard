@@ -372,6 +372,10 @@ internal class ModernGroupPanel(
         if (panel == null || !panel.isAttachedToWindow) { clear(); return }
         dim?.animate()?.alpha(0f)?.setDuration(CLOSE_MS)?.start()
         fadeChrome(1f, 0f, CLOSE_MS)
+        // 0.9.2, этап 5: к концу закрытия подсвеченная копия плавно растворяется до исходной плитки под ней,
+        // а миниатюры появляются заранее, пока кнопки долетают и гаснут. Раньше всё это менялось одним кадром.
+        handler.postDelayed({ clone?.thumbnailsHidden = false }, CLOSE_MS / 2)
+        clone?.animate()?.alpha(0f)?.setStartDelay(CLOSE_MS / 2)?.setDuration(CLOSE_MS / 2)?.start()
         flight(opening = false) { clear() }
     }
 
@@ -427,7 +431,7 @@ internal class ModernGroupPanel(
                 if (opening) {
                     child.alpha = 0f
                     if (visible) { child.scaleX = 0.9f; child.scaleY = 0.9f; child.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(OPEN_MS).start() }
-                } else child.alpha = 0f
+                } else if (visible) child.animate().alpha(0f).setDuration(CLOSE_MS).start() else child.alpha = 0f
                 return@forEachIndexed
             }
             val cx = gridBounds.left + child.left + child.width / 2f
@@ -447,7 +451,7 @@ internal class ModernGroupPanel(
                 child.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f).alpha(1f)
                     .setDuration(OPEN_MS).setInterpolator(DecelerateInterpolator()).setListener(listener).start()
             } else {
-                child.animate().translationX(tx).translationY(ty).scaleX(sx).scaleY(sy).alpha(0.3f)
+                child.animate().translationX(tx).translationY(ty).scaleX(sx).scaleY(sy).alpha(0f)
                     .setDuration(CLOSE_MS).setInterpolator(DecelerateInterpolator()).setListener(listener).start()
             }
         }

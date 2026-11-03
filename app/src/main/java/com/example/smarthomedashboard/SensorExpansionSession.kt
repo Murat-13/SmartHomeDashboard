@@ -25,8 +25,7 @@ internal class SensorExpansionSession(private val handler: Handler) {
     fun expand(source: View, target: Bounds, onTimeout: () -> Unit) {
         original = Bounds.of(source)
         source.bringToFront()
-        source.elevation = 20f
-        animate(source, target, 300L)
+        animate(source, target, 300L, EXPANDED_ELEVATION)
         current = source
         // Закрывающий тап по-прежнему распознаёт Activity; дети получают прокрутку.
         source.setOnTouchListener(null)
@@ -37,8 +36,7 @@ internal class SensorExpansionSession(private val handler: Handler) {
     fun collapse(onClosed: (View) -> Unit) {
         val source = current ?: return
         val target = checkNotNull(original)
-        source.elevation = 8f
-        animate(source, target, 250L, onClosed)
+        animate(source, target, 250L, COLLAPSED_ELEVATION, onClosed)
         // Следующая карточка может открыться до конца анимации. Target уже принадлежит переходу.
         current = null
         original = null
@@ -62,9 +60,11 @@ internal class SensorExpansionSession(private val handler: Handler) {
         original = null
     }
 
-    private fun animate(source: View, target: Bounds, durationMs: Long, onClosed: ((View) -> Unit)? = null) {
+    /** Тень меняется вместе с размером (0.9.2, этап 5): раньше она переключалась скачком в начале движения. */
+    private fun animate(source: View, target: Bounds, durationMs: Long, elevation: Float, onClosed: ((View) -> Unit)? = null) {
         animations.remove(source)?.let(::cancel)
         val start = Bounds.of(source)
+        val startElevation = source.elevation
         val animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = durationMs
             interpolator = DecelerateInterpolator()
@@ -74,6 +74,7 @@ internal class SensorExpansionSession(private val handler: Handler) {
                 source.layoutParams.height = (start.height + (target.height - start.height) * fraction).toInt()
                 source.x = start.x + (target.x - start.x) * fraction
                 source.y = start.y + (target.y - start.y) * fraction
+                source.elevation = startElevation + (elevation - startElevation) * fraction
                 source.requestLayout()
             }
         }
@@ -88,6 +89,12 @@ internal class SensorExpansionSession(private val handler: Handler) {
             }
         })
         animator.start()
+    }
+
+    companion object {
+        const val EXPANDED_ELEVATION = 20f
+        /** Обычная тень сенсорной карточки (SensorCardFactory). */
+        const val COLLAPSED_ELEVATION = 8f
     }
 
     private fun stopTimer() {
