@@ -44,6 +44,18 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
     private var bodyShader: Shader? = null
     private val tick = Runnable { invalidate(); scheduleTick() }
 
+    // Отрисовка идёт каждую минуту (или секунду) неделями: всё, что нужно кадру, создаётся один раз.
+    private val area = RectF()
+    private val clockRect = RectF()
+    private val weatherRect = RectF()
+    private val roomsRect = RectF()
+    private val cellRect = RectF()
+    private val now = Date()
+    private val small = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val dateText = TextLayoutCache()
+    private val labelText = TextLayoutCache()
+    private var roomNames = arrayOfNulls<EllipsizedName>(5)
+
     init {
         tag = "hc_compact"
         layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -128,19 +140,20 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
         canvas.drawRoundRect(body, r, r, stroke)
 
         val pad = body.height() * 0.08f
-        val area = RectF(body.left + pad, body.top + pad, body.right - pad, body.bottom - pad)
+        area.set(body.left + pad, body.top + pad, body.right - pad, body.bottom - pad)
         val rooms = snap.favorites
         val clockShare = if (rooms.isEmpty()) 0.56f else 0.33f
         val weatherShare = if (rooms.isEmpty()) 0.44f else 0.22f
         val gap = pad * 0.6f
-        val clockRect = RectF(area.left, area.top, area.left + area.width() * clockShare, area.bottom)
-        val weatherRect = RectF(clockRect.right + gap, area.top, clockRect.right + gap + area.width() * weatherShare - gap, area.bottom)
+        clockRect.set(area.left, area.top, area.left + area.width() * clockShare, area.bottom)
+        weatherRect.set(clockRect.right + gap, area.top, clockRect.right + gap + area.width() * weatherShare - gap, area.bottom)
         drawClock(canvas, snap, clockRect)
         divider(canvas, clockRect.right + gap / 2, area)
         drawWeather(canvas, snap, weatherRect)
         if (rooms.isNotEmpty()) {
             divider(canvas, weatherRect.right + gap / 2, area)
-            drawRooms(canvas, rooms, RectF(weatherRect.right + gap, area.top, area.right, area.bottom))
+            roomsRect.set(weatherRect.right + gap, area.top, area.right, area.bottom)
+            drawRooms(canvas, rooms, roomsRect)
         }
     }
 
@@ -152,7 +165,7 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
 
     private fun drawClock(canvas: Canvas, snap: HomeClimateSnapshot, rect: RectF) {
         val clock = snap.config.clock
-        val now = Date()
+        now.time = System.currentTimeMillis()
         val system24 = DateFormat.is24HourFormat(context)
         val requested = HomeClimateData.time(clock, system24, now)
         text.typeface = bold
@@ -164,13 +177,15 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
         text.color = TIME
         val timeSize = fit(text, time, rect.width() * (if (amPm != null) 0.8f else 0.96f), rect.height() * 0.42f)
         text.textSize = timeSize
-        val dateLayout = layout(HomeClimateData.date(clock, now).uppercase(), rect.width(), rect.height() * 0.13f, DATE, medium, 2)
+        val dateLayout = dateText.get(HomeClimateData.date(clock, now).uppercase(), rect.width(), rect.height() * 0.13f, DATE, medium, 2)
         val total = timeSize * 0.92f + rect.height() * 0.06f + dateLayout.height
         val top = rect.centerY() - total / 2
         val baseline = top + timeSize * 0.84f
         if (amPm != null) {
             val timeWidth = text.measureText(time)
-            val small = TextPaint(text).apply { textSize = timeSize * 0.3f; textAlign = Paint.Align.LEFT }
+            small.set(text)
+            small.textSize = timeSize * 0.3f
+            small.textAlign = Paint.Align.LEFT
             val total12 = timeWidth + small.measureText(amPm) + timeSize * 0.08f
             val start = rect.centerX() - total12 / 2
             text.textAlign = Paint.Align.LEFT
@@ -191,7 +206,7 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
         text.color = if (current.temperature != null) TEMP else MUTED
         val tempSize = fit(text, temp, rect.width() * 0.96f, rect.height() * 0.24f)
         val label = current.status ?: HomeClimateData.conditionText(current.condition)
-        val labelLayout = layout(label, rect.width(), rect.height() * 0.11f, if (current.status == null) DATE else MUTED, medium, 2)
+        val labelLayout = labelText.get(label, rect.width(), rect.height() * 0.11f, if (current.status == null) DATE else MUTED, medium, 2)
         val total = glyphSize + rect.height() * 0.04f + tempSize + rect.height() * 0.03f + labelLayout.height
         var y = rect.centerY() - total / 2
         current.glyph.draw(canvas, rect.centerX() - glyphSize / 2, y, glyphSize, iconPaint, dim = !current.available)
@@ -206,28 +221,25 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
 
     /** 1–3 в один ряд, 4 — 2 × 2, 5 — 3 сверху и 2 снизу. Пустых заглушек нет. */
     private fun drawRooms(canvas: Canvas, rooms: List<HomeClimateSnapshot.RoomLine>, rect: RectF) {
-        val rows: List<List<HomeClimateSnapshot.RoomLine>> = when (rooms.size) {
-            4 -> listOf(rooms.take(2), rooms.drop(2))
-            5 -> listOf(rooms.take(3), rooms.drop(3))
-            else -> listOf(rooms)
-        }
+        val firstRow = when (rooms.size) { 4 -> 2; 5 -> 3; else -> rooms.size }
+        val rowCount = if (firstRow < rooms.size) 2 else 1
         val gap = rect.height() * 0.05f
-        val rowH = (rect.height() - gap * (rows.size - 1)) / rows.size
-        var index = 0
-        rows.forEachIndexed { rowIndex, row ->
-            val cellW = (rect.width() - gap * (row.size - 1)) / row.size
-            // Один ряд не растягивается на всю высоту: ячейка не выше, чем при двух рядах.
-            val cellH = if (rows.size == 1) min(rowH, rect.height() * 0.62f) else rowH
-            val top = rect.top + rowIndex * (rowH + gap) + (rowH - cellH) / 2
-            row.forEachIndexed { i, line ->
-                val left = rect.left + i * (cellW + gap)
-                drawRoom(canvas, line, RectF(left, top, left + cellW, top + cellH), ROOM_COLORS[index % ROOM_COLORS.size])
-                index++
-            }
+        val rowH = (rect.height() - gap * (rowCount - 1)) / rowCount
+        // Один ряд не растягивается на всю высоту: ячейка не выше, чем при двух рядах.
+        val cellH = if (rowCount == 1) min(rowH, rect.height() * 0.62f) else rowH
+        rooms.forEachIndexed { index, line ->
+            val row = if (index < firstRow) 0 else 1
+            val inRow = if (row == 0) firstRow else rooms.size - firstRow
+            val column = if (row == 0) index else index - firstRow
+            val cellW = (rect.width() - gap * (inRow - 1)) / inRow
+            val top = rect.top + row * (rowH + gap) + (rowH - cellH) / 2
+            val left = rect.left + column * (cellW + gap)
+            cellRect.set(left, top, left + cellW, top + cellH)
+            drawRoom(canvas, line, cellRect, index, ROOM_COLORS[index % ROOM_COLORS.size])
         }
     }
 
-    private fun drawRoom(canvas: Canvas, line: HomeClimateSnapshot.RoomLine, cell: RectF, accent: Int) {
+    private fun drawRoom(canvas: Canvas, line: HomeClimateSnapshot.RoomLine, cell: RectF, index: Int, accent: Int) {
         val r = min(cell.width(), cell.height()) * 0.16f
         fill.color = CELL
         canvas.drawRoundRect(cell, r, r, fill)
@@ -253,7 +265,7 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
         text.typeface = medium
         text.textSize = nameSize
         text.color = NAME
-        val name = TextUtils.ellipsize(line.room.name, text, cell.width() - 2 * pad, TextUtils.TruncateAt.END).toString()
+        val name = ellipsized(index, line.room.name, cell.width() - 2 * pad, nameSize)
         canvas.drawText(name, cell.centerX(), y + nameSize * 0.84f, text)
         y += nameSize + pad * 0.4f
         text.typeface = bold
@@ -262,24 +274,58 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
         canvas.drawText(temp, cell.centerX(), y + tempSize * 0.84f, text)
     }
 
-    private fun layout(value: String, width: Float, size: Float, color: Int, face: Typeface, lines: Int): StaticLayout {
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            typeface = face
-            textSize = size
+    /** Название комнаты, укороченное по ширине ячейки; пересчитывается только при смене имени, ширины или шрифта. */
+    private fun ellipsized(index: Int, name: String, width: Float, size: Float): String {
+        if (index >= roomNames.size) roomNames = roomNames.copyOf(index + 1)
+        roomNames[index]?.takeIf { it.source == name && it.width == width && it.size == size }?.let { return it.text }
+        val text = TextUtils.ellipsize(name, this.text, width, TextUtils.TruncateAt.END).toString()
+        roomNames[index] = EllipsizedName(name, width, size, text)
+        return text
+    }
+
+    private class EllipsizedName(val source: String, val width: Float, val size: Float, val text: String)
+
+    /**
+     * Раскладка многострочной подписи (дата, состояние погоды). Строится заново только при смене текста или
+     * размеров, а не на каждый кадр: [StaticLayout] — самый дорогой объект отрисовки.
+     */
+    private class TextLayoutCache {
+        private var value: String? = null
+        private var width = 0
+        private var size = 0f
+        private var color = 0
+        private var face: Typeface? = null
+        private var lines = 0
+        private var layout: StaticLayout? = null
+
+        fun get(value: String, width: Float, size: Float, color: Int, face: Typeface, lines: Int): StaticLayout {
+            val w = width.toInt().coerceAtLeast(1)
+            layout?.takeIf {
+                value == this.value && w == this.width && size == this.size && color == this.color &&
+                    face == this.face && lines == this.lines
+            }?.let { return it }
+            this.value = value; this.width = w; this.size = size; this.color = color; this.face = face; this.lines = lines
+            return build(value, w, size, color, face, lines).also { layout = it }
         }
-        val w = width.toInt().coerceAtLeast(1)
-        // Слово не разрывается посередине: сначала шрифт уменьшается (не меньше 55%) до ширины
-        // самого длинного слова и общей длины, затем перенос по словам и многоточие.
-        val longest = value.split(' ').maxByOrNull { paint.measureText(it) }.orEmpty()
-        var current = size
-        while (current > size * 0.55f && (paint.measureText(longest) > w || paint.measureText(value) > w * lines * 0.95f)) {
-            current *= 0.92f
-            paint.textSize = current
+
+        private fun build(value: String, w: Int, size: Float, color: Int, face: Typeface, lines: Int): StaticLayout {
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = color
+                typeface = face
+                textSize = size
+            }
+            // Слово не разрывается посередине: сначала шрифт уменьшается (не меньше 55%) до ширины
+            // самого длинного слова и общей длины, затем перенос по словам и многоточие.
+            val longest = value.split(' ').maxByOrNull { paint.measureText(it) }.orEmpty()
+            var current = size
+            while (current > size * 0.55f && (paint.measureText(longest) > w || paint.measureText(value) > w * lines * 0.95f)) {
+                current *= 0.92f
+                paint.textSize = current
+            }
+            return StaticLayout.Builder.obtain(value, 0, value.length, paint, w)
+                .setAlignment(Layout.Alignment.ALIGN_CENTER).setMaxLines(lines)
+                .setEllipsize(TextUtils.TruncateAt.END).setIncludePad(false).build()
         }
-        return StaticLayout.Builder.obtain(value, 0, value.length, paint, w)
-            .setAlignment(Layout.Alignment.ALIGN_CENTER).setMaxLines(lines)
-            .setEllipsize(TextUtils.TruncateAt.END).setIncludePad(false).build()
     }
 
     private fun drawLayout(canvas: Canvas, layout: StaticLayout, centerX: Float, top: Float) {

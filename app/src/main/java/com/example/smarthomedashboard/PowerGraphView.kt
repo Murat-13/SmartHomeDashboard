@@ -61,6 +61,15 @@ internal class PowerGraphView(context: Context, private val state: PowerGraphSta
     private val bubble = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(10, 34, 52) }
     private val bubbleBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = POSITIVE; style = Paint.Style.STROKE; strokeWidth = dp(1.5f) }
     private val bubbleText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = dp(13f) }
+    /** Подписи времени: форматтеры и метка создаются один раз, а не на каждый кадр прокрутки. */
+    private val timeFormats = HashMap<String, SimpleDateFormat>()
+    private val stamp = Date()
+    private fun formatTime(pattern: String, t: Long, zone: TimeZone = TimeZone.getDefault()): String {
+        val format = timeFormats.getOrPut(pattern) { SimpleDateFormat(pattern, RU) }
+        if (format.timeZone.id != zone.id) format.timeZone = zone
+        stamp.time = t
+        return format.format(stamp)
+    }
     private val line = Path()
     private val fill = Path()
     private val rect = RectF()
@@ -168,14 +177,15 @@ internal class PowerGraphView(context: Context, private val state: PowerGraphSta
         }
         canvas.drawLine(plot.left, yOf(0.0), plot.right, yOf(0.0), zero)
         val step = timeStep(b - a)
-        val offset = TimeZone.getDefault().getOffset(a).toLong()
+        val zone = TimeZone.getDefault()
+        val offset = zone.getOffset(a).toLong()
         var t = ceil((a + offset).toDouble() / step).toLong() * step - offset
         label.textAlign = Paint.Align.CENTER
-        val format = SimpleDateFormat(timeFormat(b - a), Locale("ru"))
+        val pattern = timeFormat(b - a)
         while (t < b) {
             val x = xOf(t, a, b)
             canvas.drawLine(x, plot.top, x, plot.bottom, grid)
-            canvas.drawText(format.format(Date(t)), x, height - dp(6f), label)
+            canvas.drawText(formatTime(pattern, t, zone), x, height - dp(6f), label)
             t += step
         }
     }
@@ -277,8 +287,7 @@ internal class PowerGraphView(context: Context, private val state: PowerGraphSta
         if (t < a || t >= b) return
         val x = xOf(t, a, b)
         canvas.drawLine(x, plot.top, x, plot.bottom, cursorLine)
-        val time = SimpleDateFormat(if (b - a <= 2 * PowerHistory.MINUTE_MS) "HH:mm:ss" else if (b - a <= 2 * PowerHistory.DAY_MS) "HH:mm" else "dd.MM HH:mm",
-            Locale("ru")).format(Date(t))
+        val time = formatTime(if (b - a <= 2 * PowerHistory.MINUTE_MS) "HH:mm:ss" else if (b - a <= 2 * PowerHistory.DAY_MS) "HH:mm" else "dd.MM HH:mm", t)
         val content = "$time   $text"
         val w = bubbleText.measureText(content) + dp(20f)
         val left = (x - w / 2).coerceIn(plot.left, (plot.right - w).coerceAtLeast(plot.left))
@@ -332,6 +341,7 @@ internal class PowerGraphView(context: Context, private val state: PowerGraphSta
     }
 
     companion object {
+        private val RU = Locale("ru")
         val POSITIVE = Color.rgb(79, 209, 245)
         val NEGATIVE = Color.rgb(74, 222, 128)
         /** Зона захвата линии курсора по обе стороны (палец, а не стилус). */

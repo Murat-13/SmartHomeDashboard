@@ -500,10 +500,25 @@ internal class DashboardPanelController(
     }
 
     /** Устройства группы в порядке конфигурации; повреждённая конфигурация — пустой список. */
-    private fun modernEntries(tile: TileEntity): List<ModernGroupPanel.Entry> {
-        val group = (TileButtonConfig.group(tile.config) as? ButtonConfigResult.Valid)?.value ?: return emptyList()
-        return group.entityIds.mapIndexed { i, id -> ModernGroupPanel.Entry(id, group.childNames[i]) }
+    // Настройки плиток разбираются один раз на версию, а не на каждое событие HA.
+    private val iconConfigs = ParsedTileConfig { ModernIcon.fromConfig(it) }
+    private val buttonEntities = ParsedTileConfig { TileButtonConfig.entityId(it) }
+    private val groupEntries = ParsedTileConfig { config ->
+        val group = (TileButtonConfig.group(config) as? ButtonConfigResult.Valid)?.value
+        group?.entityIds?.mapIndexed { i, id -> ModernGroupPanel.Entry(id, group.childNames[i]) }.orEmpty()
     }
+    private val livePower = ParsedTileConfig { config -> LivePowerConfig.read(config) }
+    private val childPower = ParsedTileConfig { config ->
+        val json = runCatching { JSONObject(config).optJSONObject("child_power") }.getOrNull()
+        json?.keys()?.asSequence()?.associateWith { LivePowerConfig.read(json.optJSONObject(it)) }.orEmpty()
+    }
+    private val batteryConfigs = ParsedTileConfig { BatteryModernConfig.from(it) }
+    private val powerConfigs = ParsedTileConfig { PowerModernConfig.from(it) }
+    private val climateConfigs = ParsedTileConfig { HomeClimateConfig.from(it) }
+    private val parsedConfigs = listOf(iconConfigs, buttonEntities, groupEntries, livePower, childPower,
+        batteryConfigs, powerConfigs, climateConfigs)
+
+    private fun modernEntries(tile: TileEntity): List<ModernGroupPanel.Entry> = groupEntries.of(tile)
 
     private fun modernIcon(entityId: String, hint: String? = null) =
         ModernIcon.forEntity(entityId, viewModel.devices.entityAttributes[entityId], hint)
@@ -517,7 +532,7 @@ internal class DashboardPanelController(
      */
     internal fun modernModel(tile: TileEntity): ModernTileView.Model {
         // Выбор пользователя из редактора; без него — прежний автоподбор.
-        val chosen = ModernIcon.fromConfig(tile.config)
+        val chosen = iconConfigs.of(tile)
         if (tile.type == "group") {
             val ids = modernEntries(tile).map { it.entityId }
             val states = ids.map { viewModel.devices.confirmedState(it) }
@@ -531,26 +546,27 @@ internal class DashboardPanelController(
             val items = ids.mapIndexed { i, id -> ModernTileView.Item(chosen ?: modernIcon(id), states[i], recentFailure(id)) }
             return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, pending, null, items, groupIcon = chosen)
         }
-        val id = (TileButtonConfig.entityId(tile.config) as? ButtonConfigResult.Valid)?.value
+        val id = (buttonEntities.of(tile) as? ButtonConfigResult.Valid)?.value
             ?: return ModernTileView.Model(tile.title, chosen ?: ModernIcon.POWER, ConfirmedState.OFF)
         // Gson оставляет null в поле, которого нет в старой записи, даже если тип не nullable.
         val hint = (tile.icon as String?)?.takeIf { it.isNotBlank() }
         return ModernTileView.Model(
             tile.title, chosen ?: modernIcon(id, hint), viewModel.devices.confirmedState(id),
             viewModel.commands.pendingFor(id)?.startedAtMs, recentFailure(id),
-            powerText = powerText(LivePowerConfig.read(tile.config))
+            powerText = powerText(livePower.of(tile))
         )
     }
 
     /** Дочерняя кнопка панели: свой spinner только при индивидуальной команде. */
-    private fun modernChildModel(tileId: String, entityId: String, name: String) = ModernTileView.Model(
-        name, tileManager.getAllTiles().find { it.id == tileId && it.type == "group" }
-            ?.let { ModernIcon.fromConfig(it.config) } ?: modernIcon(entityId), viewModel.devices.confirmedState(entityId),
-        viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId),
-        powerText = powerText(tileManager.getAllTiles().find { it.id == tileId }?.let {
-            runCatching { LivePowerConfig.read(JSONObject(it.config).optJSONObject("child_power")?.optJSONObject(entityId)) }.getOrNull()
-        } ?: LivePowerConfig())
-    )
+    private fun modernChildModel(tileId: String, entityId: String, name: String): ModernTileView.Model {
+        val tile = tileManager.getAllTiles().find { it.id == tileId }
+        val icon = tile?.takeIf { it.type == "group" }?.let { iconConfigs.of(it) }
+        return ModernTileView.Model(
+            name, icon ?: modernIcon(entityId), viewModel.devices.confirmedState(entityId),
+            viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId),
+            powerText = powerText(tile?.let { childPower.of(it)[entityId] } ?: LivePowerConfig())
+        )
+    }
 
     private fun powerText(config: LivePowerConfig) = config.text(viewModel.devices.singleStates,
         viewModel.devices.entityAttributes, viewModel.devices.staleEntities)
@@ -921,7 +937,7 @@ internal class DashboardPanelController(
             renderPower(tile, view, readings, animate)
             return
         }
-        val config = BatteryModernConfig.from(tile.config)
+        val config = batteryConfigs.of(tile)
         view?.findViewWithTag<BatteryModernCard>("bm_compact")?.bind(tile.title, config, readings, host.temperatureUnit)
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
             (modernExpansion.card as? BatteryModernCard)?.bind(tile.title, config, readings, host.temperatureUnit)
@@ -930,7 +946,7 @@ internal class DashboardPanelController(
 
     /** Показания, прогнозы и статус связи — из данных панели; часы тикают внутри самих карточек. */
     private fun renderClimate(tile: TileEntity, view: FrameLayout?) {
-        val snapshot = HomeClimateSnapshot.from(tile.title, HomeClimateConfig.from(tile.config),
+        val snapshot = HomeClimateSnapshot.from(tile.title, climateConfigs.of(tile),
             viewModel.uiState.value.haSession, viewModel.devices, viewModel.uiState.value.yandexWeather)
         view?.findViewWithTag<HomeClimateCompactView>("hc_compact")?.bind(snapshot)
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
@@ -946,7 +962,7 @@ internal class DashboardPanelController(
      * Если новый диапазон ещё не подтверждён, плитка перерисуется к моменту подтверждения.
      */
     private fun renderPower(tile: TileEntity, view: FrameLayout?, readings: BatteryReadings, animate: Boolean) {
-        val config = PowerModernConfig.from(tile.config)
+        val config = powerConfigs.of(tile)
         val tracker = viewModel.powerTracker(tile.id)
         val voltage = readings.of(config.row(PowerModernConfig.ROLE_VOLTAGE))
         val now = android.os.SystemClock.uptimeMillis()
@@ -1102,6 +1118,8 @@ internal class DashboardPanelController(
     private fun clearPanel(keepModernGroup: Boolean) {
         if (!keepModernGroup) modernGroup.clear()
         renderedViews.clear()
+        scannedChildren = -1
+        parsedConfigs.forEach { it.clear() }
         dependencyIndex = PanelDependencyIndex(emptyList())
         panelEntityTiles = null
         panelEntityMotionSensor = null
@@ -1193,9 +1211,15 @@ internal class DashboardPanelController(
         return dependencyIndex
     }
 
+    /** Число детей панели при последнем пересчёте кэша; −1 — пересчёта ещё не было. */
+    private var scannedChildren = -1
+
     private fun viewForTile(id: String): View? {
         val cached = renderedViews[id]
         if (cached?.parent === bottomPanel) return cached
+        // Плитка другой страницы не нарисована: если дерево не менялось с прошлого пересчёта, искать
+        // нечего. Раньше каждое такое событие сбрасывало и пересобирало кэш всей страницы.
+        if (cached == null && bottomPanel.childCount == scannedChildren) return null
         // Проверяем фактическое дерево, если View создан/заменён вне обычного refresh.
         // Сохраняем только прямых живых детей; старые Views не остаются в кеше.
         renderedViews.clear()
@@ -1203,6 +1227,7 @@ internal class DashboardPanelController(
             val child = bottomPanel.getChildAt(i)
             (child.tag as? String)?.let { renderedViews[it] = child }
         }
+        scannedChildren = bottomPanel.childCount
         return renderedViews[id]
     }
 

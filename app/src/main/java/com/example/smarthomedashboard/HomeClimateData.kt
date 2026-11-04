@@ -296,14 +296,9 @@ internal object HomeClimateData {
     /** ISO 8601 из HA: «2026-10-30T15:00:00+00:00», «…Z», с долями секунд или без. */
     fun parseTime(text: String): Date? {
         if (text.isBlank()) return null
-        val normalized = text.trim().replace(Regex("\\.\\d+"), "").replace("Z", "+00:00")
-        val patterns = listOf("yyyy-MM-dd'T'HH:mm:ssXXX", "yyyy-MM-dd'T'HH:mmXXX", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd")
-        for (pattern in patterns) {
+        val normalized = text.trim().replace(FRACTION, "").replace("Z", "+00:00")
+        for (parser in isoParsers.get()!!) {
             try {
-                val parser = SimpleDateFormat(pattern, Locale.ROOT).apply {
-                    if (!pattern.contains("XXX")) timeZone = TimeZone.getTimeZone("UTC")
-                    isLenient = false
-                }
                 val position = java.text.ParsePosition(0)
                 val parsed = parser.parse(normalized, position)
                 if (parsed != null && position.index == normalized.length) return parsed
@@ -311,6 +306,20 @@ internal object HomeClimateData {
             }
         }
         return null
+    }
+
+    private val FRACTION = Regex("\\.\\d+")
+
+    /** Разборщики ISO-времени прогноза: создаются один раз на поток, а не на каждую точку прогноза. */
+    // ThreadLocal.withInitial — только с API 26, а minSdk 24.
+    private val isoParsers = object : ThreadLocal<List<SimpleDateFormat>>() {
+        override fun initialValue() =
+            listOf("yyyy-MM-dd'T'HH:mm:ssXXX", "yyyy-MM-dd'T'HH:mmXXX", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd").map { pattern ->
+                SimpleDateFormat(pattern, Locale.ROOT).apply {
+                    if (!pattern.contains("XXX")) timeZone = TimeZone.getTimeZone("UTC")
+                    isLenient = false
+                }
+            }
     }
 
     private fun JSONObject.optDoubleOrNull(key: String): Double? {
@@ -327,16 +336,32 @@ internal object HomeClimateData {
     fun zone(clock: HomeClimateConfig.Clock): TimeZone =
         clock.timeZone?.let { id -> TimeZone.getTimeZone(id).takeIf { it.id == id } } ?: TimeZone.getDefault()
 
+    /**
+     * Форматтеры времени переиспользуются: часы перерисовываются каждую минуту или секунду круглые сутки,
+     * а `SimpleDateFormat` дорог в создании. Кэш свой у каждого потока (форматтер не потокобезопасен),
+     * ключ — шаблон и часовой пояс; при смене языка системы кэш сбрасывается.
+     */
+    private class Formats(val locale: Locale) : HashMap<String, SimpleDateFormat>()
+    private val formats = ThreadLocal<Formats>()
+
+    private fun format(pattern: String, zone: TimeZone, date: Date): String {
+        val locale = Locale.getDefault()
+        val cache = formats.get()?.takeIf { it.locale == locale } ?: Formats(locale).also(formats::set)
+        val key = pattern + '\u0000' + zone.id
+        val formatter = cache.getOrPut(key) { SimpleDateFormat(pattern, locale).apply { timeZone = zone } }
+        return formatter.format(date)
+    }
+
     fun time(clock: HomeClimateConfig.Clock, system24h: Boolean, now: Date, seconds: Boolean = clock.seconds): String {
         val use24 = clock.use24h ?: system24h
         val pattern = (if (use24) "HH:mm" else "h:mm") + (if (seconds) ":ss" else "")
-        return SimpleDateFormat(pattern, Locale.getDefault()).apply { timeZone = zone(clock) }.format(now)
+        return format(pattern, zone(clock), now)
     }
 
     /** «AM»/«PM» для 12-часового формата, иначе null. */
     fun amPm(clock: HomeClimateConfig.Clock, system24h: Boolean, now: Date): String? {
         if (clock.use24h ?: system24h) return null
-        return SimpleDateFormat("a", Locale.getDefault()).apply { timeZone = zone(clock) }.format(now)
+        return format("a", zone(clock), now)
     }
 
     fun date(clock: HomeClimateConfig.Clock, now: Date): String {
@@ -345,18 +370,17 @@ internal object HomeClimateData {
             HomeClimateConfig.DATE_NUMERIC -> "dd.MM.yyyy"
             else -> "EEEE, d MMMM"
         }
-        val text = SimpleDateFormat(pattern, Locale.getDefault()).apply { timeZone = zone(clock) }.format(now)
+        val text = format(pattern, zone(clock), now)
         return text.replaceFirstChar { it.titlecase(Locale.getDefault()) }
     }
 
     fun hourLabel(date: Date, clock: HomeClimateConfig.Clock, system24h: Boolean): String =
-        SimpleDateFormat(if (clock.use24h ?: system24h) "HH:mm" else "h a", Locale.getDefault())
-            .apply { timeZone = zone(clock) }.format(date)
+        format(if (clock.use24h ?: system24h) "HH:mm" else "h a", zone(clock), date)
 
     fun dayLabel(date: Date, clock: HomeClimateConfig.Clock, now: Date = Date()): String {
         val zone = zone(clock)
         if (dayKey(date, zone) == dayKey(now, zone)) return "Сегодня"
-        return SimpleDateFormat("EE", Locale.getDefault()).apply { timeZone = zone }.format(date)
+        return format("EE", zone, date)
             .replaceFirstChar { it.titlecase(Locale.getDefault()) }
     }
 }
