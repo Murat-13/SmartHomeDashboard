@@ -24,10 +24,12 @@ internal class PowerHistoryStore(context: Context, name: String? = DB_NAME) :
             "max REAL NOT NULL, avg REAL NOT NULL, covered INTEGER NOT NULL, count INTEGER NOT NULL, " +
             "PRIMARY KEY(source, start)) WITHOUT ROWID")
         db.execSQL("CREATE TABLE alive (source INTEGER PRIMARY KEY, until INTEGER NOT NULL)")
+        db.execSQL(CREATE_CHECKED)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Первая версия схемы; будущие миграции — здесь, без потери данных.
+        // Миграции без потери данных. 2 (0.9.5): периоды, уже проверенные в истории HA.
+        if (oldVersion < 2) db.execSQL(CREATE_CHECKED)
     }
 
     fun sourceId(instance: String, entityId: String, create: Boolean = true): Long? {
@@ -182,20 +184,61 @@ internal class PowerHistoryStore(context: Context, name: String? = DB_NAME) :
      * Интервалы без локальных данных в [from, to): от метки разрыва до следующего замера, а также
      * от [from] до первого замера (истории ещё нет). Для подгрузки из истории HA.
      */
+    /**
+     * Пропуски в [from, to): время, не покрытое ни точными замерами (`raw`, от значения до следующей записи),
+     * ни минутными агрегатами (`minute` — уплотнённые старые данные), ни периодами, уже проверенными
+     * в истории HA (`checked`). Раньше учитывалась только `raw`, и всё старше 7 дней считалось пропуском.
+     */
     fun gaps(source: Long, from: Long, to: Long): List<LongRange> {
-        val result = ArrayList<LongRange>()
-        // До окна держалось значение — начало окна не пробел.
-        var gapStart: Long? = if (hasDataBefore(source, from)) null else from
+        if (to <= from) return emptyList()
+        val covered = ArrayList<LongArray>()
+        fun cover(start: Long, end: Long) {
+            val a = maxOf(start, from); val b = minOf(end, to)
+            if (b > a) covered += longArrayOf(a, b)
+        }
+        val id = source.toString()
+        // До окна держалось значение — начало окна покрыто.
+        var dataStart: Long? = if (hasDataBefore(source, from)) from else null
         readableDatabase.rawQuery("SELECT ts, value FROM raw WHERE source = ? AND ts >= ? AND ts < ? ORDER BY ts",
-            arrayOf(source.toString(), from.toString(), to.toString())).use {
+            arrayOf(id, from.toString(), to.toString())).use {
             while (it.moveToNext()) {
                 val ts = it.getLong(0)
-                gapStart?.let { start -> if (ts > start) result += start until ts }
-                gapStart = if (it.isNull(1)) ts else null
+                dataStart?.let { start -> cover(start, ts) }
+                dataStart = if (it.isNull(1)) null else ts
             }
         }
-        gapStart?.let { if (to > it) result += it until to }
+        dataStart?.let { cover(it, to) }
+        // Минутные агрегаты: подряд идущие минуты — один интервал.
+        var runStart = -1L
+        var runEnd = -1L
+        readableDatabase.rawQuery("SELECT start FROM minute WHERE source = ? AND start >= ? AND start < ? ORDER BY start",
+            arrayOf(id, (from - PowerHistory.MINUTE_MS).toString(), to.toString())).use {
+            while (it.moveToNext()) {
+                val start = it.getLong(0)
+                if (start == runEnd) runEnd = start + PowerHistory.MINUTE_MS
+                else { if (runStart >= 0) cover(runStart, runEnd); runStart = start; runEnd = start + PowerHistory.MINUTE_MS }
+            }
+        }
+        if (runStart >= 0) cover(runStart, runEnd)
+        readableDatabase.rawQuery("SELECT start, until FROM checked WHERE source = ? AND until > ? AND start < ?",
+            arrayOf(id, from.toString(), to.toString())).use {
+            while (it.moveToNext()) cover(it.getLong(0), it.getLong(1))
+        }
+        covered.sortBy { it[0] }
+        val result = ArrayList<LongRange>()
+        var cursor = from
+        covered.forEach { (start, end) ->
+            if (start > cursor) result += cursor until start
+            if (end > cursor) cursor = end
+        }
+        if (to > cursor) result += cursor until to
         return result
+    }
+
+    /** Период [start, until) уже запрошен в истории HA: повторно не запрашивается, даже если HA ничего не вернул. */
+    fun markChecked(source: Long, start: Long, until: Long) {
+        if (until <= start) return
+        writableDatabase.execSQL("INSERT OR REPLACE INTO checked (source, start, until) VALUES (?, ?, ?)", arrayOf<Any>(source, start, until))
     }
 
     private fun hasDataBefore(source: Long, ts: Long): Boolean {
@@ -215,9 +258,8 @@ internal class PowerHistoryStore(context: Context, name: String? = DB_NAME) :
         val oldest = now - PowerHistory.KEEP_MS
         db.execSQL("DELETE FROM minute WHERE start < ?", arrayOf<Any>(oldest))
         db.execSQL("DELETE FROM raw WHERE ts < ?", arrayOf<Any>(oldest))
+        db.execSQL("DELETE FROM checked WHERE until < ?", arrayOf<Any>(oldest))
     }
-
-    private class Acc(var min: Double, var max: Double, var sum: Double = 0.0, var covered: Long = 0, var count: Int = 0)
 
     private fun compactSource(db: SQLiteDatabase, source: Long, cutoff: Long) {
         val id = source.toString()
@@ -229,32 +271,15 @@ internal class PowerHistoryStore(context: Context, name: String? = DB_NAME) :
         val next = db.rawQuery("SELECT ts FROM raw WHERE source = ? AND ts >= ? ORDER BY ts LIMIT 1", arrayOf(id, cutoff.toString())).use {
             if (it.moveToFirst()) it.getLong(0) else null
         }
-        val minutes = sortedMapOf<Long, Acc>()
-        fun acc(minute: Long, value: Double) = minutes.getOrPut(minute) { Acc(value, value) }
-        rows.forEachIndexed { i, s ->
-            val value = s.watts ?: return@forEachIndexed
-            val stop = minOf(if (i + 1 < rows.size) rows[i + 1].ts else (next ?: cutoff), cutoff)
-            acc(Math.floorDiv(s.ts, PowerHistory.MINUTE_MS) * PowerHistory.MINUTE_MS, value).count++
-            var t = s.ts
-            while (t < stop) {
-                val minute = Math.floorDiv(t, PowerHistory.MINUTE_MS) * PowerHistory.MINUTE_MS
-                val until = minOf(stop, minute + PowerHistory.MINUTE_MS)
-                acc(minute, value).apply {
-                    min = minOf(min, value); max = maxOf(max, value)
-                    sum += value * (until - t); covered += until - t
-                }
-                t = until
-            }
-        }
+        val minutes = aggregate(rows, cutoff)
         val carry = rows.last().watts?.takeIf { next == null || next > cutoff }
         db.beginTransaction()
         try {
             val insert = db.compileStatement("INSERT OR REPLACE INTO minute (source, start, min, max, avg, covered, count) VALUES (?, ?, ?, ?, ?, ?, ?)")
-            minutes.forEach { (start, a) ->
-                insert.bindLong(1, source); insert.bindLong(2, start)
-                insert.bindDouble(3, a.min); insert.bindDouble(4, a.max)
-                insert.bindDouble(5, if (a.covered > 0) a.sum / a.covered else (a.min + a.max) / 2)
-                insert.bindLong(6, a.covered); insert.bindLong(7, a.count.toLong())
+            minutes.forEach { b ->
+                insert.bindLong(1, source); insert.bindLong(2, b.start)
+                insert.bindDouble(3, b.min); insert.bindDouble(4, b.max); insert.bindDouble(5, b.avg)
+                insert.bindLong(6, b.coveredMs); insert.bindLong(7, b.count.toLong())
                 insert.executeInsert()
             }
             db.execSQL("DELETE FROM raw WHERE source = ? AND ts < ?", arrayOf<Any>(source, cutoff))
@@ -308,6 +333,37 @@ internal class PowerHistoryStore(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "power_history.db"
-        const val VERSION = 1
+        const val VERSION = 2
+        private const val CREATE_CHECKED = "CREATE TABLE IF NOT EXISTS checked (source INTEGER NOT NULL, " +
+            "start INTEGER NOT NULL, until INTEGER NOT NULL, PRIMARY KEY(source, start)) WITHOUT ROWID"
+
+        private class Acc(var min: Double, var max: Double, var sum: Double = 0.0, var covered: Long = 0, var count: Int = 0)
+
+        /**
+         * Минутные агрегаты замеров (по времени, отсортированы): значение держится до следующей записи,
+         * последнее — до [end]. Разрывы (null) минут не создают. Общая логика уплотнения и подгрузки старой истории.
+         */
+        fun aggregate(rows: List<PowerSample>, end: Long): List<PowerBucket> {
+            val minutes = sortedMapOf<Long, Acc>()
+            fun acc(minute: Long, value: Double) = minutes.getOrPut(minute) { Acc(value, value) }
+            rows.forEachIndexed { i, s ->
+                val value = s.watts ?: return@forEachIndexed
+                val stop = minOf(if (i + 1 < rows.size) rows[i + 1].ts else end, end)
+                acc(Math.floorDiv(s.ts, PowerHistory.MINUTE_MS) * PowerHistory.MINUTE_MS, value).count++
+                var t = s.ts
+                while (t < stop) {
+                    val minute = Math.floorDiv(t, PowerHistory.MINUTE_MS) * PowerHistory.MINUTE_MS
+                    val until = minOf(stop, minute + PowerHistory.MINUTE_MS)
+                    acc(minute, value).apply {
+                        min = minOf(min, value); max = maxOf(max, value)
+                        sum += value * (until - t); covered += until - t
+                    }
+                    t = until
+                }
+            }
+            return minutes.map { (start, a) ->
+                PowerBucket(start, a.min, a.max, if (a.covered > 0) a.sum / a.covered else (a.min + a.max) / 2, a.covered, a.count)
+            }
+        }
     }
 }

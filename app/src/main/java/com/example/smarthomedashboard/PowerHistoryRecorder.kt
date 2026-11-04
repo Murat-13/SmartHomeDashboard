@@ -89,6 +89,8 @@ internal class PowerHistoryRecorder(
 
     /** Остановить всё запланированное (тесты, замена регистратора). Данные не теряются: накопленное записывается. */
     fun stop() {
+        importSession++
+        importQueue.clear()
         flush()
         connected = false
         scheduler.removeCallbacksAndMessages(null)
@@ -128,6 +130,8 @@ internal class PowerHistoryRecorder(
     }
 
     fun onDisconnected() {
+        importSession++
+        importQueue.clear()
         if (connected) breakAll()
         connected = false
         scheduler.removeCallbacks(heartbeat)
@@ -202,11 +206,24 @@ internal class PowerHistoryRecorder(
 
     // ---- Подгрузка пропусков из истории HA (только чтение) ----
 
+    /** Кусок пропуска для одного запроса истории; [range] — полуинтервал first..last. */
+    private class ImportChunk(val entityId: String, val source: Long, val range: LongRange, val unit: String)
+    private val importQueue = ArrayDeque<ImportChunk>()
+    /** Сессия подгрузки: разрыв, смена сервера и остановка отменяют ещё не отправленные куски. */
+    private var importSession = 0
+
+    /**
+     * Пропуски за 35 дней запрашиваются по одному куску не длиннее [IMPORT_CHUNK_MS], новые раньше старых.
+     * Разбор ответа и запись — в фоне. Запрошенный кусок отмечается «проверено» (кроме последних
+     * [IMPORT_SETTLE_MS], которые HA мог ещё не записать) и больше не запрашивается, даже если в HA данных за него нет.
+     */
     private fun maybeImport() {
         val key = instance ?: return
         val read = reader ?: return
         if (!snapshotDone || importRequested || !connected) return
         importRequested = true
+        val session = ++importSession
+        importQueue.clear()
         val ids = sources.filter { units[it] != null }
         val now = clock()
         val units = ids.associateWith { this.units.getValue(it) }
@@ -215,33 +232,66 @@ internal class PowerHistoryRecorder(
                 val source = store.sourceId(key, id) ?: return@flatMap emptyList()
                 store.gaps(source, now - PowerHistory.KEEP_MS, now - IMPORT_RECENT_MS)
                     .filter { it.last - it.first >= MIN_GAP_MS }
-                    .sortedByDescending { it.first }
-                    .take(MAX_IMPORTS_PER_SOURCE)
-                    .map { Triple(id, source, it) }
+                    .flatMap { chunks(it, now) }
+                    .map { ImportChunk(id, source, it, units.getValue(id)) }
+            }.sortedByDescending { it.range.first }
+            post {
+                if (session != importSession || instance != key) return@post
+                importQueue.addAll(plan)
+                nextImport(read, key, session)
             }
-            post { plan.forEach { (id, source, gap) -> request(read, key, id, source, gap, units.getValue(id)) } }
         }
     }
 
-    private fun request(read: (String, JSONObject, (Any?) -> Unit) -> Unit, key: String, entityId: String, source: Long,
-                        gap: LongRange, unit: String) {
+    /** Режет пропуск по границе уплотнения (старше — сразу в минутные агрегаты) и на куски [IMPORT_CHUNK_MS]. */
+    private fun chunks(gap: LongRange, now: Long): List<LongRange> {
+        val cutoff = rawCutoff(now)
+        val end = gap.last + 1
+        val result = ArrayList<LongRange>()
+        var start = gap.first
+        while (start < end) {
+            var stop = minOf(end, start + IMPORT_CHUNK_MS)
+            if (start < cutoff && stop > cutoff) stop = cutoff
+            result += start until stop
+            start = stop
+        }
+        return result
+    }
+
+    private fun nextImport(read: (String, JSONObject, (Any?) -> Unit) -> Unit, key: String, session: Int) {
+        if (session != importSession || instance != key || !connected) return
+        val chunk = importQueue.removeFirstOrNull() ?: return
         val params = JSONObject()
-            .put("start_time", iso(gap.first))
-            .put("end_time", iso(gap.last + 1))
-            .put("entity_ids", JSONArray().put(entityId))
+            .put("start_time", iso(chunk.range.first))
+            .put("end_time", iso(chunk.range.last + 1))
+            .put("entity_ids", JSONArray().put(chunk.entityId))
             .put("minimal_response", true)
             .put("no_attributes", true)
             .put("significant_changes_only", false)
             .put("include_start_time_state", true)
         read(HISTORY, params) { result ->
-            if (instance != key) return@read
-            val samples = parseHistory(result, entityId, unit).filter { it.ts in gap }
-            if (samples.isEmpty()) return@read
+            if (session != importSession || instance != key) return@read
+            // Отказ, тайм-аут или разрыв: остальное — при следующем подключении (кусок не отмечен).
+            if (result == null) { importQueue.clear(); return@read }
+            val settled = clock() - IMPORT_SETTLE_MS
             io.execute {
-                if (store.insert(source, samples, fillBreaks = true) > 0) post { listeners.toList().forEach { it.changed(entityId, null) } }
+                val samples = parseHistory(result, chunk.entityId, chunk.unit).filter { it.ts in chunk.range }
+                val end = chunk.range.last + 1
+                // Старше границы уплотнения — сразу минутные агрегаты без перезаписи имеющихся,
+                // а не точные замеры, которые уплотнение затем слило бы поверх готовых минут.
+                val added = if (end <= rawCutoff(clock())) store.insertMinutes(chunk.source, PowerHistoryStore.aggregate(samples, end))
+                    else store.insert(chunk.source, samples, fillBreaks = true)
+                // Отмечается всё, кроме последних минут: их HA мог ещё не записать — спросим при следующем подключении.
+                store.markChecked(chunk.source, chunk.range.first, minOf(end, settled))
+                post {
+                    if (added > 0) listeners.toList().forEach { it.changed(chunk.entityId, null) }
+                    nextImport(read, key, session)
+                }
             }
         }
     }
+
+    private fun rawCutoff(now: Long) = Math.floorDiv(now - PowerHistory.RAW_KEEP_MS, PowerHistory.MINUTE_MS) * PowerHistory.MINUTE_MS
 
     // ---- Чтение для графика (результат на главном потоке) ----
 
@@ -274,7 +324,10 @@ internal class PowerHistoryRecorder(
         const val MIN_GAP_MS = 30_000L
         /** Последние секунды не запрашиваем: данные о них уже идут живым потоком. */
         const val IMPORT_RECENT_MS = 5_000L
-        const val MAX_IMPORTS_PER_SOURCE = 20
+        /** Один запрос истории HA — не длиннее 6 часов: ответ умеренного размера, без всплесков памяти. */
+        const val IMPORT_CHUNK_MS = 6 * PowerHistory.HOUR_MS
+        /** Последние минуты HA мог ещё не записать: такие куски не отмечаются «проверено». */
+        const val IMPORT_SETTLE_MS = 10 * PowerHistory.MINUTE_MS
 
         @Volatile private var shared: Pair<Context, PowerHistoryRecorder>? = null
 
