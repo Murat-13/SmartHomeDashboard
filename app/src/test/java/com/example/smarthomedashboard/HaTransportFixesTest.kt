@@ -26,7 +26,7 @@ import kotlin.concurrent.thread
 
 /**
  * 0.9.5 — исправления транспорта HA: закрытие без кода, общая очистка при возврате на локальный адрес,
- * ошибки операций отдельно от статуса соединения, один снимок get_states на соединение, повтор get_config.
+ * ошибки операций отдельно от статуса соединения, без дублей get_states, повтор get_config.
  * Только loopback-серверы с искусственными данными; команд реальному дому нет.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -179,7 +179,7 @@ class HaTransportFixesTest {
         await { model.uiState.value.connectionStatus is ConnectionStatus.Error }
     }
 
-    @Test fun onlyOneStatesSnapshotPerConnection() {
+    @Test fun duplicateStatesRequestIsSkippedOnlyWhileNothingChanged() {
         val peer = Peer()
         val server = server(peer)
         var connected = false
@@ -188,17 +188,25 @@ class HaTransportFixesTest {
         client.subscribeEntities(listOf("light.artificial"))
         client.connect()
         await { connected && peer.count("get_states") == 1 }
-        // Как onConnected и onResume панели: повторные вызовы, пока снимок ожидается, не дублируют запрос.
+        // Как onConnected сразу после auth_ok и onResume панели: точные дубли не отправляются.
         repeat(3) { client.subscribeEntities(listOf("light.artificial")) }
         settle()
         assertEquals(1, peer.count("get_states"))
 
+        // Пришло событие — следующий вызов снова пересинхронизирует полным снимком.
+        peer.socket!!.send(JSONObject().put("type", "event").put("id", 1).put("event", JSONObject()
+            .put("event_type", "state_changed").put("data", JSONObject().put("entity_id", "light.artificial")
+                .put("new_state", JSONObject().put("state", "on").put("attributes", JSONObject())))).toString())
+        settle()
+        client.subscribeEntities(listOf("light.artificial"))
+        await { peer.count("get_states") == 2 }
+
+        // После ответа явная пересинхронизация по-прежнему возможна.
         val request = peer.received.last { it.optString("type") == "get_states" }
         result(peer.socket!!, request.getInt("id"), true, JSONArray())
         settle()
-        client.subscribeEntities(listOf("light.artificial", "sensor.added"))
-        settle()
-        assertEquals("После снимка состояния приходят событиями", 1, peer.count("get_states"))
+        client.subscribeEntities(listOf("light.artificial"))
+        await { peer.count("get_states") == 3 }
         assertEquals(1, peer.count("subscribe_events"))
     }
 

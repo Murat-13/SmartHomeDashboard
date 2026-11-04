@@ -91,8 +91,6 @@ class HomeAssistantWebSocket(
         val timeout: Runnable
     )
     private var stateRequest: StateRequest? = null
-    /** Поколение, в котором уже принят полный снимок get_states: дальше всё приходит событиями. */
-    private var snapshotGeneration = -1
     /** Разовые запросы чтения ([read]): ответ или null при ошибке/разрыве/тайм-ауте. */
     private data class ReadRequest(val result: (Any?) -> Unit, val timeout: Runnable)
     private val readRequests = mutableMapOf<Int, ReadRequest>()
@@ -294,7 +292,6 @@ class HomeAssistantWebSocket(
                         onError("Не удалось получить состояния Home Assistant")
                         return
                     }
-                    snapshotGeneration = generation
                     val states = message.states.filter { it.entityId !in request.changed }.map { state ->
                         if (state.entityId !in request.forecasts || !state.attributes.has("forecast")) state
                         else state.copy(attributes = JSONObject().also { copy ->
@@ -383,11 +380,16 @@ class HomeAssistantWebSocket(
     fun subscribeEntities(entityIds: List<String>) = onMain {
         // subscribe_events covers all entities, including advanced widget configs.
         statesRequested = true
-        // Один снимок на соединение: auth_ok уже запросил его, а дальше состояния приходят событиями.
-        // Повторный запрос нужен, только если снимка ещё нет и он не ожидается (отказ/тайм-аут).
-        if (authenticated && stateRequest == null && snapshotGeneration != generation) {
+        // Каждый вызов — пересинхронизация полным снимком, кроме точного дубля: запрос уже отправлен,
+        // а после него не пришло ни одного события и прогноза (так было при auth_ok + onConnected и onResume).
+        if (authenticated && !snapshotPendingUnchanged()) {
             ensureStates()
         }
+    }
+
+    private fun snapshotPendingUnchanged(): Boolean {
+        val pending = stateRequest ?: return false
+        return pending.changed.isEmpty() && pending.forecasts.isEmpty()
     }
 
     private fun ensureStates() {
