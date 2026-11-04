@@ -127,11 +127,24 @@ class EditModePinGateTest {
     @Test fun unknownPinStateDoesNotSaveUntilCheckShowsPinDisabled() {
         val card = open()
         ArchitectureTestAccess.setField(activity, "pinDisabled", null)
+        // Хранилище «PIN отключён» отвечает только по сигналу теста. Раньше оно отвечало сразу, и если
+        // фоновая проверка успевала до приостановки withContext, сохранение шло синхронно внутри жеста —
+        // тест «плавал» (падал в CI 03.11 и в базовом прогоне 04.11). Поведение приложения то же.
+        val release = java.util.concurrent.CountDownLatch(1)
+        ArchitectureTestAccess.setField(activity, "pinAccess", PinAccess(object : PinAccess.Storage {
+            override fun read(): PinAccess.State {
+                release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                return PinAccess.State(null, null)
+            }
+            override fun write(state: PinAccess.State) = true
+        }, object : PinAccess.Legacy { override fun read(): String? = null; override fun remove() = true },
+            clock = object : PinAccess.Clock { override fun elapsed() = 0L; override fun boot() = "test" }, worker = {}))
         val before = prefs()
         resize(card)
         assertEquals(before, prefs())
         assertTrue(pinRequested())
-        // Изолированное хранилище теста: PIN отключён — действие применяется после проверки.
+        // Проверка ответила «PIN отключён» — действие применяется после неё.
+        release.countDown()
         awaitPinGate(activity)
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(300, savedWidth())

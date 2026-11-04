@@ -84,11 +84,16 @@ class SettingsSectionsTest {
     }
 
     @Test fun changedAddressIsNotSavedBeforeSuccessfulProbe() {
+        // Чтение токена ждёт сигнала теста: раньше быстрый отказ чтения мог завершить проверку синхронно
+        // внутри saveConnections (withContext(IO) без приостановки), и кнопка уже снова была включена.
+        val tokenRead = java.util.concurrent.CountDownLatch(1)
+        org.robolectric.util.ReflectionHelpers.setField(activity, "haTokens", haTokenTestAccess(activity, tokenRead))
         activity.findViewById<EditText>(R.id.etHaLocalHost).setText("http://new.example.invalid")
         invoke("saveConnections")
         assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
         assertFalse(activity.findViewById<View>(R.id.btnSave).isEnabled)
         invoke("cancelProbe")
+        tokenRead.countDown()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
         assertFalse(activity.isFinishing)
