@@ -716,9 +716,15 @@ class SettingsActivity : PinProtectedActivity() {
 
     private fun hostFields() = listOf(etHaLocalHost.text.toString(), etHaRemoteHost.text.toString())
 
-    /** Разрешение действует, только пока в форме есть адрес, которому оно нужно; иначе сохраняется как false. */
-    private fun insecureRemoteAllowed() =
-        cbAllowInsecureRemote.isChecked && hostFields().any { HomeAssistantAddress.needsInsecureConsent(it) }
+    /**
+     * Разрешение действует, только пока в форме есть адрес, которому оно нужно; иначе сохраняется как false.
+     * Без переключателя на экране (частичная сборка формы) — сохранённое значение, ничего не меняется.
+     */
+    private fun insecureRemoteAllowed(): Boolean {
+        if (!::cbAllowInsecureRemote.isInitialized) return getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+            .getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false)
+        return cbAllowInsecureRemote.isChecked && hostFields().any { HomeAssistantAddress.needsInsecureConsent(it) }
+    }
 
     private fun prepareWeatherInput() {
         etYandexApiKey.isSaveEnabled = false
@@ -740,7 +746,7 @@ class SettingsActivity : PinProtectedActivity() {
         etHaToken.isEnabled = !pending
         etHaLocalHost.isEnabled = !pending
         etHaRemoteHost.isEnabled = !pending
-        cbAllowInsecureRemote.isEnabled = !pending
+        if (::cbAllowInsecureRemote.isInitialized) cbAllowInsecureRemote.isEnabled = !pending
         setWeatherPending(pending)
     }
 
@@ -904,7 +910,7 @@ class SettingsActivity : PinProtectedActivity() {
             etHaToken.isEnabled = true
             etHaLocalHost.isEnabled = true
             etHaRemoteHost.isEnabled = true
-            cbAllowInsecureRemote.isEnabled = true
+            if (::cbAllowInsecureRemote.isInitialized) cbAllowInsecureRemote.isEnabled = true
             loadHaTokenStatus()
         }
         if (::tvYandexKeyStatus.isInitialized) loadWeatherConfiguration()

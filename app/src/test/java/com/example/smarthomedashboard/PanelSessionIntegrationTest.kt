@@ -558,7 +558,8 @@ class PanelSessionIntegrationTest {
         (panel.parent as FrameLayout).addView(TextView(activity).apply { id = R.id.tvHaLiveStatus })
         val socket = HomeAssistantWebSocket("http://localhost:1", "FAKE-RESUME-TOKEN", { _, _, _ -> }, {}, {})
         set("webSocket", socket)
-        set("haConfiguration", listOf("http://localhost:1", "", "FAKE-RESUME-TOKEN"))
+        // Конфигурация подключения: адреса, токен и разрешение внешнего http (0.9.5).
+        set("haConfiguration", listOf("http://localhost:1", "", "FAKE-RESUME-TOKEN", "false"))
         set("connectedTokenRevision", HaTokenAccess.revision)
         assertFalse(ArchitectureTestAccess.getField<Boolean>(socket, "running"))
         invoke("onResume")
