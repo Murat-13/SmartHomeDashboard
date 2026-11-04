@@ -21,6 +21,10 @@
     <string name="local_host_label">Локальный адрес (необязательно)</string>
     <string name="local_host_hint">http://192.168.1.10:8123</string>
     <string name="remote_host_label">Внешний адрес (необязательно, если указан локальный)</string>
+    <string name="allow_insecure_remote">Разрешить внешнее подключение без шифрования (http)</string>
+    <string name="insecure_remote_title">Подключение без шифрования</string>
+    <string name="insecure_remote_message">Внешний адрес указан с http:// — через интернет токен Home Assistant и все команды пойдут открытым текстом. Любой, кто перехватит трафик по пути (публичный Wi‑Fi, провайдер, взломанный роутер), получит полный доступ к вашему дому.\n\nНадёжнее включить HTTPS в Home Assistant (например, через Nabu Casa или обратный прокси) или подключаться через VPN.\n\nРазрешить всё равно?</string>
+    <string name="insecure_remote_allow">Разрешить</string>
     <string name="remote_host_hint">https://ha.example.invalid</string>
     <string name="fill_fields">Укажите токен и хотя бы один адрес: локальный или внешний</string>
     <string name="checking_local">Проверяю локальную сеть…</string>

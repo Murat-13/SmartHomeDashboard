@@ -99,6 +99,34 @@ class SettingsSectionsTest {
         assertFalse(activity.isFinishing)
     }
 
+    @Test fun insecureRemoteNeedsExplicitConsentAndLocalHttpStaysQuiet() {
+        val consent = activity.findViewById<CompoundButton>(R.id.cbAllowInsecureRemote)
+        val warning = activity.findViewById<TextView>(R.id.tvHaTransportWarning)
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText("http://192.168.1.20:8123")
+        activity.findViewById<EditText>(R.id.etHaRemoteHost).setText("")
+        assertFalse("Домашний http — без предупреждения", warning.visibility == View.VISIBLE)
+        assertFalse(consent.visibility == View.VISIBLE)
+
+        activity.findViewById<EditText>(R.id.etHaRemoteHost).setText("http://203.0.113.7:8123")
+        assertTrue(warning.visibility == View.VISIBLE)
+        assertTrue(consent.visibility == View.VISIBLE)
+        consent.performClick()
+        assertFalse("До подтверждения разрешение не включено", consent.isChecked)
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(dialog.isShowing)
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(consent.isChecked)
+
+        consent.performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(consent.isChecked)
+        // Разрешение — часть данных подключения: сохраняется только через проверку подключения.
+        assertFalse(prefs.getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false))
+        assertTrue(invoke("haChanged") as Boolean)
+    }
+
     @Test fun leavingAsksOnlyWhenConnectionDataIsUnsaved() {
         activity.findViewById<EditText>(R.id.etHaToken).setText("FAKE-UNSAVED")
         invoke("leave")

@@ -875,7 +875,9 @@ class MainActivity : AppCompatActivity() {
         connectedTokenRevision = HaTokenAccess.revision
         val tokenRevision = connectedTokenRevision
         viewModel.tokenRevision = tokenRevision
-        val configuration = listOf(local, remote, token)
+        val allowInsecure = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+            .getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false)
+        val configuration = listOf(local, remote, token, allowInsecure.toString())
         if (haConfiguration == configuration && webSocket != null) {
             // connect() restarts a stopped client and leaves active/backoff connections alone.
             viewModel.resumeWebSocket()
@@ -893,6 +895,7 @@ class MainActivity : AppCompatActivity() {
             host = hosts.first(),
             token = token,
             alternateHosts = hosts.drop(1),
+            allowInsecureRemote = allowInsecure,
             onStateChangedCallback = { entity, state, _ ->
                 if (haGeneration == generation && tokenRevision == HaTokenAccess.revision && !isDestroyed) panelController.renderEntityState(entity, state)
             },

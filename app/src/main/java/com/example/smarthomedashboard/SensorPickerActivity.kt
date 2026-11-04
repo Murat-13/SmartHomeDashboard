@@ -175,6 +175,7 @@ class SensorPickerActivity : PinProtectedActivity() {
             webSocket = HomeAssistantWebSocket(
                 host = endpoints.first(), alternateHosts = endpoints.drop(1), token = result.value,
                 autoReconnect = false, onStateChanged = { _, _, _ -> },
+                allowInsecureRemote = prefs.getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false),
                 onConnected = { if (active()) { tvStatus.text = "Загрузка..."; webSocket?.getEntities() } },
                 onDisconnected = {},
                 onError = { if (active()) tvStatus.text = it },

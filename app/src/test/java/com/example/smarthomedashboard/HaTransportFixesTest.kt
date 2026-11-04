@@ -257,6 +257,31 @@ class HaTransportFixesTest {
         assertTrue(localPeer.ids().min() > remotePeer.ids().max())
     }
 
+    @Test fun publicCleartextAddressIsRefusedWithoutConsentAndPanelFallsBackToLocal() {
+        val peer = Peer()
+        val local = server(peer)
+        val connectionErrors = CopyOnWriteArrayList<String>()
+        var connected = false
+        // Порядок как у подозрительной настройки: внешний http первым, домашний адрес запасным.
+        val client = HomeAssistantWebSocket("http://203.0.113.7:8123", "test-token", { _, _, _ -> }, { connected = true }, {},
+            alternateHosts = listOf(local.url("/").toString()), autoReconnect = false,
+            onConnectionError = { connectionErrors.add(it) }).also { clients.add(it) }
+        client.connect()
+        await { connected }
+        assertEquals(HomeAssistantAddress.INSECURE_REMOTE_REFUSED, connectionErrors.first())
+        assertEquals(local.url("/").toString(), client.getHost())
+        assertEquals("Токен ушёл только на домашний адрес", 1, peer.count("auth"))
+    }
+
+    @Test fun publicCleartextAddressAloneStopsWithClearReason() {
+        val statuses = CopyOnWriteArrayList<String>()
+        HomeAssistantWebSocket("http://203.0.113.7:8123", "test-token", { _, _, _ -> }, {}, {},
+            onStatus = { statuses.add(it) }).also { clients.add(it) }.connect()
+        await { statuses.any { it.startsWith("Ошибка:") } }
+        shadowOf(Looper.getMainLooper()).idleFor(2, TimeUnit.MINUTES)
+        assertEquals("Ошибка: ${HomeAssistantAddress.INSECURE_REMOTE_REFUSED}", statuses.last())
+    }
+
     @Test fun serverIdentityIsRetriedWhenGetConfigFails() {
         var configAnswers = 0
         val peer = Peer { socket, message ->

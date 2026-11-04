@@ -29,13 +29,52 @@ internal object HomeAssistantAddress {
         return (if (url.isHttps) "wss://" else "ws://") + url.toString().substringAfter("://")
     }
 
-    fun transportWarning(addresses:Collection<String>):String? {
-        val cleartext=addresses.any { address ->
-            try { address.isNotBlank() && webSocketUrl(address).startsWith("ws://") }
-            catch(_:Exception){false}
+    /**
+     * Без шифрования (http/ws) токен HA и все команды идут открытым текстом. В домашней сети это обычная
+     * практика, а через интернет — нет: внешний адрес по http допускается только с явного разрешения владельца.
+     */
+    const val PREF_ALLOW_INSECURE_REMOTE = "ha_allow_insecure_remote"
+    const val INSECURE_REMOTE_REFUSED = "Внешний адрес без шифрования (http): подключение не выполняется. " +
+        "Используйте https:// или разрешите небезопасное подключение в настройках"
+
+    /** Адрес будет открыт без шифрования (ws://). Некорректный адрес — false: его отклонит само подключение. */
+    fun isCleartext(address: String): Boolean =
+        try { address.isNotBlank() && webSocketUrl(address).startsWith("ws://") } catch (_: Exception) { false }
+
+    /**
+     * Хост в частной или домашней сети: частные и служебные диапазоны IPv4 (включая 100.64/10 — адреса
+     * VPN вроде Tailscale), локальные IPv6, loopback, имена без точки и домашние зоны (.local, .lan, .home.arpa…).
+     * Публичное имя, которое дома резолвится в частный адрес, сюда не попадает — для него нужно явное разрешение.
+     */
+    fun isPrivateNetwork(address: String): Boolean {
+        val host = try {
+            webSocketUrl(address).replaceFirst(Regex("^wss?://"), "http://").toHttpUrl().host.lowercase()
+        } catch (_: Exception) { return false }
+        if (host == "localhost" || !host.contains('.') && !host.contains(':')) return true
+        if (LOCAL_ZONES.any { host.endsWith(it) }) return true
+        if (host.contains(':')) {
+            // IPv6: loopback, link-local fe80::/10, уникальные локальные fc00::/7.
+            val first = host.substringBefore(':').toIntOrNull(16) ?: return host == "::1"
+            return host == "::1" || (first and 0xffc0) == 0xfe80 || (first and 0xfe00) == 0xfc00
         }
-        return if(cleartext) "HTTP/WS не шифруют соединение и токен. По возможности используйте HTTPS/WSS. Адрес автоматически не меняется." else null
+        val octets = host.split('.').map { it.toIntOrNull() ?: return false }
+        if (octets.size != 4 || octets.any { it !in 0..255 }) return false
+        val (a, b) = octets
+        return a == 10 || a == 127 || a == 192 && b == 168 || a == 172 && b in 16..31 ||
+            a == 169 && b == 254 || a == 100 && b in 64..127
     }
+
+    /** Подключение без шифрования к адресу вне домашней сети — требуется явное разрешение. */
+    fun needsInsecureConsent(address: String): Boolean = isCleartext(address) && !isPrivateNetwork(address)
+
+    /** Предупреждение для формы адресов: только про внешний адрес без шифрования; локальный http — норма. */
+    fun transportWarning(addresses: Collection<String>): String? =
+        if (addresses.any { it.isNotBlank() && needsInsecureConsent(it) })
+            "Внешний адрес без шифрования: токен Home Assistant уйдёт через интернет открытым текстом, " +
+                "его смогут перехватить. Используйте https:// — или разрешите такое подключение явно."
+        else null
+
+    private val LOCAL_ZONES = listOf(".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain")
 
     fun retryDelay(attempt: Int): Long = (2_000L * (1L shl attempt.coerceIn(0, 5))).coerceAtMost(60_000L)
 

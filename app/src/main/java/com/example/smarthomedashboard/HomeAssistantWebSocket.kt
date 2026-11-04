@@ -43,7 +43,9 @@ class HomeAssistantWebSocket(
      * разрыва; [onError] остаётся для ошибок операций при живом соединении (команда, прогноз, списки).
      * По умолчанию совпадает с [onError] — поведение прежних клиентов не меняется.
      */
-    private val onConnectionError: (String) -> Unit = onError
+    private val onConnectionError: (String) -> Unit = onError,
+    /** Владелец явно разрешил внешний адрес без шифрования; иначе такой адрес отклоняется до подключения. */
+    private val allowInsecureRemote: Boolean = false
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -136,6 +138,12 @@ class HomeAssistantWebSocket(
         // исключает совпадение ID запроса прошлого соединения с ответом нового.
         retiredServiceIds.clear()
         onStatus("Подключение: ${getHost()}")
+        // Токен не должен уйти через интернет открытым текстом без согласия владельца: адрес отклоняется
+        // навсегда для этого клиента, подключение переходит к следующему адресу (обычно локальному).
+        if (!allowInsecureRemote && HomeAssistantAddress.needsInsecureConsent(getHost())) {
+            fail(HomeAssistantAddress.INSECURE_REMOTE_REFUSED, permanent = true)
+            return
+        }
         val request = try {
             Request.Builder().url(HomeAssistantAddress.webSocketUrl(getHost())).build()
         } catch (_: IllegalArgumentException) {
@@ -655,7 +663,9 @@ class HomeAssistantWebSocket(
      */
     private fun schedulePrimaryProbe() {
         cancelPrimaryProbe()
-        if (!autoReconnect || !authenticated || endpointIndex == 0 || hosts.size < 2) return
+        // Отклонённый навсегда основной адрес (некорректный, без согласия на http) не проверяем:
+        // иначе каждые 5 минут шло бы переключение на него и сразу обратно.
+        if (!autoReconnect || !authenticated || endpointIndex == 0 || hosts.size < 2 || hosts[0] in rejectedHosts) return
         val id = generation
         probeTask = Runnable { probePrimary(id) }.also { handler.postDelayed(it, primaryProbeIntervalMs) }
     }

@@ -34,6 +34,7 @@ class SettingsActivity : PinProtectedActivity() {
 
     private lateinit var etHaLocalHost: EditText
     private lateinit var etHaRemoteHost: EditText
+    private lateinit var cbAllowInsecureRemote: CompoundButton
     private lateinit var etHaToken: EditText
     private lateinit var tvHaTokenStatus: TextView
     private var haTokens: HaTokenAccess? = null
@@ -88,6 +89,7 @@ class SettingsActivity : PinProtectedActivity() {
 
         etHaLocalHost = findViewById(R.id.etHaLocalHost)
         etHaRemoteHost = findViewById(R.id.etHaRemoteHost)
+        cbAllowInsecureRemote = findViewById(R.id.cbAllowInsecureRemote)
         etHaToken = findViewById(R.id.etHaToken)
         tvHaTokenStatus = findViewById(R.id.tvHaTokenStatus)
         tvHaConnectionStatus = findViewById(R.id.tvHaConnectionStatus)
@@ -113,6 +115,7 @@ class SettingsActivity : PinProtectedActivity() {
 
         etHaLocalHost.setText(prefs.getString("ha_local_host", ""))
         etHaRemoteHost.setText(prefs.getString("ha_remote_host", ""))
+        cbAllowInsecureRemote.isChecked = prefs.getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false)
         prepareTransportWarning()
         prepareTokenInput()
         loadHaTokenStatus()
@@ -503,6 +506,7 @@ class SettingsActivity : PinProtectedActivity() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         return etHaLocalHost.text.toString().trim() != prefs.getString("ha_local_host", "").orEmpty().trim() ||
             etHaRemoteHost.text.toString().trim() != prefs.getString("ha_remote_host", "").orEmpty().trim() ||
+            insecureRemoteAllowed() != prefs.getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false) ||
             etHaToken.text.toString().isNotBlank()
     }
 
@@ -612,6 +616,7 @@ class SettingsActivity : PinProtectedActivity() {
             if (token.isBlank()) { fail(if (HaTokenAccess.isCurrent(stored)) stored.message else "Токен HA изменён"); return@launch }
             probe = HomeAssistantWebSocket(
                 host = hosts.first(), token = token, alternateHosts = hosts.drop(1), autoReconnect = false,
+                allowInsecureRemote = insecureRemoteAllowed(),
                 onStateChanged = { _, _, _ -> },
                 onConnected = {
                     if (active()) {
@@ -676,20 +681,44 @@ class SettingsActivity : PinProtectedActivity() {
         findViewById<Button>(R.id.btnRestoreHints).isEnabled = UserHints.canRestore(this)
     }
 
+    /**
+     * Предупреждение и разрешение для внешнего адреса без шифрования. Локальный http — норма и молчит.
+     * Разрешение видно только при таком адресе, включается через окно с объяснением риска и сохраняется
+     * вместе с адресами («Проверить и сохранить»).
+     */
     private fun prepareTransportWarning() {
-        val warning=findViewById<TextView>(R.id.tvHaTransportWarning)
-        fun update(){
-            val message=HomeAssistantAddress.transportWarning(listOf(etHaLocalHost.text.toString(),etHaRemoteHost.text.toString()))
-            warning.text=message.orEmpty()
-            warning.visibility=if(message==null)android.view.View.GONE else android.view.View.VISIBLE
+        val warning = findViewById<TextView>(R.id.tvHaTransportWarning)
+        fun update() {
+            val message = HomeAssistantAddress.transportWarning(hostFields())
+            warning.text = message.orEmpty()
+            warning.visibility = if (message == null) View.GONE else View.VISIBLE
+            cbAllowInsecureRemote.visibility = warning.visibility
         }
-        val watcher=object:android.text.TextWatcher {
-            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){update()}
-            override fun afterTextChanged(s:android.text.Editable?){}
+        etHaLocalHost.addTextChangedListener(afterText { update() })
+        etHaRemoteHost.addTextChangedListener(afterText { update() })
+        var confirmed = false
+        cbAllowInsecureRemote.setOnCheckedChangeListener { button, checked ->
+            if (!checked || confirmed) return@setOnCheckedChangeListener
+            // Включение — только осознанно (касание, клавиатура, спецвозможности): до подтверждения выключено.
+            button.isChecked = false
+            AlertDialog.Builder(this).setTitle(R.string.insecure_remote_title)
+                .setMessage(R.string.insecure_remote_message)
+                .setPositiveButton(R.string.insecure_remote_allow) { _, _ ->
+                    confirmed = true
+                    button.isChecked = true
+                    confirmed = false
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
         }
-        etHaLocalHost.addTextChangedListener(watcher);etHaRemoteHost.addTextChangedListener(watcher);update()
+        update()
     }
+
+    private fun hostFields() = listOf(etHaLocalHost.text.toString(), etHaRemoteHost.text.toString())
+
+    /** Разрешение действует, только пока в форме есть адрес, которому оно нужно; иначе сохраняется как false. */
+    private fun insecureRemoteAllowed() =
+        cbAllowInsecureRemote.isChecked && hostFields().any { HomeAssistantAddress.needsInsecureConsent(it) }
 
     private fun prepareWeatherInput() {
         etYandexApiKey.isSaveEnabled = false
@@ -711,6 +740,7 @@ class SettingsActivity : PinProtectedActivity() {
         etHaToken.isEnabled = !pending
         etHaLocalHost.isEnabled = !pending
         etHaRemoteHost.isEnabled = !pending
+        cbAllowInsecureRemote.isEnabled = !pending
         setWeatherPending(pending)
     }
 
@@ -776,6 +806,7 @@ class SettingsActivity : PinProtectedActivity() {
         val haLocal = etHaLocalHost.text.toString().trim()
         val haRemote = etHaRemoteHost.text.toString().trim()
         val haToken = etHaToken.text.toString().trim()
+        val allowInsecure = insecureRemoteAllowed()
 
         val sessionMinutes = etPinSessionMinutes.text.toString().toIntOrNull()
         if (sessionMinutes == null || sessionMinutes !in PinSecurityUi.MIN_SESSION_MINUTES..PinSecurityUi.MAX_SESSION_MINUTES) {
@@ -820,6 +851,7 @@ class SettingsActivity : PinProtectedActivity() {
             prefs.edit {
                 putString("ha_local_host", haLocal)
                 putString("ha_remote_host", haRemote)
+                putBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, allowInsecure)
                 putInt("pin_session_minutes", sessionMinutes)
                 putInt("screen_timeout_minutes", screenTimeout)
                 putString("temp_unit", tempUnit)
@@ -872,6 +904,7 @@ class SettingsActivity : PinProtectedActivity() {
             etHaToken.isEnabled = true
             etHaLocalHost.isEnabled = true
             etHaRemoteHost.isEnabled = true
+            cbAllowInsecureRemote.isEnabled = true
             loadHaTokenStatus()
         }
         if (::tvYandexKeyStatus.isInitialized) loadWeatherConfiguration()

@@ -140,7 +140,8 @@ class MainViewModel : ViewModel() {
         onConnectedCallback: (() -> Unit)? = null,
         onEntitiesListCallback: ((List<HaEntity>) -> Unit)? = null,
         onCommandStateChangedCallback: ((String) -> Unit)? = null,
-        onStatesSnapshotCallback: ((List<String>) -> Unit)? = null
+        onStatesSnapshotCallback: ((List<String>) -> Unit)? = null,
+        allowInsecureRemote: Boolean = false
     ) {
         snapshotCallback = onStatesSnapshotCallback
         commandStateCallback = onCommandStateChangedCallback
@@ -148,7 +149,7 @@ class MainViewModel : ViewModel() {
         forecastCallback = onForecastChangedCallback
         connectedCallback = onConnectedCallback
         entitiesCallback = onEntitiesListCallback
-        val nextConfiguration = listOf(host, token, autoReconnect.toString()) + alternateHosts
+        val nextConfiguration = listOf(host, token, autoReconnect.toString(), allowInsecureRemote.toString()) + alternateHosts
         if (configuration == nextConfiguration && webSocket != null) {
             resumeWebSocket()
             if (_uiState.value.connectionStatus == ConnectionStatus.Connected) {
@@ -169,6 +170,7 @@ class MainViewModel : ViewModel() {
             token = token,
             alternateHosts = alternateHosts,
             autoReconnect = autoReconnect,
+            allowInsecureRemote = allowInsecureRemote,
             onStateChanged = { entityId, state, attributes ->
                 if (generation == currentGeneration) {
                     onEntityStateChanged(entityId, state, attributes)
