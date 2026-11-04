@@ -39,6 +39,8 @@ class HomeAssistantWebSocketTest {
                 webSocket.send(if (accept) """{"type":"auth_ok"}""" else """{"type":"auth_invalid"}""")
             }
         }
+        // Как HA: на кадр закрытия клиента сервер отвечает своим (иначе соединение висит до тайм-аута).
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
     }
 
     private fun server(peer: Peer): MockWebServer = MockWebServer().also {
@@ -57,6 +59,16 @@ class HomeAssistantWebSocketTest {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6)
         while (!condition() && System.nanoTime() < deadline) {
             shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        assertTrue("Condition timed out", condition())
+    }
+
+    /** Ждёт условие, сдвигая часы главного потока: выдержки и повторы проб идут по отложенным задачам. */
+    private fun awaitAdvancing(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6)
+        while (!condition() && System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idleFor(250, TimeUnit.MILLISECONDS)
             Thread.sleep(10)
         }
         assertTrue("Condition timed out", condition())
@@ -116,48 +128,50 @@ class HomeAssistantWebSocketTest {
         assertEquals(1, second.requestCount)
     }
 
-    private fun probingClient(local: String, remote: String, onConnected: () -> Unit) =
+    private fun probingClient(local: String, remote: String, onConnected: () -> Unit, onSwitched: () -> Unit = {}) =
         HomeAssistantWebSocket(local, "test-token", { _, _, _ -> }, onConnected, {}, alternateHosts = listOf(remote),
-            primaryProbeIntervalMs = 1_000L).also { clients.add(it) }
+            primaryProbeIntervalMs = 1_000L, onEndpointSwitched = onSwitched).also { clients.add(it) }
 
-    @Test fun returnsToLocalAddressWhenItIsBackWithoutAuthenticatingProbe() {
+    // 0.9.5 (решение владельца 04.11.2026): проба локального адреса авторизуется и сама становится
+    // основным соединением — без повторного подключения и без «разрыва» для панели.
+    @Test fun returnsToLocalAddressWhenItIsBackWithoutReconnecting() {
         val probe = Peer()
-        val localPeer = Peer()
         val remotePeer = Peer()
-        // Локальный сначала недоступен, затем отвечает на пробу и на настоящее подключение.
+        // Локальный сначала недоступен, затем отвечает на пробу.
         val local = MockWebServer().also { servers.add(it) }
         local.enqueue(MockResponse().setResponseCode(503))
         local.enqueue(MockResponse().withWebSocketUpgrade(probe))
-        local.enqueue(MockResponse().withWebSocketUpgrade(localPeer))
         local.start()
         val remote = server(remotePeer)
         var connections = 0
-        val client = probingClient(local.url("/").toString(), remote.url("/").toString()) { connections++ }
+        var switches = 0
+        val client = probingClient(local.url("/").toString(), remote.url("/").toString(), { connections++ }, { switches++ })
         client.subscribeEntities(listOf("light.test"))
         client.connect()
         await { connections == 1 }
         assertEquals(remote.url("/").toString(), client.getHost())
 
         shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
-        await { connections == 2 }
+        await { probe.received.any { it.optString("type") == "auth" } }
+        awaitAdvancing { switches == 1 }
         assertEquals(local.url("/").toString(), client.getHost())
-        // Проба не отправляет токен: достаточно приглашения auth_required.
-        assertTrue(probe.received.isEmpty())
-        // После переключения подписки восстанавливаются на локальном адресе.
-        await { localPeer.received.any { it.optString("type") == "subscribe_events" } }
+        assertEquals("Повторного подключения нет", 1, connections)
+        // Подписки восстановлены на том же сокете пробы.
+        await { probe.received.any { it.optString("type") == "subscribe_events" } }
+        assertEquals(2, local.requestCount)
         assertEquals(1, remote.requestCount)
     }
 
     @Test fun staysOnRemoteWhileLocalIsDownAndChecksAgainLater() {
-        val localPeer = Peer()
+        val probe = Peer()
         val local = MockWebServer().also { servers.add(it) }
         repeat(2) { local.enqueue(MockResponse().setResponseCode(503)) }
-        local.enqueue(MockResponse().withWebSocketUpgrade(Peer()))
-        local.enqueue(MockResponse().withWebSocketUpgrade(localPeer))
+        local.enqueue(MockResponse().withWebSocketUpgrade(probe))
         local.start()
         val remote = server(Peer())
         var connections = 0
-        val client = probingClient(local.url("/").toString(), remote.url("/").toString()) { connections++ }
+        var switches = 0
+        val client = probingClient(local.url("/").toString(), remote.url("/").toString(), { connections++ }, { switches++ })
         client.connect()
         await { connections == 1 }
 
@@ -168,8 +182,10 @@ class HomeAssistantWebSocketTest {
         assertEquals(1, connections)
 
         shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
-        await { connections == 2 }
+        await { probe.received.any { it.optString("type") == "auth" } }
+        awaitAdvancing { switches == 1 }
         assertEquals(local.url("/").toString(), client.getHost())
+        assertEquals(1, connections)
     }
 
     @Test fun unavailableLocalFallsBackToRemote() {

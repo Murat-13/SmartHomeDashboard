@@ -55,6 +55,8 @@ class HaTransportFixesTest {
         }
         fun count(type: String) = received.count { it.optString("type") == type }
         fun ids() = received.filter { it.has("id") }.map { it.getInt("id") }
+        // Как HA: на кадр закрытия клиента сервер отвечает своим.
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
     }
 
     private fun server(vararg peers: Peer): MockWebServer = MockWebServer().also { server ->
@@ -229,17 +231,17 @@ class HaTransportFixesTest {
 
     @Test fun switchToLocalFinishesPendingReadsAndKeepsMessageIdsGrowing() {
         val probe = Peer()
-        val localPeer = Peer()
         val remotePeer = Peer() // на get_config не отвечает: запрос висит до переключения
         val local = MockWebServer().also { servers.add(it) }
         local.enqueue(MockResponse().setResponseCode(503))
         local.enqueue(MockResponse().withWebSocketUpgrade(probe))
-        local.enqueue(MockResponse().withWebSocketUpgrade(localPeer))
         local.start()
         val remote = server(remotePeer)
         var connections = 0
+        var switched = 0
         val client = HomeAssistantWebSocket(local.url("/").toString(), "test-token", { _, _, _ -> }, { connections++ }, {},
-            alternateHosts = listOf(remote.url("/").toString()), primaryProbeIntervalMs = 1_000L).also { clients.add(it) }
+            alternateHosts = listOf(remote.url("/").toString()), primaryProbeIntervalMs = 1_000L,
+            onEndpointSwitched = { switched++ }).also { clients.add(it) }
         client.subscribeEntities(emptyList())
         client.connect()
         await { connections == 1 && remotePeer.count("get_states") == 1 }
@@ -249,12 +251,16 @@ class HaTransportFixesTest {
         await { remotePeer.count("get_config") == 1 }
         assertTrue(answers.isEmpty())
 
-        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
-        await { connections == 2 && localPeer.count("get_states") == 1 }
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6)
+        while (switched == 0 && System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idleFor(250, TimeUnit.MILLISECONDS)
+            Thread.sleep(10)
+        }
+        await { switched == 1 && probe.count("get_states") == 1 }
         // Запрос прошлого соединения завершён отказом сразу, а не через 60 с тайм-аута.
         assertEquals(listOf<Any?>("null"), answers.toList())
         // Нумерация сквозная: ни один ID нового соединения не совпадает с ID прошлого.
-        assertTrue(localPeer.ids().min() > remotePeer.ids().max())
+        assertTrue(probe.ids().min() > remotePeer.ids().max())
     }
 
     @Test fun publicCleartextAddressIsRefusedWithoutConsentAndPanelFallsBackToLocal() {

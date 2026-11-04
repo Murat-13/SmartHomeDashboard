@@ -2,6 +2,7 @@ package com.example.smarthomedashboard
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import okhttp3.*
 import org.json.JSONObject
 import org.json.JSONArray
@@ -45,7 +46,12 @@ class HomeAssistantWebSocket(
      */
     private val onConnectionError: (String) -> Unit = onError,
     /** Владелец явно разрешил внешний адрес без шифрования; иначе такой адрес отклоняется до подключения. */
-    private val allowInsecureRemote: Boolean = false
+    private val allowInsecureRemote: Boolean = false,
+    /**
+     * Соединение без разрыва перешло с запасного адреса на основной (локальный): данные продолжают
+     * приходить, снимок состояний запрошен заново. [onDisconnected]/[onConnected] при этом не вызываются.
+     */
+    private val onEndpointSwitched: () -> Unit = {}
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -66,6 +72,18 @@ class HomeAssistantWebSocket(
     private var statesRequested = false
     private var entitiesRequested = false
     private companion object {
+        /** Проба основного адреса: время на подключение и авторизацию. */
+        const val PROBE_TIMEOUT_MS = 15_000L
+        /** Выдержка после авторизации пробы до перехода на неё. */
+        const val PROBE_SETTLE_MS = 2_000L
+        /** Сколько ждать завершения команды устройству перед переходом, и как часто проверять. */
+        const val ADOPT_WAIT_MS = 15_000L
+        const val ADOPT_RETRY_MS = 500L
+        /** Основной адрес отвалился раньше этого после перехода — проверки становятся реже. */
+        const val FLAP_WINDOW_MS = 3 * 60_000L
+        const val MAX_PROBE_DELAY_MS = 30 * 60_000L
+        /** Сколько ждать ответного кадра закрытия от прежнего сокета. */
+        const val CLOSE_GRACE_MS = 5_000L
         const val DAILY = "daily"
         const val HOURLY = "hourly"
         /** Единственные команды [read]: только чтение конфигурации и истории. */
@@ -105,6 +123,15 @@ class HomeAssistantWebSocket(
     private var timeoutTask: Runnable? = null
     private var probeTask: Runnable? = null
     private var probeSocket: WebSocket? = null
+    private var probeListener: SocketListener? = null
+    private var probeTimeout: Runnable? = null
+    /** Сколько раз подряд основной адрес отвалился вскоре после возврата на него: проверки реже. */
+    private var probeBackoff = 0
+    /** Время перехода на основной адрес ([SystemClock.elapsedRealtime]); 0 — переходов не было. */
+    private var switchedAt = 0L
+    /** Прежний сокет после перехода: закрывается штатно, но не дольше [CLOSE_GRACE_MS]. */
+    private var retiring: WebSocket? = null
+    private val dropRetiring = Runnable { retiring?.cancel(); retiring = null }
 
     fun getHost(): String = hosts.getOrElse(endpointIndex) { host }
 
@@ -119,6 +146,7 @@ class HomeAssistantWebSocket(
             rejectedHosts.clear()
             tokenRejectedHosts.clear()
             endpointIndex = 0
+            probeBackoff = 0
             openConnection()
         }
     }
@@ -153,53 +181,76 @@ class HomeAssistantWebSocket(
         timeoutTask = Runnable {
             if (running && generation == id && !authenticated) fail("Тайм-аут подключения или авторизации")
         }.also { handler.postDelayed(it, 15_000L) }
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            private fun current(block: () -> Unit) = handler.post {
-                if (running && generation == id) block()
-            }
+        webSocket = client.newWebSocket(request, SocketListener(id, gate))
+    }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (!gate.acquire()) return
-                // OkHttp сериализует сообщения соединения. JSON и подготовка массива не занимают UI.
-                val message = HaInboundMessage.parse(text) { running && generation == id }
-                if (message == null) {
+    /**
+     * Слушатель одного сокета. [owner] — поколение, от имени которого сокет работает. Пока сокет — проба
+     * основного адреса ([probing]), его сообщения идут в [handleProbeMessage]; после перехода
+     * ([adoptProbe]) он получает поколение основного соединения и дальше неотличим от обычного.
+     */
+    private inner class SocketListener(
+        @Volatile var owner: Int,
+        val gate: HaMessageGate,
+        @Volatile var probing: Boolean = false
+    ) : WebSocketListener() {
+        private fun alive() = running && generation == owner
+        private fun current(block: () -> Unit) = handler.post { if (alive()) block() }
+
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (probing) {
+                handler.post { handleProbeMessage(webSocket, text) }
+                return
+            }
+            if (!gate.acquire()) return
+            // OkHttp сериализует сообщения соединения. JSON и подготовка массива не занимают UI.
+            val message = HaInboundMessage.parse(text) { alive() }
+            if (message == null) {
+                gate.release()
+                return
+            }
+            val posted = handler.post {
+                try {
+                    if (alive()) handleMessage(message)
+                } finally {
                     gate.release()
-                    return
-                }
-                val posted = handler.post {
-                    try {
-                        if (running && generation == id) handleMessage(message)
-                    } finally {
-                        gate.release()
-                    }
-                }
-                if (!posted) gate.release()
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                // Ответный close(code) не отправляем: при кадре без кода OkHttp передаёт 1005,
-                // а close(1005) бросает IllegalArgumentException в главном потоке. fail() отменяет сокет.
-                current { fail("Сервер закрыл соединение") }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                current { fail("Соединение закрыто") }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                current {
-                    if (response?.code == 401 || response?.code == 403) {
-                        fail("Сервер временно отказал в доступе (HTTP ${response.code})")
-                    } else {
-                        fail(HomeAssistantAddress.errorMessage(t))
-                    }
                 }
             }
-        })
+            if (!posted) gate.release()
+        }
+
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            // Ответный close(code) не отправляем: при кадре без кода OkHttp передаёт 1005,
+            // а close(1005) бросает IllegalArgumentException в главном потоке. fail() отменяет сокет.
+            if (probing) handler.post { probeLost(webSocket) } else current { fail("Сервер закрыл соединение") }
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (probing) handler.post { probeLost(webSocket) } else current { fail("Соединение закрыто") }
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (probing) {
+                handler.post { probeLost(webSocket) }
+                return
+            }
+            current {
+                if (response?.code == 401 || response?.code == 403) {
+                    fail("Сервер временно отказал в доступе (HTTP ${response.code})")
+                } else {
+                    fail(HomeAssistantAddress.errorMessage(t))
+                }
+            }
+        }
     }
 
     private fun fail(message: String, permanent: Boolean = false, tokenRejected: Boolean = false) {
         if (!running) return
+        // Основной адрес отвалился вскоре после возврата на него — нестабильная сеть: следующая проверка реже.
+        if (endpointIndex == 0 && switchedAt > 0) {
+            probeBackoff = if (SystemClock.elapsedRealtime() - switchedAt < FLAP_WINDOW_MS) probeBackoff + 1 else 0
+            switchedAt = 0L
+        }
         teardown()
         if (permanent || tokenRejected) rejectedHosts.add(getHost())
         if (tokenRejected) tokenRejectedHosts.add(getHost())
@@ -233,7 +284,7 @@ class HomeAssistantWebSocket(
     }
 
     /**
-     * Единая очистка текущего сокета для [fail], [switchToPrimary] и [disconnect]: сначала поколение
+     * Единая очистка текущего сокета для [fail] и [disconnect]: сначала поколение
      * (cancel() сам может вызвать onFailure), затем все ожидающие запросы завершаются отказом,
      * чтобы ни один не дождался ответа уже другого соединения.
      */
@@ -656,10 +707,14 @@ class HomeAssistantWebSocket(
         return sent
     }
 
+    // ---- Возврат на основной (локальный) адрес без разрыва ----
+
     /**
-     * Панель стоит дома: после перехода на внешний адрес возвращаемся на локальный, как только он снова
-     * отвечает. Пробное соединение не авторизуется: достаточно приглашения auth_required от HA.
-     * Текущее соединение закрывается только после успешной проверки.
+     * Панель стоит дома: основной адрес всегда в приоритете. Пока работаем через запасной, раз в
+     * [primaryProbeIntervalMs] пробуем основной отдельным сокетом. Проба полностью авторизуется (тем же токеном,
+     * что ушёл бы туда при обычном подключении) и только после [PROBE_SETTLE_MS] устойчивой работы заменяет
+     * текущее соединение — без «нет связи», устаревших показаний и разрыва графика ([adoptProbe]).
+     * Если основной адрес вскоре снова отваливается, проверки становятся реже (до [MAX_PROBE_DELAY_MS]).
      */
     private fun schedulePrimaryProbe() {
         cancelPrimaryProbe()
@@ -667,57 +722,117 @@ class HomeAssistantWebSocket(
         // иначе каждые 5 минут шло бы переключение на него и сразу обратно.
         if (!autoReconnect || !authenticated || endpointIndex == 0 || hosts.size < 2 || hosts[0] in rejectedHosts) return
         val id = generation
-        probeTask = Runnable { probePrimary(id) }.also { handler.postDelayed(it, primaryProbeIntervalMs) }
+        val delay = (primaryProbeIntervalMs shl probeBackoff.coerceAtMost(5)).coerceAtMost(MAX_PROBE_DELAY_MS)
+        probeTask = Runnable { probePrimary(id) }.also { handler.postDelayed(it, delay) }
     }
 
     private fun probePrimary(id: Int) {
         probeTask = null
         if (!running || generation != id || !authenticated || endpointIndex == 0) return
+        if (!allowInsecureRemote && HomeAssistantAddress.needsInsecureConsent(hosts[0])) return
         val request = try {
             Request.Builder().url(HomeAssistantAddress.webSocketUrl(hosts[0])).build()
         } catch (_: IllegalArgumentException) { return }
-        var answered = false
-        val timeout = Runnable { if (!answered) { cancelPrimaryProbe(); schedulePrimaryProbe() } }
-        handler.postDelayed(timeout, 10_000L)
-        probeSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (!text.contains("auth_required")) return
-                handler.post {
-                    if (answered || probeSocket !== webSocket) return@post
-                    answered = true
-                    handler.removeCallbacks(timeout)
-                    switchToPrimary(id)
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                handler.post {
-                    if (answered || probeSocket !== webSocket) return@post
-                    answered = true
-                    handler.removeCallbacks(timeout)
-                    probeSocket = null
-                    // Локальный адрес пока недоступен: остаёмся на запасном и проверим позже.
-                    if (running && generation == id) schedulePrimaryProbe()
-                }
-            }
-        })
+        // Не ответил и не авторизовался за отведённое время — остаёмся на запасном, проверим позже.
+        probeTimeout = Runnable { abandonProbe() }.also { handler.postDelayed(it, PROBE_TIMEOUT_MS) }
+        val listener = SocketListener(owner = id, gate = HaMessageGate(), probing = true)
+        probeListener = listener
+        probeSocket = client.newWebSocket(request, listener)
     }
 
-    private fun switchToPrimary(id: Int) {
+    /** Сообщения пробы: только авторизация. Данные по пробе не идут, пока она не стала основным сокетом. */
+    private fun handleProbeMessage(socket: WebSocket, text: String) {
+        if (socket !== probeSocket) return
+        val id = probeListener?.owner ?: return
+        when (runCatching { JSONObject(text).optString("type") }.getOrNull()) {
+            "auth_required" -> socket.send(JSONObject().put("type", "auth").put("access_token", token).toString())
+            "auth_ok" -> {
+                probeTimeout?.let { handler.removeCallbacks(it) }
+                // Короткая выдержка: сокет, который сразу рвётся (нестабильный Wi-Fi), не заменит рабочий.
+                probeTimeout = Runnable { adoptProbe(id, SystemClock.elapsedRealtime() + ADOPT_WAIT_MS) }
+                    .also { handler.postDelayed(it, PROBE_SETTLE_MS) }
+            }
+            // Основной адрес не принял токен — работаем через запасной; это не ошибка текущего соединения.
+            "auth_invalid" -> abandonProbe()
+        }
+    }
+
+    private fun probeLost(socket: WebSocket) {
+        if (socket === probeSocket) abandonProbe()
+    }
+
+    private fun abandonProbe() {
         cancelPrimaryProbe()
-        if (!running || generation != id || endpointIndex == 0) return
-        onStatus("Локальный адрес снова доступен: переключение")
-        // Та же очистка, что в fail(), включая запросы чтения истории/get_config.
-        teardown()
-        onDisconnected()
+        if (running) schedulePrimaryProbe()
+    }
+
+    /**
+     * Проба становится основным соединением. Старое закрывается штатно, его ожидающие чтения завершаются
+     * отказом (повторятся по новому сокету), а подписки и полный снимок состояний запрашиваются заново.
+     * Команды устройствам не обрываются: пока ответ на команду ещё ожидается, переход откладывается
+     * (до [deadline]), затем отменяется до следующей проверки.
+     */
+    private fun adoptProbe(id: Int, deadline: Long) {
+        probeTimeout = null
+        val socket = probeSocket
+        val listener = probeListener
+        if (socket == null || listener == null || !running || generation != id || !authenticated || endpointIndex == 0) {
+            cancelPrimaryProbe()
+            return
+        }
+        if (serviceRequests.isNotEmpty()) {
+            if (SystemClock.elapsedRealtime() >= deadline) { abandonProbe(); return }
+            probeTimeout = Runnable { adoptProbe(id, deadline) }.also { handler.postDelayed(it, ADOPT_RETRY_MS) }
+            return
+        }
+        probeSocket = null
+        probeListener = null
+        onStatus("Локальный адрес снова доступен: переход без разрыва")
+        val previous = webSocket
+        // Как в teardown(), но без «разрыва» для владельца: данные остаются достоверными.
+        cancelIncoming()
+        generation++
+        timeoutTask?.let { handler.removeCallbacks(it) }
+        timeoutTask = null
+        authenticated = false
+        finishServiceRequests()
+        finishReadRequests()
+        forecastSubscriptions.clear()
+        retireSocket(previous)
+        listener.owner = generation
+        listener.probing = false
+        webSocket = socket
+        inboundGate = listener.gate
         endpointIndex = 0
         failures = 0
-        openConnection()
+        authSent = true
+        authenticated = true
+        stateSubscriptionSent = false
+        switchedAt = SystemClock.elapsedRealtime()
+        // То же, что после auth_ok обычного подключения: подписки, снимок, прогнозы, список сущностей.
+        if (statesRequested) ensureStates()
+        ensureForecasts()
+        if (entitiesRequested) requestEntities()
+        onEndpointSwitched()
+    }
+
+    /** Штатное закрытие прежнего сокета; если сервер не ответил за [CLOSE_GRACE_MS] — обрыв. */
+    private fun retireSocket(socket: WebSocket?) {
+        handler.removeCallbacks(dropRetiring)
+        dropRetiring.run()
+        socket ?: return
+        retiring = socket
+        if (runCatching { socket.close(1000, "Switching to primary address") }.getOrDefault(false)) {
+            handler.postDelayed(dropRetiring, CLOSE_GRACE_MS)
+        } else dropRetiring.run()
     }
 
     private fun cancelPrimaryProbe() {
         probeTask?.let { handler.removeCallbacks(it) }
         probeTask = null
+        probeTimeout?.let { handler.removeCallbacks(it) }
+        probeTimeout = null
+        probeListener = null
         probeSocket?.cancel()
         probeSocket = null
     }
@@ -726,6 +841,8 @@ class HomeAssistantWebSocket(
         running = false
         reconnectTask?.let { handler.removeCallbacks(it) }
         reconnectTask = null
+        handler.removeCallbacks(dropRetiring)
+        dropRetiring.run()
         teardown()
     }
 }

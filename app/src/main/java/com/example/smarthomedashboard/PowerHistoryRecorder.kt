@@ -129,6 +129,17 @@ internal class PowerHistoryRecorder(
         maybeImport()
     }
 
+    /**
+     * Соединение без разрыва перешло на другой адрес того же HA: запись продолжается без разрыва графика,
+     * а прерванная подгрузка истории начнётся заново после нового снимка состояний.
+     */
+    fun onEndpointSwitched() {
+        importSession++
+        importQueue.clear()
+        importRequested = false
+        snapshotDone = false
+    }
+
     fun onDisconnected() {
         importSession++
         importQueue.clear()

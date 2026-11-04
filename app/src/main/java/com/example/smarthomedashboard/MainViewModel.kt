@@ -222,6 +222,15 @@ class MainViewModel : ViewModel() {
             onError = { message ->
                 if (generation == currentGeneration) publishOperationError(message)
             },
+            // Переход на локальный адрес без разрыва: данные достоверны, история не рвётся; сервер
+            // уточняется заново (на случай, если адреса ведут к разным HA), экран обновляет маршрут.
+            onEndpointSwitched = {
+                if (generation == currentGeneration) {
+                    powerHistory?.onEndpointSwitched()
+                    identifyServer(currentGeneration)
+                    connectedCallback?.invoke()
+                }
+            },
             // Только разрыв меняет статус соединения.
             onConnectionError = { message ->
                 if (generation == currentGeneration) {

@@ -914,6 +914,8 @@ class MainActivity : AppCompatActivity() {
                     localRoute = local.isNotEmpty() && active == local
                     val network = if (localRoute == true) "Локальная сеть" else "Интернет"
                     viewModel.publishStatus("$network ($active)")
+                    // Маршрут меняется и без смены статуса связи (переход на локальный без разрыва).
+                    updateSystemStatus()
                     subscribeToNeededEntities()
                     viewModel.getEntities()
                 }
