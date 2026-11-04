@@ -122,11 +122,17 @@ class MainViewModelTest {
     fun errorAndRetryStatusReachRetainedState() {
         viewModel.connectWebSocket("http://[", "artificial-token", autoReconnect = false)
         val client = requireNotNull(viewModel.getWebSocket())
-        callback(client, "onError")("Неверный токен HA")
+        // Отказ токена — ошибка соединения (fail() → onConnectionError), она меняет статус связи.
+        callback(client, "onConnectionError")("Неверный токен HA")
         assertEquals(ConnectionStatus.Error("Неверный токен HA"), viewModel.uiState.value.connectionStatus)
         assertEquals("Неверный токен HA", viewModel.uiState.value.statusMessage)
         callback(client, "onStatus")("Повтор через 10 минут")
         assertEquals("Повтор через 10 минут", viewModel.uiState.value.statusMessage)
+        // Ошибка операции (0.9.5): только текст и плашка, статус связи прежний.
+        callback(client, "onError")("Нет ответа Home Assistant на команду")
+        assertEquals(ConnectionStatus.Error("Неверный токен HA"), viewModel.uiState.value.connectionStatus)
+        assertEquals("Нет ответа Home Assistant на команду", viewModel.uiState.value.operationError?.message)
+        assertEquals("Нет ответа Home Assistant на команду", viewModel.uiState.value.statusMessage)
         viewModel.disconnectWebSocket()
     }
 

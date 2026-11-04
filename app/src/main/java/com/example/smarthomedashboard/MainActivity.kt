@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -68,8 +69,11 @@ class MainActivity : AppCompatActivity() {
     private var lossShown = false
     private val showLoss = Runnable {
         lossShown = true
+        pillHandler.removeCallbacks(hideOperationError)
         showPill(ModernUi.Status.ERROR, "Нет связи с Home Assistant · переподключение…")
     }
+    // Скрывает только плашку ошибки операции: потерю связи не снимает.
+    private val hideOperationError = Runnable { if (!lossShown) hidePill.run() }
     private val hidePill = Runnable { findViewById<View?>(R.id.statusPill)?.visibility = View.GONE }
 
     private val panelController: DashboardPanelController by lazy {
@@ -118,6 +122,8 @@ class MainActivity : AppCompatActivity() {
         private const val PILL_LOSS_DELAY_MS = 5_000L
         private const val PILL_START_DELAY_MS = 15_000L
         private const val PILL_RECOVERED_MS = 3_000L
+        /** Ошибка операции при живом соединении видна на плашке столько, затем плашка скрывается. */
+        internal const val PILL_OPERATION_ERROR_MS = 12_000L
         private const val PAGE_FLING = 1000f
         private const val DOTS_VISIBLE_MS = 2_000L
         private const val PEEK_FALLBACK_MS = 400L
@@ -179,6 +185,9 @@ class MainActivity : AppCompatActivity() {
             }
             launch {
                 viewModel.uiState.map { it.connectionStatus }.distinctUntilChanged().collect { onConnectionStatus(it) }
+            }
+            launch {
+                viewModel.uiState.map { it.operationError }.distinctUntilChanged().collect { it?.let(::onOperationError) }
             }
         }
         internet?.start()
@@ -613,6 +622,19 @@ class MainActivity : AppCompatActivity() {
             pillHandler.postDelayed(showLoss, if (everConnected) PILL_LOSS_DELAY_MS else PILL_START_DELAY_MS)
         }
         updateSystemStatus()
+    }
+
+    /**
+     * Ошибка операции (команда, прогноз) при живом соединении: янтарная плашка на [PILL_OPERATION_ERROR_MS].
+     * Потерю связи не перекрывает. После пересоздания экрана показывается только остаток срока.
+     */
+    private fun onOperationError(error: OperationError) {
+        if (lossShown) return
+        val remaining = PILL_OPERATION_ERROR_MS - (SystemClock.elapsedRealtime() - error.atMs)
+        if (remaining <= 0) return
+        showPill(ModernUi.Status.WARNING, error.message)
+        pillHandler.removeCallbacks(hideOperationError)
+        pillHandler.postDelayed(hideOperationError, remaining)
     }
 
     private fun showPill(state: ModernUi.Status, text: String) {

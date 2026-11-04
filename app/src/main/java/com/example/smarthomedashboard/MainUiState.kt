@@ -26,5 +26,13 @@ data class MainUiState(
     val dailyUnsupported: Set<String> = emptySet(),
     internal val yandexWeather: YandexClimateWeather = YandexClimateWeather(),
     val isEditMode: Boolean = false,
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    /** Последняя ошибка операции при живом соединении (команда, прогноз, списки); не меняет [connectionStatus]. */
+    val operationError: OperationError? = null
 )
+
+/**
+ * Ошибка операции для кратковременного показа на плашке. [atMs] — `SystemClock.elapsedRealtime()`:
+ * пересозданный экран показывает её только остаток срока, а не заново.
+ */
+data class OperationError(val message: String, val atMs: Long)

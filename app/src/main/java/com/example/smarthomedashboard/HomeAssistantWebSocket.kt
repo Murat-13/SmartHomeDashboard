@@ -37,7 +37,13 @@ class HomeAssistantWebSocket(
      * интеграция не поддерживает почасовой тип. Это не ошибка соединения и не показывается статусом.
      */
     private val onHourlyForecastChanged: (entityId: String, forecast: JSONArray?, supported: Boolean) -> Unit = { _, _, _ -> },
-    private val onDailyForecastUnavailable: (entityId: String) -> Unit = {}
+    private val onDailyForecastUnavailable: (entityId: String) -> Unit = {},
+    /**
+     * Ошибка самого соединения (обрыв, отказ авторизации, тайм-аут подключения). Вызывается только из
+     * разрыва; [onError] остаётся для ошибок операций при живом соединении (команда, прогноз, списки).
+     * По умолчанию совпадает с [onError] — поведение прежних клиентов не меняется.
+     */
+    private val onConnectionError: (String) -> Unit = onError
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -85,6 +91,8 @@ class HomeAssistantWebSocket(
         val timeout: Runnable
     )
     private var stateRequest: StateRequest? = null
+    /** Поколение, в котором уже принят полный снимок get_states: дальше всё приходит событиями. */
+    private var snapshotGeneration = -1
     /** Разовые запросы чтения ([read]): ответ или null при ошибке/разрыве/тайм-ауте. */
     private data class ReadRequest(val result: (Any?) -> Unit, val timeout: Runnable)
     private val readRequests = mutableMapOf<Int, ReadRequest>()
@@ -126,8 +134,9 @@ class HomeAssistantWebSocket(
         authSent = false
         stateSubscriptionSent = false
         forecastSubscriptions.clear()
-        messageId = 1
-        retiredServiceIds.clear() // ID запросов начинается заново; старое поколение уже отсечено.
+        // ID не сбрасываются: HA требует лишь рост в пределах соединения, а сквозная нумерация
+        // исключает совпадение ID запроса прошлого соединения с ответом нового.
+        retiredServiceIds.clear()
         onStatus("Подключение: ${getHost()}")
         val request = try {
             Request.Builder().url(HomeAssistantAddress.webSocketUrl(getHost())).build()
@@ -162,10 +171,9 @@ class HomeAssistantWebSocket(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                current {
-                    webSocket.close(code, null)
-                    fail("Сервер закрыл соединение")
-                }
+                // Ответный close(code) не отправляем: при кадре без кода OkHttp передаёт 1005,
+                // а close(1005) бросает IllegalArgumentException в главном потоке. fail() отменяет сокет.
+                current { fail("Сервер закрыл соединение") }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -186,23 +194,12 @@ class HomeAssistantWebSocket(
 
     private fun fail(message: String, permanent: Boolean = false, tokenRejected: Boolean = false) {
         if (!running) return
-        cancelPrimaryProbe()
-        // Invalidate first: cancel() can itself cause onFailure.
-        cancelIncoming()
-        generation++
-        timeoutTask?.let { handler.removeCallbacks(it) }
-        timeoutTask = null
-        webSocket?.cancel()
-        webSocket = null
-        authenticated = false
-        finishServiceRequests()
-        finishReadRequests()
-        forecastSubscriptions.clear()
+        teardown()
         if (permanent || tokenRejected) rejectedHosts.add(getHost())
         if (tokenRejected) tokenRejectedHosts.add(getHost())
         failures++
         onDisconnected()
-        onError(message)
+        onConnectionError(message)
         val available = hosts.indices.filter { hosts[it] !in rejectedHosts }
         if (available.isEmpty() && autoReconnect && tokenRejectedHosts.isNotEmpty()) {
             // A revoked token must not cause a tight loop, but may become usable again later.
@@ -227,6 +224,25 @@ class HomeAssistantWebSocket(
         val delay = if (failures < hosts.size) 0L else HomeAssistantAddress.retryDelay(failures - hosts.size)
         onStatus("Переподключение через ${delay / 1000} сек.: $message")
         reconnectTask = Runnable { openConnection() }.also { handler.postDelayed(it, delay) }
+    }
+
+    /**
+     * Единая очистка текущего сокета для [fail], [switchToPrimary] и [disconnect]: сначала поколение
+     * (cancel() сам может вызвать onFailure), затем все ожидающие запросы завершаются отказом,
+     * чтобы ни один не дождался ответа уже другого соединения.
+     */
+    private fun teardown() {
+        cancelPrimaryProbe()
+        cancelIncoming()
+        generation++
+        timeoutTask?.let { handler.removeCallbacks(it) }
+        timeoutTask = null
+        webSocket?.cancel()
+        webSocket = null
+        authenticated = false
+        finishServiceRequests()
+        finishReadRequests()
+        forecastSubscriptions.clear()
     }
 
     private fun handleMessage(message: HaInboundMessage) {
@@ -278,6 +294,7 @@ class HomeAssistantWebSocket(
                         onError("Не удалось получить состояния Home Assistant")
                         return
                     }
+                    snapshotGeneration = generation
                     val states = message.states.filter { it.entityId !in request.changed }.map { state ->
                         if (state.entityId !in request.forecasts || !state.attributes.has("forecast")) state
                         else state.copy(attributes = JSONObject().also { copy ->
@@ -366,7 +383,9 @@ class HomeAssistantWebSocket(
     fun subscribeEntities(entityIds: List<String>) = onMain {
         // subscribe_events covers all entities, including advanced widget configs.
         statesRequested = true
-        if (authenticated) {
+        // Один снимок на соединение: auth_ok уже запросил его, а дальше состояния приходят событиями.
+        // Повторный запрос нужен, только если снимка ещё нет и он не ожидается (отказ/тайм-аут).
+        if (authenticated && stateRequest == null && snapshotGeneration != generation) {
             ensureStates()
         }
     }
@@ -676,17 +695,9 @@ class HomeAssistantWebSocket(
         cancelPrimaryProbe()
         if (!running || generation != id || endpointIndex == 0) return
         onStatus("Локальный адрес снова доступен: переключение")
-        // Как в fail(): сначала инвалидируем поколение, чтобы callbacks старого сокета не сработали.
-        cancelIncoming()
-        generation++
-        timeoutTask?.let { handler.removeCallbacks(it) }
-        timeoutTask = null
-        webSocket?.cancel()
-        webSocket = null
-        authenticated = false
-        finishServiceRequests()
+        // Та же очистка, что в fail(), включая запросы чтения истории/get_config.
+        teardown()
         onDisconnected()
-        forecastSubscriptions.clear()
         endpointIndex = 0
         failures = 0
         openConnection()
@@ -701,19 +712,9 @@ class HomeAssistantWebSocket(
 
     fun disconnect() = onMain {
         running = false
-        cancelIncoming()
-        cancelPrimaryProbe()
-        generation++
         reconnectTask?.let { handler.removeCallbacks(it) }
-        timeoutTask?.let { handler.removeCallbacks(it) }
         reconnectTask = null
-        timeoutTask = null
-        authenticated = false
-        finishServiceRequests()
-        finishReadRequests()
-        webSocket?.cancel()
-        webSocket = null
-        forecastSubscriptions.clear()
+        teardown()
     }
 }
 

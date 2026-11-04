@@ -1,5 +1,8 @@
 package com.example.smarthomedashboard
 
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,7 +34,7 @@ class MainViewModel : ViewModel() {
         render = { id -> commandStateCallback?.invoke(id) },
         cancelRequest = { id -> webSocket?.cancelServiceRequests(id) },
         connectionGeneration = { webSocket?.connectionGeneration ?: generation },
-        error = ::publishStatus
+        error = ::publishOperationError
     )
 
     private var webSocket: HomeAssistantWebSocket? = null
@@ -48,12 +51,42 @@ class MainViewModel : ViewModel() {
         powerHistory?.setSources(entityIds)
     }
 
-    /** Сервер HA определяется по get_config (только чтение), чтобы истории разных домов не смешивались. */
+    private val identifyHandler = Handler(Looper.getMainLooper())
+    private var identifyRetry: Runnable? = null
+    private var identifyAttempt = 0
+
+    /**
+     * Сервер HA определяется по get_config (только чтение), чтобы истории разных домов не смешивались.
+     * Без ответа запись истории не начинается, поэтому отказ повторяется с растущей паузой, пока
+     * соединение живо. Ответ без данных о доме ([PowerHistoryRecorder.instanceKey] = null) не повторяется.
+     */
     private fun identifyServer(currentGeneration: Int) {
+        cancelIdentify()
+        identifyAttempt = 0
+        requestIdentity(currentGeneration)
+    }
+
+    private fun requestIdentity(currentGeneration: Int) {
         val history = powerHistory ?: return
-        webSocket?.read("get_config") { config ->
-            if (generation == currentGeneration) PowerHistoryRecorder.instanceKey(config)?.let(history::setInstance)
+        val client = webSocket ?: return
+        client.read("get_config") { config ->
+            if (generation != currentGeneration || _uiState.value.connectionStatus != ConnectionStatus.Connected) return@read
+            if (config == null) {
+                val delay = IDENTIFY_RETRY_MS[identifyAttempt.coerceAtMost(IDENTIFY_RETRY_MS.lastIndex)]
+                identifyAttempt++
+                identifyRetry = Runnable {
+                    identifyRetry = null
+                    requestIdentity(currentGeneration)
+                }.also { identifyHandler.postDelayed(it, delay) }
+                return@read
+            }
+            PowerHistoryRecorder.instanceKey(config)?.let(history::setInstance)
         }
+    }
+
+    private fun cancelIdentify() {
+        identifyRetry?.let { identifyHandler.removeCallbacks(it) }
+        identifyRetry = null
     }
 
     internal var tokenRevision = -1L
@@ -79,6 +112,13 @@ class MainViewModel : ViewModel() {
     // Статус — сохраняемое состояние экрана, а не одноразовое событие подключённого UI.
     internal fun publishStatus(message: String) {
         _uiState.update { it.copy(statusMessage = message) }
+    }
+
+    /** Ошибка операции: текст статуса и кратковременная плашка, статус соединения не меняется. */
+    internal fun publishOperationError(message: String) {
+        _uiState.update {
+            it.copy(statusMessage = message, operationError = OperationError(message, SystemClock.elapsedRealtime()))
+        }
     }
 
     fun resumeWebSocket() {
@@ -167,6 +207,7 @@ class MainViewModel : ViewModel() {
             },
             onDisconnected = {
                 if (generation == currentGeneration) {
+                    cancelIdentify()
                     commands.disconnected()
                     powerHistory?.onDisconnected()
                     _uiState.update { it.copy(connectionStatus = ConnectionStatus.Disconnected, haSession = HaSession()) }
@@ -175,7 +216,12 @@ class MainViewModel : ViewModel() {
             onEntitiesList = { entities ->
                 if (generation == currentGeneration) entitiesCallback?.invoke(entities)
             },
+            // Ошибка операции при живом соединении: сокет работает, «нет связи» не показываем.
             onError = { message ->
+                if (generation == currentGeneration) publishOperationError(message)
+            },
+            // Только разрыв меняет статус соединения.
+            onConnectionError = { message ->
                 if (generation == currentGeneration) {
                     _uiState.update { it.copy(connectionStatus = ConnectionStatus.Error(message)) }
                     publishStatus(message)
@@ -211,6 +257,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun disconnectWebSocket() {
+        cancelIdentify()
         commands.disconnected()
         powerHistory?.onDisconnected()
         generation++
@@ -243,7 +290,7 @@ class MainViewModel : ViewModel() {
     fun callService(domain: String, service: String, entityId: String, onResult: (ServiceCommandResult) -> Unit = {}): Boolean {
         val client = webSocket
         if (client == null) {
-            publishStatus("Нет соединения: дождитесь переподключения и повторите команду")
+            publishOperationError("Нет соединения: дождитесь переподключения и повторите команду")
             return false
         }
         return client.callService(domain, service, entityId, onResult)
@@ -302,5 +349,10 @@ class MainViewModel : ViewModel() {
         detachUi()
         disconnectWebSocket()
         super.onCleared()
+    }
+
+    private companion object {
+        /** Паузы повтора get_config: 15 с, 30 с, 1 мин, 2 мин, далее каждые 5 мин. */
+        val IDENTIFY_RETRY_MS = longArrayOf(15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
     }
 }
