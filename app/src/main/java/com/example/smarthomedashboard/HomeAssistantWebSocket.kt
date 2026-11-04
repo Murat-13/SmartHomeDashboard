@@ -129,6 +129,12 @@ class HomeAssistantWebSocket(
     private var probeBackoff = 0
     /** Время перехода на основной адрес ([SystemClock.elapsedRealtime]); 0 — переходов не было. */
     private var switchedAt = 0L
+    /**
+     * Основной адрес отказал пробе в доступе (неверный токен, HTTP 401/403): больше не пробуем до нового
+     * [connect]. Иначе неверный токен уходил бы туда каждые 5 минут — HA считает это неудачными входами
+     * и при включённой защите может заблокировать IP планшета.
+     */
+    private var primaryRefusedProbe = false
     /** Прежний сокет после перехода: закрывается штатно, но не дольше [CLOSE_GRACE_MS]. */
     private var retiring: WebSocket? = null
     private val dropRetiring = Runnable { retiring?.cancel(); retiring = null }
@@ -147,6 +153,7 @@ class HomeAssistantWebSocket(
             tokenRejectedHosts.clear()
             endpointIndex = 0
             probeBackoff = 0
+            primaryRefusedProbe = false
             openConnection()
         }
     }
@@ -195,7 +202,6 @@ class HomeAssistantWebSocket(
         @Volatile var probing: Boolean = false
     ) : WebSocketListener() {
         private fun alive() = running && generation == owner
-        private fun current(block: () -> Unit) = handler.post { if (alive()) block() }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (probing) {
@@ -219,27 +225,29 @@ class HomeAssistantWebSocket(
             if (!posted) gate.release()
         }
 
+        /**
+         * Проба это или уже основной сокет — решается в главном потоке: сокет может быть принят как основной
+         * между событием OkHttp и его обработкой, и его обрыв не должен потеряться.
+         */
+        private fun ended(webSocket: WebSocket, httpCode: Int? = null, mainFailure: () -> Unit) = handler.post {
+            if (probing) probeLost(webSocket, httpCode) else if (alive()) mainFailure()
+        }
+
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             // Ответный close(code) не отправляем: при кадре без кода OkHttp передаёт 1005,
             // а close(1005) бросает IllegalArgumentException в главном потоке. fail() отменяет сокет.
-            if (probing) handler.post { probeLost(webSocket) } else current { fail("Сервер закрыл соединение") }
+            ended(webSocket) { fail("Сервер закрыл соединение") }
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (probing) handler.post { probeLost(webSocket) } else current { fail("Соединение закрыто") }
+            ended(webSocket) { fail("Соединение закрыто") }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            if (probing) {
-                handler.post { probeLost(webSocket) }
-                return
-            }
-            current {
-                if (response?.code == 401 || response?.code == 403) {
-                    fail("Сервер временно отказал в доступе (HTTP ${response.code})")
-                } else {
-                    fail(HomeAssistantAddress.errorMessage(t))
-                }
+            val code = response?.code
+            ended(webSocket, code) {
+                if (code == 401 || code == 403) fail("Сервер временно отказал в доступе (HTTP $code)")
+                else fail(HomeAssistantAddress.errorMessage(t))
             }
         }
     }
@@ -316,9 +324,7 @@ class HomeAssistantWebSocket(
                 timeoutTask?.let { handler.removeCallbacks(it) }
                 timeoutTask = null
                 // Восстанавливаем только актуальные желаемые источники до вызова владельца.
-                if (statesRequested) ensureStates()
-                ensureForecasts()
-                if (entitiesRequested) requestEntities()
+                if (!resubscribe()) return
                 onConnected()
                 schedulePrimaryProbe()
             }
@@ -720,7 +726,8 @@ class HomeAssistantWebSocket(
         cancelPrimaryProbe()
         // Отклонённый навсегда основной адрес (некорректный, без согласия на http) не проверяем:
         // иначе каждые 5 минут шло бы переключение на него и сразу обратно.
-        if (!autoReconnect || !authenticated || endpointIndex == 0 || hosts.size < 2 || hosts[0] in rejectedHosts) return
+        if (!autoReconnect || !authenticated || endpointIndex == 0 || hosts.size < 2 || hosts[0] in rejectedHosts ||
+            primaryRefusedProbe) return
         val id = generation
         val delay = (primaryProbeIntervalMs shl probeBackoff.coerceAtMost(5)).coerceAtMost(MAX_PROBE_DELAY_MS)
         probeTask = Runnable { probePrimary(id) }.also { handler.postDelayed(it, delay) }
@@ -753,12 +760,19 @@ class HomeAssistantWebSocket(
                     .also { handler.postDelayed(it, PROBE_SETTLE_MS) }
             }
             // Основной адрес не принял токен — работаем через запасной; это не ошибка текущего соединения.
-            "auth_invalid" -> abandonProbe()
+            "auth_invalid" -> refuseProbe()
         }
     }
 
-    private fun probeLost(socket: WebSocket) {
-        if (socket === probeSocket) abandonProbe()
+    private fun probeLost(socket: WebSocket, httpCode: Int? = null) {
+        if (socket !== probeSocket) return
+        if (httpCode == 401 || httpCode == 403) refuseProbe() else abandonProbe()
+    }
+
+    private fun refuseProbe() {
+        primaryRefusedProbe = true
+        onStatus("Локальный адрес отказал в доступе: проверки отключены до переподключения")
+        cancelPrimaryProbe()
     }
 
     private fun abandonProbe() {
@@ -810,10 +824,20 @@ class HomeAssistantWebSocket(
         stateSubscriptionSent = false
         switchedAt = SystemClock.elapsedRealtime()
         // То же, что после auth_ok обычного подключения: подписки, снимок, прогнозы, список сущностей.
+        if (!resubscribe()) return
+        onEndpointSwitched()
+    }
+
+    /**
+     * Подписки, снимок, прогнозы и список сущностей нового соединения. false — отправка не удалась и
+     * соединение уже разорвано через fail(): владельцу нельзя сообщать «подключено» после «разрыва».
+     */
+    private fun resubscribe(): Boolean {
+        val id = generation
         if (statesRequested) ensureStates()
         ensureForecasts()
         if (entitiesRequested) requestEntities()
-        onEndpointSwitched()
+        return generation == id && authenticated
     }
 
     /** Штатное закрытие прежнего сокета; если сервер не ответил за [CLOSE_GRACE_MS] — обрыв. */

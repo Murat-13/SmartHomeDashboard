@@ -168,6 +168,29 @@ class PowerHistoryImportTest {
         assertTrue("Недавняя точка — точный замер", raw.any { it.first == recentTs && it.second == 420.0 })
     }
 
+    @Test fun afterEndpointSwitchSamplesWaitForServerIdentity() {
+        val r = connected()
+        answerAll()
+        r.onEndpointSwitched()
+        now += 60_000
+        r.onState("sensor.inv", "777", w())
+        r.flush()
+        val homeSource = store.sourceId("home", "sensor.inv")!!
+        val raw = mutableListOf<Pair<Long, Double?>>()
+        store.forEachRaw(homeSource) { ts, v -> raw += ts to v }
+        assertTrue("Сервер ещё не подтверждён — под прежним ключом ничего нового", raw.none { it.second == 777.0 })
+        assertTrue("И подгрузка истории не начинается", waiting.isEmpty())
+        // Новый адрес вёл к другому HA: показание записано под его ключом, прежний сервер не тронут.
+        r.setInstance("other")
+        r.flush()
+        val other = mutableListOf<Pair<Long, Double?>>()
+        store.forEachRaw(store.sourceId("other", "sensor.inv")!!) { ts, v -> other += ts to v }
+        assertTrue(other.any { it.second == 777.0 })
+        raw.clear()
+        store.forEachRaw(homeSource) { ts, v -> raw += ts to v }
+        assertTrue(raw.none { it.second == 777.0 })
+    }
+
     @Test fun databaseFrom094IsUpgradedWithoutLosingData() {
         val name = "power_history_upgrade_test.db"
         context.deleteDatabase(name)

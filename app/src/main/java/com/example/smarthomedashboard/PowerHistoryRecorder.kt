@@ -48,6 +48,11 @@ internal class PowerHistoryRecorder(
     private val listeners = LinkedHashSet<Listener>()
     private var flushScheduled = false
     private var importRequested = false
+    /**
+     * После перехода соединения на другой адрес сервер ещё не подтверждён (`get_config`): если адреса ведут к
+     * разным HA, показания нового нельзя записывать под ключом прежнего. До [setInstance] записи ждут в памяти.
+     */
+    private var identityPending = false
 
     fun addListener(listener: Listener) { listeners += listener }
     fun removeListener(listener: Listener) { listeners -= listener }
@@ -59,6 +64,7 @@ internal class PowerHistoryRecorder(
 
     /** Сервер HA определён: закрываем прошлые сессии (остановка приложения) и начинаем запись. */
     fun setInstance(key: String) {
+        identityPending = false
         if (instance != null && instance != key) breakAll()
         val changed = instance != key
         instance = key
@@ -138,9 +144,11 @@ internal class PowerHistoryRecorder(
         importQueue.clear()
         importRequested = false
         snapshotDone = false
+        identityPending = true
     }
 
     fun onDisconnected() {
+        // identityPending сохраняется: неподтверждённые записи ждут ответа get_config и после переподключения.
         importSession++
         importQueue.clear()
         if (connected) breakAll()
@@ -175,6 +183,7 @@ internal class PowerHistoryRecorder(
 
     /** Пишет накопленное; до определения сервера HA данные ждут в памяти. */
     fun flush() {
+        if (identityPending) return
         val key = instance ?: return
         val batch = ArrayList(pending)
         pending.clear()
@@ -229,6 +238,7 @@ internal class PowerHistoryRecorder(
      * [IMPORT_SETTLE_MS], которые HA мог ещё не записать) и больше не запрашивается, даже если в HA данных за него нет.
      */
     private fun maybeImport() {
+        if (identityPending) return
         val key = instance ?: return
         val read = reader ?: return
         if (!snapshotDone || importRequested || !connected) return

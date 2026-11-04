@@ -198,6 +198,11 @@ class HaSoftSwitchTest {
         assertEquals(0, switched)
         assertEquals(before, disconnected)
         assertEquals(remote.url("/").toString(), client.getHost())
+        // Неверный токен не повторяется каждые 5 минут: HA считает это неудачными входами и может забанить IP.
+        val requests = local.requestCount
+        repeat(40) { shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS); Thread.sleep(5) }
+        assertEquals(requests, local.requestCount)
+        assertEquals(1, probe.count("auth"))
     }
 
     @Test fun flappingLocalAddressIsProbedLessOften() {
