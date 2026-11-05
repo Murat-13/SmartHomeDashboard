@@ -158,6 +158,17 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
 - Pre-release `v0.9.6` (тег на `8545644`): один APK + `.sha256`; `digest` GitHub = SHA-256 сборки, скачанный APK — тот же
   хэш. Код, версия, Play Защита, HA, прокси не менялись, push не выполнялся, планшеты не трогались.
 
+### 05.11.2026 — агент Android Studio на Mac владельца: техдолг, этап A — русский язык Android Studio
+
+- Начало задачи «техдолг A→D»: `main` = `2def414`, рабочая копия чистая. Базовый прогон `testDebugUnitTest assembleDebug
+  assembleDebugAndroidTest assembleRelease lintDebug --offline` — 1253 теста, 0 падений; lint 0 ошибок, 330 предупреждений.
+- Этап A (проект не менялся): Android Studio Preview 2026.2.3 (сборка AI-262.10968.63.2623.16736312), вторая —
+  Android Studio 2026.2.1. Раздел Settings → Appearance & Behavior → System Settings → Language and Region есть
+  (`preferences.language.and.region` в `AndroidStudioPlugin.xml`). Официального пакета `com.intellij.ru` на Marketplace нет
+  (ответ 404) — ничего не устанавливалось. Совместимые с сборкой 262 сторонние пакеты (не JetBrains): `org.localization4idea`
+  2026.2.0, `com.ai.dev.tools.languagePack.ru` 2026.2.1, `com.ai.dev.tools.languagePack.community.ru` 2026.2, `su.rus.language-pack`
+  1.0.3, `su.rus.language-pack.igalexor` 1.0.4 — установка только по решению владельца.
+
 ### 05.11.2026 — Claude (чат проекта): версия 0.9.6 и публикация плитки «Инвертор»
 
 - После выпуска 0.9.5 (запись ниже): `appVersionName` 0.9.5 → 0.9.6 (versionCode 906); коммиты плитки «Инвертор»
