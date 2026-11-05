@@ -88,11 +88,18 @@ class HomeClimateEditorActivity : PinProtectedActivity() {
                 "звёздочкой до 5 комнат для свёрнутого вида. Изменения применяются только кнопкой «Сохранить»."))
 
         preview = HomeClimateCompactView(this).apply { tag = "hc_editor_preview" }
+        // Одни и те же параметры разметки: onMeasure только меняет их размер, без новых объектов.
+        val previewParams = FrameLayout.LayoutParams(0, 0, Gravity.CENTER_HORIZONTAL)
+        preview.layoutParams = previewParams
         val previewFrame = object : FrameLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 val screenHeight = resources.displayMetrics.heightPixels
                 val width = minOf(MeasureSpec.getSize(widthMeasureSpec), kit.dp(440), (screenHeight * 0.38f).toInt())
-                preview.layoutParams = LayoutParams(width, width / 2, Gravity.CENTER_HORIZONTAL)
+                if (previewParams.width != width || previewParams.height != width / 2) {
+                    previewParams.width = width
+                    previewParams.height = width / 2
+                    preview.layoutParams = previewParams
+                }
                 super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(width / 2 + kit.dp(8), MeasureSpec.EXACTLY))
             }
         }

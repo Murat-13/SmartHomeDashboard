@@ -80,8 +80,10 @@ class AdvancedSettingsLookTest {
     @Test fun usesModernThemeStylesAndKeepsEverySetting() {
         val activity = open()
         layout(activity, 1280, 752)
+        // Фон экрана даёт окно темы Modern (лишний фон корня убран — lint Overdraw, вид тот же).
         val root = (activity.findViewById<ViewGroup>(android.R.id.content)).getChildAt(0)
-        assertEquals(color(R.color.modern_background), (root.background as ColorDrawable).color)
+        assertNull(root.background)
+        assertEquals(color(R.color.modern_background), (activity.window.decorView.background as ColorDrawable).color)
 
         val save = activity.findViewById<Button>(R.id.btnSave)
         val cancel = activity.findViewById<Button>(R.id.btnCancel)

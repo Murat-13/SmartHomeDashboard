@@ -188,16 +188,22 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
         scheduleTick()
     }
 
+    // Параметры узкой и широкой раскладки создаются один раз, а не в onMeasure.
+    private val topNarrow by lazy { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(222f)) }
+    private val topWide by lazy { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(132f)) }
+    private val clockNarrow by lazy { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(124f)) }
+    private val clockWide by lazy { LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.5f) }
+    private val detailsNarrow by lazy { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(88f)).apply { topMargin = dp(8f) } }
+    private val detailsWide by lazy { LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.1f).apply { leftMargin = dp(12f) } }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val narrow = MeasureSpec.getSize(widthMeasureSpec) / density < 760f
         if (narrowLayout != narrow) {
             narrowLayout = narrow
             top.orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            top.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(if (narrow) 222f else 132f))
-            clockWeather.layoutParams = if (narrow) LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(124f))
-                else LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.5f)
-            details.layoutParams = if (narrow) LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(88f)).apply { topMargin = dp(8f) }
-                else LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.1f).apply { leftMargin = dp(12f) }
+            top.layoutParams = if (narrow) topNarrow else topWide
+            clockWeather.layoutParams = if (narrow) clockNarrow else clockWide
+            details.layoutParams = if (narrow) detailsNarrow else detailsWide
         }
         headerLimit = (MeasureSpec.getSize(heightMeasureSpec) * if (MeasureSpec.getSize(heightMeasureSpec) / density < 420f) 0.5f else 0.62f).toInt().coerceAtLeast(1)
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
