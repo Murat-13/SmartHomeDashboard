@@ -179,4 +179,29 @@ class SettingsImportSaveTest {
         assertTrue(text.contains("адреса Home Assistant"))
         assertTrue(text.contains("токен Home Assistant, ключ Яндекса и PIN"))
     }
+
+    /**
+     * Ревью 05.11.2026: новый токен HA раньше записывался до сохранения погоды. Отказ погоды оставлял
+     * новый токен при старом адресе. Теперь при отказе погоды токен и адрес не меняются.
+     */
+    @Test fun weatherFailureDoesNotReplaceHaToken() {
+        setUpHa(ha())
+        val activity = settings()
+        // Хранилище ключа погоды отказывает в записи (как сбой Keystore).
+        val failing = WeatherKeyAccess(object : WeatherKeySlot {
+            override fun read() = SecretStore.ReadResult(SecretStore.Status.ABSENT)
+            override fun write(value: String) = SecretStore.Status.WRITE_FAILED
+        }, PreferenceWeatherLegacy({ prefs }, { "10.0" }, { "20.0" }), { })
+        ReflectionHelpers.setField(activity, "weatherKeys", failing)
+        activity.findViewById<EditText>(R.id.etHaToken).setText("NEW-TOKEN")
+        activity.findViewById<EditText>(R.id.etYandexApiKey).setText("FAKE-WEATHER-KEY")
+        activity.findViewById<android.view.View>(R.id.btnSave).performClick()
+        await("сохранение завершилось отказом погоды") {
+            ReflectionHelpers.getField<android.widget.TextView>(activity, "tvYandexKeyStatus").text.toString() ==
+                "Не удалось сохранить ключ Яндекса"
+        }
+        idle()
+        assertFalse("экран не закрыт", activity.isFinishing)
+        assertEquals("токен HA не заменён при отказе погоды", "FAKE-TOKEN", storedToken())
+    }
 }

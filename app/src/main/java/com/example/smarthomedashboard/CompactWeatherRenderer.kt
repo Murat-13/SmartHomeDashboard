@@ -27,7 +27,8 @@ internal object CompactWeatherRenderer {
                 attrs.opt("temperature")?.toString() ?: "—"
             } else "—"
         } else {
-            stateForEntity(entityId) ?: "—"
+            // «unavailable»/«unknown» — прочерк, а не «unavailable°C».
+            stateForEntity(entityId)?.takeUnless { it.isBlank() || it == "unavailable" || it == "unknown" } ?: "—"
         }
         view.findViewWithTag<TextView>("weather_temp")?.text = if (temp != "—") "$temp°C" else temp
         val icon = when {

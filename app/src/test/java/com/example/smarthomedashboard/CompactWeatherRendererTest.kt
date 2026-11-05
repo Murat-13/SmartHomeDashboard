@@ -86,4 +86,15 @@ class CompactWeatherRendererTest {
         CompactWeatherRenderer.renderYandex(root, "—", "⛅", "unknown")
         assertEquals(listOf("⛅", "—°C", "unknown"), values(root))
     }
+
+    @Test fun unavailableSensorShowsDashNotRawState() {
+        val root = views()
+        val sensor = tile("""{"entity_id":"sensor.outdoor_temp"}""")
+        CompactWeatherRenderer.renderHomeAssistant(root, sensor, { "unavailable" }, { null })
+        assertEquals("—", values(root)[1])
+        CompactWeatherRenderer.renderHomeAssistant(root, sensor, { "unknown" }, { null })
+        assertEquals("—", values(root)[1])
+        CompactWeatherRenderer.renderHomeAssistant(root, sensor, { "7.5" }, { null })
+        assertEquals("7.5°C", values(root)[1])
+    }
 }

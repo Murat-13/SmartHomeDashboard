@@ -828,6 +828,22 @@ class SettingsActivity : PinProtectedActivity() {
         val revision = HaTokenAccess.revision
         setSavePending(true)
         lifecycleScope.launch {
+            // Сначала погода, затем токен: токен и адрес HA пишутся вместе в конце. Раньше новый токен
+            // записывался до погоды, и отказ погоды оставлял новый токен при старом адресе.
+            val weather = withContext(Dispatchers.IO) {
+                weatherAccess().save(newWeatherKey, weatherConfiguration, expectedWeatherRevision)
+            }
+            if (request != tokenRequest || isFinishing || isDestroyed || !isPinAccessAllowed()) return@launch
+            if (!weather.usable || !WeatherKeyAccess.isCurrent(weather)) {
+                if (weather.status != WeatherKeyAccess.Status.STALE && WeatherKeyAccess.isCurrent(weather)) {
+                    weatherRevision = weather.revision
+                }
+                tvYandexKeyStatus.text = if (WeatherKeyAccess.isCurrent(weather)) weather.message else "Настройки Яндекса изменились"
+                setSavePending(false)
+                saveFailed("Погода: ${tvYandexKeyStatus.text}")
+                return@launch
+            }
+            weatherRevision = weather.revision
             val result = withContext(Dispatchers.IO) {
                 if (haToken.isEmpty()) tokens().read() else tokens().replace(haToken, revision)
             }
@@ -839,20 +855,6 @@ class SettingsActivity : PinProtectedActivity() {
                 saveFailed(tvHaTokenStatus.text.toString())
                 return@launch
             }
-            val weather = withContext(Dispatchers.IO) {
-                weatherAccess().save(newWeatherKey, weatherConfiguration, expectedWeatherRevision)
-            }
-            if (request != tokenRequest || isFinishing || isDestroyed || !isPinAccessAllowed()) return@launch
-            if (!weather.usable || !WeatherKeyAccess.isCurrent(weather) || !HaTokenAccess.isCurrent(result)) {
-                if (weather.status != WeatherKeyAccess.Status.STALE && WeatherKeyAccess.isCurrent(weather)) {
-                    weatherRevision = weather.revision
-                }
-                tvYandexKeyStatus.text = if (WeatherKeyAccess.isCurrent(weather)) weather.message else "Настройки Яндекса изменились"
-                setSavePending(false)
-                saveFailed("Погода: ${tvYandexKeyStatus.text}")
-                return@launch
-            }
-            weatherRevision = weather.revision
             setSavePending(false)
             prefs.edit {
                 putString("ha_local_host", haLocal)

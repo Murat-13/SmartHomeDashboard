@@ -12,7 +12,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class YandexWeatherManager(private val context: Context) {
-    private val client = OkHttpClient()
+    // Один клиент на процесс: пул соединений и потоки не плодятся при каждом пересоздании экрана.
+    private val client = sharedClient
     private val prefs = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
     private var weatherKeys: WeatherKeyAccess? = null
     private fun keys() = weatherKeys ?: WeatherKeyAccess.create(context).also { weatherKeys = it }
@@ -176,7 +177,8 @@ class YandexWeatherManager(private val context: Context) {
                         // Только код ответа: ключ, URL и тело ответа не попадают в диагностику.
                         android.util.Log.d("YandexWeather", "HTTP ${response.code}")
                         if (!response.isSuccessful) {
-                            scope.launch { if (active()) reportError(callback, "Response not successful: ${response.code}") }
+                            val code = response.code
+                            scope.launch { if (active()) reportError(callback, httpError(code)) }
                             return
                         }
 
@@ -185,11 +187,12 @@ class YandexWeatherManager(private val context: Context) {
                             val json = JSONObject(body)
                             val climate = YandexClimateWeather.parse(json)
                             val fact = json.getJSONObject("fact")
-                            val currentTemp = fact.optInt("temp").toString()
+                            // Нет значения — прочерк, а не «0» или «NaN» (правила достоверности панели).
+                            val currentTemp = whole(fact, "temp")
                             val currentState = fact.optString("condition", "unknown")
-                            val humidity = fact.optInt("humidity").toString()
-                            val pressure = fact.optInt("pressure_mm").toString()
-                            val windSpeed = fact.optDouble("wind_speed").toString()
+                            val humidity = whole(fact, "humidity")
+                            val pressure = whole(fact, "pressure_mm")
+                            val windSpeed = fact.optDouble("wind_speed").takeIf { it.isFinite() }?.toString() ?: "—"
                             val windDir = translateWindDir(fact.optString("wind_dir", "—"))
 
                             val forecastList = mutableListOf<ForecastDay>()
@@ -344,4 +347,21 @@ class YandexWeatherManager(private val context: Context) {
 
     fun loadLat() = prefs.getString("yandex_lat", "").orEmpty()
     fun loadLon() = prefs.getString("yandex_lon", "").orEmpty()
+
+    internal companion object {
+        private val sharedClient by lazy { OkHttpClient() }
+
+        /** Целое значение поля или «—», если его нет или оно не число. */
+        fun whole(json: JSONObject, key: String): String =
+            json.opt(key)?.let { (it as? Number)?.toDouble() ?: (it as? String)?.toDoubleOrNull() }
+                ?.takeIf { it.isFinite() }?.let { Math.round(it).toString() } ?: "—"
+
+        /** Отказ сервера по-русски: показывается на плитке климата рядом с «показан кэш». */
+        fun httpError(code: Int): String = when (code) {
+            401, 403 -> "Яндекс Погода отклонила ключ (HTTP $code)"
+            429 -> "Яндекс Погода: превышен лимит запросов (HTTP 429)"
+            in 500..599 -> "Сервер Яндекс Погоды недоступен (HTTP $code)"
+            else -> "Яндекс Погода не ответила данными (HTTP $code)"
+        }
+    }
 }
