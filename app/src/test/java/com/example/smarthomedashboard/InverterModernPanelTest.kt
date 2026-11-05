@@ -336,4 +336,14 @@ class InverterModernPanelTest {
         assertFalse("Карточка свернулась — подтверждение закрыто", second.isShowing)
         assertTrue(calls().isEmpty())
     }
+
+    @Test fun backCollapsesExpandedCardInsteadOfLeavingPanel() {
+        open(values())
+        assertFalse("Нечего сворачивать — «Назад» идёт дальше", controller.collapseOnBack())
+        expand()
+        assertTrue(controller.collapseOnBack())
+        advance(600)
+        assertFalse(controller.modernExpansion.isOpen)
+        assertFalse(activity.isFinishing)
+    }
 }

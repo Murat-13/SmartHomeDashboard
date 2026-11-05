@@ -380,6 +380,16 @@ class MainActivity : AppCompatActivity() {
 
     /** Боковая панель, жест двумя пальцами и монитор интернета. */
     private fun setupSystemPanel() {
+        // Раскрытая карточка/группа: «Назад» сворачивает её. Зарегистрирован раньше боковой панели —
+        // открытая панель (и полноэкранный график, добавляемый позже) обрабатывают «Назад» первыми.
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (::tileManager.isInitialized && panelController.collapseOnBack()) return
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
+        })
         val root = findViewById<FrameLayout?>(R.id.mainRoot) ?: return
         val back = object : androidx.activity.OnBackPressedCallback(false) {
             override fun handleOnBackPressed() { drawer?.close() }
