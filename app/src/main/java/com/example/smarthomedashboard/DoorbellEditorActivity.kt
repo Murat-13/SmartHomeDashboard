@@ -398,6 +398,13 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             Toast.makeText(this, "Плитка изменена другим экраном. Закройте редактор и откройте её заново.", Toast.LENGTH_LONG).show()
             return false
         }
+        // Логин и пароль, вставленные в адрес, переносятся в поле логина и защищённое хранилище.
+        val (main, mainUser, mainPass) = DoorbellConfig.splitCredentials(config.rtspMain)
+        val (sub, subUser, subPass) = DoorbellConfig.splitCredentials(config.rtspSub)
+        if (main != config.rtspMain || sub != config.rtspSub) {
+            config = config.copy(rtspMain = main, rtspSub = sub, rtspUser = config.rtspUser.ifBlank { mainUser ?: subUser.orEmpty() })
+            if (password.isNullOrEmpty()) (mainPass ?: subPass)?.let { password = it }
+        }
         val (w, h) = DoorbellConfig.fit(
             JSONObject(latest.config).optInt("button_size", DoorbellConfig.DEFAULT_WIDTH),
             JSONObject(latest.config).optInt("widget_height", (DoorbellConfig.DEFAULT_WIDTH / DoorbellConfig.DEFAULT_ASPECT).toInt()),

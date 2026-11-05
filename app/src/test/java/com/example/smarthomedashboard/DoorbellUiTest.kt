@@ -177,12 +177,31 @@ class DoorbellUiTest {
         assertFalse(window.isShowing)
     }
 
-    @Test fun gateWithoutFactReportsFailure() {
+    @Test fun acceptedWithoutFactDoesNotInviteImmediateRepeat() {
         val window = openFromBanner()
+        calls.clear()
         hold(window.openButton, 1_100)
         advance(DoorbellRingWindow.GATE_TIMEOUT_MS + 100)
-        assertEquals(DoorbellRingWindow.Gate.FAILED, window.openButton.state)
+        assertEquals(DoorbellRingWindow.Gate.UNCONFIRMED, window.openButton.state)
         assertTrue(window.isShowing)
+        hold(window.openButton, 100)
+        assertEquals("Касание лишь снимает предупреждение", 1, calls.size)
+        assertEquals(DoorbellRingWindow.Gate.IDLE, window.openButton.state)
+        hold(window.openButton, 1_100)
+        assertEquals("Повтор — новым удержанием", 2, calls.size)
+    }
+
+    @Test fun repeatedRingAfterOpenedKeepsWindowAndUnlocksButton() {
+        val window = openFromBanner()
+        advance(3_500)
+        values["lock.gate"] = "unlocked"; state()
+        assertEquals(DoorbellRingWindow.Gate.OPENED, window.openButton.state)
+        values["lock.gate"] = "locked"; state()
+        advance(500)
+        ring()
+        advance(3_000)
+        assertTrue("Новый звонок отменил закрытие после «Калитку открыли»", window.isShowing)
+        assertEquals(DoorbellRingWindow.Gate.IDLE, window.openButton.state)
     }
 
     @Test fun autoCloseAfterMinuteAndRepeatedRingExtends() {

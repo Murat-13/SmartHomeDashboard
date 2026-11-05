@@ -205,7 +205,10 @@ internal class DoorbellMonitor {
 
     private fun lock(id: String, config: DoorbellConfig, readings: BatteryReadings, s: State, out: MutableList<Event>) {
         if (config.lock.isBlank()) return
-        val raw = (readings.of(config.lock) as? BatteryReading.Value)?.raw ?: return
+        val reading = readings.of(config.lock)
+        // Замок недоступен — прежнее состояние забываем: возврат сразу в «открыто» не значит, что калитку открыли.
+        if (reading is BatteryReading.Unavailable || reading == BatteryReading.Missing) { s.lock = null; return }
+        val raw = (reading as? BatteryReading.Value)?.raw ?: return
         val before = s.lock
         s.lock = raw
         if (before == null || before == raw) return

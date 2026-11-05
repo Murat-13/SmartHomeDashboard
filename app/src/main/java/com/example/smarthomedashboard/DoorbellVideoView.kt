@@ -108,8 +108,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         }
         if (picturePath != picture) {
             picture = picturePath
-            // Токен снимка HA меняется каждые несколько минут — это не новый кадр, лишняя загрузка не нужна.
-            if (bitmapMissing() || SystemClock.elapsedRealtime() - pictureLoadedAt >= SNAPSHOT_EVERY_MS) loadPicture()
+            // Токен снимка HA меняется каждые несколько минут — это не новый кадр; невидимой плитке кадр не нужен.
+            if (visible && (bitmapMissing() || SystemClock.elapsedRealtime() - pictureLoadedAt >= SNAPSHOT_EVERY_MS)) loadPicture()
         }
         update()
     }

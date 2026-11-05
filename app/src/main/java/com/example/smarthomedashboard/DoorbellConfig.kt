@@ -149,6 +149,23 @@ internal data class DoorbellConfig(
 
         const val MIN_HEIGHT = 120
 
+        /**
+         * Логин и пароль, вставленные прямо в адрес (`rtsp://user:pass@host/...`): адрес без них, логин, пароль.
+         * Пароль не должен оставаться в config открытым текстом (и в резервных копиях).
+         */
+        fun splitCredentials(url: String): Triple<String, String?, String?> {
+            val scheme = url.substringBefore("://", "")
+            if (scheme.isEmpty()) return Triple(url, null, null)
+            val rest = url.substringAfter("://")
+            val authority = rest.substringBefore("/")
+            if ("@" !in authority) return Triple(url, null, null)
+            val info = authority.substringBeforeLast("@")
+            fun dec(v: String) = try { java.net.URLDecoder.decode(v, "UTF-8") } catch (_: Exception) { v }
+            val user = dec(info.substringBefore(":")).takeIf { it.isNotEmpty() }
+            val pass = if (":" in info) dec(info.substringAfter(":")) else null
+            return Triple("$scheme://" + rest.substring(info.length + 1), user, pass)
+        }
+
         /** RTSP-адрес с логином/паролем для плеера. Пароль в config не хранится. */
         fun withCredentials(url: String, user: String, password: String?): String {
             if (user.isBlank() || url.isBlank() || "@" in url.substringAfter("://").substringBefore("/")) return url

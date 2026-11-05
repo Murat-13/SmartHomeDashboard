@@ -67,7 +67,8 @@ internal class DoorbellRingWindow private constructor(
     private var gateDeadline: Runnable? = null
     private var interacted = false
 
-    enum class Gate { IDLE, SENDING, WAITING, OPENED, FAILED }
+    /** UNCONFIRMED — HA принял команду, но факта открытия панель не увидела: повтор не предлагаем (импульсное реле). */
+    enum class Gate { IDLE, SENDING, WAITING, OPENED, FAILED, UNCONFIRMED }
 
     private val autoClose = Runnable { close() }
     private val unmute = object : Runnable {
@@ -197,6 +198,7 @@ internal class DoorbellRingWindow private constructor(
             }
         })
         applyNightBrightness()
+        main.post(keepAwake)
         main.postDelayed(autoClose, RING_MS)
         main.postDelayed(unmute, 600)
     }
@@ -222,6 +224,9 @@ internal class DoorbellRingWindow private constructor(
     /** Повторный звонок: окно остаётся, отсчёт начинается заново. */
     fun extend() {
         if (!isShowing || closing) return
+        // Звонят снова после «Калитку открыли»: окно остаётся, кнопка снова доступна.
+        main.removeCallbacks(closeAfterOpened)
+        if (gate == Gate.OPENED || gate == Gate.UNCONFIRMED || gate == Gate.FAILED) gate = Gate.IDLE
         main.removeCallbacks(autoClose)
         main.postDelayed(autoClose, RING_MS)
         card.video.muted = true
@@ -264,6 +269,8 @@ internal class DoorbellRingWindow private constructor(
         main.removeCallbacksAndMessages(null)
         animator?.let { animator = null; it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
         restoreBrightness()
+        // Экраны настроек и редакторов сами по себе экран не держат: флаг окна снимается.
+        if (host !is MainActivity) host.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         card.dispose()
         (parent as? ViewGroup)?.removeView(this)
         if (wasShowing) onClosed(this)
@@ -307,11 +314,13 @@ internal class DoorbellRingWindow private constructor(
             Gate.WAITING -> "Открываю калитку…"
             Gate.OPENED -> "Калитку открыли"
             Gate.FAILED -> "Не удалось открыть — попробуйте ещё раз"
+            Gate.UNCONFIRMED -> "Команда принята, подтверждения нет — проверьте калитку"
             Gate.IDLE -> DoorbellHub.lastRing(tileId)?.let { "Звонок " + DoorbellModel.ago(it, now) } ?: ""
         }
         sub.setTextColor(when (gate) {
             Gate.OPENED -> DoorbellFrame.RING
             Gate.FAILED -> DoorbellFrame.OFFLINE
+            Gate.UNCONFIRMED -> DoorbellFrame.PERSON
             else -> DoorbellFrame.SECONDARY
         })
         openButton.state = gate
@@ -329,6 +338,8 @@ internal class DoorbellRingWindow private constructor(
         val config = DoorbellHub.config(tileId) ?: return
         val command = DoorbellModel.openCommand(config.lock) ?: return
         if (gate == Gate.SENDING || gate == Gate.WAITING || gate == Gate.OPENED) return
+        // После «подтверждения нет» повтор — только осознанный: второе удержание (первое лишь снимает предупреждение).
+        if (gate == Gate.UNCONFIRMED) { gate = Gate.IDLE; render(); return }
         val actions = DoorbellHub.actions
         gate = Gate.SENDING
         render()
@@ -340,7 +351,14 @@ internal class DoorbellRingWindow private constructor(
         } == true
         if (!sent) { gate = Gate.FAILED; render(); return }
         // Факт открытия — событие HA (DoorbellMonitor.GateOpened). Нет факта — честно «не удалось».
-        val deadline = Runnable { if (gate == Gate.SENDING || gate == Gate.WAITING) { gate = Gate.FAILED; render() } }
+        val deadline = Runnable {
+            when (gate) {
+                Gate.SENDING -> gate = Gate.FAILED
+                Gate.WAITING -> gate = Gate.UNCONFIRMED
+                else -> return@Runnable
+            }
+            render()
+        }
         gateDeadline = deadline
         main.postDelayed(deadline, GATE_TIMEOUT_MS)
     }
@@ -355,8 +373,10 @@ internal class DoorbellRingWindow private constructor(
         render()
         card.applyAccent(DoorbellFrame.RING, pulse = false, animate = true)
         main.removeCallbacks(autoClose)
-        main.postDelayed({ close() }, OPENED_SHOW_MS)
+        main.postDelayed(closeAfterOpened, OPENED_SHOW_MS)
     }
+
+    private val closeAfterOpened = Runnable { close() }
 
     private fun toggleLight() {
         val config = DoorbellHub.config(tileId) ?: return
@@ -398,23 +418,37 @@ internal class DoorbellRingWindow private constructor(
 
     // ---- Яркость в тихие часы ----
 
+    private var appliedBrightness = -1f
+
     private fun applyNightBrightness() {
         val config = DoorbellHub.config(tileId) ?: return
         if (!config.isQuiet(DoorbellHub.minuteOfDay())) return
         val window = host.window ?: return
         val attrs = window.attributes
         savedBrightness = attrs.screenBrightness
-        attrs.screenBrightness = config.nightBrightness.coerceIn(5, 100) / 100f
+        appliedBrightness = config.nightBrightness.coerceIn(5, 100) / 100f
+        attrs.screenBrightness = appliedBrightness
         window.attributes = attrs
     }
 
+    /** Возвращаем яркость, только если её не поменял кто-то другой (например, затемнение панели). */
     private fun restoreBrightness() {
         val saved = savedBrightness ?: return
         savedBrightness = null
         val window = host.window ?: return
         val attrs = window.attributes
+        if (attrs.screenBrightness != appliedBrightness) return
         attrs.screenBrightness = saved
         window.attributes = attrs
+    }
+
+    /** Пока окно открыто, панель не затемняется (иначе видео встанет, а яркость потом собьётся). */
+    private val keepAwake = object : Runnable {
+        override fun run() {
+            if (!isShowing) return
+            DoorbellHub.actions?.keepAwake()
+            main.postDelayed(this, KEEP_AWAKE_MS)
+        }
     }
 
     // ---- Вспомогательное ----
@@ -467,6 +501,7 @@ internal class DoorbellRingWindow private constructor(
         const val CLOSE_MS = 260L
         const val OPENED_SHOW_MS = 2_500L
         const val GATE_TIMEOUT_MS = 15_000L
+        private const val KEEP_AWAKE_MS = 20_000L
 
         fun show(activity: Activity, tileId: String, origin: RectF?, onClosed: (DoorbellRingWindow) -> Unit): DoorbellRingWindow {
             val window = DoorbellRingWindow(activity, tileId, origin, onClosed)
@@ -512,6 +547,7 @@ internal class HoldButton(context: Context, private val label: String, icon: Int
     private val accent get() = when (state) {
         DoorbellRingWindow.Gate.OPENED -> DoorbellFrame.RING
         DoorbellRingWindow.Gate.FAILED -> DoorbellFrame.OFFLINE
+        DoorbellRingWindow.Gate.UNCONFIRMED -> DoorbellFrame.PERSON
         else -> DoorbellFrame.RING
     }
 
@@ -523,6 +559,7 @@ internal class HoldButton(context: Context, private val label: String, icon: Int
 
     private val hint get() = when (state) {
         DoorbellRingWindow.Gate.IDLE, DoorbellRingWindow.Gate.FAILED -> if (progress > 0f) "держите…" else "удерживайте 1 секунду"
+        DoorbellRingWindow.Gate.UNCONFIRMED -> "нет подтверждения · коснитесь, чтобы повторить"
         else -> null
     }
 

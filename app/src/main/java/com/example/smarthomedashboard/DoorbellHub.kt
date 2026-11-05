@@ -33,6 +33,8 @@ internal object DoorbellHub {
         fun prepareForRing()
         /** Прямоугольник плитки в окне (для роста окна звонка из неё); null — плитка не на экране. */
         fun tileBounds(tileId: String): android.graphics.RectF?
+        /** Окно звонка открыто: панель не затемняется (перезапуск таймера бездействия). */
+        fun keepAwake() {}
     }
 
     var actions: Actions? = null
@@ -91,7 +93,9 @@ internal object DoorbellHub {
         monitor.nextCheckAt?.let { main.postDelayed(recheck, (it - now).coerceAtLeast(0) + 20) }
         events.forEach(::handle)
         RingUi.render()
-        notifyListeners()
+        // Плитки панели перерисовываются по своим сущностям сами; здесь — только то, чего в HA нет
+        // (пропущенные, «нет сигнала», окно звонка). Иначе каждое событие любой сущности будило бы все домофоны.
+        if (events.isNotEmpty()) notifyListeners()
     }
 
     private fun handle(event: DoorbellMonitor.Event) {
@@ -167,7 +171,11 @@ internal object DoorbellHub {
         val snapshot = DoorbellModel.snapshot(config, current)
         if (!snapshot.sunDown || snapshot.lightOn != false) return
         val domain = config.light.substringBefore('.')
-        if (actions?.call(domain, "turn_on", config.light, emptyMap()) {} == true) autoLit += tileId
+        if (actions?.call(domain, "turn_on", config.light, emptyMap()) {} == true) {
+            autoLit += tileId
+            // Окно могло так и не открыться («Позже», баннер ушёл сам): свет гаснет и без него.
+            scheduleLightOff(tileId, DoorbellRingWindow.RING_MS + config.lightOffMinutes * 60_000L)
+        }
     }
 
     /** Свет переключён вручную в окне звонка: дальше им управляет человек. */
@@ -180,17 +188,24 @@ internal object DoorbellHub {
     fun windowClosed(tileId: String) {
         if (tileId !in autoLit) return
         val config = config(tileId) ?: return
-        if (config.lightOffMinutes <= 0) { autoLit -= tileId; return }
+        if (config.lightOffMinutes <= 0) { autoLit -= tileId; lightOffs.remove(tileId)?.let(main::removeCallbacks); return }
+        scheduleLightOff(tileId, config.lightOffMinutes * 60_000L)
+    }
+
+    private fun scheduleLightOff(tileId: String, delay: Long) {
+        if (config(tileId)?.lightOffMinutes?.let { it <= 0 } != false) return
         lightOffs.remove(tileId)?.let(main::removeCallbacks)
         val off = Runnable {
             lightOffs.remove(tileId)
+            // Окно всё ещё открыто (человек смотрит) — погасим после его закрытия.
+            if (RingUi.current?.let { it.tileId == tileId && it.isShowing } == true) return@Runnable
             autoLit -= tileId
             val latest = config(tileId) ?: return@Runnable
             val state = readings?.let { DoorbellModel.snapshot(latest, it).lightOn }
             if (state == true) actions?.call(latest.light.substringBefore('.'), "turn_off", latest.light, emptyMap()) {}
         }
         lightOffs[tileId] = off
-        main.postDelayed(off, config.lightOffMinutes * 60_000L)
+        main.postDelayed(off, delay)
     }
 
     // ---- Видео: HA и пароль ----
@@ -294,6 +309,8 @@ internal object DoorbellHub {
         }
 
         fun gateOpened(tileId: String) {
+            // Калитку открыли (здесь или на другом планшете) — звонок обработан, не пропущен.
+            acknowledge(tileId)
             if (pending?.first == tileId) pending = null
             banner?.takeIf { it.tileId == tileId }?.dismiss()
             window?.takeIf { it.tileId == tileId }?.gateOpened()
@@ -326,7 +343,10 @@ internal object DoorbellHub {
             resumed = WeakReference(activity)
             val (tileId, at) = pending ?: return
             if (SystemClock.uptimeMillis() - at > DoorbellRingWindow.RING_MS) { pending = null; return }
-            if (window?.isShowing == true || banner != null) return
+            if (window?.isShowing == true) return
+            // Баннер прежнего экрана (настройки закрыли, вернулись на панель) — заменить окном или новым баннером.
+            if (banner?.host === activity) return
+            banner?.dismiss()
             if (activity is MainActivity) show(activity, tileId, null) else showBanner(activity, tileId)
         }
 

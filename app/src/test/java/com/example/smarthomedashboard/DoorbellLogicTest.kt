@@ -63,6 +63,9 @@ class DoorbellLogicTest {
         assertEquals("Логин в адресе уже есть — не трогаем", "rtsp://u:p@h/s", DoorbellConfig.withCredentials("rtsp://u:p@h/s", "admin", "x"))
         assertEquals("rtsp://admin@h/s", DoorbellConfig.withCredentials("rtsp://h/s", "admin", null))
         assertEquals("rtsp://h/s", DoorbellConfig.withCredentials("rtsp://h/s", "", "x"))
+        assertEquals(Triple("rtsp://10.0.0.5:554/main", "admin", "p@ss w"),
+            DoorbellConfig.splitCredentials("rtsp://admin:p%40ss%20w@10.0.0.5:554/main"))
+        assertEquals(Triple("rtsp://h/s", null, null), DoorbellConfig.splitCredentials("rtsp://h/s"))
     }
 
     @Test fun dependenciesIncludeSunOnlyForAutoLight() {
@@ -146,6 +149,9 @@ class DoorbellLogicTest {
         assertEquals(listOf(DoorbellMonitor.Event.GateOpened("door")),
             m.evaluate(listOf(tile()), readings(normal + ("lock.gate" to "unlocked")), 1_000))
         assertTrue("Закрылась — не событие", m.evaluate(listOf(tile()), readings(normal), 2_000).isEmpty())
+        m.evaluate(listOf(tile()), readings(normal + ("lock.gate" to "unavailable")), 3_000)
+        assertTrue("Вернулся из «недоступен» сразу открытым — не событие",
+            m.evaluate(listOf(tile()), readings(normal + ("lock.gate" to "unlocked")), 4_000).isEmpty())
         val button = tile(full.copy(lock = "button.gate"))
         val b = DoorbellMonitor()
         b.evaluate(listOf(button), readings(normal + ("button.gate" to "2026-11-06T01:00:00+00:00")), 0)
