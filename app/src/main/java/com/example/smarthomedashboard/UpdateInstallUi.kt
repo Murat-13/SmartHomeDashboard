@@ -2,7 +2,6 @@ package com.example.smarthomedashboard
 
 import android.app.AlertDialog
 import android.content.Intent
-import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -10,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.core.net.toUri
 
 /**
  * Установка обновления по кнопке (боковая панель или «О приложении»). Вызывающий уже проверил PIN.
@@ -58,7 +58,7 @@ internal object UpdateInstallUi {
                         // Нет разрешения может быть только на Android 8+ (см. UpdateInstaller.canInstall).
                         if (android.os.Build.VERSION.SDK_INT >= 26) runCatching {
                             activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                Uri.parse("package:${activity.packageName}")))
+                                "package:${activity.packageName}".toUri()))
                         }
                     }
                     .setNegativeButton("Отмена", null)

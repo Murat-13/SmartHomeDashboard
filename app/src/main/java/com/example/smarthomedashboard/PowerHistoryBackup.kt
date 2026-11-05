@@ -17,6 +17,7 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
+import androidx.core.content.edit
 
 /**
  * Отдельный бэкап истории мощности (docs/power-graph.md), независимый от копий настроек: своё имя файла,
@@ -81,11 +82,11 @@ internal object PowerHistoryBackup {
         // Засчитывается только копия, которая читается целиком с совпавшей суммой.
         if (!written || summary(store, name) == null) {
             store.delete(name)
-            prefs.edit().putString(PREF_LAST_RESULT, "error").apply()
+            prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
         }
         store.names().filter { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }.sorted().dropLast(KEEP).forEach { store.delete(it) }
-        prefs.edit().putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok").apply()
+        prefs.edit { putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok") }
         return Outcome.CREATED
     }
 

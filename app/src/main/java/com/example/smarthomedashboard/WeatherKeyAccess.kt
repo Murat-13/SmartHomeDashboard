@@ -1,5 +1,6 @@
 package com.example.smarthomedashboard
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Looper
@@ -156,6 +157,8 @@ internal class PreferenceWeatherLegacy(
         catch (_: SecurityException) { throw WeatherLegacyFailure(WeatherKeyAccess.Status.LEGACY_ERROR) }
     override fun readKey(): String? = read { preferences().getString("yandex_api_key", null) }
     override fun phase(): String? = read { preferences().getString("yandex_key_transfer_phase", null) }
+    // Синхронная запись намеренно: перенос секрета продолжается только после подтверждённой записи на диск.
+    @SuppressLint("ApplySharedPref")
     override fun mark(phase: String?): Boolean = try {
         preferences().edit().putString("yandex_key_transfer_phase", phase).commit()
     } catch (_: SecurityException) { false }

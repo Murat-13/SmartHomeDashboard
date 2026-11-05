@@ -27,6 +27,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
+import androidx.core.content.edit
 
 /**
  * HTTP к GitHub для обновлений. Весь путь, включая переадресации на CDN, — только HTTPS на домены GitHub:
@@ -202,7 +203,7 @@ internal object AppUpdater {
     fun channel(context: Context) = UpdateChannel.from(prefs(context).getString(PREF_CHANNEL, null))
 
     fun setChannel(context: Context, channel: UpdateChannel) {
-        prefs(context).edit().putString(PREF_CHANNEL, channel.pref).apply()
+        prefs(context).edit { putString(PREF_CHANNEL, channel.pref) }
     }
 
     fun status(context: Context): Status {
@@ -247,7 +248,7 @@ internal object AppUpdater {
     private fun reject(context: Context, file: File, rejection: String, versionName: String, versionCode: Long,
                        problem: String, now: Long): Status {
         file.delete()
-        prefs(context).edit().putString(PREF_REJECTED, rejection).apply()
+        prefs(context).edit { putString(PREF_REJECTED, rejection) }
         UpdateLog.add(context, "Выпуск $versionName отвергнут: $problem", now)
         return save(context, Status(State.ERROR, problem, versionName, versionCode, now), sha = null)
     }
@@ -275,7 +276,7 @@ internal object AppUpdater {
         } catch (e: IOException) {
             // Уже скачанное и проверенное обновление сбой связи не отменяет.
             if (previous.state == State.READY && previous.versionCode > installed.versionCode && readyFile(context, deps) != null) {
-                prefs.edit().putLong(PREF_LAST_CHECK, now).apply()
+                prefs.edit { putLong(PREF_LAST_CHECK, now) }
                 return status(context)
             }
             return fail(context, now, when ((e as? UpdateHttp.HttpStatus)?.code) {
@@ -305,7 +306,7 @@ internal object AppUpdater {
         val rejection = "${release.versionCode}:$expected"
         val current = status(context)
         if (prefs.getString(PREF_REJECTED, null) == rejection && current.state == State.ERROR && current.versionCode == release.versionCode) {
-            prefs.edit().putLong(PREF_LAST_CHECK, now).apply()
+            prefs.edit { putLong(PREF_LAST_CHECK, now) }
             return status(context)
         }
 
@@ -329,7 +330,7 @@ internal object AppUpdater {
 
         val problem = problemOf(deps.apk.archive(file), installed, release.versionCode, release.versionName)
         if (problem != null) return reject(context, file, rejection, release.versionName, release.versionCode, problem, now)
-        prefs.edit().remove(PREF_REJECTED).apply()
+        prefs.edit { remove(PREF_REJECTED) }
         UpdateLog.add(context, "Найдено обновление ${release.versionName} (${channel(context).label} канал): скачано, SHA-256 и подпись проверены", now)
         return save(context, ready, expected)
     }
@@ -350,15 +351,15 @@ internal object AppUpdater {
         save(context, Status(State.ERROR, message, lastCheck = now), sha = null)
 
     private fun save(context: Context, status: Status, sha: String?): Status {
-        prefs(context).edit()
-            .putString(PREF_STATE, status.state.name)
-            .putString(PREF_MESSAGE, status.message)
-            .putString(PREF_VERSION_NAME, status.versionName)
-            .putLong(PREF_VERSION_CODE, status.versionCode)
-            .putString(PREF_SHA, sha)
-            .putString(PREF_NOTES, status.notes)
-            .putLong(PREF_LAST_CHECK, status.lastCheck)
-            .apply()
+        prefs(context).edit {
+            putString(PREF_STATE, status.state.name)
+            putString(PREF_MESSAGE, status.message)
+            putString(PREF_VERSION_NAME, status.versionName)
+            putLong(PREF_VERSION_CODE, status.versionCode)
+            putString(PREF_SHA, sha)
+            putString(PREF_NOTES, status.notes)
+            putLong(PREF_LAST_CHECK, status.lastCheck)
+        }
         return status
     }
 

@@ -21,6 +21,7 @@ import androidx.core.graphics.ColorUtils
 import java.util.Date
 import kotlin.math.max
 import kotlin.math.min
+import androidx.core.graphics.withTranslation
 
 /**
  * Свёрнутая плитка «Часы · Погода · Климат дома», строго 2:1. Рисует всё на Canvas: часы (главный
@@ -329,10 +330,7 @@ internal class HomeClimateCompactView(context: Context) : View(context), ModernH
     }
 
     private fun drawLayout(canvas: Canvas, layout: StaticLayout, centerX: Float, top: Float) {
-        canvas.save()
-        canvas.translate(centerX - layout.width / 2f, top)
-        layout.draw(canvas)
-        canvas.restore()
+        canvas.withTranslation(centerX - layout.width / 2f, top) { layout.draw(this) }
     }
 
     private fun describe(snap: HomeClimateSnapshot): String {

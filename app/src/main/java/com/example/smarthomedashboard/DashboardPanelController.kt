@@ -18,6 +18,7 @@ import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import org.json.JSONObject
 import org.json.JSONArray
+import androidx.core.content.edit
 
 /** Дерево панели и его обработчики. Живёт ровно столько же, сколько экран. */
 internal class DashboardPanelController(
@@ -165,7 +166,7 @@ internal class DashboardPanelController(
     /** Новая пустая страница справа; возвращает её номер. */
     fun addPage(): Int {
         val index = pageCount()
-        pagePrefs().edit().putInt(PREF_PAGE_COUNT, index + 1).apply()
+        pagePrefs().edit { putInt(PREF_PAGE_COUNT, index + 1) }
         return index
     }
 
@@ -703,6 +704,8 @@ internal class DashboardPanelController(
         }
     }
 
+    // Обработчик касаний возвращает false: клик идёт штатно через View.onTouchEvent → performClick.
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun setupButtonTouch(
         tile: TileEntity,
         button: View

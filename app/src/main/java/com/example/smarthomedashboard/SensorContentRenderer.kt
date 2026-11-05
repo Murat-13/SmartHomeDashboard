@@ -7,6 +7,7 @@ import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.example.smarthomedashboard.data.TileEntity
+import androidx.core.view.isEmpty
 
 internal object SensorContentRenderer {
     // Строит строки обычных датчиков и батареи, сохраняя первый View как заголовок.
@@ -45,7 +46,7 @@ internal object SensorContentRenderer {
         }
 
         // Форматирование завершено до изменения Views: ошибка не оставит частично обновлённую карточку.
-        val start = if (container.childCount == 0) 0 else 1
+        val start = if (container.isEmpty()) 0 else 1
         val fontSize = tile.fontSize.toFloat()
         val fontPixels = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, fontSize, container.resources.displayMetrics)
         rows.forEachIndexed { index, (name, value) ->

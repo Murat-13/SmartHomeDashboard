@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.edit
 
 /**
  * Блок «История мощности» в раскрытой карточке «Электропитание Modern» и в полноэкранном графике
@@ -150,7 +151,7 @@ internal class PowerGraphPanel(
             onTouch()
             if (state.period != period) {
                 state.select(period, clock())
-                prefs?.edit()?.putString(prefKey(tileId), period.key)?.apply()
+                prefs?.edit { putString(prefKey(tileId), period.key) }
                 changed(reloadData = true)
             }
         }

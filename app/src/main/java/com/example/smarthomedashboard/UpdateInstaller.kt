@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import androidx.core.content.edit
 
 /**
  * Установка скачанного и проверенного обновления ([AppUpdater.readyFile]) через PackageInstaller.
@@ -100,7 +101,7 @@ internal object UpdateInstaller {
     fun nightEnabled(context: Context) = prefs(context).getBoolean(PREF_NIGHT, false)
 
     fun setNightEnabled(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(PREF_NIGHT, enabled).apply()
+        prefs(context).edit { putBoolean(PREF_NIGHT, enabled) }
         UpdateLog.add(context, if (enabled) "Ночная автоустановка включена" else "Ночная автоустановка выключена")
     }
 
@@ -150,7 +151,7 @@ internal object UpdateInstaller {
     }
 
     private fun setState(context: Context, state: InstallState, message: String) {
-        prefs(context).edit().putString(PREF_INSTALL_STATE, state.name).putString(PREF_INSTALL_MESSAGE, message).apply()
+        prefs(context).edit { putString(PREF_INSTALL_STATE, state.name).putString(PREF_INSTALL_MESSAGE, message) }
     }
 
     /** Строка о последней попытке для «О приложении»; null — показывать нечего. */

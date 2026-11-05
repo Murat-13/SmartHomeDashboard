@@ -1,5 +1,6 @@
 package com.example.smarthomedashboard
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Looper
@@ -10,6 +11,8 @@ internal class MqttRemovalMigration(
     private val deletePassword: () -> SecretStore.Status,
     private val checkWorker: () -> Unit
 ) {
+    // Синхронная запись намеренно: метка «готово» ставится только после подтверждённого удаления старых ключей.
+    @SuppressLint("ApplySharedPref")
     fun run(): Boolean {
         checkWorker()
         return synchronized(LOCK) {

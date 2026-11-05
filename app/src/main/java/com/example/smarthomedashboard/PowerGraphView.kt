@@ -19,6 +19,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
+import androidx.core.graphics.withClip
 
 /**
  * Полотно графика мощности: линия с заливкой до нуля — голубая выше 0 Вт (потребление), зелёная ниже
@@ -135,11 +136,10 @@ internal class PowerGraphView(context: Context, private val state: PowerGraphSta
         val a = from(); val b = to()
         updateScale(a, b)
         drawGrid(canvas, a, b)
-        val count = canvas.save()
-        canvas.clipRect(plot)
-        drawBuckets(canvas, a, b)
-        drawSamples(canvas, a, b, now)
-        canvas.restoreToCount(count)
+        canvas.withClip(plot) {
+            drawBuckets(this, a, b)
+            drawSamples(this, a, b, now)
+        }
         message?.let { canvas.drawText(it, plot.centerX(), plot.centerY(), messagePaint) }
         drawCursor(canvas, a, b)
         if (state.live) postInvalidateDelayed(((b - a) / plot.width().coerceAtLeast(1f)).toLong().coerceIn(250L, 10_000L))

@@ -14,6 +14,7 @@ import androidx.appcompat.widget.SwitchCompat
 import com.example.smarthomedashboard.data.ColorRule
 import java.lang.ref.WeakReference
 import org.json.JSONObject
+import androidx.core.graphics.toColorInt
 
 /** Только слабая ссылка на владельца уже полученных показаний: редактор не открывает сеть. */
 internal object TileEditorPreviewSource {
@@ -377,7 +378,7 @@ internal class SensorTileEditor(
             box.addView(bounds)
             box.addView(button("Изменить цвет", "rule-color-$index") { chooseColor(index) }.apply {
                 val swatch = GradientDrawable().apply {
-                    setColor(try { Color.parseColor(item.value.colorHex) } catch (_: IllegalArgumentException) { Color.GRAY })
+                    setColor(try { item.value.colorHex.toColorInt() } catch (_: IllegalArgumentException) { Color.GRAY })
                     setStroke(dp(1), Color.WHITE)
                     cornerRadius = dp(4).toFloat()
                     setBounds(0, 0, dp(32), dp(32))
@@ -399,7 +400,7 @@ internal class SensorTileEditor(
             "#CC4CAF50", "#CCF44336", "#CC2196F3", "#CCFFEB3B", "#CC9C27B0", "#CCFF9800", "#CC00BCD4", "#CCFFFFFF",
             "#E64CAF50", "#E6F44336", "#E62196F3", "#E6FFEB3B", "#E69C27B0", "#E6FF9800", "#E600BCD4", "#E6FFFFFF",
             "#FF4CAF50", "#FFF44336", "#FF2196F3", "#FFFFEB3B", "#FF9C27B0", "#FFFF9800", "#FF00BCD4", "#FFFFFFFF").forEach { hex ->
-            palette.addView(button("", "palette-$hex") { field.setText(hex) }.apply { backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(hex)); contentDescription = "Цвет $hex" }, GridLayout.LayoutParams().apply { width = dp(52); height = dp(48); setMargins(dp(3), dp(3), dp(3), dp(3)) })
+            palette.addView(button("", "palette-$hex") { field.setText(hex) }.apply { backgroundTintList = android.content.res.ColorStateList.valueOf(hex.toColorInt()); contentDescription = "Цвет $hex" }, GridLayout.LayoutParams().apply { width = dp(52); height = dp(48); setMargins(dp(3), dp(3), dp(3), dp(3)) })
         }
         content.addView(palette)
         val dialog = AlertDialog.Builder(activity).setTitle("Цвет правила").setView(ScrollView(activity).apply { addView(content) })

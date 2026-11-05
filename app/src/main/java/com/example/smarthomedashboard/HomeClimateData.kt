@@ -13,6 +13,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import androidx.core.graphics.withTranslation
 
 /**
  * Погодные значки в том же семействе контуров, что [ModernIcon] (24×24, линия 2), но с цветами
@@ -47,14 +48,13 @@ internal enum class WeatherGlyph(private vararg val parts: Pair<Int, Array<Strin
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeJoin = Paint.Join.ROUND
         paint.strokeWidth = (2f).coerceAtLeast(1.2f / scale)
-        canvas.save()
-        canvas.translate(x, y)
-        canvas.scale(scale, scale)
-        paths.forEach { (color, path) ->
-            paint.color = if (dim) FOG_COLOR else color
-            canvas.drawPath(path, paint)
+        canvas.withTranslation(x, y) {
+            scale(scale, scale)
+            paths.forEach { (color, path) ->
+                paint.color = if (dim) FOG_COLOR else color
+                drawPath(path, paint)
+            }
         }
-        canvas.restore()
     }
 
     companion object {

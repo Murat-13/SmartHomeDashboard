@@ -16,6 +16,8 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import androidx.core.content.edit
+import androidx.core.net.toUri
 
 /**
  * Автокопии того же открытого файла, что и ручной экспорт (без токена, ключа Яндекса и PIN).
@@ -93,7 +95,7 @@ internal object AutoBackup {
     private fun prefs(context: Context) = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
 
     fun store(context: Context): Store =
-        prefs(context).getString(PREF_TREE, null)?.let { FolderStore(context, Uri.parse(it)) } ?: InternalStore(context)
+        prefs(context).getString(PREF_TREE, null)?.let { FolderStore(context, it.toUri()) } ?: InternalStore(context)
 
     /** Плитки, которые сейчас попали бы в копию, читаются без потерь. */
     private fun tilesIntact(context: Context): Boolean =
@@ -130,9 +132,9 @@ internal object AutoBackup {
     /** Одна проверка: копия создаётся только при изменении содержимого. [now] — для имени файла и статуса. */
     fun run(context: Context, store: Store = store(context), now: Long = System.currentTimeMillis()): Outcome {
         val prefs = prefs(context)
-        prefs.edit().putLong(PREF_LAST_CHECK, now).apply()
+        prefs.edit { putLong(PREF_LAST_CHECK, now) }
         if (!tilesIntact(context)) {
-            prefs.edit().putString(PREF_LAST_RESULT, "damaged").apply()
+            prefs.edit { putString(PREF_LAST_RESULT, "damaged") }
             return Outcome.DAMAGED
         }
         val text = ConfigBackup.build(context).toString(2)
@@ -145,11 +147,11 @@ internal object AutoBackup {
         val verified = store.write(name, text) && store.read(name)?.let { runCatching { JSONObject(it) }.isSuccess && it == text } == true
         if (!verified) {
             store.delete(name)
-            prefs.edit().putString(PREF_LAST_RESULT, "error").apply()
+            prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
         }
         store.names().filter { it.startsWith(PREFIX) && it.endsWith(".json") }.sorted().dropLast(KEEP).forEach { store.delete(it) }
-        prefs.edit().putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok").apply()
+        prefs.edit { putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok") }
         return Outcome.CREATED
     }
 

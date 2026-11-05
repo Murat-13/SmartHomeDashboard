@@ -16,6 +16,8 @@ import java.util.Date
 import java.util.Locale
 
 internal object YandexWeatherDetailsRenderer {
+    // Обработчик касаний возвращает false: клик идёт штатно через View.onTouchEvent → performClick.
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     fun render(
         context: Context,
         container: LinearLayout,

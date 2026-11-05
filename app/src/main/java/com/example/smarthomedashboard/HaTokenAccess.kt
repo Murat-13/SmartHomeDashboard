@@ -1,5 +1,6 @@
 package com.example.smarthomedashboard
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Looper
 import java.util.concurrent.atomic.AtomicLong
@@ -143,6 +144,8 @@ internal class PreferenceLegacyHaToken(
     } catch (_: ClassCastException) { throw LegacyTokenException()
     } catch (_: SecurityException) { throw LegacyTokenException() }
 
+    // Синхронная запись намеренно: перенос секрета продолжается только после подтверждённой записи на диск.
+    @SuppressLint("ApplySharedPref")
     override fun mark(phase: String?): Boolean = try {
         preferences().edit().putString("ha_token_transfer_phase", phase).commit()
     } catch (_: SecurityException) { false }

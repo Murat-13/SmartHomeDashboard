@@ -2,6 +2,7 @@ package com.example.smarthomedashboard
 
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.core.graphics.toColorInt
 
 /**
  * Настройки универсальной плитки «Электропитание Modern» (`type = power_modern`), ключ [KEY]
@@ -292,7 +293,7 @@ internal data class PowerModernConfig(
         }
 
         fun parseColor(text: String?): Int? = try {
-            if (text.isNullOrBlank()) null else android.graphics.Color.parseColor(text.trim())
+            if (text.isNullOrBlank()) null else text.trim().toColorInt()
         } catch (_: IllegalArgumentException) { null }
 
         private fun rowJson(row: BatteryModernConfig.Row) = JSONObject().apply {

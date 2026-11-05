@@ -21,6 +21,7 @@ import androidx.core.graphics.ColorUtils
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import androidx.core.graphics.withTranslation
 
 /**
  * Плитка Modern: одиночная кнопка, материнская плитка группы или дочерняя кнопка раскрытой панели.
@@ -316,10 +317,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         iconPaint.color = palette.icon
         icon.draw(canvas, card.centerX() - iconSize / 2, top, iconSize, iconPaint)
         top += iconSize + gap
-        canvas.save()
-        canvas.translate(card.centerX() - layout.width / 2f, top)
-        layout.draw(canvas)
-        canvas.restore()
+        canvas.withTranslation(card.centerX() - layout.width / 2f, top) { layout.draw(this) }
         model.powerText?.let { power ->
             val label = power
             powerPaint.color = palette.icon
@@ -345,10 +343,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         val shift = if (groupIcon != null && layout.lineCount == 1) (groupIconSize() + groupIconGap()) / 2 else 0f
         val originX = card.centerX() - layout.width / 2f + shift
         val originY = card.top + pad
-        canvas.save()
-        canvas.translate(originX, originY)
-        layout.draw(canvas)
-        canvas.restore()
+        canvas.withTranslation(originX, originY) { layout.draw(this) }
         if (groupIcon != null) {
             val size = groupIconSize()
             val x = originX + layout.getLineLeft(0) - groupIconGap() - size
@@ -530,4 +525,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         fun borderOf(visual: Visual) = palette(visual).border
         fun iconOf(visual: Visual) = palette(visual).icon
     }
+
+    /** Явное переопределение для спецвозможностей: клик обрабатывается штатно. */
+    override fun performClick(): Boolean = super.performClick()
 }

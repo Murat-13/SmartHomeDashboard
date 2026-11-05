@@ -17,8 +17,11 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.core.view.isEmpty
 
 internal object HomeAssistantWeatherDetailsRenderer {
+    // Обработчик касаний возвращает false: клик идёт штатно через View.onTouchEvent → performClick.
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     fun render(
         context: Context,
         tile: TileEntity,
@@ -239,7 +242,7 @@ internal object HomeAssistantWeatherDetailsRenderer {
             }
         }
         // Непустой массив тоже может не содержать ни одной пригодной записи.
-        if (forecastRow.childCount == 0) {
+        if (forecastRow.isEmpty()) {
             forecastRow.addView(TextView(context).apply {
                 text = "Прогноз временно недоступен\n(Проверьте атрибуты в HA)"
                 setTextColor(Color.GRAY)

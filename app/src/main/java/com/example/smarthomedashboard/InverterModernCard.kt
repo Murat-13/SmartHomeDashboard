@@ -22,6 +22,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.isEmpty
 
 /**
  * Плитка «Инвертор» (docs/inverter-modern.md): компактная — квадрат со схемой потоков крестом и статусом;
@@ -489,7 +490,7 @@ internal class InverterModernCard(
 
     /** Касания вариантов приоритета — свои: раскрытие не сворачивается от них. */
     override fun interactiveAt(windowX: Float, windowY: Float): Boolean {
-        if (priorityChips.childCount == 0 || !priorityChips.isShown) return false
+        if (priorityChips.isEmpty() || !priorityChips.isShown) return false
         // Только видимая часть: варианты, прокрученные за край ScrollView, не перехватывают касания.
         if (!priorityChips.getGlobalVisibleRect(visibleChips)) return false
         return visibleChips.contains(windowX.toInt(), windowY.toInt())

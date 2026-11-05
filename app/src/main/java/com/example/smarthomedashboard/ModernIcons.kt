@@ -5,6 +5,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import androidx.core.graphics.PathParser
 import org.json.JSONObject
+import androidx.core.graphics.withTranslation
 
 /**
  * Контурные иконки Modern (сетка 24×24, линия 2, скруглённые концы) — рисуются прямо на Canvas,
@@ -79,11 +80,10 @@ internal enum class ModernIcon(val key: String?, val label: String?, private var
         paint.strokeJoin = Paint.Join.ROUND
         // Тонкие значки крошечных миниатюр остаются различимыми.
         paint.strokeWidth = (2f).coerceAtLeast(1.2f / scale)
-        canvas.save()
-        canvas.translate(x, y)
-        canvas.scale(scale, scale)
-        canvas.drawPath(path, paint)
-        canvas.restore()
+        canvas.withTranslation(x, y) {
+            scale(scale, scale)
+            drawPath(path, paint)
+        }
         paint.strokeWidth = stroke
     }
 

@@ -26,6 +26,8 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import androidx.core.view.isVisible
+import androidx.core.view.isEmpty
 
 /**
  * Раскрытая Modern-группа: затемнение, яркая копия материнской плитки над ним и непрозрачная
@@ -386,7 +388,7 @@ internal class ModernGroupPanel(
     private fun fadeChrome(from: Float, to: Float, duration: Long) {
         val panel = panel ?: return
         val column = panel.getChildAt(0) as? ViewGroup ?: return
-        val chrome = listOfNotNull(column.getChildAt(0), column.getChildAt(1), emptyView?.takeIf { it.visibility == View.VISIBLE })
+        val chrome = listOfNotNull(column.getChildAt(0), column.getChildAt(1), emptyView?.takeIf { it.isVisible })
         val background = panel.background
         val saved = panel.elevation
         android.animation.ValueAnimator.ofFloat(from, to).apply {
@@ -501,7 +503,7 @@ internal class ModernGroupPanel(
         }
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val rows = if (childCount == 0) 0 else (childCount + cols - 1) / cols
+            val rows = if (isEmpty()) 0 else (childCount + cols - 1) / cols
             val spec = { size: Int -> MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY) }
             for (i in 0 until childCount) getChildAt(i).measure(spec(cellW), spec(cellH))
             val width = MeasureSpec.getSize(widthMeasureSpec)

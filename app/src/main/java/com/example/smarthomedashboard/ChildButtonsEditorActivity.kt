@@ -383,6 +383,8 @@ class ChildButtonAdapter(
         return ViewHolder(createItemView(parent))
     }
 
+    // Обработчик касаний возвращает false: клик идёт штатно через View.onTouchEvent → performClick.
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = items[position]
         holder.tvOrder.text = "${position + 1}"
