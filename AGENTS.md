@@ -133,8 +133,8 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   тайм-ауте без события сущности) и мелочи (схема перерисовывается ≤ 25 кадров/с; подтверждение закрывается через 30 с
   и при сворачивании, команда только из открытой карточки; `interactiveAt` по видимой части; ночной минус PV — не поток).
   Не исправлено: пульсация аварии не останавливается при затемнении экрана (так же у «Электропитание Modern»).
-- Проверено: полный прогон `testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease lintDebug` — см. итог
-  ниже в этой записи; новые `InverterModernLogicTest` ×14, `InverterModernPanelTest` ×10, `InverterModernVisualTest` ×5
+- Проверено: полный прогон `testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease lintDebug` — 1249 тестов,
+  0 падений; lint — 0 ошибок, 342 предупреждения (как до изменений); новые `InverterModernLogicTest` ×14, `InverterModernPanelTest` ×10, `InverterModernVisualTest` ×5
   (рендеры просмотрены). Не проверено: реальный инвертор (в HA ещё не подключён), планшет, команды реальному дому не
   отправлялись.
 
