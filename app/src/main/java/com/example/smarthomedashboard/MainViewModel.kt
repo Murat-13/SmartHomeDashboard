@@ -364,6 +364,7 @@ class MainViewModel : ViewModel() {
     }
 
     override fun onCleared() {
+        PanelAlerts.detach()
         detachUi()
         disconnectWebSocket()
         super.onCleared()

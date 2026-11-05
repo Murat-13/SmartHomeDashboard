@@ -36,7 +36,8 @@ val releaseSigning: Properties? = rootProject.file("keystore.properties").takeIf
 android {
     namespace = "com.example.smarthomedashboard"
     // Android 15 (0.9.7): edge-to-edge принудительно — отступы системных полос задаёт SystemBarInsets.
-    compileSdk = 35
+    // 36 — для Media3 1.11 (видео домофона). Поведение приложения задаёт targetSdk.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.smarthomedashboard"
@@ -100,6 +101,12 @@ dependencies {
 
     // Ежедневные автокопии настроек (решение владельца 02.11.2026). 2.10.x требует compileSdk 35 (0.9.7).
     implementation("androidx.work:work-runtime-ktx:2.10.5")
+
+    // Видео плитки «Домофон» (решение владельца 06.11.2026): RTSP напрямую с камеры, HLS через Home Assistant.
+    // Аппаратное декодирование H.264/H.265; без media3-ui — отрисовка своя (TextureView, стиль Modern).
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-rtsp:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")

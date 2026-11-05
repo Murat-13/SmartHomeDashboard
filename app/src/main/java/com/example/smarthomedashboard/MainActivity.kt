@@ -167,6 +167,21 @@ class MainActivity : AppCompatActivity() {
         UpdateInstaller.schedule(applicationContext)
         setupWebSocket()
         showWelcomeOnFirstLaunch()
+        startVoiceAlerts()
+    }
+
+    /**
+     * Голосовые уведомления (docs/voice-alerts.md): следят за состоянием HA, пока жива панель — и когда поверх
+     * открыты настройки или редактор (Activity остановлена, но не уничтожена). В тестах Robolectric не включаются.
+     */
+    private fun startVoiceAlerts() {
+        if (android.os.Build.FINGERPRINT == "robolectric") return
+        PanelAlerts.attach(applicationContext)
+        lifecycleScope.launch {
+            viewModel.uiState.map { it.singleStates to it.haSession }.distinctUntilChanged().collect {
+                PanelAlerts.onState(viewModel.uiState.value)
+            }
+        }
     }
 
     private var uiStateJob: Job? = null

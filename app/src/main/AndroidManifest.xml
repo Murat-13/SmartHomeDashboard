@@ -60,6 +60,11 @@
             android:theme="@style/Theme.SmartHomeDashboard.Modern" />
 
         <activity
+            android:name=".VoiceAlertsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+
+        <activity
             android:name=".SensorPickerActivity"
             android:exported="false" />
 

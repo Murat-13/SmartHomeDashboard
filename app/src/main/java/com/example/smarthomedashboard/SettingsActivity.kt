@@ -491,6 +491,14 @@ class SettingsActivity : PinProtectedActivity() {
         findViewById<CompoundButton?>(R.id.cbMotionEnabled)?.setOnCheckedChangeListener { _, checked ->
             apply { putBoolean(MainActivity.PREF_MOTION_ENABLED, checked) }
         }
+        // Голосовые уведомления (docs/voice-alerts.md) — отдельный экран, вход из раздела «Экран».
+        findViewById<android.widget.LinearLayout?>(R.id.sectionScreen)?.let { section ->
+            if (section.findViewWithTag<View>("btnVoiceAlerts") == null) {
+                section.addView(ModernUi.secondaryButton(this, "Голосовые уведомления…") {
+                    startActivity(android.content.Intent(this, VoiceAlertsActivity::class.java))
+                }.apply { tag = "btnVoiceAlerts" }, 2)
+            }
+        }
         findViewById<CompoundButton?>(R.id.cbModernHaptics)?.setOnCheckedChangeListener { _, checked ->
             apply { putBoolean(ModernHaptics.PREF, checked) }
         }
