@@ -290,6 +290,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         // При пересоздании (поворот) новая панель снова пометит себя в onCreate.
         isAlive = false
+        // Новое окно начинает с рабочей яркостью: пауза анимаций затемнения не переносится.
+        PanelMotion.dimmed = false
         clockHandler.removeCallbacks(weatherRefreshRunnable)
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
         super.onDestroy()
@@ -668,6 +670,7 @@ class MainActivity : AppCompatActivity() {
             val screen = when (type) {
                 BatteryModernConfig.TYPE -> BatteryModernEditorActivity::class.java
                 PowerModernConfig.TYPE -> PowerModernEditorActivity::class.java
+                InverterModernConfig.TYPE -> InverterModernEditorActivity::class.java
                 HomeClimateConfig.TYPE -> HomeClimateEditorActivity::class.java
                 else -> TileSettingsActivity::class.java
             }
@@ -965,6 +968,8 @@ class MainActivity : AppCompatActivity() {
     private fun dimScreen() {
         if (isDimmed) return
         isDimmed = true
+        // Схемы потоков не двигаются при яркости 1%: экономия ЦП на стене 24/7.
+        PanelMotion.dimmed = true
         val params = window.attributes
         params.screenBrightness = 0.01f // Минимальная яркость
         window.attributes = params
@@ -972,6 +977,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun wakeScreen() {
         isDimmed = false
+        PanelMotion.dimmed = false
         val params = window.attributes
         params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE // Системное значение
         window.attributes = params

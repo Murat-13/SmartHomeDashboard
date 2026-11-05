@@ -107,7 +107,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 val isGroup = position == 2
                 // Источники «АКБ Modern» выбираются по каждому показателю в её редакторе.
                 val isModern = typeAt(position) == BatteryModernConfig.TYPE || typeAt(position) == PowerModernConfig.TYPE ||
-                    typeAt(position) == HomeClimateConfig.TYPE
+                    typeAt(position) == HomeClimateConfig.TYPE || typeAt(position) == InverterModernConfig.TYPE
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 btnSelectSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
@@ -119,6 +119,9 @@ class TileSettingsActivity : PinProtectedActivity() {
                 if (tileId == null && (position == 7 || position == 8) && etTitle.text.isBlank()) {
                     etTitle.setText(PowerModernConfig.title(
                         if (position == 8) PowerModernConfig.PROFILE_INVERTER else PowerModernConfig.PROFILE_GRID))
+                }
+                if (tileId == null && typeAt(position) == InverterModernConfig.TYPE && etTitle.text.isBlank()) {
+                    etTitle.setText(InverterModernConfig.DEFAULT_TITLE)
                 }
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
@@ -249,6 +252,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             BatteryModernConfig.TYPE -> 6
             PowerModernConfig.TYPE -> powerIndex(tile.config)
             HomeClimateConfig.TYPE -> 9
+            InverterModernConfig.TYPE -> 10
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -305,7 +309,8 @@ class TileSettingsActivity : PinProtectedActivity() {
 
         val container = when (type) {
             "button", "group" -> "bottom_panel"
-            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE, HomeClimateConfig.TYPE -> "grid"
+            "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE, HomeClimateConfig.TYPE,
+            InverterModernConfig.TYPE -> "grid"
             else -> "grid"
         }
 
@@ -382,6 +387,8 @@ class TileSettingsActivity : PinProtectedActivity() {
                 existingConfig.toString())
             // «Часы · Погода · Климат»: размер 2:1 и пустой шаблон; сохранённые настройки не сбрасываются.
             HomeClimateConfig.TYPE -> HomeClimateConfig.newTileConfig(existingConfig.toString())
+            // «Инвертор»: квадрат и пустой шаблон; сохранённые настройки не сбрасываются.
+            InverterModernConfig.TYPE -> InverterModernConfig.newTileConfig(existingConfig.toString())
             else -> existingConfig.toString()
         }
 
@@ -410,6 +417,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         6 -> BatteryModernConfig.TYPE
         7, 8 -> PowerModernConfig.TYPE
         9 -> HomeClimateConfig.TYPE
+        10 -> InverterModernConfig.TYPE
         else -> "sensor"
     }
 
@@ -462,6 +470,8 @@ class TileSettingsActivity : PinProtectedActivity() {
         tvSelectedSensors.text = when {
             isGroup && selectedSensors.isEmpty() -> "В группе пока нет устройств"
             isGroup -> "Устройств в группе: ${selectedSensors.size}"
+            typeAt(spinnerType.selectedItemPosition) == InverterModernConfig.TYPE ->
+                "Датчики инвертора выбираются в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == HomeClimateConfig.TYPE ->
                 "Погода и комнаты выбираются в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == BatteryModernConfig.TYPE ||
@@ -560,6 +570,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         initialTitle = original.title
         initialType = if (original.type == PowerModernConfig.TYPE) powerIndex(original.config)
             else if (original.type == HomeClimateConfig.TYPE) 9
+            else if (original.type == InverterModernConfig.TYPE) 10
             else listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
         val draft = try {
             saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)

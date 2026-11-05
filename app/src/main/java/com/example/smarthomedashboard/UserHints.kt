@@ -51,7 +51,8 @@ internal object UserHints {
         BATTERY_MODERN_EDITOR("hint_hidden_battery_modern_editor"),
         BATTERY_MODERN_ROW("hint_hidden_battery_modern_row"),
         POWER_MODERN_EDITOR("hint_hidden_power_modern_editor"),
-        HOME_CLIMATE_EDITOR("hint_hidden_home_climate_editor")
+        HOME_CLIMATE_EDITOR("hint_hidden_home_climate_editor"),
+        INVERTER_MODERN_EDITOR("hint_hidden_inverter_modern_editor")
     }
 
     /** Пользователь уже входил в редактирование: подсказка «как войти» ему не нужна. */
@@ -129,6 +130,9 @@ internal object UserHints {
         HomeClimateConfig.TYPE -> "Часы, текущая погода и температура до пяти избранных комнат в одной плитке 2:1; " +
             "по нажатию — почасовой прогноз, прогноз на 5 дней и все комнаты. После сохранения нажмите " +
             "на плитку в режиме редактирования и выберите погоду и датчики комнат. Прежние плитки часов и погоды не меняются."
+        InverterModernConfig.TYPE -> "Инвертор: откуда и куда идёт энергия — солнце, сеть, АКБ и дом, режим и аварии. " +
+            "По нажатию — подробности и смена приоритета источника (под PIN). После сохранения нажмите на плитку " +
+            "в режиме редактирования и выберите датчики инвертора."
         "clock" -> "Часы и дата. Датчики выбирать не нужно."
         "weather" -> "Погода из Home Assistant: выберите сущность weather.* (без выбора — weather.home). " +
             "Яндекс Погоду можно включить в настройках приложения."

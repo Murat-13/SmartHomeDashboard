@@ -247,6 +247,7 @@ internal class DashboardPanelController(
         val tiles = tileManager.getTilesByContainer("bottom_panel").filter { it.page == page }
         // Состояния удалённых плиток «Электропитание Modern» не накапливаются.
         viewModel.retainPowerTrackers(tileManager.getAllTiles().filter { it.type == PowerModernConfig.TYPE }.mapTo(HashSet()) { it.id })
+        viewModel.retainInverterTrackers(tileManager.getAllTiles().filter { it.type == InverterModernConfig.TYPE }.mapTo(HashSet()) { it.id })
 
         // Сенсоры
         tileManager.getTilesByContainer("grid").filter { it.page == page }.forEach { tile ->
@@ -515,8 +516,9 @@ internal class DashboardPanelController(
     private val batteryConfigs = ParsedTileConfig { BatteryModernConfig.from(it) }
     private val powerConfigs = ParsedTileConfig { PowerModernConfig.from(it) }
     private val climateConfigs = ParsedTileConfig { HomeClimateConfig.from(it) }
+    private val inverterConfigs = ParsedTileConfig { InverterModernConfig.from(it) }
     private val parsedConfigs = listOf(iconConfigs, buttonEntities, groupEntries, livePower, childPower,
-        batteryConfigs, powerConfigs, climateConfigs)
+        batteryConfigs, powerConfigs, climateConfigs, inverterConfigs)
 
     private fun modernEntries(tile: TileEntity): List<ModernGroupPanel.Entry> = groupEntries.of(tile)
 
@@ -899,7 +901,8 @@ internal class DashboardPanelController(
 
     /** Modern-плитки (АКБ, Электропитание, Часы · Погода · Климат): общие раскрытие, resize, перемещение и редактирование. */
     private fun isModern(type: String) =
-        type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE || type == HomeClimateConfig.TYPE
+        type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE || type == HomeClimateConfig.TYPE ||
+            type == InverterModernConfig.TYPE
 
     private fun createModernBatteryView(tile: TileEntity, savedWidth: Int, savedHeight: Int): View {
         // «Часы · Погода · Климат» — всегда 2:1 внутри сохранённого прямоугольника; config не переписывается.
@@ -908,6 +911,7 @@ internal class DashboardPanelController(
         val (card, resizeHandle) = when (tile.type) {
             PowerModernConfig.TYPE -> PowerModernCard.createTile(activity, tile.id, width, height, isEditMode)
             HomeClimateConfig.TYPE -> HomeClimateCompactView.createTile(activity, tile.id, width, height, isEditMode)
+            InverterModernConfig.TYPE -> InverterModernCard.createTile(activity, tile.id, width, height, isEditMode)
             else -> BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
         }
         // Новая View сразу получает уже подтверждённое оформление (без повторной анимации).
@@ -935,6 +939,10 @@ internal class DashboardPanelController(
         val readings = modernReadings()
         if (tile.type == PowerModernConfig.TYPE) {
             renderPower(tile, view, readings, animate)
+            return
+        }
+        if (tile.type == InverterModernConfig.TYPE) {
+            renderInverter(tile, view, readings, animate)
             return
         }
         val config = batteryConfigs.of(tile)
@@ -985,6 +993,52 @@ internal class DashboardPanelController(
         handler.postDelayed(check, (at - now).coerceAtLeast(0L))
     }
 
+    /** Отложенные проверки подтверждения цвета «Инвертора»: не больше одной на плитку. */
+    private val inverterChecks = mutableMapOf<String, Runnable>()
+
+    /** Схема и цифры — сразу; цвет — по трекеру плитки (смена держится 1,8 с, без мерцания у границ). */
+    private fun renderInverter(tile: TileEntity, view: FrameLayout?, readings: BatteryReadings, animate: Boolean) {
+        val config = inverterConfigs.of(tile)
+        val snapshot = InverterModel.snapshot(config, readings)
+        val tracker = viewModel.inverterTracker(tile.id)
+        val now = android.os.SystemClock.uptimeMillis()
+        val look = tracker.update(snapshot.look, now)
+        view?.findViewWithTag<InverterModernCard>("inv_compact")?.bind(tile.title, config, readings, snapshot, look, animate)
+        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
+            val pending = config.row(InverterModernConfig.ROLE_PRIORITY)?.entityId?.takeIf { it.isNotBlank() }
+                ?.let { viewModel.commands.pendingFor(it)?.expectedState }
+            (modernExpansion.card as? InverterModernCard)?.bind(tile.title, config, readings, snapshot, look, animate, pending)
+        }
+        inverterChecks.remove(tile.id)?.let(handler::removeCallbacks)
+        val at = tracker.nextCheckAt ?: return
+        val check = Runnable {
+            inverterChecks.remove(tile.id)
+            tileManager.getAllTiles().find { it.id == tile.id }?.let { renderModern(it, viewForTile(it.id) as? FrameLayout, true) }
+        }
+        inverterChecks[tile.id] = check
+        handler.postDelayed(check, (at - now).coerceAtLeast(0L))
+    }
+
+    /**
+     * Смена приоритета источника (решение владельца): подтверждение → PIN → `select.select_option`.
+     * Ожидание показывается на карточке до факта HA; повтор при ожидании не отправляется.
+     */
+    private fun confirmPriority(tileId: String, option: String) {
+        modernExpansion.touch()
+        val label = InverterModel.priorityLabel(option)
+        ModernUi.dangerDialog(activity, "Сменить приоритет источника?",
+            "Инвертор переключится на «$label». Дом может перейти на другой источник питания.", "Сменить") {
+            if (host.adminAction { sendPriority(tileId, option) }) sendPriority(tileId, option)
+        }.show()
+    }
+
+    private fun sendPriority(tileId: String, option: String) {
+        val tile = tileManager.getAllTiles().find { it.id == tileId } ?: return
+        val entity = inverterConfigs.of(tile).row(InverterModernConfig.ROLE_PRIORITY)?.entityId?.takeIf { it.isNotBlank() } ?: return
+        viewModel.commands.selectOption(entity, option)
+        renderModern(tile, viewForTile(tile.id) as? FrameLayout, animate = true)
+    }
+
     /** Смена связи/синхронизации меняет достоверность всех показаний Modern без событий сущностей. */
     fun renderSessionState() {
         if (!host.hasPanel) return
@@ -1008,6 +1062,18 @@ internal class DashboardPanelController(
                 else minOf((screenH * 0.92f).toInt(), (width * 0.74f).toInt()).coerceAtLeast((screenH * 0.6f).toInt())
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             modernExpansion.expand(tile.id, source, HomeClimateExpandedCard(activity), target)
+            renderModern(tile, null, animate = false)
+            return
+        }
+        if (tile.type == InverterModernConfig.TYPE) {
+            // Слева схема крупно, справа подробности узлов и приоритет источника.
+            val width = minOf((screenW * 0.9f).toInt(), 1600)
+            val height = minOf((screenH * 0.9f).toInt(), (width * 0.64f).toInt()).coerceAtLeast(screenH / 2)
+            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
+            val card = InverterModernCard(activity, expanded = true)
+            card.onPriority = { option -> confirmPriority(tile.id, option) }
+            card.scroll?.setOnScrollChangeListener { _, _, _, _, _ -> modernExpansion.touch() }
+            modernExpansion.expand(tile.id, source, card, target)
             renderModern(tile, null, animate = false)
             return
         }
