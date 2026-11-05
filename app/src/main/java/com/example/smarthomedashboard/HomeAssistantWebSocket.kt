@@ -636,10 +636,15 @@ class HomeAssistantWebSocket(
         }
     }
 
+    /**
+     * Команда устройству. [data] — дополнительные поля `service_data` (например, `option` для
+     * `select.select_option`); `entity_id` задаётся только параметром и полями [data] не перезаписывается.
+     */
     fun callService(
         domain: String,
         service: String,
         entityId: String,
+        data: Map<String, Any> = emptyMap(),
         onResult: (ServiceCommandResult) -> Unit = {}
     ): Boolean {
         // Не ставим действие в очередь даже при вызове не с UI-потока.
@@ -651,8 +656,11 @@ class HomeAssistantWebSocket(
             onError("Нет соединения: дождитесь переподключения и повторите команду")
             return false
         }
+        val serviceData = JSONObject()
+        data.forEach { (key, value) -> serviceData.put(key, value) }
+        serviceData.put("entity_id", entityId)
         val message = command("call_service").put("domain", domain).put("service", service)
-            .put("service_data", JSONObject().put("entity_id", entityId))
+            .put("service_data", serviceData)
         val id = message.getInt("id")
         val timeout = Runnable {
             serviceRequests.remove(id)?.let {

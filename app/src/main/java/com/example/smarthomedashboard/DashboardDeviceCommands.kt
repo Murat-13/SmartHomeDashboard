@@ -12,7 +12,9 @@ internal class DashboardDeviceCommands(
     private val render: (String) -> Unit = {},
     private val cancelRequest: (String) -> Unit = {},
     private val connectionGeneration: () -> Int = { 0 },
-    private val error: (String) -> Unit = {}
+    private val error: (String) -> Unit = {},
+    /** Выбор варианта сущности `select` (`select.select_option`): id, вариант, результат. */
+    private val sendOption: (String, String, (ServiceCommandResult) -> Unit) -> Boolean = { _, _, _ -> false }
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var nextOperationId = 0L
@@ -63,6 +65,19 @@ internal class DashboardDeviceCommands(
         ids.forEach { id -> commands[id]?.takeIf { pending[id]?.operationId == it.operationId }?.let(::dispatch) }
     }
 
+    /**
+     * Выбрать вариант сущности `select` (приоритет источника инвертора и т. п.). Как и переключение:
+     * один запрос без повторов, ожидание до фактического состояния [option] в HA, затем снятие ожидания.
+     * false — уже идёт команда этой сущности, вариант уже выбран или отправить не удалось.
+     */
+    fun selectOption(id: String, option: String): Boolean {
+        expireOverdue()
+        if (id in pending || state.singleStates[id] == option) return false
+        val command = begin(id, option)
+        notifyChanged(listOf(id))
+        return dispatch(command) { result -> sendOption(id, option, result) }
+    }
+
     private fun begin(id: String, expected: String, groupId: String? = null): PendingCommand {
         val now = SystemClock.elapsedRealtime()
         failures.remove(id)
@@ -87,9 +102,15 @@ internal class DashboardDeviceCommands(
         return command
     }
 
-    private fun dispatch(command: PendingCommand): Boolean {
+    private fun dispatch(command: PendingCommand): Boolean = dispatch(command) { result ->
         val id = command.entityId
-        val accepted = send(id.substringBefore('.'), if (command.expectedState == "on") "turn_on" else "turn_off", id) { result ->
+        send(id.substringBefore('.'), if (command.expectedState == "on") "turn_on" else "turn_off", id, result)
+    }
+
+    /** Отправка и обработка ответа одной команды; [transmit] только передаёт запрос в HA. */
+    private fun dispatch(command: PendingCommand, transmit: ((ServiceCommandResult) -> Unit) -> Boolean): Boolean {
+        val id = command.entityId
+        val accepted = transmit { result ->
             if (isCurrent(command)) {
                 val currentResult = if (command.connectionGeneration == connectionGeneration()) result else ServiceCommandResult.DISCONNECTED
                 if (currentResult == ServiceCommandResult.ACKNOWLEDGED) {

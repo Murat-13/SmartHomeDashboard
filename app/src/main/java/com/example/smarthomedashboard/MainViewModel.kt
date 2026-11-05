@@ -25,16 +25,22 @@ class MainViewModel : ViewModel() {
     internal fun powerTracker(tileId: String) = powerTrackers.getOrPut(tileId) { PowerStateTracker() }
     internal fun retainPowerTrackers(tileIds: Set<String>) { powerTrackers.keys.retainAll(tileIds) }
 
+    // Подтверждённый цвет плиток «Инвертор» по id плитки (как у «Электропитание Modern»).
+    private val inverterTrackers = mutableMapOf<String, InverterLookTracker>()
+    internal fun inverterTracker(tileId: String) = inverterTrackers.getOrPut(tileId) { InverterLookTracker() }
+    internal fun retainInverterTrackers(tileIds: Set<String>) { inverterTrackers.keys.retainAll(tileIds) }
+
     // Открытая Modern-группа остаётся открытой после поворота и изменения размера окна.
     internal var openModernGroup: String? = null
     /** Текущая страница панели (0 — главная); переживает пересоздание экрана, но не перезапуск. */
     internal var currentPage = 0
     internal val commands = DashboardDeviceCommands(
-        devices, ::callService, ::publishDevices,
+        devices, { domain, service, id, result -> callService(domain, service, id, onResult = result) }, ::publishDevices,
         render = { id -> commandStateCallback?.invoke(id) },
         cancelRequest = { id -> webSocket?.cancelServiceRequests(id) },
         connectionGeneration = { webSocket?.connectionGeneration ?: generation },
-        error = ::publishOperationError
+        error = ::publishOperationError,
+        sendOption = { id, option, result -> callService("select", "select_option", id, mapOf("option" to option), result) }
     )
 
     private var webSocket: HomeAssistantWebSocket? = null
@@ -298,13 +304,14 @@ class MainViewModel : ViewModel() {
         webSocket?.syncHourlyForecastSubscriptions(entityIds)
     }
 
-    fun callService(domain: String, service: String, entityId: String, onResult: (ServiceCommandResult) -> Unit = {}): Boolean {
+    fun callService(domain: String, service: String, entityId: String, data: Map<String, Any> = emptyMap(),
+                    onResult: (ServiceCommandResult) -> Unit = {}): Boolean {
         val client = webSocket
         if (client == null) {
             publishOperationError("Нет соединения: дождитесь переподключения и повторите команду")
             return false
         }
-        return client.callService(domain, service, entityId, onResult)
+        return client.callService(domain, service, entityId, data, onResult)
     }
 
     internal fun onYandexWeatherChanged(weather: YandexClimateWeather) {
