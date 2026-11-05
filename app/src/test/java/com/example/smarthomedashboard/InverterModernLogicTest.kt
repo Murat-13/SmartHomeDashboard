@@ -118,6 +118,12 @@ class InverterModernLogicTest {
         assertEquals(InverterModel.Look.NO_DATA, unavailable.look)
     }
 
+    @Test fun nightNegativePvIsNotAFlow() {
+        val s = snap(mapOf("pv_power" to "-25", "battery_power" to "-400", "load_power" to "380"))
+        assertFalse(s.solarActive)
+        assertEquals("От АКБ", s.status)
+    }
+
     @Test fun smallFlowsAreIdleAndLoadZeroSaysNoLoad() {
         val s = snap(mapOf("pv_power" to "12", "grid_power" to "-10", "battery_power" to "0", "load_power" to "0"))
         assertFalse(s.solarActive || s.gridActive || s.batteryActive || s.loadActive)

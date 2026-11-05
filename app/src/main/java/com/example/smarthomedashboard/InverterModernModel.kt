@@ -46,7 +46,8 @@ internal object InverterModel {
         val look: Look,
         val status: String
     ) {
-        val solarActive get() = active(solar)
+        /** Солнце только отдаёт: ночной «минус» по PV (собственное потребление MPPT) потоком не считается. */
+        val solarActive get() = solar != null && solar > IDLE_W
         val gridActive get() = active(grid)
         val batteryActive get() = active(battery)
         val loadActive get() = active(load)

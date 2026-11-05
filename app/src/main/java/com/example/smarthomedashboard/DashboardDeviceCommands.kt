@@ -73,27 +73,31 @@ internal class DashboardDeviceCommands(
     fun selectOption(id: String, option: String): Boolean {
         expireOverdue()
         if (id in pending || state.singleStates[id] == option) return false
-        val command = begin(id, option)
+        val command = begin(id, option, option = true)
         notifyChanged(listOf(id))
         return dispatch(command) { result -> sendOption(id, option, result) }
     }
 
-    private fun begin(id: String, expected: String, groupId: String? = null): PendingCommand {
+    private fun begin(id: String, expected: String, groupId: String? = null, option: Boolean = false): PendingCommand {
         val now = SystemClock.elapsedRealtime()
         failures.remove(id)
         val command = PendingCommand(
-            id, expected, ++nextOperationId, connectionGeneration(), now, now + 20_000L,
+            id, expected, ++nextOperationId, connectionGeneration(), now, now + if (option) OPTION_DEADLINE_MS else DEADLINE_MS,
             alreadyConfirmed = state.confirmedState(id) != ConfirmedState.UNAVAILABLE && state.singleStates[id] == expected,
-            groupId = groupId
+            groupId = groupId,
+            option = option
         )
         pending[id] = command
         val deadline = Runnable {
             if (isCurrent(command)) {
                 val observed = pending.getValue(id).observedAfterStart
                 remove(id)
-                if (!observed) state.markUnconfirmed(id)
+                // Вариант select: последнее значение HA остаётся фактом (иначе блок выбора заблокирован
+                // до переподключения, если значение так и не изменилось).
+                if (!observed && !command.option) state.markUnconfirmed(id)
                 failed(id)
-                error("Устройство не подтвердило переключение. Проверьте его состояние")
+                error(if (command.option) "Устройство не подтвердило выбранный вариант. Проверьте его состояние"
+                    else "Устройство не подтвердило переключение. Проверьте его состояние")
                 notifyChanged(listOf(id))
             }
         }
@@ -126,7 +130,7 @@ internal class DashboardDeviceCommands(
                 } else {
                     val observed = pending.getValue(id).observedAfterStart
                     remove(id)
-                    if (currentResult == ServiceCommandResult.ACK_TIMEOUT && !observed) state.markUnconfirmed(id)
+                    if (currentResult == ServiceCommandResult.ACK_TIMEOUT && !observed && !command.option) state.markUnconfirmed(id)
                     if (currentResult == ServiceCommandResult.DISCONNECTED) state.markDisconnected() else failed(id)
                     error(when (currentResult) {
                         ServiceCommandResult.REJECTED -> "Home Assistant отклонил команду"
@@ -156,7 +160,10 @@ internal class DashboardDeviceCommands(
     fun entityChanged(id: String) {
         val command = pending[id] ?: return
         val actual = state.singleStates[id]
-        if (actual == command.expectedState || state.confirmedState(id) == ConfirmedState.UNAVAILABLE) {
+        // У select любое значение, кроме недоступного, — обычный факт (прежний вариант ещё не применён).
+        val unavailable = if (command.option) actual == null || actual == "unavailable" || actual == "unknown" ||
+            id in state.staleEntities else state.confirmedState(id) == ConfirmedState.UNAVAILABLE
+        if (actual == command.expectedState || unavailable) {
             remove(id)
             if (actual != command.expectedState) error("Устройство недоступно: переключение не подтверждено")
         } else {
@@ -186,5 +193,11 @@ internal class DashboardDeviceCommands(
     private fun notifyChanged(ids: Collection<String>) {
         changed()
         ids.forEach(render)
+    }
+
+    private companion object {
+        const val DEADLINE_MS = 20_000L
+        /** Интеграции инверторов опрашивают устройство раз в 30–60 с: ждём факт дольше, чем у выключателей. */
+        const val OPTION_DEADLINE_MS = 90_000L
     }
 }

@@ -490,11 +490,17 @@ internal class InverterModernCard(
     /** Касания вариантов приоритета — свои: раскрытие не сворачивается от них. */
     override fun interactiveAt(windowX: Float, windowY: Float): Boolean {
         if (priorityChips.childCount == 0 || !priorityChips.isShown) return false
-        val location = IntArray(2)
-        priorityChips.getLocationInWindow(location)
-        val w = priorityChips.width * scaleX
-        val h = priorityChips.height * scaleY
-        return windowX >= location[0] && windowX < location[0] + w && windowY >= location[1] && windowY < location[1] + h
+        // Только видимая часть: варианты, прокрученные за край ScrollView, не перехватывают касания.
+        if (!priorityChips.getGlobalVisibleRect(visibleChips)) return false
+        return visibleChips.contains(windowX.toInt(), windowY.toInt())
+    }
+    private val visibleChips = android.graphics.Rect()
+
+    /** Карточка сворачивается или освобождается: панель закрывает своё подтверждение смены приоритета. */
+    var onClosing: (() -> Unit)? = null
+
+    override fun collapsing() {
+        onClosing?.invoke()
     }
 
     private fun radius() = if (expanded) 40f * scale.coerceAtLeast(0.6f) else 32f
@@ -518,6 +524,8 @@ internal class InverterModernCard(
     }
 
     override fun dispose() {
+        onClosing?.invoke()
+        onClosing = null
         onPriority = null
         stopPulse()
         wantPulse = false

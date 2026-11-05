@@ -102,6 +102,8 @@ class InverterModernPanelTest {
         ReflectionHelpers.setField(client, "authenticated", true)
         ReflectionHelpers.setField(client, "webSocket", socket)
         ArchitectureTestAccess.setField(viewModel, "webSocket", client)
+        // Как в onCreate: смена ожидания команды перерисовывает зависящие плитки.
+        ArchitectureTestAccess.setField(viewModel, "commandStateCallback", { id: String -> controller.renderCommandState(id) })
         state.value = state.value.copy(haSession = HaSession(connected = true))
         viewModel.onStatesSnapshot(values.map { (id, v) -> HaEntityState(id, v, attributes(id)) })
         state.value = state.value.copy(haSession = HaSession(connected = true, synced = true))
@@ -264,5 +266,74 @@ class InverterModernPanelTest {
             .apply { isAccessible = true }.invoke(activity)
         layout()
         assertEquals("Новая View сразу с подтверждённым цветом", InverterModel.AMBER, card().accent)
+    }
+
+    @Test fun oldValueEventKeepsWaitingAndRejectClearsPendingOnCard() {
+        open(values())
+        val expanded = expand()
+        expanded.findViewWithTag<View>("inv_option_UTI").performClick()
+        (ShadowAlertDialog.getLatestAlertDialog() as AlertDialog).getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        advance(50)
+        val request = calls().single()
+        val client = viewModel.getWebSocket()!!
+        fun reply(success: Boolean) = ArchitectureTestAccess.methods(client).single { it.name == "handleMessage" && it.parameterTypes.size == 1 }
+            .apply { isAccessible = true }.invoke(client, requireNotNull(HaInboundMessage.parse(JSONObject().put("type", "result")
+                .put("id", request.getInt("id")).put("success", success).toString())))
+        reply(true)
+        // Опросная интеграция прислала прежнее значение: инвертор ещё не применил — ждём дальше, без ложной ошибки.
+        event("select.inv_priority", "SBU")
+        assertNotNull(viewModel.commands.pendingFor("select.inv_priority"))
+        assertEquals("Переключение: Сеть первой…", text(expanded, "inv_priority_current"))
+        // 20 с — ещё ждём (опрос раз в 30–60 с); через 90 с — ошибка, но прежнее значение остаётся фактом.
+        advance(21_000)
+        assertNotNull(viewModel.commands.pendingFor("select.inv_priority"))
+        advance(70_000)
+        assertNull(viewModel.commands.pendingFor("select.inv_priority"))
+    }
+
+    @Test fun deadlineKeepsLastValueAndChipsUsable() {
+        open(values())
+        viewModel.commands.selectOption("select.inv_priority", "UTI")
+        advance(91_000)
+        assertNull(viewModel.commands.pendingFor("select.inv_priority"))
+        assertFalse("Значение HA не помечается недостоверным", "select.inv_priority" in viewModel.devices.staleEntities)
+        val expanded = expand()
+        assertEquals("Солнце → АКБ → Сеть", text(expanded, "inv_priority_current"))
+        assertTrue(expanded.findViewWithTag<View>("inv_option_UTI").hasOnClickListeners())
+    }
+
+    @Test fun rejectedCommandUpdatesOpenCardWithoutEntityEvent() {
+        open(values())
+        val expanded = expand()
+        expanded.findViewWithTag<View>("inv_option_UTI").performClick()
+        (ShadowAlertDialog.getLatestAlertDialog() as AlertDialog).getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        advance(50)
+        val request = calls().single()
+        val client = viewModel.getWebSocket()!!
+        ArchitectureTestAccess.methods(client).single { it.name == "handleMessage" && it.parameterTypes.size == 1 }
+            .apply { isAccessible = true }.invoke(client, requireNotNull(HaInboundMessage.parse(JSONObject().put("type", "result")
+                .put("id", request.getInt("id")).put("success", false).toString())))
+        advance(50)
+        assertEquals("Солнце → АКБ → Сеть", text(expanded, "inv_priority_current"))
+    }
+
+    @Test fun forgottenConfirmationClosesItselfAndCollapseCancelsIt() {
+        open(values())
+        val expanded = expand()
+        expanded.findViewWithTag<View>("inv_option_UTI").performClick()
+        val dialog = ShadowAlertDialog.getLatestAlertDialog() as AlertDialog
+        // Как на устройстве: диалог забирает фокус окна, автосворачивание карточки на паузе.
+        controller.setInteractive(false)
+        advance(DashboardPanelController.PRIORITY_DIALOG_MS + 100)
+        controller.setInteractive(true)
+        assertTrue(controller.modernExpansion.isOpen)
+        assertFalse("Через 30 с закрыто", dialog.isShowing)
+        assertTrue(calls().isEmpty())
+        expanded.findViewWithTag<View>("inv_option_UTI").performClick()
+        val second = ShadowAlertDialog.getLatestAlertDialog() as AlertDialog
+        ReflectionHelpers.callInstanceMethod<Unit>(controller, "collapseModernBattery")
+        advance(50)
+        assertFalse("Карточка свернулась — подтверждение закрыто", second.isShowing)
+        assertTrue(calls().isEmpty())
     }
 }

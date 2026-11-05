@@ -57,6 +57,7 @@ internal class InverterFlowView(context: Context) : View(context), ModernHideAwa
     private val offsets = FloatArray(4)
     private var animator: ValueAnimator? = null
     private var lastFrameMs = 0L
+    private var lastDrawMs = 0L
     private var hiddenBySource = false
     private var windowShown = true
 
@@ -261,6 +262,9 @@ internal class InverterFlowView(context: Context) : View(context), ModernHideAwa
         offsets[1] += dt * speed(snap.grid)
         offsets[2] += dt * speed(snap.load)
         offsets[3] += dt * speed(snap.battery)
+        // Точки сдвигаются плавно и при 25 кадрах/с: перерисовка реже кадров экрана — меньше нагрузки 24/7.
+        if (frame - lastDrawMs < FRAME_MS) return
+        lastDrawMs = frame
         // Ограничиваем рост: шаг точек кратен, вид не меняется.
         val step = nodeR * 0.62f
         if (step > 0f) for (i in offsets.indices) offsets[i] %= step * 1_000f
@@ -322,6 +326,7 @@ internal class InverterFlowView(context: Context) : View(context), ModernHideAwa
         val GRID = InverterModel.SKY
         val HOME = Color.rgb(226, 236, 244)
         val BATTERY = PowerModernConfig.EMERALD
+        private const val FRAME_MS = 40L
 
         private fun withAlpha(color: Int, alpha: Int) = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
     }

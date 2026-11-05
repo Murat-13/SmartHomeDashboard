@@ -128,6 +128,8 @@ internal class DashboardPanelController(
         /** Вход в редактирование долгим нажатием на пустое место (было 3 с). */
         internal const val EDIT_LONG_PRESS_MS = 1500L
         internal const val PREF_PAGE_COUNT = "page_count"
+        /** Подтверждение смены приоритета инвертора закрывается само без команды. */
+        internal const val PRIORITY_DIALOG_MS = 30_000L
     }
 
     fun dispatchTouch(event: MotionEvent): Boolean? =
@@ -1023,16 +1025,32 @@ internal class DashboardPanelController(
      * Смена приоритета источника (решение владельца): подтверждение → PIN → `select.select_option`.
      * Ожидание показывается на карточке до факта HA; повтор при ожидании не отправляется.
      */
+    private var priorityDialog: android.app.AlertDialog? = null
+    private val priorityDialogTimeout = Runnable { closePriorityDialog() }
+
     private fun confirmPriority(tileId: String, option: String) {
         modernExpansion.touch()
+        closePriorityDialog()
         val label = InverterModel.priorityLabel(option)
-        ModernUi.dangerDialog(activity, "Сменить приоритет источника?",
+        priorityDialog = ModernUi.dangerDialog(activity, "Сменить приоритет источника?",
             "Инвертор переключится на «$label». Дом может перейти на другой источник питания.", "Сменить") {
             if (host.adminAction { sendPriority(tileId, option) }) sendPriority(tileId, option)
-        }.show()
+        }.apply {
+            setOnDismissListener { if (priorityDialog === this) { priorityDialog = null; handler.removeCallbacks(priorityDialogTimeout) } }
+            show()
+        }
+        // Забытое подтверждение на стене не висит: через 30 с закрывается само, команды нет.
+        handler.postDelayed(priorityDialogTimeout, PRIORITY_DIALOG_MS)
+    }
+
+    private fun closePriorityDialog() {
+        handler.removeCallbacks(priorityDialogTimeout)
+        priorityDialog?.let { priorityDialog = null; if (it.isShowing) it.dismiss() }
     }
 
     private fun sendPriority(tileId: String, option: String) {
+        // Только из открытой карточки этой плитки: после сворачивания или перестройки панели команда не уходит.
+        if (!modernExpansion.isOpen || modernExpansion.tileId != tileId) return
         val tile = tileManager.getAllTiles().find { it.id == tileId } ?: return
         val entity = inverterConfigs.of(tile).row(InverterModernConfig.ROLE_PRIORITY)?.entityId?.takeIf { it.isNotBlank() } ?: return
         viewModel.commands.selectOption(entity, option)
@@ -1072,6 +1090,7 @@ internal class DashboardPanelController(
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             val card = InverterModernCard(activity, expanded = true)
             card.onPriority = { option -> confirmPriority(tile.id, option) }
+            card.onClosing = ::closePriorityDialog
             card.scroll?.setOnScrollChangeListener { _, _, _, _, _ -> modernExpansion.touch() }
             modernExpansion.expand(tile.id, source, card, target)
             renderModern(tile, null, animate = false)
@@ -1263,7 +1282,10 @@ internal class DashboardPanelController(
     }
 
     fun renderCommandState(eid: String) {
-        renderControls(currentIndex().affected(listOf(eid)), setOf(eid))
+        val tiles = currentIndex().affected(listOf(eid))
+        renderControls(tiles, setOf(eid))
+        // Ожидание приоритета инвертора могло сняться без события сущности (отказ, тайм-аут).
+        tiles.filter { it.type == InverterModernConfig.TYPE }.forEach { renderModern(it, viewForTile(it.id) as? FrameLayout, true) }
     }
 
     private fun currentIndex(): PanelDependencyIndex {

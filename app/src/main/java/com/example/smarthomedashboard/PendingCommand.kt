@@ -19,5 +19,7 @@ data class PendingCommand(
     val sent: Boolean = false,
     val acknowledged: Boolean = false,
     /** id группы, если команда отправлена общей кнопкой группы; null — индивидуальная команда. */
-    val groupId: String? = null
+    val groupId: String? = null,
+    /** Выбор варианта `select`: состояние — произвольный текст, а не on/off; ожидание дольше (опросные интеграции). */
+    val option: Boolean = false
 )
