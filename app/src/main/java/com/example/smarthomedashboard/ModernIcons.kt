@@ -3,7 +3,6 @@ package com.example.smarthomedashboard
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
-import androidx.core.graphics.PathParser
 import org.json.JSONObject
 import androidx.core.graphics.withTranslation
 
@@ -68,7 +67,7 @@ internal enum class ModernIcon(val key: String?, val label: String?, private var
         "M15 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z");
 
     private val path: Path by lazy {
-        Path().apply { data.forEach { addPath(PathParser.createPathFromPathData(it)) } }
+        svgPath(data)
     }
 
     /** Иконка в квадрате [size] с левым верхним углом (x, y); цвет и альфа — из [paint]. */
@@ -172,3 +171,9 @@ internal enum class ModernIcon(val key: String?, val label: String?, private var
         }
     }
 }
+
+/** Контур из SVG-команд (общий для иконок Modern и погоды). */
+// core 1.12+ (приходит с WorkManager 2.10) пометила PathParser внутренним; публичной замены до API 33 нет.
+@android.annotation.SuppressLint("RestrictedApi")
+internal fun svgPath(data: Array<out String>): Path =
+    Path().apply { data.forEach { addPath(androidx.core.graphics.PathParser.createPathFromPathData(it)) } }

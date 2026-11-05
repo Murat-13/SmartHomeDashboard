@@ -3,7 +3,6 @@ package com.example.smarthomedashboard
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
-import androidx.core.graphics.PathParser
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -38,7 +37,7 @@ internal enum class WeatherGlyph(private vararg val parts: Pair<Int, Array<Strin
     UNKNOWN(FOG_COLOR to arrayOf("M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0-20z", "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3", "M12 17h.01"));
 
     private val paths: List<Pair<Int, Path>> by lazy {
-        parts.map { (color, data) -> color to Path().apply { data.forEach { addPath(PathParser.createPathFromPathData(it)) } } }
+        parts.map { (color, data) -> color to svgPath(data) }
     }
 
     /** [dim] — приглушить цвета (нет актуальных данных). */

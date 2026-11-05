@@ -35,7 +35,7 @@ val releaseSigning: Properties? = rootProject.file("keystore.properties").takeIf
 
 android {
     namespace = "com.example.smarthomedashboard"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.smarthomedashboard"
@@ -97,8 +97,8 @@ dependencies {
     // Gson
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // Ежедневные автокопии настроек (решение владельца 02.11.2026). 2.9.x — последняя ветка для compileSdk 34.
-    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    // Ежедневные автокопии настроек (решение владельца 02.11.2026). 2.10.x требует compileSdk 35 (0.9.7).
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
