@@ -158,6 +158,22 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
 - Pre-release `v0.9.6` (тег на `8545644`): один APK + `.sha256`; `digest` GitHub = SHA-256 сборки, скачанный APK — тот же
   хэш. Код, версия, Play Защита, HA, прокси не менялись, push не выполнялся, планшеты не трогались.
 
+### 05.11.2026 — агент Android Studio на Mac владельца: техдолг, этап B — lint (поведение и вид не меняются)
+
+- `41edbce`: DrawAllocation — `HomeClimateExpandedCard`/`HomeClimateEditorActivity` больше не создают LayoutParams в onMeasure
+  (заранее созданные поля); Overdraw — убран фон корня у «Настроек», редактора плитки и «Расширенных»: там тема
+  Modern с тем же `windowBackground` (`modern_background`). Остальные 7 Overdraw — экраны на другой теме с другим фоном окна,
+  не тронуты. `AdvancedSettingsLookTest` проверяет тот же видимый фон через фон окна (+ корень без фона).
+- `ab4dc09`: удалены 44 неиспользуемых ресурса (37 строк, 2 массива, 2 цвета, стили `DashboardButton`,
+  `DashboardImageButton`, `Widget.Modern.NavItem`); каждое имя проверено по main/test (R., @, строки, getIdentifier — нет).
+- `7454c96`: UseKtx по месту (`edit {}`, `toUri`, `toColorInt`, `isEmpty`, `isVisible`, `withTranslation`, `withClip`); `performClick`
+  у `ModernTileView`; `@SuppressLint` с пояснением для синхронного `commit()` в переносе секретов (`HaTokenAccess`, `WeatherKeyAccess`,
+  `MqttRemovalMigration` — логика не тронута) и для обработчиков касаний, возвращающих false. Не тронуты (остались
+  11 UseKtx): код PIN/секретов с проверкой результата `commit()` и явные транзакции SQLite. Gradle-зависимости и HardcodedText не трогались.
+- Проверено: `testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease lintDebug --offline` — 1253 теста,
+  0 падений; lint 0 ошибок, предупреждений 330 → 229 (DrawAllocation 10→0, Overdraw 10→7, UnusedResources 44→0,
+  ApplySharedPref 4→0, ClickableViewAccessibility 8→0, UseKtx 43→11). Не проверено: вид на планшете.
+
 ### 05.11.2026 — агент Android Studio на Mac владельца: техдолг, этап A — русский язык Android Studio
 
 - Начало задачи «техдолг A→D»: `main` = `2def414`, рабочая копия чистая. Базовый прогон `testDebugUnitTest assembleDebug
