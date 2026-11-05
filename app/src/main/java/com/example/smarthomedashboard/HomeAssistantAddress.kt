@@ -7,6 +7,10 @@ import java.net.UnknownHostException
 import javax.net.ssl.SSLException
 
 internal object HomeAssistantAddress {
+    /** Базовый http(s)-адрес HA для REST и потоков камеры (снимок, HLS): тот же сервер, что у WebSocket. */
+    fun httpBase(address: String): String =
+        webSocketUrl(address).replaceFirst(Regex("^ws"), "http").removeSuffix("/api/websocket")
+
     fun webSocketUrl(address: String): String {
         val value = address.trim()
         require(value.isNotEmpty()) { "Empty address" }

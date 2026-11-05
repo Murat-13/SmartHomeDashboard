@@ -75,8 +75,12 @@ internal class BatteryModernExpansion(
         collapse()
     }
 
-    fun expand(id: String, from: View, expandedCard: View, target: Bounds) {
+    /** Таймер текущего раскрытия; null — карточка не сворачивается сама (решение владельца для домофона). */
+    private var currentTimeout: Long? = timeoutMs
+
+    fun expand(id: String, from: View, expandedCard: View, target: Bounds, timeout: Long? = timeoutMs) {
         clear()
+        currentTimeout = timeout
         val host = overlay() ?: return
         val start = Bounds(from.x, from.y, from.layoutParams.width, from.layoutParams.height)
         tileId = id
@@ -203,8 +207,9 @@ internal class BatteryModernExpansion(
     private fun scheduleTimer() {
         stopTimer()
         if (paused) return
-        collapseAt = android.os.SystemClock.uptimeMillis() + timeoutMs
-        handler.postDelayed(timeout, timeoutMs)
+        val delay = currentTimeout ?: return
+        collapseAt = android.os.SystemClock.uptimeMillis() + delay
+        handler.postDelayed(timeout, delay)
     }
 
     private fun stopTimer() {

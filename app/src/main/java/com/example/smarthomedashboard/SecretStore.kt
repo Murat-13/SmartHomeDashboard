@@ -31,7 +31,10 @@ internal class SecretStore(
         HA_TOKEN(1),
         // Устаревший, только для удаления при обновлении; новые значения не записываются.
         MQTT_PASSWORD(2),
-        WEATHER_KEY(4)
+        WEATHER_KEY(4),
+        // Пароль RTSP домофона (06.11.2026). Бит появляется в файле только после сохранения пароля: прежние
+        // контейнеры (биты 1–4) читаются без изменений. Версии формата и ключа, AAD и порядок слотов прежние.
+        CAMERA_PASSWORD(8)
     }
     enum class Status {
         SUCCESS, ABSENT, KEY_UNAVAILABLE, STORAGE_UNAVAILABLE,
@@ -97,7 +100,7 @@ internal class SecretStore(
         if (input.readInt() != MAGIC) fail(Status.CORRUPTED)
         if (input.readInt() != FORMAT_VERSION || input.readInt() != KEY_VERSION) fail(Status.UNSUPPORTED_VERSION)
         val mask = input.readInt()
-        if (mask and 7 != mask) fail(Status.CORRUPTED)
+        if (mask and ALL_BITS != mask) fail(Status.CORRUPTED)
         val iv = ByteArray(12).also { input.readFully(it) }
         val length = input.readInt()
         if (length < 16 || length != input.available()) fail(Status.CORRUPTED)
@@ -198,6 +201,7 @@ internal class SecretStore(
         val LOCK = Any()
         const val MAGIC = 0x53485353
         const val FORMAT_VERSION = 1
+        val ALL_BITS = Slot.entries.fold(0) { m, slot -> m or slot.bit }
         const val KEY_VERSION = 1
         const val MAX_VALUE_BYTES = 65536
         const val MIN_FILE_BYTES = 48

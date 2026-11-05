@@ -175,6 +175,7 @@ class MainActivity : AppCompatActivity() {
      * открыты настройки или редактор (Activity остановлена, но не уничтожена). В тестах Robolectric не включаются.
      */
     private fun startVoiceAlerts() {
+        connectDoorbells()
         if (android.os.Build.FINGERPRINT == "robolectric") return
         PanelAlerts.attach(applicationContext)
         lifecycleScope.launch {
@@ -182,6 +183,26 @@ class MainActivity : AppCompatActivity() {
                 PanelAlerts.onState(viewModel.uiState.value)
             }
         }
+    }
+
+    /** «Домофон»: окно звонка и видео пользуются соединением и командами этой панели (docs/doorbell.md). */
+    private val doorbellListener: () -> Unit = { if (::tileManager.isInitialized) panelController.renderDoorbells() }
+    private val doorbellActions = object : DoorbellHub.Actions {
+        override fun call(domain: String, service: String, entityId: String, data: Map<String, Any>,
+                          onResult: (ServiceCommandResult) -> Unit) = viewModel.callService(domain, service, entityId, data, onResult)
+        override fun prepareForRing() {
+            resetIdleTimer()
+            if (::tileManager.isInitialized) panelController.collapseAll()
+        }
+        override fun tileBounds(tileId: String) = if (::tileManager.isInitialized) panelController.tileBounds(tileId) else null
+    }
+
+    private val doorbellConnection: () -> HomeAssistantWebSocket? = { viewModel.getWebSocket() }
+
+    private fun connectDoorbells() {
+        DoorbellHub.connection = doorbellConnection
+        DoorbellHub.actions = doorbellActions
+        DoorbellHub.addListener(doorbellListener)
     }
 
     private var uiStateJob: Job? = null
@@ -307,6 +328,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         // При пересоздании (поворот) новая панель снова пометит себя в onCreate.
         isAlive = false
+        DoorbellHub.removeListener(doorbellListener)
+        if (DoorbellHub.actions === doorbellActions) DoorbellHub.actions = null
+        if (DoorbellHub.connection === doorbellConnection) DoorbellHub.connection = null
         // Новое окно начинает с рабочей яркостью: пауза анимаций затемнения не переносится.
         PanelMotion.dimmed = false
         clockHandler.removeCallbacks(weatherRefreshRunnable)
@@ -372,6 +396,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         resetIdleTimer()
+        // Окно звонка поверх панели: жесты панели (страницы, боковая панель) не работают, касания — окну.
+        if (DoorbellHub.RingUi.current?.let { it.isShowing && it.host === this } == true) return super.dispatchTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) scheduleAutoHome()
         val side = drawer
         val swipe = navigation
@@ -399,6 +425,7 @@ class MainActivity : AppCompatActivity() {
         // открытая панель (и полноэкранный график, добавляемый позже) обрабатывают «Назад» первыми.
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                DoorbellHub.RingUi.current?.takeIf { it.isShowing && it.host === this@MainActivity }?.let { it.close(); return }
                 if (::tileManager.isInitialized && panelController.collapseOnBack()) return
                 isEnabled = false
                 onBackPressedDispatcher.onBackPressed()
@@ -698,6 +725,7 @@ class MainActivity : AppCompatActivity() {
                 BatteryModernConfig.TYPE -> BatteryModernEditorActivity::class.java
                 PowerModernConfig.TYPE -> PowerModernEditorActivity::class.java
                 InverterModernConfig.TYPE -> InverterModernEditorActivity::class.java
+                DoorbellConfig.TYPE -> DoorbellEditorActivity::class.java
                 HomeClimateConfig.TYPE -> HomeClimateEditorActivity::class.java
                 else -> TileSettingsActivity::class.java
             }

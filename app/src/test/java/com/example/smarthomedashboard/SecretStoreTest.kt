@@ -294,7 +294,7 @@ class SecretStoreTest {
                     ready.countDown()
                     check(start.await(10, TimeUnit.SECONDS))
                     repeat(20) {
-                        val slot = SecretStore.Slot.entries[worker % 3]
+                        val slot = SecretStore.Slot.entries[worker % SecretStore.Slot.entries.size]
                         assertEquals(ok, SecretStore(tracked, keys) {}.write(slot, "FAKE-" + slot.name))
                     }
                 })

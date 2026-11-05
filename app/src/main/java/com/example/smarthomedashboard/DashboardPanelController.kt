@@ -919,16 +919,22 @@ internal class DashboardPanelController(
     /** Modern-плитки (АКБ, Электропитание, Часы · Погода · Климат): общие раскрытие, resize, перемещение и редактирование. */
     private fun isModern(type: String) =
         type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE || type == HomeClimateConfig.TYPE ||
-            type == InverterModernConfig.TYPE
+            type == InverterModernConfig.TYPE || type == DoorbellConfig.TYPE
 
     private fun createModernBatteryView(tile: TileEntity, savedWidth: Int, savedHeight: Int): View {
         // «Часы · Погода · Климат» — всегда 2:1 внутри сохранённого прямоугольника; config не переписывается.
-        val (width, height) = if (tile.type == HomeClimateConfig.TYPE) HomeClimateConfig.fit(savedWidth, savedHeight)
-            else savedWidth to savedHeight
+        val doorbellAspect = if (tile.type == DoorbellConfig.TYPE) DoorbellConfig.from(tile.config).aspect else null
+        val (width, height) = when {
+            tile.type == HomeClimateConfig.TYPE -> HomeClimateConfig.fit(savedWidth, savedHeight)
+            // «Домофон» — всегда в пропорции видео (4:3), меняется только размер.
+            doorbellAspect != null -> DoorbellConfig.fit(savedWidth, savedHeight, doorbellAspect)
+            else -> savedWidth to savedHeight
+        }
         val (card, resizeHandle) = when (tile.type) {
             PowerModernConfig.TYPE -> PowerModernCard.createTile(activity, tile.id, width, height, isEditMode)
             HomeClimateConfig.TYPE -> HomeClimateCompactView.createTile(activity, tile.id, width, height, isEditMode)
             InverterModernConfig.TYPE -> InverterModernCard.createTile(activity, tile.id, width, height, isEditMode)
+            DoorbellConfig.TYPE -> DoorbellCard.createTile(activity, tile.id, width, height, isEditMode)
             else -> BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
         }
         // Новая View сразу получает уже подтверждённое оформление (без повторной анимации).
@@ -938,7 +944,7 @@ internal class DashboardPanelController(
             card, resizeHandle, tile.type, screenW, screenH,
             onResizingChanged = { isResizing = it },
             saveSize = { w, h -> saveSensorSize(tile.id, w, h) },
-            aspectRatio = if (tile.type == HomeClimateConfig.TYPE) HomeClimateConfig.ASPECT else null
+            aspectRatio = if (tile.type == HomeClimateConfig.TYPE) HomeClimateConfig.ASPECT else doorbellAspect
         )
         return card
     }
@@ -960,6 +966,10 @@ internal class DashboardPanelController(
         }
         if (tile.type == InverterModernConfig.TYPE) {
             renderInverter(tile, view, readings, animate)
+            return
+        }
+        if (tile.type == DoorbellConfig.TYPE) {
+            renderDoorbell(tile, view, readings, animate)
             return
         }
         val config = batteryConfigs.of(tile)
@@ -1008,6 +1018,45 @@ internal class DashboardPanelController(
         }
         powerChecks[tile.id] = check
         handler.postDelayed(check, (at - now).coerceAtLeast(0L))
+    }
+
+    /**
+     * «Домофон»: картинка и подписи из показаний HA, звонки и пропущенные — из [DoorbellHub].
+     * Подпись «Звонок: N мин назад» обновляется раз в минуту, пока на панели есть домофон.
+     */
+    private fun renderDoorbell(tile: TileEntity, view: FrameLayout?, readings: BatteryReadings, animate: Boolean) {
+        val config = DoorbellConfig.from(tile.config)
+        val snapshot = DoorbellModel.snapshot(config, readings)
+        val now = System.currentTimeMillis()
+        val offline = DoorbellHub.offline(tile.id)
+        val missed = DoorbellHub.missed(tile.id)
+        val last = DoorbellHub.lastRing(tile.id)
+        view?.findViewWithTag<DoorbellCard>("door_compact")?.bind(tile.title, config, snapshot, offline, missed, last, now, animate)
+        if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
+            (modernExpansion.card as? DoorbellCard)?.bind(tile.title, config, snapshot, offline, missed, last, now, animate)
+        }
+        handler.removeCallbacks(doorbellTick)
+        handler.postDelayed(doorbellTick, 60_000L)
+    }
+
+    private val doorbellTick = Runnable { renderDoorbells() }
+
+    /** Звонок, пропущенные, окно звонка открылось/закрылось: перерисовать плитки домофона текущей страницы. */
+    fun renderDoorbells() {
+        if (!host.hasPanel) return
+        tileManager.getAllTiles().filter { it.type == DoorbellConfig.TYPE }.forEach { tile ->
+            renderModern(tile, viewForTile(tile.id) as? FrameLayout, animate = true)
+        }
+    }
+
+    /** Прямоугольник плитки в окне — окно звонка растёт из неё. */
+    fun tileBounds(tileId: String): android.graphics.RectF? {
+        val view = viewForTile(tileId) ?: return null
+        if (!view.isShown || view.width <= 0) return null
+        val location = IntArray(2)
+        view.getLocationInWindow(location)
+        return android.graphics.RectF(location[0].toFloat(), location[1].toFloat(),
+            location[0] + view.width.toFloat(), location[1] + view.height.toFloat())
     }
 
     /** Отложенные проверки подтверждения цвета «Инвертора»: не больше одной на плитку. */
@@ -1095,6 +1144,19 @@ internal class DashboardPanelController(
                 else minOf((screenH * 0.92f).toInt(), (width * 0.74f).toInt()).coerceAtLeast((screenH * 0.6f).toInt())
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             modernExpansion.expand(tile.id, source, HomeClimateExpandedCard(activity), target)
+            renderModern(tile, null, animate = false)
+            return
+        }
+        if (tile.type == DoorbellConfig.TYPE) {
+            // Видео крупно со звуком (только слушать). Касание сворачивает; автосворачивание — по настройке плитки.
+            val config = DoorbellConfig.from(tile.config)
+            var height = (screenH * 0.9f).toInt()
+            var width = (height * config.aspect).toInt()
+            if (width > screenW * 0.94f) { width = (screenW * 0.94f).toInt(); height = (width / config.aspect).toInt() }
+            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
+            DoorbellHub.acknowledge(tile.id)
+            modernExpansion.expand(tile.id, source, DoorbellCard(activity, expanded = true), target,
+                if (config.autoCollapse) config.collapseSeconds * 1000L else null)
             renderModern(tile, null, animate = false)
             return
         }

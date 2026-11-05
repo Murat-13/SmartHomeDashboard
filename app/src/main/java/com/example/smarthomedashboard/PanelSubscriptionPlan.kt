@@ -33,6 +33,11 @@ internal data class PanelSubscriptionPlan(
                     }
                     return@forEach
                 }
+                if (tile.type == DoorbellConfig.TYPE) {
+                    // Только сущности HA: адреса RTSP и прочие строки config не подписки.
+                    ids.addAll(DoorbellConfig.from(tile.config).entityIds)
+                    return@forEach
+                }
                 if (tile.type == "weather" && !useYandex) {
                     val source = WeatherEntityResolver.resolve(tile.config)
                     if (source.startsWith("weather.")) weatherIds.add(source)

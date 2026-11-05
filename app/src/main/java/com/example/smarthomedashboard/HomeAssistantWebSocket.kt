@@ -86,8 +86,11 @@ class HomeAssistantWebSocket(
         const val CLOSE_GRACE_MS = 5_000L
         const val DAILY = "daily"
         const val HOURLY = "hourly"
-        /** Единственные команды [read]: только чтение конфигурации и истории. */
-        val READ_ONLY = setOf("get_config", "history/history_during_period")
+        /**
+         * Единственные команды [read]: только чтение — конфигурация, история и адрес потока камеры
+         * (`camera/stream` выдаёт временную ссылку HLS, ничего не меняя в HA).
+         */
+        val READ_ONLY = setOf("get_config", "history/history_during_period", "camera/stream")
     }
     private val forecastEntities = linkedSetOf<String>()
     private val hourlyForecastEntities = linkedSetOf<String>()
@@ -476,8 +479,11 @@ class HomeAssistantWebSocket(
         else stateRequest = null
     }
 
+    /** Адрес сервера текущего подключения (локальный или внешний) для REST и потоков; null — нет авторизации. */
+    val httpBase: String? get() = if (authenticated) runCatching { HomeAssistantAddress.httpBase(getHost()) }.getOrNull() else null
+
     /**
-     * Разовое чтение из HA для истории мощности. Разрешены только команды из [READ_ONLY]: через этот
+     * Разовое чтение из HA для истории мощности и потока камеры. Разрешены только команды из [READ_ONLY]: через этот
      * метод невозможно отправить управляющий вызов. [result] — на главном потоке, null при отказе.
      */
     fun read(type: String, params: JSONObject = JSONObject(), timeoutMs: Long = 60_000L, result: (Any?) -> Unit) = onMain {

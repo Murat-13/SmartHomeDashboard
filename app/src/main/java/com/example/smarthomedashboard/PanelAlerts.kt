@@ -244,6 +244,7 @@ internal object PanelAlerts {
         if (app != null) return
         app = context.applicationContext
         tiles = com.example.smarthomedashboard.data.TileManager(context.applicationContext)
+        DoorbellHub.attach(context)
     }
 
     fun settings(): VoiceAlertSettings = settings ?: app?.let { VoiceAlertSettings.load(it) }?.also { settings = it } ?: VoiceAlertSettings()
@@ -267,6 +268,8 @@ internal object PanelAlerts {
         monitor.evaluate(list, readings, settings(), now).forEach(::say)
         main.removeCallbacks(recheck)
         monitor.nextCheckAt?.let { main.postDelayed(recheck, (it - now).coerceAtLeast(0) + 20) }
+        // Домофон: звонок, связь, калитка — свои правила звука (мелодия плитки, без общего кулдауна звонка).
+        DoorbellHub.onState(list, readings)
     }
 
     /** Событие плитки домофона (звонок, потеря связи) — через те же фильтры и очередь. */
@@ -285,6 +288,18 @@ internal object PanelAlerts {
         voice.speak(VoiceAnnouncer.Sound(alert.phrase, tone ?: VoiceAnnouncer.resource(context, R.raw.alert_chime), level, tag))
     }
 
+    /**
+     * Звук плитки (звонок домофона): мелодия и необязательная фраза сразу, без общего кулдауна;
+     * повтор с тем же [tag] начинает звучание заново. Тихие часы и громкость уже учтены в [volume].
+     */
+    fun sound(phrase: String?, tone: android.net.Uri, volume: Float, tag: String) {
+        val context = app ?: return
+        if (!enabled || volume <= 0f) return
+        val voice = announcer ?: VoiceAnnouncer(context).also { announcer = it }
+        voice.cancel(tag)
+        voice.speak(VoiceAnnouncer.Sound(phrase, tone, volume, tag))
+    }
+
     /** Проверка из настроек: сигнал и фраза на заданной громкости. */
     fun preview(phrase: String, volume: Float) {
         val context = app ?: return
@@ -297,9 +312,13 @@ internal object PanelAlerts {
 
     fun cancel(tag: String) = announcer?.cancel(tag)
 
+    /** Сейчас звучит сигнал или фраза (окно звонка включает звук видео после них). */
+    val speaking get() = announcer?.busy == true
+
     /** ViewModel очищен (панель закрыта): голос освобождается. */
     fun detach() {
         main.removeCallbacks(recheck)
+        DoorbellHub.detach()
         announcer?.release()
         announcer = null
         app = null
