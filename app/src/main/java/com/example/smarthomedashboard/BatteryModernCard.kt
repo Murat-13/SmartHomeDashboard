@@ -41,6 +41,8 @@ internal class BatteryModernCard(
     private val fitPaint = Paint()
     private val sized = mutableListOf<Triple<View, Float, Float>>()
     private var scale = 1f
+    /** Компактное окно мощности: нижний отступ до шкалы масштабируется вместе с карточкой. */
+    private var powerBottom: View? = null
 
     private val glyph = BatteryGlyphView(context)
     private val title = text(if (expanded) 46f else 34f, Color.WHITE, bold = true)
@@ -170,7 +172,11 @@ internal class BatteryModernCard(
             left.addView(socBlock)
             top.addView(left, weighted())
             top.addView(gap(12f))
-            top.addView(powerBlock, weighted())
+            // Окно мощности — на всю высоту верхней строки: сверху отступ карточки (22), снизу до шкалы
+            // 12 + 10 = 22 — так же, как справа (решение владельца 05.11.2026).
+            top.addView(powerBlock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                .apply { gravity = Gravity.TOP })
+            powerBottom = powerBlock
             content.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         content.addView(spacer(12f))
@@ -361,6 +367,9 @@ internal class BatteryModernCard(
 
     private fun applyScale(next: Float) {
         scale = next
+        powerBottom?.let { block ->
+            (block.layoutParams as? LinearLayout.LayoutParams)?.let { it.bottomMargin = (POWER_BOTTOM_GAP * next).toInt(); block.layoutParams = it }
+        }
         scaled.forEach { (view, base) -> view.setTextSize(TypedValue.COMPLEX_UNIT_PX, base * next) }
         padded.forEach { (view, base) ->
             val p = (base * next).toInt()
@@ -440,7 +449,9 @@ internal class BatteryModernCard(
 
     companion object {
         /** Базовый размер цифр мощности компактного вида (было 50, +24%). */
-        const val COMPACT_POWER = 62f
+        const val COMPACT_POWER = 74f
+        /** Добавка к зазору 12 между окном мощности и шкалой: вместе 22, как отступ справа. */
+        const val POWER_BOTTOM_GAP = 10f
         val GREEN = Color.rgb(52, 232, 158)
         val ACCENT = Color.rgb(38, 198, 218)
         val BLUE = Color.rgb(41, 182, 246)

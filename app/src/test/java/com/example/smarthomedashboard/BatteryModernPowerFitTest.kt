@@ -57,12 +57,13 @@ class BatteryModernPowerFitTest {
     }
 
     @Test fun powerDigitsAreLargerThanBeforeWhenSpaceAllows() {
-        // Прежний размер — 50 базовых единиц; теперь 62 (+24%), если хватает места.
+        // Исходно 50 базовых единиц, 29.10 — 62, 05.11.2026 — 74 (решение владельца), если хватает места.
         listOf(Triple("-9", BatteryModernConfig.DEFAULT_WIDTH, BatteryModernConfig.DEFAULT_HEIGHT),
             Triple("-407.3", 760, 380), Triple("1381.65", 760, 380)).forEach { (value, w, h) ->
             val power = card(value, w, h).findViewWithTag<TextView>("bm_power")
             val scale = minOf(w / 540f, h / 390f)
-            assertEquals("$value at ${w}x$h", 62f * scale, power.textSize, 0.6f)
+            assertEquals("$value at ${w}x$h", BatteryModernCard.COMPACT_POWER * scale, power.textSize, 0.6f)
+            assertEquals(74f, BatteryModernCard.COMPACT_POWER)
             assertTrue(power.textSize >= 50f * scale * 1.2f)
             assertEquals(android.graphics.Color.WHITE, power.currentTextColor)
         }
@@ -102,6 +103,22 @@ class BatteryModernPowerFitTest {
         val short = card("0", 360, 260).findViewWithTag<TextView>("bm_power").textSize
         assertTrue("Длинное значение уменьшено ($small < $short)", small <= short)
         val scale = minOf(360 / 540f, 260 / 390f)
-        assertEquals(62f * scale, short, 0.6f)
+        assertEquals(BatteryModernCard.COMPACT_POWER * scale, short, 0.6f)
+    }
+
+    /** Решение владельца 05.11.2026: отступы окна мощности сверху, справа и снизу (до шкалы) одинаковые. */
+    @Test fun powerWindowHasEqualGapsTopRightAndBottom() {
+        listOf(580 to 360, 520 to 380, 440 to 320, 760 to 380).forEach { (w, h) ->
+            val card = card("106", w, h)
+            val power = card.findViewWithTag<TextView>("bm_power")
+            val block = (power.parent as View).parent.parent as View
+            val bar = card.findViewWithTag<View>("bm_bar")
+            val b = bounds(block)
+            val top = b[1]
+            val right = card.width - b[2]
+            val bottom = bounds(bar)[1] - b[3]
+            assertEquals("${w}x$h: сверху = справа", right.toFloat(), top.toFloat(), 2f)
+            assertEquals("${w}x$h: снизу = справа", right.toFloat(), bottom.toFloat(), 2f)
+        }
     }
 }
