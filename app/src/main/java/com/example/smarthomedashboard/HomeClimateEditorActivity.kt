@@ -93,7 +93,7 @@ class HomeClimateEditorActivity : PinProtectedActivity() {
         preview.layoutParams = previewParams
         val previewFrame = object : FrameLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val screenHeight = resources.displayMetrics.heightPixels
+                val screenHeight = SystemBarInsets.legacyWindowSize(this@HomeClimateEditorActivity).second
                 val width = minOf(MeasureSpec.getSize(widthMeasureSpec), kit.dp(440), (screenHeight * 0.38f).toInt())
                 if (previewParams.width != width || previewParams.height != width / 2) {
                     previewParams.width = width

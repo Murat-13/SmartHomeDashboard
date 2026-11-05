@@ -359,8 +359,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             // Новое недопустимое значение нельзя записать даже вместе с другими полями формы.
             val unchanged = oldTile != null && existingConfig.has("button_size") &&
                 input == existingConfig.optInt("button_size", TilePlacement.BUTTON_SIZE).toString()
-            val metrics = resources.displayMetrics
-            val maximum = TilePlacement.maxButtonSize(metrics.widthPixels, metrics.heightPixels)
+            val (windowW, windowH) = SystemBarInsets.legacyWindowSize(this)
+            val maximum = TilePlacement.maxButtonSize(windowW, windowH)
             if (!unchanged && (buttonSize == null || buttonSize !in 1..maximum)) {
                 etButtonSize.error = "Размер должен быть от 1 до $maximum px"
                 return null
@@ -424,11 +424,11 @@ class TileSettingsActivity : PinProtectedActivity() {
     private fun newTile(type: String, container: String, title: String, config: String): TileEntity {
         // x/y — пиксели панели, а не номер ячейки: иначе все новые плитки ложатся в угол.
         val size = TilePlacement.size(container, config)
-        val metrics = resources.displayMetrics
+        val (windowW, windowH) = SystemBarInsets.legacyWindowSize(this)
         // Новая плитка — на ту страницу, с которой её добавили; место ищется только среди её плиток.
         val page = intent.getIntExtra(EXTRA_PAGE, 0).coerceAtLeast(0)
         val (x, y) = TilePlacement.findFreeSpot(
-            tileManager.getAllTiles().filter { it.page == page }, size.width, size.height, metrics.widthPixels, metrics.heightPixels
+            tileManager.getAllTiles().filter { it.page == page }, size.width, size.height, windowW, windowH
         )
         return TileEntity(
             id = tileId ?: UUID.randomUUID().toString(),

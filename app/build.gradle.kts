@@ -35,12 +35,13 @@ val releaseSigning: Properties? = rootProject.file("keystore.properties").takeIf
 
 android {
     namespace = "com.example.smarthomedashboard"
+    // Android 15 (0.9.7): edge-to-edge принудительно — отступы системных полос задаёт SystemBarInsets.
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.smarthomedashboard"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
     }

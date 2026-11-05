@@ -48,8 +48,10 @@ internal class DashboardPanelController(
     private val dimOverlay get() = host.dim
     private val tileManager get() = host.tiles
     private val motionSensorId get() = host.motionEntity
-    private val screenW by lazy { resources.displayMetrics.widthPixels }
-    private val screenH by lazy { resources.displayMetrics.heightPixels }
+    // Размер окна «как до Android 15» (без полосы навигации): раскладка плиток прежняя при targetSdk 35.
+    private val windowSize by lazy { SystemBarInsets.legacyWindowSize(activity) }
+    private val screenW get() = windowSize.first
+    private val screenH get() = windowSize.second
     private fun <T : View> findViewById(id: Int): T = activity.findViewById(id)
 
     private val handler = Handler(Looper.getMainLooper())

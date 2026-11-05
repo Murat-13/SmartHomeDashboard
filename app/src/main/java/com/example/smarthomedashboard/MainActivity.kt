@@ -110,8 +110,10 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private val screenW by lazy { resources.displayMetrics.widthPixels }
-    private val screenH by lazy { resources.displayMetrics.heightPixels }
+    // Размер окна «как до Android 15» (без полосы навигации): раскладка плиток прежняя при targetSdk 35.
+    private val windowSize by lazy { SystemBarInsets.legacyWindowSize(this) }
+    private val screenW get() = windowSize.first
+    private val screenH get() = windowSize.second
 
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
