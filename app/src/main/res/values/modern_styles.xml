@@ -108,16 +108,4 @@
         <item name="android:textAppearance">@style/TextAppearance.Modern.Caption</item>
     </style>
 
-    <style name="Widget.Modern.NavItem" parent="">
-        <item name="android:background">@drawable/modern_bg_nav_item</item>
-        <item name="android:minHeight">@dimen/modern_touch_target</item>
-        <item name="android:gravity">center_vertical</item>
-        <item name="android:paddingStart">@dimen/modern_space_m</item>
-        <item name="android:paddingEnd">@dimen/modern_space_m</item>
-        <item name="android:drawablePadding">@dimen/modern_space_m</item>
-        <item name="android:textColor">@color/modern_nav_text</item>
-        <item name="android:textSize">@dimen/modern_text_body</item>
-        <item name="android:clickable">true</item>
-        <item name="android:focusable">true</item>
-    </style>
 </resources>
