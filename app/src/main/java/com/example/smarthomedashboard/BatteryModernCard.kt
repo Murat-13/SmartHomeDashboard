@@ -41,6 +41,16 @@ internal class BatteryModernCard(
     private val fitPaint = Paint()
     private val sized = mutableListOf<Triple<View, Float, Float>>()
     private var scale = 1f
+    /** Ореол по периметру — как у остальных плиток Modern ([PowerModernCard.haloFor]): тело карточки отступает внутрь. */
+    internal var haloPx = PowerModernCard.haloFor(1f)
+        private set
+    private lateinit var content: LinearLayout
+    private val density = resources.displayMetrics.density
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bodyRect = RectF()
+    private var bodyShaderFor = 0L
     /** Компактное окно мощности: нижний отступ до шкалы масштабируется вместе с карточкой. */
     private var powerBottom: View? = null
 
@@ -96,15 +106,19 @@ internal class BatteryModernCard(
     init {
         tag = if (expanded) "bm_expanded" else "bm_compact"
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
-        background = cardBackground()
-        clipToOutline = true
+        setWillNotDraw(false)
+        // Ореол рисуется в зарезервированном отступе: обрезка по контуру его бы срезала (как у «Сети», «Инвертора»).
+        clipToOutline = false
         outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, 36f * scale)
+                val inset = haloPx.toInt()
+                outline.setRoundRect(inset, inset, view.width - inset, view.height - inset, 36f * scale)
             }
         }
-        val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            val inset = haloPx.toInt(); setMargins(inset, inset, inset, inset)
+        })
         pad(content, 22f)
 
         val header = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -329,6 +343,48 @@ internal class BatteryModernCard(
         return line
     }
 
+    /**
+     * Тело и ореол — те же формулы, что у [PowerModernCard]: три кольца ореола в отступе, тело с градиентом прежних
+     * цветов, мягкое свечение у кромки и рамка. Цвет — прежний бирюзовый рамки АКБ. Без выделений памяти в кадре.
+     */
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat()
+        if (w <= 0 || h <= 0) return
+        val r = 36f * scale
+        val halo = haloPx
+        val c = FRAME
+        if (halo >= 1f) {
+            val band = halo / 3f
+            glowPaint.strokeWidth = band
+            for (i in 1..3) {
+                val offset = band * (i - 0.5f)
+                glowPaint.color = Color.argb((70 * (4 - i) / 3f).toInt(), Color.red(c), Color.green(c), Color.blue(c))
+                bodyRect.set(halo - offset, halo - offset, w - halo + offset, h - halo + offset)
+                canvas.drawRoundRect(bodyRect, r + offset, r + offset, glowPaint)
+            }
+        }
+        val key = (width.toLong() shl 32) or height.toLong() xor (halo.toLong() shl 48)
+        if (bodyShaderFor != key) {
+            bodyShaderFor = key
+            bodyPaint.shader = android.graphics.LinearGradient(halo, halo, w - halo, h - halo,
+                Color.argb(240, 12, 34, 38), Color.argb(240, 8, 18, 26), android.graphics.Shader.TileMode.CLAMP)
+        }
+        bodyRect.set(halo, halo, w - halo, h - halo)
+        canvas.drawRoundRect(bodyRect, r, r, bodyPaint)
+        for (i in 3 downTo 1) {
+            val stroke = 2.2f * i * scale * density
+            glowPaint.strokeWidth = stroke
+            glowPaint.color = Color.argb(26 * (4 - i), Color.red(c), Color.green(c), Color.blue(c))
+            bodyRect.set(halo + stroke / 2, halo + stroke / 2, w - halo - stroke / 2, h - halo - stroke / 2)
+            canvas.drawRoundRect(bodyRect, r, r, glowPaint)
+        }
+        val border = (1.4f * scale * density).coerceAtLeast(1.5f)
+        borderPaint.strokeWidth = border
+        borderPaint.color = Color.argb(235, Color.red(c), Color.green(c), Color.blue(c))
+        bodyRect.set(halo + border / 2, halo + border / 2, w - halo - border / 2, h - halo - border / 2)
+        canvas.drawRoundRect(bodyRect, r, r, borderPaint)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w <= 0 || h <= 0) return
@@ -367,6 +423,13 @@ internal class BatteryModernCard(
 
     private fun applyScale(next: Float) {
         scale = next
+        haloPx = PowerModernCard.haloFor(next)
+        (content.layoutParams as? LayoutParams)?.let { lp ->
+            val inset = haloPx.toInt()
+            lp.setMargins(inset, inset, inset, inset)
+            content.layoutParams = lp
+        }
+        invalidate()
         powerBottom?.let { block ->
             (block.layoutParams as? LinearLayout.LayoutParams)?.let { it.bottomMargin = (POWER_BOTTOM_GAP * next).toInt(); block.layoutParams = it }
         }
@@ -473,12 +536,11 @@ internal class BatteryModernCard(
             stroke?.let { setStroke(2, it) }
         }
 
-        private fun cardBackground() = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR, intArrayOf(Color.argb(240, 12, 34, 38), Color.argb(240, 8, 18, 26))
-        ).apply {
-            cornerRadius = 36f
-            setStroke(3, Color.argb(170, 38, 198, 160))
-        }
+        /** Цвет рамки и ореола АКБ (прежний бирюзовый рамки). */
+        val FRAME = Color.rgb(38, 198, 160)
+
+        /** Масштаб компактной карточки по размеру плитки — как в onSizeChanged. */
+        fun compactScale(width: Int, height: Int) = minOf(width / 540f, height / 390f).coerceIn(0.35f, 2.2f)
 
         /** Плитка панели: та же основа, что у остальных виджетов (тег, размер, ручка resize). */
         fun createTile(context: Context, tileId: String, width: Int, height: Int, isEditMode: Boolean): Pair<FrameLayout, ImageView> {
@@ -486,10 +548,12 @@ internal class BatteryModernCard(
                 layoutParams = LayoutParams(width, height)
                 tag = tileId
                 elevation = 8f
-                clipToOutline = true
+                // Тень — по телу карточки, ореол вокруг не обрезается (как у остальных плиток Modern).
+                clipToOutline = false
                 outlineProvider = object : ViewOutlineProvider() {
                     override fun getOutline(view: View, outline: Outline) {
-                        outline.setRoundRect(0, 0, view.width, view.height, 32f)
+                        val inset = PowerModernCard.haloFor(compactScale(view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))).toInt()
+                        outline.setRoundRect(inset, inset, view.width - inset, view.height - inset, 32f)
                     }
                 }
             }

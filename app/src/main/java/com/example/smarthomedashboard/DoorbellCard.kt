@@ -378,7 +378,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
 
     private fun renderVideoStatus() {
         val s = video.status
-        val show = offlineVeil.visibility != VISIBLE && (s == DoorbellVideoView.Status.CONNECTING ||
+        val show = offlineVeil.visibility != VISIBLE && !video.hasGuest && (s == DoorbellVideoView.Status.CONNECTING ||
             s == DoorbellVideoView.Status.ERROR || s == DoorbellVideoView.Status.NO_SOURCE)
         connecting.visibility = if (show) VISIBLE else GONE
         if (show) set(connecting, when (s) {

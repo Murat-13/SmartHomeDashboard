@@ -60,6 +60,16 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         tag = "door_snapshot"
     }
     private val texture = TextureView(context).apply { alpha = 0f; tag = "door_texture" }
+    /** Чужой плеер на время подключения своего (см. [lendTo], [handOffTo]). Между снимком и своим видео. */
+    private val guestTexture = TextureView(context).apply { alpha = 0f; tag = "door_guest" }
+    private var guest: ExoPlayer? = null
+    /** Владелец одолженного плеера; null — плеер передан насовсем (освобождаем сами). */
+    private var guestOwner: DoorbellVideoView? = null
+    private var guestAspect = DoorbellConfig.DEFAULT_ASPECT
+    /** Кому одолжен свой плеер (вывод картинки сейчас там). */
+    private var loanedTo: DoorbellVideoView? = null
+    /** Пара (плитка ↔ раскрытие): при закрытии свой плеер отдаётся ей, если у неё ещё нет картинки. */
+    var partner: DoorbellVideoView? = null
     private var player: ExoPlayer? = null
     private var source: Source? = null
     private var picture: String? = null
@@ -73,7 +83,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     /** Звук: в компактной плитке выключен, в раскрытой и окне звонка — включён. */
     var muted = true
-        set(value) { field = value; player?.volume = if (value) 0f else 1f }
+        set(value) {
+            field = value
+            if (loanedTo == null) player?.volume = if (value) 0f else 1f
+            guest?.volume = if (value) 0f else 1f
+        }
 
     /** Владелец разрешает видео (например, окно звонка поверх — компактной плитке не играть). */
     var active = true
@@ -90,6 +104,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     init {
         setBackgroundColor(android.graphics.Color.BLACK)
         addView(snapshot, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(guestTexture, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(texture, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         texture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) = fitTexture()
@@ -147,7 +162,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (player == null && !retryPending) start()
     }
 
-    private val releaseLater = Runnable { releasePlayer(); if (status == Status.PLAYING) status = Status.IDLE }
+    private val releaseLater = Runnable { dropGuest(); releasePlayer(); if (status == Status.PLAYING) status = Status.IDLE }
     private val snapshotTick = Runnable { loadPicture(); update() }
     private var retryPending = false
     private val retry = Runnable { retryPending = false; if (visible && player == null) start() }
@@ -205,10 +220,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 fitTexture()
             }
             override fun onRenderedFirstFrame() {
-                if (player !== exo) return
+                if (player !== exo || loanedTo != null) return
                 failures = 0
                 status = Status.PLAYING
-                texture.animate().alpha(1f).setDuration(220).start()
+                // Свой поток пошёл: проявляется поверх временного, затем временный возвращается или освобождается.
+                texture.animate().alpha(1f).setDuration(FADE_MS).withEndAction { dropGuest() }.start()
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (player === exo) failed(error.errorCodeName)
@@ -242,11 +258,85 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         retryPending = false
         val exo = player ?: return
         player = null
+        // Одолженный плеер освобождается: у того, кто его показывал, картинка гаснет до своего потока.
+        loanedTo?.let { borrower -> loanedTo = null; borrower.guestReleased(exo) }
         keepLastFrame()
         texture.animate().cancel()
         texture.alpha = 0f
         exo.clearVideoTextureView(texture)
         exo.release()
+    }
+
+    // ---- Бесшовная смена потока (решение владельца): плитка ↔ раскрытие/окно звонка ----
+
+    /**
+     * Одолжить свой играющий плеер [target], пока тот подключает свой поток: картинка там живая сразу.
+     * Плеер остаётся нашим; вернётся, когда у [target] пойдёт свой поток или он закроется.
+     */
+    fun lendTo(target: DoorbellVideoView): Boolean {
+        val exo = player ?: return false
+        if (status != Status.PLAYING || loanedTo != null || target === this) return false
+        if (!target.acceptGuest(exo, this, videoAspect)) return false
+        loanedTo = target
+        return true
+    }
+
+    private fun acceptGuest(exo: ExoPlayer, owner: DoorbellVideoView?, aspect: Float): Boolean {
+        if (status == Status.PLAYING || !isAttachedToWindow) return false
+        dropGuest()
+        guest = exo
+        guestOwner = owner
+        guestAspect = aspect
+        exo.setVideoTextureView(guestTexture)
+        exo.volume = if (muted) 0f else 1f
+        guestTexture.alpha = 1f
+        fitTexture()
+        onStatus?.invoke(status)
+        return true
+    }
+
+    /** Временная картинка больше не нужна: одолженный плеер — владельцу, переданный — освободить. */
+    private fun dropGuest() {
+        val exo = guest ?: return
+        guest = null
+        val owner = guestOwner
+        guestOwner = null
+        guestTexture.alpha = 0f
+        exo.clearVideoTextureView(guestTexture)
+        if (owner != null) owner.reclaim(exo) else exo.release()
+        onStatus?.invoke(status)
+    }
+
+    private fun reclaim(exo: ExoPlayer) {
+        if (player !== exo) return
+        loanedTo = null
+        exo.setVideoTextureView(texture)
+        exo.volume = if (muted) 0f else 1f
+    }
+
+    /** Владелец освободил одолженный плеер (экран затемнён, ошибка). */
+    private fun guestReleased(exo: ExoPlayer) {
+        if (guest !== exo) return
+        guest = null
+        guestOwner = null
+        guestTexture.alpha = 0f
+        onStatus?.invoke(status)
+    }
+
+    /** Показывается чужой поток (надпись «Подключение…» не нужна). */
+    val hasGuest get() = guest != null
+
+    /**
+     * Закрываемся: если у [partner] картинки ещё нет, а у нас поток идёт — отдать плеер ему насовсем
+     * (он освободит его на своём первом кадре). Иначе — обычное освобождение.
+     */
+    private fun handOffTo(target: DoorbellVideoView?): Boolean {
+        val exo = player ?: return false
+        if (target == null || status != Status.PLAYING || loanedTo != null) return false
+        if (!target.acceptGuest(exo, null, videoAspect)) return false
+        player = null
+        attempt++
+        return true
     }
 
     /** Последний кадр остаётся на месте, пока поток переподключается: вместо чёрной вспышки — картинка. */
@@ -261,14 +351,19 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     /** Кадр заполняет плитку без искажений (обрезка по краям, как у снимка). */
     private fun fitTexture() {
-        val w = texture.width.toFloat()
-        val h = texture.height.toFloat()
+        fit(texture, videoAspect)
+        fit(guestTexture, guestAspect)
+    }
+
+    private fun fit(view: TextureView, aspect: Float) {
+        val w = view.width.toFloat()
+        val h = view.height.toFloat()
         if (w <= 0 || h <= 0) return
-        val view = w / h
+        val ratio = w / h
         val sx: Float
         val sy: Float
-        if (videoAspect > view) { sx = videoAspect / view; sy = 1f } else { sx = 1f; sy = view / videoAspect }
-        texture.setTransform(Matrix().apply { setScale(sx, sy, w / 2f, h / 2f) })
+        if (aspect > ratio) { sx = aspect / ratio; sy = 1f } else { sx = 1f; sy = ratio / aspect }
+        view.setTransform(Matrix().apply { setScale(sx, sy, w / 2f, h / 2f) })
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -318,6 +413,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         main.removeCallbacksAndMessages(null)
         pictureCall?.cancel()
         pictureCall = null
+        dropGuest()
         releasePlayer()
         super.onDetachedFromWindow()
     }
@@ -338,7 +434,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         onAspect = null
         main.removeCallbacksAndMessages(null)
         pictureCall?.cancel()
-        releasePlayer()
+        dropGuest()
+        // Сворачивание: поток раскрытия досматривается в плитке, пока не пойдёт её субпоток.
+        if (!handOffTo(partner)) releasePlayer()
+        partner = null
     }
 
     internal val hasPlayer get() = player != null
@@ -350,6 +449,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val RTSP_TIMEOUT_MS = 6_000L
         private const val RETRY_BASE_MS = 2_000L
         private const val RETRY_MAX_MS = 30_000L
+        private const val FADE_MS = 220L
         /** В тестах Robolectric декодеров нет: только снимок. */
         internal val ENABLED = android.os.Build.FINGERPRINT != "robolectric"
     }

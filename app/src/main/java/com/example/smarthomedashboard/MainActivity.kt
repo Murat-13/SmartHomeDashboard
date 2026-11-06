@@ -196,6 +196,7 @@ class MainActivity : AppCompatActivity() {
         }
         override fun tileBounds(tileId: String) = if (::tileManager.isInitialized) panelController.tileBounds(tileId) else null
         override fun keepAwake() = resetIdleTimer()
+        override fun tileVideo(tileId: String) = if (::tileManager.isInitialized) panelController.tileVideo(tileId) else null
     }
 
     private val doorbellConnection: () -> HomeAssistantWebSocket? = { viewModel.getWebSocket() }

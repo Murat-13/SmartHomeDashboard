@@ -1049,6 +1049,10 @@ internal class DashboardPanelController(
         }
     }
 
+    /** Видео плитки домофона на экране (для бесшовного начала окна звонка); null — плитки не видно. */
+    fun tileVideo(tileId: String): DoorbellVideoView? =
+        (viewForTile(tileId)?.takeIf { it.isShown } as? ViewGroup)?.findViewWithTag<DoorbellCard>("door_compact")?.video
+
     /** Прямоугольник плитки в окне — окно звонка растёт из неё. */
     fun tileBounds(tileId: String): android.graphics.RectF? {
         val view = viewForTile(tileId) ?: return null
@@ -1155,9 +1159,16 @@ internal class DashboardPanelController(
             if (width > screenW * 0.94f) { width = (screenW * 0.94f).toInt(); height = (width / config.aspect).toInt() }
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             DoorbellHub.acknowledge(tile.id)
-            modernExpansion.expand(tile.id, source, DoorbellCard(activity, expanded = true), target,
+            val expanded = DoorbellCard(activity, expanded = true)
+            modernExpansion.expand(tile.id, source, expanded, target,
                 if (config.autoCollapse) config.collapseSeconds * 1000L else null)
             renderModern(tile, null, animate = false)
+            // Бесшовно: пока подключается основной поток, крупно идёт уже работающий субпоток плитки;
+            // при сворачивании — наоборот (DoorbellVideoView.lendTo / partner).
+            source.findViewWithTag<DoorbellCard>("door_compact")?.video?.let { compact ->
+                expanded.video.partner = compact
+                compact.lendTo(expanded.video)
+            }
             return
         }
         if (tile.type == InverterModernConfig.TYPE) {

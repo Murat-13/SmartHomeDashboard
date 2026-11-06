@@ -188,6 +188,11 @@ internal class DoorbellRingWindow private constructor(
         isShowing = true
         openedAt = SystemClock.uptimeMillis()
         render()
+        // Плитка видна на панели — окно сразу показывает её живой субпоток, пока подключается основной.
+        if (host is MainActivity) DoorbellHub.actions?.tileVideo(tileId)?.let { tile ->
+            card.video.partner = tile
+            tile.lendTo(card.video)
+        }
         panel.alpha = 0f
         panel.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
             override fun onPreDraw(): Boolean {

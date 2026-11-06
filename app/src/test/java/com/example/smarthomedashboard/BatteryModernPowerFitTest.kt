@@ -114,8 +114,10 @@ class BatteryModernPowerFitTest {
             val block = (power.parent as View).parent.parent as View
             val bar = card.findViewWithTag<View>("bm_bar")
             val b = bounds(block)
-            val top = b[1]
-            val right = card.width - b[2]
+            // Отступы — от тела карточки: снаружи по периметру теперь ореол, как у остальных плиток Modern.
+            val halo = card.haloPx.toInt()
+            val top = b[1] - halo
+            val right = card.width - halo - b[2]
             val bottom = bounds(bar)[1] - b[3]
             assertEquals("${w}x$h: сверху = справа", right.toFloat(), top.toFloat(), 2f)
             assertEquals("${w}x$h: снизу = справа", right.toFloat(), bottom.toFloat(), 2f)

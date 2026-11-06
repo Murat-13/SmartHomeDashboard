@@ -35,6 +35,8 @@ internal object DoorbellHub {
         fun tileBounds(tileId: String): android.graphics.RectF?
         /** Окно звонка открыто: панель не затемняется (перезапуск таймера бездействия). */
         fun keepAwake() {}
+        /** Видео плитки на экране — окно звонка начинает с него, пока подключается основной поток. */
+        fun tileVideo(tileId: String): DoorbellVideoView? = null
     }
 
     var actions: Actions? = null
