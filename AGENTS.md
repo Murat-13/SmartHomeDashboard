@@ -131,6 +131,17 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 06.11.2026 — агент Android Studio на Mac владельца: выпуск v0.9.9 (pre-release)
+
+- По поручению владельца (код не дорабатывать). Копия чистая, `git pull --ff-only` → `a611b1f`; `appVersionName` 0.9.9,
+  compileSdk 36, targetSdk 35, R8 выключен.
+- Проверено: `testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug assembleRelease --offline` — 1296 тестов,
+  0 падений (ничего не перезапускалось); lint 0 ошибок, 258 предупреждений. Release тем же ключом, что 0.9.8: сертификат
+  `a2874d96…bc64c` (совпадает), 0.9.9/909, не debuggable, разрешения прежние; 8,85 МБ; SHA-256
+  `20a17669313414c4298beb75769468ce52e09b6ea8ba112b6ab6d1b726e6696f`.
+- Pre-release `v0.9.9`: тег на `a611b1f` (CI success), APK + `.sha256`, описание владельца; `digest` GitHub = SHA-256
+  сборки, скачанный APK — тот же хэш. Планшеты, adb и HA не трогались; на устройстве 0.9.9 не проверялась.
+
 ### 06.11.2026 — Claude (чат проекта): 0.9.9 — домофон после теста на Hikvision
 
 - Владелец проверил 0.9.8 на московском планшете с камерой Hikvision (RTSP): видео в плитке и раскрытии работает,
