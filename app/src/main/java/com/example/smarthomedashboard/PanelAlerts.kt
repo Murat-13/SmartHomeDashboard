@@ -256,6 +256,14 @@ internal object PanelAlerts {
     }
 
     /** Новое состояние HA. Главный поток. */
+    /**
+     * Когда пересчитывать: состояния и сессия HA плюс атрибуты сущностей домофона ([DoorbellHub.attributeIds]).
+     * Атрибуты остальных сущностей не участвуют — их частые изменения не будят проверку. Сравнение атрибутов —
+     * по экземпляру: панель создаёт новый объект только для изменившейся сущности.
+     */
+    fun stateKey(model: MainUiState): Any =
+        Triple(model.singleStates, model.haSession, DoorbellHub.attributeIds.map { model.entityAttributes[it] })
+
     fun onState(model: MainUiState) {
         if (app == null || !enabled) return
         evaluate(BatteryReadings.from(model))

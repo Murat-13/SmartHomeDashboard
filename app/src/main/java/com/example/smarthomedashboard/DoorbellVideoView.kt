@@ -292,8 +292,14 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         return true
     }
 
-    private fun acceptGuest(exo: ExoPlayer, owner: DoorbellVideoView?, aspect: Float): Boolean {
-        if (status == Status.PLAYING || !isAttachedToWindow) return false
+    /**
+     * Временную картинку берёт только тот, кто сам будет играть живой поток: его первый кадр и отпустит гостя.
+     * В режиме «снимок» своего потока нет — гость (основной поток!) декодировался бы до затемнения экрана.
+     */
+    internal val canHostGuest get() = source?.let { !it.snapshotOnly && (it.rtsp.isNotBlank() || it.camera.isNotBlank()) } == true
+
+    internal fun acceptGuest(exo: ExoPlayer, owner: DoorbellVideoView?, aspect: Float): Boolean {
+        if (status == Status.PLAYING || !isAttachedToWindow || !canHostGuest) return false
         dropGuest()
         guest = exo
         guestOwner = owner

@@ -179,7 +179,7 @@ class MainActivity : AppCompatActivity() {
         if (android.os.Build.FINGERPRINT == "robolectric") return
         PanelAlerts.attach(applicationContext)
         lifecycleScope.launch {
-            viewModel.uiState.map { it.singleStates to it.haSession }.distinctUntilChanged().collect {
+            viewModel.uiState.map(PanelAlerts::stateKey).distinctUntilChanged().collect {
                 PanelAlerts.onState(viewModel.uiState.value)
             }
         }

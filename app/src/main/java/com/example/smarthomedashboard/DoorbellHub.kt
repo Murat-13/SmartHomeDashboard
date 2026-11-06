@@ -66,6 +66,7 @@ internal object DoorbellHub {
         lightOffs.values.forEach(main::removeCallbacks)
         lightOffs.clear()
         autoLit.clear()
+        autoLitSeenOn.clear()
         RingUi.closeAll()
         (app as? Application)?.unregisterActivityLifecycleCallbacks(activityTracker)
         app = null
@@ -86,14 +87,25 @@ internal object DoorbellHub {
     // ---- Состояние HA ----
 
     /** Новое состояние HA и список плиток (из [PanelAlerts]). */
+    /**
+     * Сущности, у которых важны атрибуты, а не только состояние: снимок камеры (`entity_picture` с токеном,
+     * обновляется без смены состояния) и список готовых фраз (`options`). Их изменения тоже доставляются сюда.
+     */
+    @Volatile var attributeIds: Set<String> = emptySet()
+        private set
+
     fun onState(tiles: List<TileEntity>, current: BatteryReadings) {
         tileList = tiles.filter { it.type == DoorbellConfig.TYPE }
+        attributeIds = tileList.flatMapTo(LinkedHashSet()) { tile ->
+            DoorbellConfig.from(tile.config).let { listOf(it.camera, it.quickReply) }.filter { it.isNotBlank() }
+        }
         readings = current
         val now = SystemClock.uptimeMillis()
         val events = monitor.evaluate(tileList, current, now)
         main.removeCallbacks(recheck)
         monitor.nextCheckAt?.let { main.postDelayed(recheck, (it - now).coerceAtLeast(0) + 20) }
         events.forEach(::handle)
+        releaseManualLights(current)
         RingUi.render()
         // Плитки панели перерисовываются по своим сущностям сами; здесь — только то, чего в HA нет
         // (пропущенные, «нет сигнала», окно звонка). Иначе каждое событие любой сущности будило бы все домофоны.
@@ -163,13 +175,19 @@ internal object DoorbellHub {
     // ---- Свет у входа ----
 
     private val autoLit = mutableSetOf<String>()
+    /** Свет, включённый звонком, HA уже показал включённым (до этого «выкл» — просто команда ещё в пути). */
+    private val autoLitSeenOn = mutableSetOf<String>()
     private val lightOffs = mutableMapOf<String, Runnable>()
 
     /** После заката включить свет, если он выключен; включённый ранее свет не трогается. */
     private fun autoLight(tileId: String, config: DoorbellConfig) {
-        lightOffs.remove(tileId)?.let(main::removeCallbacks)
         val current = readings ?: return
         if (!config.autoLight || config.light.isBlank()) return
+        // Свет уже горит от прошлого звонка: выключение переносится, но не отменяется («Позже», окно не открывали).
+        if (tileId in autoLit) {
+            scheduleLightOff(tileId, DoorbellRingWindow.RING_MS + config.lightOffMinutes * 60_000L)
+            return
+        }
         val snapshot = DoorbellModel.snapshot(config, current)
         if (!snapshot.sunDown || snapshot.lightOn != false) return
         val domain = config.light.substringBefore('.')
@@ -180,9 +198,26 @@ internal object DoorbellHub {
         }
     }
 
+    /**
+     * Свет, включённый звонком, кто-то выключил (выключатель, плитка, HA): автоматика его больше не трогает —
+     * следующее включение уже ручное. Видно только по факту HA; без связи с HA ничего не меняется.
+     */
+    private fun releaseManualLights(current: BatteryReadings) {
+        if (autoLit.isEmpty()) return
+        autoLit.toList().forEach { tileId ->
+            val config = config(tileId) ?: return@forEach
+            when (DoorbellModel.snapshot(config, current).lightOn) {
+                true -> autoLitSeenOn += tileId
+                false -> if (tileId in autoLitSeenOn) lightTouched(tileId)
+                null -> Unit
+            }
+        }
+    }
+
     /** Свет переключён вручную в окне звонка: дальше им управляет человек. */
     fun lightTouched(tileId: String) {
         autoLit -= tileId
+        autoLitSeenOn -= tileId
         lightOffs.remove(tileId)?.let(main::removeCallbacks)
     }
 
@@ -190,7 +225,7 @@ internal object DoorbellHub {
     fun windowClosed(tileId: String) {
         if (tileId !in autoLit) return
         val config = config(tileId) ?: return
-        if (config.lightOffMinutes <= 0) { autoLit -= tileId; lightOffs.remove(tileId)?.let(main::removeCallbacks); return }
+        if (config.lightOffMinutes <= 0) { autoLit -= tileId; autoLitSeenOn -= tileId; lightOffs.remove(tileId)?.let(main::removeCallbacks); return }
         scheduleLightOff(tileId, config.lightOffMinutes * 60_000L)
     }
 
@@ -202,6 +237,7 @@ internal object DoorbellHub {
             // Окно всё ещё открыто (человек смотрит) — погасим после его закрытия.
             if (RingUi.current?.let { it.tileId == tileId && it.isShowing } == true) return@Runnable
             autoLit -= tileId
+            autoLitSeenOn -= tileId
             val latest = config(tileId) ?: return@Runnable
             val state = readings?.let { DoorbellModel.snapshot(latest, it).lightOn }
             if (state == true) actions?.call(latest.light.substringBefore('.'), "turn_off", latest.light, emptyMap()) {}

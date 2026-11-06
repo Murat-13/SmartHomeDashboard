@@ -98,6 +98,25 @@ class DoorbellLogicTest {
         assertEquals("Нет связи с Home Assistant", noHa.haStatus)
     }
 
+    /** Смена только атрибутов камеры/фраз домофона доходит до проверок; атрибуты прочих сущностей — нет. */
+    @Test fun attributeOnlyChangesOfDoorbellEntitiesWakeChecks() {
+        DoorbellHub.onState(listOf(tile()), readings(normal))
+        try {
+            val vm = MainViewModel()
+            vm.onStatesSnapshot(listOf(HaEntityState("camera.door", "idle", JSONObject().put("entity_picture", "/a?token=1")),
+                HaEntityState("select.door_reply", "off", JSONObject().put("options", JSONArray(listOf("off")))),
+                HaEntityState("sensor.t", "20", JSONObject().put("x", 1))))
+            val before = PanelAlerts.stateKey(vm.uiState.value)
+            vm.onEntityStateChanged("sensor.t", "20", JSONObject().put("x", 2))
+            assertEquals("Чужие атрибуты не будят проверку", before, PanelAlerts.stateKey(vm.uiState.value))
+            vm.onEntityStateChanged("camera.door", "idle", JSONObject().put("entity_picture", "/a?token=2"))
+            assertNotEquals("Новый токен снимка доходит", before, PanelAlerts.stateKey(vm.uiState.value))
+            val mid = PanelAlerts.stateKey(vm.uiState.value)
+            vm.onEntityStateChanged("select.door_reply", "off", JSONObject().put("options", JSONArray(listOf("off", "Иду"))))
+            assertNotEquals("Новые фразы доходят", mid, PanelAlerts.stateKey(vm.uiState.value))
+        } finally { DoorbellHub.detach() }
+    }
+
     @Test fun openCommandPerDomain() {
         assertEquals(DoorbellModel.OpenCommand("lock", "unlock", "unlocked"), DoorbellModel.openCommand("lock.gate"))
         assertEquals("press", DoorbellModel.openCommand("button.gate")!!.service)

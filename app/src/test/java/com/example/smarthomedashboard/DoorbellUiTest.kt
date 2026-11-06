@@ -142,6 +142,23 @@ class DoorbellUiTest {
         card.dispose()
     }
 
+    /** Плитка в режиме «снимок» не берёт основной поток раскрытия «досматривать»: отпустить его было бы некому. */
+    @Test fun snapshotTileDoesNotHostGuestStream() {
+        val card = DoorbellCard(activity, expanded = false)
+        root().addView(card, ViewGroup.LayoutParams(480, 360))
+        advance(50)
+        card.bind("Калитка", config.copy(mode = DoorbellConfig.VideoMode.SNAPSHOT), DoorbellModel.snapshot(config, readings()),
+            false, 0, null, System.currentTimeMillis(), animate = false)
+        val exo = androidx.media3.exoplayer.ExoPlayer.Builder(activity).build()
+        try {
+            assertFalse(card.video.canHostGuest)
+            assertFalse(card.video.acceptGuest(exo, null, 4f / 3f))
+            assertFalse(card.video.hasGuest)
+            card.bind("Калитка", config, DoorbellModel.snapshot(config, readings()), false, 0, null, System.currentTimeMillis(), animate = false)
+            assertTrue("Живая плитка временную картинку берёт", card.video.canHostGuest)
+        } finally { exo.release(); card.dispose() }
+    }
+
     @Test fun hdBadgeFadesInAndOutWithStream() {
         val card = DoorbellCard(activity, expanded = true)
         root().addView(card, ViewGroup.LayoutParams(800, 600))
@@ -243,6 +260,32 @@ class DoorbellUiTest {
         assertTrue(calls.isEmpty())
         advance(2_000)
         assertEquals(listOf("light.turn_off light.entrance"), calls)
+    }
+
+    /** Второй звонок, когда свет уже включён автоматически, а окно не открывали: выключение не теряется. */
+    @Test fun secondRingKeepsAutoLightOffTimer() {
+        ring(); layoutRoot()
+        banner()!!.findViewWithTag<View>("door_banner_later").performClick()
+        values["light.entrance"] = "on"; state()
+        advance(10_000)
+        ring(); layoutRoot()
+        banner()?.findViewWithTag<View>("door_banner_later")?.performClick()
+        calls.clear()
+        advance(DoorbellRingWindow.RING_MS + 3 * 60_000L + 2_000)
+        assertEquals("Свет, включённый звонком, гаснет и после повторного звонка", listOf("light.turn_off light.entrance"), calls)
+    }
+
+    /** Свет выключили руками (выключатель, плитка) — дальше им управляет человек, автоматика не трогает. */
+    @Test fun lightTurnedOffManuallyIsNotTouchedAgain() {
+        ring(); layoutRoot()
+        banner()!!.findViewWithTag<View>("door_banner_later").performClick()
+        values["light.entrance"] = "on"; state()
+        values["light.entrance"] = "off"; state()
+        advance(1_000)
+        values["light.entrance"] = "on"; state() // включил человек
+        calls.clear()
+        advance(DoorbellRingWindow.RING_MS + 3 * 60_000L + 2_000)
+        assertTrue("Ручное включение не выключается автоматикой: $calls", calls.isEmpty())
     }
 
     @Test fun manualLightTakesOverAutomatic() {
