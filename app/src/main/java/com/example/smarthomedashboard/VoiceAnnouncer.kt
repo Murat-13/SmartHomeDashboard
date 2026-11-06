@@ -39,6 +39,18 @@ internal class VoiceAnnouncer(context: Context) {
     private var player: MediaPlayer? = null
     private var savedAlarmVolume: Int? = null
     private var released = false
+    /** Идентификатор текущей фразы: ответы синтеза о прошлых (прерванных) фразах игнорируются. */
+    private var utterance: String? = null
+    private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    init {
+        // Процесс прервался во время фразы: громкость будильника владельца осталась на максимуме — вернуть.
+        if (prefs.contains(KEY_SAVED_ALARM)) {
+            val saved = prefs.getInt(KEY_SAVED_ALARM, -1)
+            if (saved >= 0) try { audio.setStreamVolume(AudioManager.STREAM_ALARM, saved, 0) } catch (_: SecurityException) {}
+            prefs.edit().remove(KEY_SAVED_ALARM).apply()
+        }
+    }
 
     /** Один элемент очереди: звук (ресурс или файл владельца), затем фраза. */
     data class Sound(val phrase: String?, val tone: Uri?, val volume: Float, val tag: String = "")
@@ -81,10 +93,10 @@ internal class VoiceAnnouncer(context: Context) {
                 engine.setAudioAttributes(attributes)
                 engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) { main.post { finished() } }
+                    override fun onDone(utteranceId: String?) { main.post { finished(utteranceId) } }
                     @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { main.post { finished() } }
-                    override fun onError(utteranceId: String?, errorCode: Int) { main.post { finished() } }
+                    override fun onError(utteranceId: String?) { main.post { finished(utteranceId) } }
+                    override fun onError(utteranceId: String?, errorCode: Int) { main.post { finished(utteranceId) } }
                 })
                 // Если очередь ждала готовности синтеза — продолжить.
                 if (playing?.let { it.tone == null && it.phrase != null } == true) sayPhrase(playing!!)
@@ -134,16 +146,26 @@ internal class VoiceAnnouncer(context: Context) {
             return
         }
         val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, sound.volume) }
-        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, "u" + System.nanoTime()) != TextToSpeech.SUCCESS) finished()
+        val id = "u" + System.nanoTime()
+        utterance = id
+        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, id) != TextToSpeech.SUCCESS) finished()
+    }
+
+    /** Ответ синтеза: только о текущей фразе (запоздавший ответ о прерванной не обрывает новую). */
+    private fun finished(utteranceId: String?) {
+        if (utteranceId != utterance) return
+        finished()
     }
 
     private fun finished() {
         if (playing == null) return
+        utterance = null
         playing = null
         next()
     }
 
     private fun stopCurrent() {
+        utterance = null
         releasePlayer()
         tts?.stop()
         playing = null
@@ -157,10 +179,13 @@ internal class VoiceAnnouncer(context: Context) {
         if (savedAlarmVolume != null) return
         try {
             savedAlarmVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
+            // Записано до повышения: если процесс прервётся во время фразы, следующий запуск вернёт громкость.
+            prefs.edit().putInt(KEY_SAVED_ALARM, savedAlarmVolume!!).commit()
             audio.setStreamVolume(AudioManager.STREAM_ALARM, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
         } catch (e: SecurityException) {
             // «Не беспокоить» на некоторых прошивках запрещает менять громкость: играем на текущей.
             savedAlarmVolume = null
+            prefs.edit().remove(KEY_SAVED_ALARM).apply()
         }
     }
 
@@ -170,10 +195,13 @@ internal class VoiceAnnouncer(context: Context) {
         val saved = savedAlarmVolume ?: return
         savedAlarmVolume = null
         try { audio.setStreamVolume(AudioManager.STREAM_ALARM, saved, 0) } catch (_: SecurityException) {}
+        prefs.edit().remove(KEY_SAVED_ALARM).apply()
     }
 
     companion object {
         private const val TAG = "VoiceAnnouncer"
+        const val PREFS = "dashboard_prefs"
+        private const val KEY_SAVED_ALARM = "voice_saved_alarm_volume"
 
         fun resource(context: Context, id: Int): Uri = Uri.parse("android.resource://${context.packageName}/$id")
     }
