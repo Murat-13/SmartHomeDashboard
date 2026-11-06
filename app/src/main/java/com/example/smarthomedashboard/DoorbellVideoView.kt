@@ -38,7 +38,8 @@ import java.io.IOException
  * 3. снимок HA (`entity_picture`) — режим «снимок раз в минуту» и подложка, пока видео подключается.
  *
  * Плеер существует, только пока видео действительно видно: View в окне, показана, окно видно, экран не
- * затемнён ([PanelMotion.dimmed]), плитка не скрыта раскрытием ([hiddenBySource]) и владелец разрешил ([active]).
+ * затемнён ([PanelMotion.dimmed]) и владелец разрешил ([active]). Под раскрытием ([hiddenBySource]) субпоток плитки
+ * продолжает идти (решение владельца): после сворачивания картинка сразу живая, а субпоток почти ничего не стоит.
  * Иначе плеер освобождается (декодер и соединение с домофоном) с короткой задержкой от дребезга.
  * Ошибки — переподключение с нарастающей паузой и чередованием путей. Только главный поток.
  */
@@ -122,7 +123,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     private fun bitmapMissing() = snapshot.drawable == null
 
-    private val visible get() = isAttachedToWindow && isShown && windowShown && !hiddenBySource && !PanelMotion.dimmed && active
+    private val visible get() = isAttachedToWindow && isShown && windowShown && !PanelMotion.dimmed && active
 
     private fun update() {
         main.removeCallbacks(releaseLater)
@@ -241,10 +242,21 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         retryPending = false
         val exo = player ?: return
         player = null
+        keepLastFrame()
         texture.animate().cancel()
         texture.alpha = 0f
         exo.clearVideoTextureView(texture)
         exo.release()
+    }
+
+    /** Последний кадр остаётся на месте, пока поток переподключается: вместо чёрной вспышки — картинка. */
+    private fun keepLastFrame() {
+        if (status != Status.PLAYING || !texture.isAvailable || texture.width <= 0 || texture.height <= 0) return
+        // Кадр в пропорциях видео (половинное разрешение — подложка на секунду-другую) и та же обрезка, что у видео.
+        val w = (texture.width / 2).coerceAtLeast(1)
+        val h = (w / videoAspect).toInt().coerceAtLeast(1)
+        val bitmap = try { texture.getBitmap(w, h) } catch (_: Exception) { null } ?: return
+        snapshot.setImageBitmap(bitmap)
     }
 
     /** Кадр заполняет плитку без искажений (обрезка по краям, как у снимка). */

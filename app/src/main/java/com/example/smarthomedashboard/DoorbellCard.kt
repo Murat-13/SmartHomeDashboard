@@ -373,8 +373,6 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
             user = config.rtspUser, camera = config.camera,
             snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT
         ), snapshot.picture)
-        // Окно звонка поверх — компактной плитке видео не нужно.
-        video.active = expanded || !DoorbellHub.RingUi.windowOpen
         renderVideoStatus()
     }
 
@@ -395,10 +393,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         bell.setColorFilter(color)
     }
 
-    override fun visibilityChanged() {
-        super.visibilityChanged()
-        video.setHiddenBySource(hiddenBySource)
-    }
+    // Под раскрытием и окном звонка видео плитки не останавливается (docs/doorbell.md): скрытие источника
+    // влияет только на анимации рамки.
 
     override fun dispose() {
         releaseAnimations()
