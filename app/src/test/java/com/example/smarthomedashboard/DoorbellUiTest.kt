@@ -142,6 +142,24 @@ class DoorbellUiTest {
         card.dispose()
     }
 
+    @Test fun hdBadgeFadesInAndOutWithStream() {
+        val card = DoorbellCard(activity, expanded = true)
+        root().addView(card, ViewGroup.LayoutParams(800, 600))
+        advance(50)
+        val hd = card.findViewWithTag<TextView>("door_hd")
+        assertEquals("Пока основного потока нет — надписи нет", View.GONE, hd.visibility)
+        card.showHd(true)
+        advance(120)
+        assertTrue("Проявляется плавно", hd.alpha > 0f && hd.alpha < DoorbellCard.HD_ALPHA)
+        advance(300)
+        assertEquals(DoorbellCard.HD_ALPHA, hd.alpha, 0.01f)
+        assertEquals("HD", hd.text.toString())
+        card.showHd(false)
+        advance(400)
+        assertEquals(View.GONE, hd.visibility)
+        card.dispose()
+    }
+
     @Test fun ringInOtherScreenShowsBannerThenWindowWithoutLosingTheScreen() {
         val window = openFromBanner()
         assertNull("Баннер убран", banner())

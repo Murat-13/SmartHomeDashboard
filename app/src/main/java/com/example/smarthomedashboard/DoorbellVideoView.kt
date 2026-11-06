@@ -96,6 +96,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     var status = Status.IDLE
         private set(value) { if (field != value) { field = value; onStatus?.invoke(value) } }
     var onStatus: ((Status) -> Unit)? = null
+    /**
+     * На экране сейчас поток высокой чёткости (кадр от [HD_HEIGHT] строк) — по реальному разрешению того плеера,
+     * чью картинку видно (свой или временный), а не по настройкам. Индикатор «HD» карточки.
+     */
+    var onQuality: ((Boolean) -> Unit)? = null
+    var showingHd = false
+        private set
     /** Реальная пропорция кадра (ширина/высота) — для плитки «по видео». */
     var onAspect: ((Float) -> Unit)? = null
     var videoAspect = DoorbellConfig.DEFAULT_ASPECT
@@ -218,11 +225,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 val aspect = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
                 if (kotlin.math.abs(aspect - videoAspect) > 0.01f) { videoAspect = aspect; onAspect?.invoke(aspect) }
                 fitTexture()
+                updateQuality()
             }
             override fun onRenderedFirstFrame() {
                 if (player !== exo || loanedTo != null) return
                 failures = 0
                 status = Status.PLAYING
+                updateQuality()
                 // Свой поток пошёл: проявляется поверх временного, затем временный возвращается или освобождается.
                 texture.animate().alpha(1f).setDuration(FADE_MS).withEndAction { dropGuest() }.start()
             }
@@ -265,6 +274,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         texture.alpha = 0f
         exo.clearVideoTextureView(texture)
         exo.release()
+        updateQuality()
     }
 
     // ---- Бесшовная смена потока (решение владельца): плитка ↔ раскрытие/окно звонка ----
@@ -278,6 +288,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (status != Status.PLAYING || loanedTo != null || target === this) return false
         if (!target.acceptGuest(exo, this, videoAspect)) return false
         loanedTo = target
+        updateQuality()
         return true
     }
 
@@ -292,6 +303,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         guestTexture.alpha = 1f
         fitTexture()
         onStatus?.invoke(status)
+        updateQuality()
         return true
     }
 
@@ -305,6 +317,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         exo.clearVideoTextureView(guestTexture)
         if (owner != null) owner.reclaim(exo) else exo.release()
         onStatus?.invoke(status)
+        updateQuality()
     }
 
     private fun reclaim(exo: ExoPlayer) {
@@ -312,6 +325,17 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         loanedTo = null
         exo.setVideoTextureView(texture)
         exo.volume = if (muted) 0f else 1f
+        updateQuality()
+    }
+
+    /** Чью картинку сейчас видно: свой поток (пошёл и не одолжен), иначе временный. */
+    private fun updateQuality() {
+        val own = player?.takeIf { status == Status.PLAYING && loanedTo == null }
+        val shown = own ?: guest
+        val hd = (shown?.videoSize?.height ?: 0) >= HD_HEIGHT
+        if (hd == showingHd) return
+        showingHd = hd
+        onQuality?.invoke(hd)
     }
 
     /** Владелец освободил одолженный плеер (экран затемнён, ошибка). */
@@ -321,6 +345,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         guestOwner = null
         guestTexture.alpha = 0f
         onStatus?.invoke(status)
+        updateQuality()
     }
 
     /** Показывается чужой поток (надпись «Подключение…» не нужна). */
@@ -336,6 +361,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (!target.acceptGuest(exo, null, videoAspect)) return false
         player = null
         attempt++
+        updateQuality()
         return true
     }
 
@@ -431,6 +457,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     fun dispose() {
         onStatus = null
+        onQuality = null
         onAspect = null
         main.removeCallbacksAndMessages(null)
         pictureCall?.cancel()
@@ -450,6 +477,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val RETRY_BASE_MS = 2_000L
         private const val RETRY_MAX_MS = 30_000L
         private const val FADE_MS = 220L
+        /** Высота кадра, с которой поток считается основным (HD): субпотоки Reolink/Hikvision — 360–512 строк. */
+        const val HD_HEIGHT = 720
         /** В тестах Robolectric декодеров нет: только снимок. */
         internal val ENABLED = android.os.Build.FINGERPRINT != "robolectric"
     }

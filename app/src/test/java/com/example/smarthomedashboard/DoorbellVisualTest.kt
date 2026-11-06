@@ -112,6 +112,18 @@ class DoorbellVisualTest {
         compact("compact_large", w = 800, h = 600)
     }
 
+    @Test fun rendersExpandedWithHd() {
+        val host = FrameLayout(activity)
+        val card = DoorbellCard(activity, expanded = true)
+        host.addView(card, FrameLayout.LayoutParams(1000, 750))
+        (activity.findViewById<ViewGroup>(android.R.id.content)).addView(host, ViewGroup.LayoutParams(1000, 750))
+        card.findViewWithTag<ImageView>("door_snapshot").setImageBitmap(fakeFrame())
+        card.bind("Домофон", config, DoorbellModel.snapshot(config, readings()), false, 0, null, System.currentTimeMillis(), animate = false)
+        card.showHd(true)
+        save(host, 1000, 750, "expanded_hd", 400)
+        card.dispose()
+    }
+
     @Test fun rendersRingWindow() {
         val app = activity.application
         DoorbellHub.attach(app)

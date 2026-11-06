@@ -258,6 +258,14 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         background = GradientDrawable().apply { setColor(OFFLINE); cornerRadius = 999f }
         visibility = GONE
     }
+    /** «HD»: на экране основной поток (решение владельца — только для себя, ненавязчиво). Триггер — сам поток. */
+    private val hd = text(if (expanded) 18f else 13f, Color.WHITE, bold = true).apply {
+        text = "HD"
+        tag = "door_hd"
+        alpha = 0f
+        visibility = GONE
+        contentDescription = "Основной поток"
+    }
     private val icons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; tag = "door_icons" }
     private val iconViews = DoorbellConfig.Detection.entries.associateWith { d ->
         ImageView(context).apply {
@@ -297,6 +305,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         names.addView(title); names.addView(status)
         header.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(missedBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         content.addView(header, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
@@ -314,6 +323,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         offlineVeil.addView(offlineText)
         content.addView(offlineVeil, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         video.onStatus = { renderVideoStatus() }
+        video.onQuality = { showHd(it) }
         setAccentNow(NEUTRAL)
     }
 
@@ -332,6 +342,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         }
         val off = ((if (expanded) 72 else 40) * next).toInt().coerceAtLeast(1)
         offlineIcon.layoutParams = (offlineIcon.layoutParams as LinearLayout.LayoutParams).apply { width = off; height = off; bottomMargin = (8 * next).toInt() }
+        hd.setPadding((10 * next).toInt(), 0, (10 * next).toInt(), 0)
         missedBadge.minWidth = (30 * next).toInt()
         missedBadge.setPadding((10 * next).toInt(), (3 * next).toInt(), (10 * next).toInt(), (3 * next).toInt())
         topScrim.layoutParams = (topScrim.layoutParams as LayoutParams).apply { height = (height(0.36f)) }
@@ -376,6 +387,17 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         renderVideoStatus()
     }
 
+    /** Плавно 0,25 с; полупрозрачная белая надпись. */
+    internal fun showHd(on: Boolean) {
+        hd.animate().cancel()
+        if (on) {
+            hd.visibility = VISIBLE
+            hd.animate().alpha(HD_ALPHA).setDuration(HD_FADE_MS).start()
+        } else if (hd.visibility == VISIBLE) {
+            hd.animate().alpha(0f).setDuration(HD_FADE_MS).withEndAction { hd.visibility = GONE }.start()
+        }
+    }
+
     private fun renderVideoStatus() {
         val s = video.status
         val show = offlineVeil.visibility != VISIBLE && !video.hasGuest && (s == DoorbellVideoView.Status.CONNECTING ||
@@ -402,6 +424,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     }
 
     companion object {
+        const val HD_ALPHA = 0.55f
+        const val HD_FADE_MS = 250L
+
         fun iconFor(d: DoorbellConfig.Detection) = when (d) {
             DoorbellConfig.Detection.PERSON -> R.drawable.ic_door_person
             DoorbellConfig.Detection.ANIMAL -> R.drawable.ic_door_animal
