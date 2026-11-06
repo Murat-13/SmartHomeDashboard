@@ -6,7 +6,7 @@ plugins {
 
 // Версия «мажор.минор.патч» (0.9.x до полной регрессии, затем 1.0.0). versionCode выводится из неё:
 // 0.9.0 → 900, 0.9.1 → 901, 1.0.0 → 10000, поэтому растёт вместе с версией. Минор и патч — 0–99.
-val appVersionName = "0.9.11"
+val appVersionName = "0.9.12"
 val appVersionCode = appVersionName.split('.').map { it.toInt() }.let { parts ->
     require(parts.size == 3 && parts[1] in 0..99 && parts[2] in 0..99) {
         "versionName должен быть вида мажор.минор.патч, минор и патч 0–99: $appVersionName"

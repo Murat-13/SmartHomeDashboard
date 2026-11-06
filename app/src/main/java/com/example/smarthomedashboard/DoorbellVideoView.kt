@@ -45,7 +45,8 @@ import java.io.IOException
  */
 @OptIn(UnstableApi::class)
 internal class DoorbellVideoView(context: Context) : FrameLayout(context), PanelMotion.Listener {
-    enum class Status { IDLE, CONNECTING, PLAYING, SNAPSHOT, NO_SOURCE, ERROR }
+    /** OFFLINE — домофон недоступен по данным HA: не подключаемся вовсе, пока он не вернётся. */
+    enum class Status { IDLE, CONNECTING, PLAYING, SNAPSHOT, NO_SOURCE, ERROR, OFFLINE }
 
     data class Source(
         val rtsp: String,
@@ -88,6 +89,29 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             if (loanedTo == null) player?.volume = if (value) 0f else 1f
             guest?.volume = if (value) 0f else 1f
         }
+
+    /**
+     * HA сообщает, что домофон недоступен (камера/датчик «unavailable» дольше порога). Как у NVR-клиентов:
+     * пока устройства нет, попыток подключения нет; вернулся — подключаемся сразу, без ожидания паузы.
+     */
+    var deviceOffline = false
+        set(value) {
+            if (field == value) return
+            field = value
+            failures = 0
+            consecutiveFailures = 0
+            if (value) { dropGuest(); releasePlayer() }
+            update()
+        }
+
+    /** Видео не идёт несколько попыток подряд (адрес не отвечает) — для плиток без сущностей HA это «Нет сигнала». */
+    var unreachable = false
+        private set(value) { if (field != value) { field = value; onStatus?.invoke(status) } }
+    private var consecutiveFailures = 0
+
+    /** Когда был показан последний живой кадр (для «Нет видео с 14:05»). */
+    var lastFrameAt: Long? = null
+        private set
 
     /** Владелец разрешает видео (например, окно звонка поверх — компактной плитке не играть). */
     var active = true
@@ -154,6 +178,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (src == null || (src.rtsp.isBlank() && src.camera.isBlank())) {
             releasePlayer(); status = Status.NO_SOURCE; return
         }
+        if (deviceOffline) {
+            releasePlayer()
+            status = Status.OFFLINE
+            return
+        }
         if (!visible) {
             // Короткая пауза: перелистывание страницы туда-обратно не рвёт соединение с домофоном.
             if (player != null) main.postDelayed(releaseLater, RELEASE_DELAY_MS)
@@ -191,6 +220,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             val media = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
                 .setTimeoutMs(RTSP_TIMEOUT_MS)
+                // Media3 открывает RTSP-сокет без таймаута: недоступный адрес держал бы поток плеера минутами,
+                // а освобождение плеера ждёт этот поток в главном — отсюда «жуткие лаги» при выключенной камере.
+                .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS))
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
             play { it.setMediaSource(media) }
         }
@@ -230,6 +262,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             override fun onRenderedFirstFrame() {
                 if (player !== exo || loanedTo != null) return
                 failures = 0
+                consecutiveFailures = 0
+                unreachable = false
                 status = Status.PLAYING
                 updateQuality()
                 // Свой поток пошёл: проявляется поверх временного, затем временный возвращается или освобождается.
@@ -248,7 +282,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         exo.prepare()
     }
 
-    private fun failed(reason: String) {
+    internal fun failed(reason: String) {
         Log.w(TAG, "Видео домофона: $reason")
         releasePlayer()
         failures++
@@ -256,7 +290,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         // Есть оба пути — чередуем: дома прямой RTSP, вне дома HA.
         if (src.rtsp.isNotBlank() && src.camera.isNotBlank()) useHa = !useHa
         status = Status.ERROR
-        val delay = (RETRY_BASE_MS shl (failures - 1).coerceIn(0, 4)).coerceAtMost(RETRY_MAX_MS)
+        consecutiveFailures++
+        if (consecutiveFailures >= UNREACHABLE_AFTER) unreachable = true
+        // Нарастающая пауза; адрес не отвечает — редкие проверки (раз в минуту), как у клиентов видеорегистраторов.
+        val delay = if (unreachable) RETRY_UNREACHABLE_MS
+            else (RETRY_BASE_MS shl (failures - 1).coerceIn(0, 4)).coerceAtMost(RETRY_MAX_MS)
         retryPending = true
         main.postDelayed(retry, delay)
     }
@@ -272,7 +310,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         keepLastFrame()
         texture.animate().cancel()
         texture.alpha = 0f
-        exo.clearVideoTextureView(texture)
+        // Без clearVideoTextureView: он ждёт поток плеера до 2 с (отсоединение поверхности), release() сам
+        // отпускает поверхность. Главный поток ждёт плеер только внутри release() (не дольше 0,5 с).
         exo.release()
         updateQuality()
     }
@@ -371,6 +410,12 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         return true
     }
 
+    /** Подложка (последний кадр или снимок) приглушена, пока видео нет: она не должна выглядеть живой картинкой. */
+    fun markStale(stale: Boolean) {
+        val target = if (stale) STALE_ALPHA else 1f
+        if (snapshot.alpha != target) snapshot.animate().alpha(target).setDuration(250).start()
+    }
+
     /** Последний кадр остаётся на месте, пока поток переподключается: вместо чёрной вспышки — картинка. */
     private fun keepLastFrame() {
         if (status != Status.PLAYING || !texture.isAvailable || texture.width <= 0 || texture.height <= 0) return
@@ -379,6 +424,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val h = (w / videoAspect).toInt().coerceAtLeast(1)
         val bitmap = try { texture.getBitmap(w, h) } catch (_: Exception) { null } ?: return
         snapshot.setImageBitmap(bitmap)
+        lastFrameAt = System.currentTimeMillis()
     }
 
     /** Кадр заполняет плитку без искажений (обрезка по краям, как у снимка). */
@@ -482,10 +528,49 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val RTSP_TIMEOUT_MS = 6_000L
         private const val RETRY_BASE_MS = 2_000L
         private const val RETRY_MAX_MS = 30_000L
+        private const val RETRY_UNREACHABLE_MS = 60_000L
+        /** Подключение к RTSP: дольше ждать нет смысла — в своей сети камера отвечает за доли секунды. */
+        internal const val RTSP_CONNECT_TIMEOUT_MS = 4_000
+        /** Столько неудач подряд — адрес считается недоступным (≈ 15 с при паузах 2, 4, 8 с). */
+        internal const val UNREACHABLE_AFTER = 3
+        private const val STALE_ALPHA = 0.4f
         private const val FADE_MS = 220L
         /** Высота кадра, с которой поток считается основным (HD): субпотоки Reolink/Hikvision — 360–512 строк. */
         const val HD_HEIGHT = 720
         /** В тестах Robolectric декодеров нет: только снимок. */
         internal val ENABLED = android.os.Build.FINGERPRINT != "robolectric"
+    }
+}
+
+/**
+ * Фабрика сокетов RTSP с таймаутом подключения. Стандартная `SocketFactory.createSocket(host, port)` подключается
+ * без таймаута: до недоступного адреса — до системного предела TCP (минуты). Чтение без таймаута, как и было:
+ * управляющий канал RTSP подолгу молчит между запросами.
+ */
+internal class ConnectTimeoutSocketFactory(private val timeoutMs: Int) : javax.net.SocketFactory() {
+    override fun createSocket(): java.net.Socket = java.net.Socket()
+
+    override fun createSocket(host: String, port: Int): java.net.Socket =
+        connect(java.net.InetSocketAddress(host, port))
+
+    override fun createSocket(host: String, port: Int, localHost: java.net.InetAddress?, localPort: Int): java.net.Socket =
+        java.net.Socket().apply {
+            bind(java.net.InetSocketAddress(localHost, localPort))
+            connectOrClose(this, java.net.InetSocketAddress(host, port))
+        }
+
+    override fun createSocket(host: java.net.InetAddress, port: Int): java.net.Socket =
+        connect(java.net.InetSocketAddress(host, port))
+
+    override fun createSocket(address: java.net.InetAddress, port: Int, localAddress: java.net.InetAddress?, localPort: Int): java.net.Socket =
+        java.net.Socket().apply {
+            bind(java.net.InetSocketAddress(localAddress, localPort))
+            connectOrClose(this, java.net.InetSocketAddress(address, port))
+        }
+
+    private fun connect(address: java.net.InetSocketAddress) = java.net.Socket().also { connectOrClose(it, address) }
+
+    private fun connectOrClose(socket: java.net.Socket, address: java.net.InetSocketAddress) {
+        try { socket.connect(address, timeoutMs) } catch (e: java.io.IOException) { socket.close(); throw e }
     }
 }

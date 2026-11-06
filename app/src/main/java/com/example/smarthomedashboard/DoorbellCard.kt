@@ -322,7 +322,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         offlineVeil.addView(offlineIcon, LinearLayout.LayoutParams(1, 1))
         offlineVeil.addView(offlineText)
         content.addView(offlineVeil, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        video.onStatus = { renderVideoStatus() }
+        video.onStatus = { refresh() }
         video.onQuality = { showHd(it) }
         setAccentNow(NEUTRAL)
     }
@@ -354,22 +354,19 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private fun height(fraction: Float) = ((content.height.takeIf { it > 0 } ?: height) * fraction).toInt().coerceAtLeast(1)
 
     /** Показания и звонки — из [DoorbellHub]; [now] — настенное время для «последнего звонка». */
+    private var boundConfig = DoorbellConfig()
+    private var boundSnapshot: DoorbellModel.Snapshot? = null
+    private var boundOffline = false
+    private var boundAnimate = true
+
     fun bind(tileTitle: String, config: DoorbellConfig, snapshot: DoorbellModel.Snapshot, offline: Boolean, missed: Int,
              lastRing: Long?, now: Long, animate: Boolean = true) {
         lastBound = snapshot
+        boundConfig = config
+        boundSnapshot = snapshot
+        boundOffline = offline
+        boundAnimate = animate
         set(title, tileTitle.ifBlank { DoorbellConfig.DEFAULT_TITLE })
-        val noSignal = offline || snapshot.online == false
-        val (color, text) = when {
-            snapshot.haStatus != null -> NEUTRAL to snapshot.haStatus
-            !config.hasVideo && config.visitor.isBlank() -> NEUTRAL to "Не настроен — откройте редактор"
-            noSignal -> OFFLINE to "Нет сигнала"
-            snapshot.ringing -> RING to "Звонят в калитку"
-            snapshot.person -> PERSON to "Человек у калитки"
-            snapshot.detections.isNotEmpty() -> NEUTRAL to snapshot.detections.joinToString(" · ") { it.title }
-            else -> NEUTRAL to (if (config.mode == DoorbellConfig.VideoMode.SNAPSHOT) "Снимок раз в минуту" else "В сети")
-        }
-        set(status, text)
-        applyAccent(color, pulse = snapshot.ringing && !noSignal, animate = animate)
         set(last, lastRing?.let { "Звонок: " + DoorbellModel.ago(it, now) } ?: "Звонков не было")
         missedBadge.visibility = if (missed > 0 && !ringMode) VISIBLE else GONE
         if (missed > 0) set(missedBadge, if (missed > 99) "99+" else missed.toString())
@@ -378,12 +375,39 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
             v.visibility = if (on) VISIBLE else GONE
             v.setColorFilter(if (d == DoorbellConfig.Detection.PERSON) PERSON else Color.WHITE)
         }
-        offlineVeil.visibility = if (noSignal && snapshot.haStatus == null) VISIBLE else GONE
         video.bind(DoorbellVideoView.Source(
             rtsp = if (expanded) config.rtspMain.ifBlank { config.rtspSub } else config.rtspSub.ifBlank { config.rtspMain },
             user = config.rtspUser, camera = config.camera,
             snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT
         ), snapshot.picture)
+        // HA точно знает, что домофона нет: видео не подключается, пока он не вернётся (без лишних попыток).
+        video.deviceOffline = snapshot.haStatus == null && (offline || snapshot.online == false)
+        refresh()
+    }
+
+    /**
+     * «Нет сигнала»: по HA (камера/кнопка звонка недоступны) или — если сущностей HA в плитке нет — по самому видео
+     * (адрес не отвечает несколько попыток подряд). Без связи с HA судить о домофоне по HA нельзя.
+     */
+    private fun refresh() {
+        val config = boundConfig
+        val snapshot = boundSnapshot ?: return
+        val haKnows = config.camera.isNotBlank() || config.visitor.isNotBlank()
+        val noSignal = boundOffline || snapshot.online == false || (!haKnows && video.unreachable)
+        val (color, text) = when {
+            snapshot.haStatus != null && haKnows -> NEUTRAL to snapshot.haStatus
+            !config.hasVideo && config.visitor.isBlank() -> NEUTRAL to "Не настроен — откройте редактор"
+            noSignal -> OFFLINE to "Нет сигнала"
+            snapshot.ringing -> RING to "Звонят в калитку"
+            snapshot.person -> PERSON to "Человек у калитки"
+            snapshot.detections.isNotEmpty() -> NEUTRAL to snapshot.detections.joinToString(" · ") { it.title }
+            else -> NEUTRAL to (if (config.mode == DoorbellConfig.VideoMode.SNAPSHOT) "Снимок раз в минуту" else "В сети")
+        }
+        set(status, text)
+        applyAccent(color, pulse = snapshot.ringing && !noSignal, animate = boundAnimate)
+        val veil = noSignal && (snapshot.haStatus == null || !haKnows)
+        offlineVeil.visibility = if (veil) VISIBLE else GONE
+        if (veil) set(offlineText, video.lastFrameAt?.let { "Нет сигнала с " + clock(it) } ?: "Нет сигнала")
         renderVideoStatus()
     }
 
@@ -400,14 +424,22 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
 
     private fun renderVideoStatus() {
         val s = video.status
+        // Застывший последний кадр не должен выглядеть живым: при ошибке и недоступности он приглушён.
+        video.markStale(s == DoorbellVideoView.Status.ERROR || s == DoorbellVideoView.Status.OFFLINE ||
+            offlineVeil.visibility == VISIBLE)
         val show = offlineVeil.visibility != VISIBLE && !video.hasGuest && (s == DoorbellVideoView.Status.CONNECTING ||
             s == DoorbellVideoView.Status.ERROR || s == DoorbellVideoView.Status.NO_SOURCE)
         connecting.visibility = if (show) VISIBLE else GONE
         if (show) set(connecting, when (s) {
             DoorbellVideoView.Status.NO_SOURCE -> "Видео не настроено"
-            DoorbellVideoView.Status.ERROR -> "Нет видео · переподключение…"
+            DoorbellVideoView.Status.ERROR -> video.lastFrameAt?.let { "Нет видео с ${clock(it)} · переподключение…" }
+                ?: "Нет видео · переподключение…"
             else -> "Подключение к домофону…"
         })
+    }
+
+    private fun clock(at: Long): String = java.util.Calendar.getInstance().apply { timeInMillis = at }.let {
+        "%02d:%02d".format(it.get(java.util.Calendar.HOUR_OF_DAY), it.get(java.util.Calendar.MINUTE))
     }
 
     override fun setAccentNow(color: Int) {
