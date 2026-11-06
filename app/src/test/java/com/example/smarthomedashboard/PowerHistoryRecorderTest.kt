@@ -47,6 +47,24 @@ class PowerHistoryRecorderTest {
         assertEquals(-820.0, r.latest("sensor.inv")!!, 0.0)
     }
 
+    /** Сбой SQLite при записи (занята, диск полон, повреждение): накопленное не теряется, уходит следующей записью. */
+    @Test fun failedWriteKeepsBatchForNextFlush() {
+        val r = recorder()
+        r.setSources(setOf("sensor.inv"))
+        r.setInstance("home")
+        r.onState("sensor.inv", "100", w()); now += 1000
+        r.flush()
+        store.writableDatabase.execSQL("ALTER TABLE raw RENAME TO raw_off")
+        r.onState("sensor.inv", "200", w()); now += 1000
+        r.onState("sensor.inv", "unavailable", w()); now += 1000
+        r.flush() // запись падает: таблицы нет
+        store.writableDatabase.execSQL("ALTER TABLE raw_off RENAME TO raw")
+        r.onState("sensor.inv", "300", w()); now += 1000
+        r.flush()
+        assertEquals("Значение и разрыв из неудачной записи сохранены", listOf(100.0, 200.0, null, 300.0),
+            samples("home", "sensor.inv").map { it.watts })
+    }
+
     @Test fun samplesBeforeServerIsKnownWaitInMemory() {
         val r = recorder()
         r.setSources(setOf("sensor.inv"))

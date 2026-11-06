@@ -191,11 +191,24 @@ internal class PowerHistoryRecorder(
         if (batch.isEmpty() && alive.isEmpty()) return
         val now = clock()
         io.execute {
-            batch.groupBy({ it.first }, { it.second }).forEach { (id, samples) ->
-                store.sourceId(key, id)?.let { store.insert(it, samples) }
+            // Вставка идемпотентна (INSERT OR IGNORE по времени) и транзакционна: при сбое SQLite пачка
+            // возвращается в очередь и уходит со следующей записью — без отдельного цикла повторов.
+            val written = runCatching {
+                batch.groupBy({ it.first }, { it.second }).forEach { (id, samples) ->
+                    store.sourceId(key, id)?.let { store.insert(it, samples) }
+                }
             }
-            alive.forEach { id -> store.sourceId(key, id)?.let { store.setAlive(it, now) } }
+            if (written.isFailure && batch.isNotEmpty()) post { requeue(batch, key) }
+            runCatching { alive.forEach { id -> store.sourceId(key, id)?.let { store.setAlive(it, now) } } }
         }
+    }
+
+    /** Неудачная пачка — в начало очереди (старше новых записей), с тем же пределом памяти [MAX_PENDING]. */
+    private fun requeue(batch: List<Pair<String, PowerSample>>, key: String) {
+        // Сервер сменился — старые записи под новым ключом недопустимы.
+        if (instance != key) return
+        pending.addAll(0, batch)
+        if (pending.size > MAX_PENDING) pending.subList(0, pending.size - MAX_PENDING).clear()
     }
 
     /** Прошлая запись источника оборвалась без метки (приложение остановлено) — ставим разрыв. */
