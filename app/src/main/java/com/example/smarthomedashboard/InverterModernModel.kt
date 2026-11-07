@@ -166,7 +166,7 @@ internal object InverterModel {
     /** Текст аварии для подписи: «on/true/1» сами по себе ничего не объясняют и не показываются. */
     private fun describeFlag(raw: String): String? = raw.trim().takeIf {
         it.isNotEmpty() && it.lowercase() !in setOf("on", "true", "yes", "да") && it.toDoubleOrNull() == null
-    } ?: raw.trim().toDoubleOrNull()?.let { "код ${BatteryFormat.decimal(it, 0, java.util.Locale.ROOT)}" }
+    } ?: raw.trim().toDoubleOrNull()?.takeIf { it.isFinite() }?.let { "код ${BatteryFormat.decimal(it, 0, java.util.Locale.ROOT)}" }
 
     /** Мощность строки в Вт: единица — явная в строке, иначе из HA; без единицы — Вт. */
     fun watts(row: BatteryModernConfig.Row?, reading: BatteryReading): Double? {

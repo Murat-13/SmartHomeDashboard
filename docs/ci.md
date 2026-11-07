@@ -2,6 +2,9 @@
 
 Workflow: [.github/workflows/android-ci.yml](../.github/workflows/android-ci.yml) — на каждый PR и push в `main`.
 
+Глубокие проверки (эмулятор с фальшивым HA, RTSP-стенд, ночной soak, хаос-тесты) — отдельный workflow
+[.github/workflows/deep-tests.yml](../.github/workflows/deep-tests.yml), см. [deep-testing.md](deep-testing.md).
+
 | Шаг | Команда | При падении |
 |---|---|---|
 | Тесты и сборка | `testDebugUnitTest assembleDebug assembleDebugAndroidTest assembleRelease` | артефакт `test-reports` |

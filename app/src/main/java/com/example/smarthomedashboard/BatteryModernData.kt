@@ -138,6 +138,9 @@ internal object BatteryFormat {
     }
 
     fun decimal(number: Double, decimals: Int, locale: Locale = Locale.getDefault()): String {
+        // «NaN»/«Infinity» от сломанной интеграции и переполнение пересчёта (1e308 кВт → Вт, °C → °F) — не число:
+        // BigDecimal бросил бы исключение в главном потоке и уронил панель (найдено хаос-прогоном 0.9.13).
+        if (!number.isFinite()) return "—"
         // «-0,0» не показываем: округлённый ноль не имеет знака. Знак остальных значений сохраняется.
         // Выводим уже округлённое HALF_UP число: NumberFormat сам округлял бы «банковским» HALF_EVEN.
         val rounded = java.math.BigDecimal.valueOf(number).setScale(decimals, java.math.RoundingMode.HALF_UP)

@@ -269,10 +269,14 @@ internal data class PowerModernConfig(
             val rulesArray = json.optJSONArray("rules")
             val rules = if (rulesArray == null) defaultRules(profile) else (0 until rulesArray.length()).mapNotNull { index ->
                 val obj = rulesArray.optJSONObject(index) ?: return@mapNotNull null
+                // Повреждённая граница (не число) — правило пропускается: NaN не сравнивается ни с чем и ронял
+                // JSONObject.put при сохранении и повороте редактора (найдено хаос-прогоном редакторов 0.9.13).
+                val from = obj.optDouble("from", 0.0).takeIf { it.isFinite() } ?: return@mapNotNull null
+                val to = if (obj.has("to") && !obj.isNull("to")) obj.optDouble("to").takeIf { it.isFinite() } ?: return@mapNotNull null else null
                 Rule(
-                    from = obj.optDouble("from", 0.0),
+                    from = from,
                     fromInclusive = obj.optBoolean("from_inclusive", true),
-                    to = if (obj.has("to") && !obj.isNull("to")) obj.optDouble("to") else null,
+                    to = to,
                     toInclusive = obj.optBoolean("to_inclusive", false),
                     color = parseColor(obj.optString("color")) ?: NEUTRAL,
                     label = obj.optString("label"),

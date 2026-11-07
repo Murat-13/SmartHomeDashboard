@@ -1,0 +1,141 @@
+# Глубокие проверки (docs/deep-testing.md): настоящее приложение на эмуляторе Android с фальшивым Home Assistant
+# и RTSP-стендом домофона; ночью — длительный прогон (soak) и расширенные хаос-тесты.
+# Всё бесплатно: публичный репозиторий, стандартные раннеры GitHub. Секретов нет и не нужно;
+# реальный дом, камеры и планшеты не затрагиваются — только искусственные сущности и тестовые ролики.
+name: Deep tests
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 02:40 по Москве — ночью, когда владелец не смотрит в CI.
+    - cron: '40 23 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: 'Длительность soak-прогона, минут (0 — без него)'
+        default: '0'
+      chaos_iterations:
+        description: 'Итераций хаос-прогона панели (JVM)'
+        default: '600'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    name: Хаос-тесты (JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Хаос панели и фальшивый HA с мусором
+        run: >
+          ./gradlew testDebugUnitTest --tests '*PanelChaosTest*' --tests '*HaProtocolFuzzTest*' --tests '*EditorChaosTest*'
+          --tests '*DataCompatibilityTest*' -Ptest.maxHeap=3g
+          -Pchaos.iterations=${{ github.event_name == 'schedule' && '1500' || inputs.chaos_iterations || '300' }} --stacktrace
+      - name: Отчёт хаос-прогона
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: chaos-report
+          path: |
+            app/build/reports/chaos/
+            app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  emulator:
+    name: Эмулятор, фальшивый HA, RTSP
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SOAK_MINUTES: ${{ github.event_name == 'schedule' && '120' || inputs.soak_minutes || '0' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+
+      # Аппаратное ускорение эмулятора на стандартном Linux-раннере.
+      - name: Включить KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # RTSP-стенд: mediamtx и тестовые ролики ffmpeg (испытательная таблица, без камер владельца).
+      # Эмулятор видит машину CI по адресу 10.0.2.2. Порт 8555 закрыт («камеры нет»), 8556 — «молчащая камера».
+      - name: RTSP-стенд домофона
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          curl -sSL -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_linux_amd64.tar.gz
+          tar -xzf mediamtx.tar.gz mediamtx
+          MTX_RTMP=no MTX_HLS=no MTX_WEBRTC=no MTX_SRT=no nohup ./mediamtx > mediamtx.log 2>&1 &
+          sleep 2
+          stream() { nohup ffmpeg -nostdin -re -f lavfi -i "testsrc2=size=$1:rate=$2" -c:v libx264 -preset ultrafast -tune zerolatency -g $(( $2 * 2 )) -pix_fmt yuv420p -f rtsp -rtsp_transport tcp "rtsp://127.0.0.1:8554/$3" > "ffmpeg-$3.log" 2>&1 & }
+          stream 640x480 15 sub
+          stream 1920x1080 12 main1080
+          stream 2560x1920 8 main2560
+          nohup python3 -c "
+          import socket, time
+          s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', 8556)); s.listen(16)
+          held = []
+          while True:
+              c, _ = s.accept(); held.append(c)
+          " > silent.log 2>&1 &
+          sleep 5
+          tail -n 5 mediamtx.log
+
+      - name: Тесты на эмуляторе
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_c
+          ram-size: 4096M
+          disk-size: 6000M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: |
+            adb shell svc power stayon true
+            adb shell settings put system screen_off_timeout 2147483647
+            adb logcat -c
+            (adb logcat -v time DeepTest:I AndroidRuntime:E '*:S' > deep-log.txt &) ; sleep 1
+            ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.smarthomedashboard.deep.PanelEndToEndTest,com.example.smarthomedashboard.deep.DoorbellStreamTest -Pandroid.testInstrumentationRunnerArguments.rtspHost=10.0.2.2 -Pandroid.testInstrumentationRunnerArguments.soakMinutes=$SOAK_MINUTES -Pandroid.testInstrumentationRunnerArguments.stormSeconds=60 --stacktrace
+            adb logcat -d -v time > logcat-full.txt
+
+      - name: Итоги в сводку
+        if: ${{ !cancelled() }}
+        run: |
+          echo '### Глубокие проверки на эмуляторе' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -h 'DeepTest' deep-log.txt | sed 's/^.*DeepTest[^:]*: //' >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Отчёты эмулятора
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: emulator-report
+          path: |
+            deep-log.txt
+            logcat-full.txt
+            mediamtx.log
+            ffmpeg-*.log
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 14

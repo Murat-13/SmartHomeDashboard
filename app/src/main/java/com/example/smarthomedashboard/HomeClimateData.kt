@@ -128,6 +128,8 @@ internal object HomeClimateData {
 
     /** До [decimals] знаков без лишних нулей, десятичная запятая, без «−0». */
     fun number(value: Double, decimals: Int): String {
+        // Защита 0.9.13: нечисловое значение (NaN/∞ от сломанной интеграции) не должно ронять панель через BigDecimal.
+        if (!value.isFinite()) return "—"
         val rounded = BigDecimal.valueOf(value).setScale(decimals, RoundingMode.HALF_UP).stripTrailingZeros()
         val plain = if (rounded.signum() == 0) "0" else rounded.toPlainString()
         return plain.replace('.', ',').replace("-", "−")

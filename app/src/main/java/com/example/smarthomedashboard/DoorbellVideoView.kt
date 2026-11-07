@@ -201,6 +201,16 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private val releaseLater = Runnable { dropGuest(); releasePlayer(); if (status == Status.PLAYING) status = Status.IDLE }
     private val snapshotTick = Runnable { loadPicture(); update() }
     private var retryPending = false
+    /**
+     * Плеер подключён, но картинки нет: камера приняла соединение и молчит (зависла, перегружается) или поток
+     * не декодируется. В RTSP-модуле Media3 1.11.1 нет таймаута чтения сокета (проверено по классам библиотеки):
+     * ответа на запрос он ждёт без предела, и без этой проверки плитка навсегда оставалась бы «Подключение…»
+     * без повторов (найдено при подготовке RTSP-стенда 0.9.13).
+     */
+    private val firstFrameWatchdog = Runnable {
+        if (player != null && !firstFrameRendered) failed("нет картинки за ${FIRST_FRAME_TIMEOUT_MS / 1000} с")
+    }
+    private var firstFrameRendered = false
     private val retry = Runnable { retryPending = false; if (visible && player == null) start() }
 
     private fun start() {
@@ -249,6 +259,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             .build()
         player = exo
         startedAt = SystemClock.elapsedRealtime()
+        firstFrameRendered = false
+        main.removeCallbacks(firstFrameWatchdog)
+        main.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
         exo.volume = if (muted) 0f else 1f
         exo.setVideoTextureView(texture)
         exo.addListener(object : Player.Listener {
@@ -260,7 +273,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 updateQuality()
             }
             override fun onRenderedFirstFrame() {
-                if (player !== exo || loanedTo != null) return
+                if (player !== exo) return
+                firstFrameRendered = true
+                main.removeCallbacks(firstFrameWatchdog)
+                if (loanedTo != null) return
                 failures = 0
                 consecutiveFailures = 0
                 unreachable = false
@@ -302,6 +318,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private fun releasePlayer() {
         attempt++
         main.removeCallbacks(retry)
+        main.removeCallbacks(firstFrameWatchdog)
         retryPending = false
         val exo = player ?: return
         player = null
@@ -531,6 +548,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val RETRY_UNREACHABLE_MS = 60_000L
         /** Подключение к RTSP: дольше ждать нет смысла — в своей сети камера отвечает за доли секунды. */
         internal const val RTSP_CONNECT_TIMEOUT_MS = 4_000
+        /** Подключение с первым кадром: в своей сети — 1–3 с, через HA (HLS) — до 10 с. Дольше — камера молчит. */
+        internal const val FIRST_FRAME_TIMEOUT_MS = 20_000L
         /** Столько неудач подряд — адрес считается недоступным (≈ 15 с при паузах 2, 4, 8 с). */
         internal const val UNREACHABLE_AFTER = 3
         private const val STALE_ALPHA = 0.4f

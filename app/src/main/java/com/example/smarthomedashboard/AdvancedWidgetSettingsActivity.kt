@@ -253,7 +253,7 @@ class AdvancedWidgetSettingsActivity : PinProtectedActivity() {
             Toast.makeText(this, "Не удалось сохранить: плитка больше не существует.", Toast.LENGTH_SHORT).show()
             return
         }
-        val fontSize = etFontSize.text.toString().toIntOrNull() ?: 16
+        val fontSize = (etFontSize.text.toString().toIntOrNull() ?: 16).coerceIn(SensorContentRenderer.MIN_FONT, SensorContentRenderer.MAX_FONT)
         val config = try {
             JSONObject(oldTile.config)
         } catch (_: org.json.JSONException) {

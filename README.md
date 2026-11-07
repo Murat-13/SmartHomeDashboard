@@ -1,6 +1,7 @@
 # SmartHomeDashboard
 
 [![Android CI](https://github.com/Murat-13/SmartHomeDashboard/actions/workflows/android-ci.yml/badge.svg?branch=main)](https://github.com/Murat-13/SmartHomeDashboard/actions/workflows/android-ci.yml)
+[![Deep tests](https://github.com/Murat-13/SmartHomeDashboard/actions/workflows/deep-tests.yml/badge.svg?branch=main)](https://github.com/Murat-13/SmartHomeDashboard/actions/workflows/deep-tests.yml)
 
 Настенная панель умного дома для [Home Assistant](https://www.home-assistant.io/):
 Android-приложение на Kotlin для планшета, который постоянно висит на стене.
@@ -68,11 +69,15 @@ debug APK и AndroidTest APK собраны. Инструкции и грани�
 ./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest
 ```
 
-Инструментальные тесты (`app/src/androidTest`) запускаются на подключённом устройстве:
+Инструментальные тесты (`app/src/androidTest`) запускаются **только на эмуляторе**:
 
 ```bash
 ./gradlew connectedDebugAndroidTest
 ```
+
+> ⚠️ Не запускайте `connectedDebugAndroidTest` на настенном планшете: Gradle после тестов удаляет приложение
+> вместе с данными, а сквозные тесты (`deep/`) заменяют настройки и плитки искусственными. Тесты `deep/`
+> сами отказываются работать не на эмуляторе, но удаление приложения Gradle выполнит в любом случае.
 
 ## CI
 
@@ -80,6 +85,10 @@ Workflow [`android-ci.yml`](.github/workflows/android-ci.yml) запускает
 pull request и при каждом push в `main`: юнит-тесты, сборка debug-APK и сборка
 инструментальных тестов. Если что-то упало, отчёты тестов прикладываются
 к запуску как артефакт `test-reports`.
+
+Глубокие проверки — workflow [`deep-tests.yml`](.github/workflows/deep-tests.yml): настоящее приложение на эмуляторе
+с фальшивым Home Assistant и RTSP-стендом домофона, хаос-тесты панели, ночной многочасовой прогон
+([docs/deep-testing.md](docs/deep-testing.md)).
 
 ## Архитектура
 

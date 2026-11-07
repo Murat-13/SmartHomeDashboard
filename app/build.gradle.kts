@@ -45,6 +45,9 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
+        // Сквозные тесты на эмуляторе (docs/deep-testing.md). Прежние ручные проверки через собственные
+        // instrumentation в androidTest/AndroidManifest.xml остаются и запускаются как раньше (am instrument).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -85,6 +88,19 @@ android {
     }
 }
 
+// Глубокие прогоны (docs/deep-testing.md): размер и сид хаос-тестов задаются из командной строки,
+// например ./gradlew testDebugUnitTest -Pchaos.iterations=400 (ночной прогон CI) или -Pchaos.seed=7919.
+tasks.withType<Test>().configureEach {
+    listOf("chaos.iterations", "chaos.seed", "chaos.heapdump").forEach { key ->
+        (project.findProperty(key) as String?)?.let { systemProperty(key, it) }
+    }
+    // Поиск утечек памяти в самих тестах: -Ptest.heapDump=<папка> пишет снимок кучи при OutOfMemoryError.
+    (project.findProperty("test.heapDump") as String?)?.let { dir ->
+        jvmArgs("-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=$dir")
+    }
+    (project.findProperty("test.maxHeap") as String?)?.let { maxHeapSize = it }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -111,4 +127,10 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+
+    // Только тестовый APK, в приложение не попадает: сквозные тесты на эмуляторе с фальшивым HA (0.9.13).
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

@@ -116,7 +116,7 @@ internal object SensorCardFactory {
             // Заголовок виджета
             val titleView = TextView(context).apply {
                 text = title
-                textSize = fontSize.toFloat()
+                textSize = SensorContentRenderer.fontSize(fontSize).toFloat()
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 2f, 2f, Color.BLACK)

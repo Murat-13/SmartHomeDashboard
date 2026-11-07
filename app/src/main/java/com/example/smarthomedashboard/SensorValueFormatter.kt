@@ -1,6 +1,13 @@
 package com.example.smarthomedashboard
 
 internal object SensorValueFormatter {
+    /**
+     * Точность из настроек плитки (в т. ч. из импортированной копии) не проверялась: «-1» роняло панель
+     * (UnknownFormatConversionException), огромное число строило строку на гигабайты. Найдено хаос-прогоном 0.9.13.
+     */
+    const val MAX_DECIMALS = 6
+    private fun safe(decimals: Int) = decimals.coerceIn(0, MAX_DECIMALS)
+
     fun formatSensorValue(
         value: String,
         decimals: Int,
@@ -8,6 +15,8 @@ internal object SensorValueFormatter {
         targetTempUnit: String
     ): String {
         var floatVal = value.toFloatOrNull() ?: return value
+        // «NaN»/«Infinity» от сломанной интеграции — не число для показа.
+        if (!floatVal.isFinite()) return "—"
 
         if (sourceUnit.contains("°")) {
             if (sourceUnit.contains("C") && targetTempUnit == "F") {
@@ -19,10 +28,11 @@ internal object SensorValueFormatter {
             }
         }
 
-        return String.format("%.${decimals}f", floatVal)
+        if (!floatVal.isFinite()) return "—"
+        return String.format("%.${safe(decimals)}f", floatVal)
     }
 
     fun formatFloat(v: String, d: Int): String {
-        return v.toFloatOrNull()?.let { String.format("%.${d}f", it) } ?: "—"
+        return v.toFloatOrNull()?.takeIf { it.isFinite() }?.let { String.format("%.${safe(d)}f", it) } ?: "—"
     }
 }

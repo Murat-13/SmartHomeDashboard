@@ -349,6 +349,7 @@ internal class PowerGraphView(context: Context, private val state: PowerGraphSta
 
         /** Подпись оси: «0 Вт», «500 Вт», «−1 кВт», «2,5 кВт» — без лишних нулей. */
         fun axisLabel(watts: Double): String {
+            if (!watts.isFinite()) return "—"
             val sign = if (watts < 0) "−" else ""
             val abs = abs(watts)
             fun plain(v: Double) = java.math.BigDecimal.valueOf(v).setScale(2, java.math.RoundingMode.HALF_UP)

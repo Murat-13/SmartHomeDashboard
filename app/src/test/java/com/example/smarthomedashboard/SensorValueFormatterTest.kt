@@ -111,4 +111,16 @@ class SensorValueFormatterTest {
         assertEquals("12,5", SensorValueFormatter.formatSensorValue("12,5", 2, "", "C"))
         assertEquals("—", SensorValueFormatter.formatFloat("12,5", 2))
     }
+
+    // 0.9.13 (хаос-прогон): точность из повреждённой/импортированной плитки и нечисловые значения HA не роняют панель.
+    @Test
+    fun badDecimalsAndNonFiniteValuesDoNotCrash() = withLocale(Locale.US) {
+        assertEquals("42", SensorValueFormatter.formatSensorValue("42", -1, "", "C"))
+        assertEquals("42.000000", SensorValueFormatter.formatSensorValue("42", Int.MAX_VALUE, "", "C"))
+        assertEquals("—", SensorValueFormatter.formatSensorValue("NaN", 1, "", "C"))
+        assertEquals("—", SensorValueFormatter.formatSensorValue("Infinity", 1, "", "C"))
+        assertEquals("—", SensorValueFormatter.formatSensorValue("1e39", 1, "°C", "F"))
+        assertEquals("1", SensorValueFormatter.formatFloat("1", -5))
+        assertEquals("—", SensorValueFormatter.formatFloat("-Infinity", 1))
+    }
 }

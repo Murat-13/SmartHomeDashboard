@@ -10,6 +10,15 @@ import com.example.smarthomedashboard.data.TileEntity
 import androidx.core.view.isEmpty
 
 internal object SensorContentRenderer {
+    /**
+     * Размер текста плитки в разрешённых редактором пределах (1–200). Из импортированной копии или старого
+     * экрана расширенных настроек мог прийти любой: 0, отрицательный, сотни тысяч — разметка такого текста на
+     * панели 24/7 подвешивала главный поток (найдено хаос-прогоном 0.9.13). Значение в настройках не меняется.
+     */
+    const val MIN_FONT = 1
+    const val MAX_FONT = 200
+    fun fontSize(size: Int): Int = size.coerceIn(MIN_FONT, MAX_FONT)
+
     // Строит строки обычных датчиков и батареи, сохраняя первый View как заголовок.
     // Для погодного дерева с иконкой, температурой и описанием этот контракт не подходит.
     fun render(
@@ -47,7 +56,7 @@ internal object SensorContentRenderer {
 
         // Форматирование завершено до изменения Views: ошибка не оставит частично обновлённую карточку.
         val start = if (container.isEmpty()) 0 else 1
-        val fontSize = tile.fontSize.toFloat()
+        val fontSize = fontSize(tile.fontSize).toFloat()
         val fontPixels = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, fontSize, container.resources.displayMetrics)
         rows.forEachIndexed { index, (name, value) ->
             val position = start + index
