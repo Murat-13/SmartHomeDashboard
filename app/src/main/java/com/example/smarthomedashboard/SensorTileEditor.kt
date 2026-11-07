@@ -466,6 +466,11 @@ internal class SensorTileEditor(
         val fontPixels = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, tile.fontSize.toFloat(), activity.resources.displayMetrics)
         if (previewTitle.textSize != fontPixels) previewTitle.textSize = tile.fontSize.toFloat()
         val ids = if (expandedPreview) SensorConfigResolver.getExpandedSensorIds(tile) else SensorConfigResolver.getCollapsedSensorIds(tile)
+        // Недопустимая точность старой строки: панель покажет значение с ближайшей допустимой (0.9.13), но владелец
+        // должен узнать о такой строке и исправить её в редакторе.
+        if (SensorConfigResolver.loadSensorConfigs(tile, expandedPreview).any { it.decimals !in 0..SensorValueFormatter.MAX_DECIMALS }) {
+            errorText.text = "Проверьте точность показаний: формат строки не поддерживается. Настройки не изменены."
+        }
         try {
             SensorContentRenderer.render(tile, ids, expandedPreview, previewContent, SensorConfigResolver::loadSensorConfigs, ::state) { value, decimals, id ->
                 SensorValueFormatter.formatSensorValue(value, decimals, states.entityAttributes[id]?.optString("unit_of_measurement").orEmpty(), activity.getSharedPreferences("dashboard_prefs", 0).getString("temp_unit", "C") ?: "C")

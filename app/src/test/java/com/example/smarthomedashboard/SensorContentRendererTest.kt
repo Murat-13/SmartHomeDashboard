@@ -19,7 +19,6 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import java.lang.reflect.InvocationTargetException
-import java.util.IllegalFormatException
 import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
@@ -301,18 +300,16 @@ class SensorContentRendererTest {
         assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, row.layoutParams.height)
     }
 
-    @Test fun formattingFailureLeavesExistingChildrenUntouched() = withUsLocale {
-        states["sensor.a"] = "1"
+    // 0.9.13: недопустимая точность из старой/импортированной плитки раньше бросала IllegalFormatException прямо
+    // в главном потоке панели (её не перехватывал никто, кроме редактора). Теперь значение показывается с ближайшей
+    // допустимой точностью, а редактор по-прежнему предупреждает о такой строке (SensorEditorUiTest).
+    @Test fun invalidPrecisionIsClampedInsteadOfFailing() = withUsLocale {
+        states["sensor.a"] = "1.26"
         val tile = tile("""{"collapsed_sensor_configs":[
             {"entity_id":"sensor.a","display_name":"A","decimals":-1}]}""")
         val container = container()
-        val old = TextView(context).apply { text = "old" }
-        container.addView(old)
-        assertThrows(IllegalFormatException::class.java) {
-            render(tile, listOf("sensor.a"), false, container)
-        }
-        assertEquals(2, container.childCount)
-        assertSame(old, container.getChildAt(1))
+        render(tile, listOf("sensor.a"), false, container)
+        assertEquals(listOf("A  1"), rows(container))
     }
 
     @Test fun onlyConfiguredBatterySocUsesDashForMissingOrNonFiniteReadings() = withUsLocale {

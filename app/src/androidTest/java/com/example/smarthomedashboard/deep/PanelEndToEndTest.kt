@@ -57,6 +57,14 @@ class PanelEndToEndTest {
         return onMain { activity.window.decorView.findViewWithTag<View>(id) }
     }
 
+    private fun expanded(): Boolean {
+        val current = activity()
+        return onMain {
+            val controller = MainActivity::class.java.getDeclaredMethod("getPanelController").apply { isAccessible = true }.invoke(current)
+            controller.javaClass.getMethod("hasExpansion").invoke(controller) as Boolean
+        }
+    }
+
     @Test fun startsConnectsAndShowsEveryTileType() {
         launch()
         for (id in listOf("deep_sensor", "deep_battery", "deep_weather", "deep_bms", "deep_grid", "deep_inverter",
@@ -90,8 +98,11 @@ class PanelEndToEndTest {
             if (System.currentTimeMillis() > nextTap) {
                 tile(expandable[rnd.nextInt(expandable.size)])?.let { tap(activity(), it) }
                 Thread.sleep(900)
-                val current = activity()
-                onMain { current.onBackPressedDispatcher.onBackPressed() }
+                // «Назад» — только если что-то раскрылось: на пустой панели «Назад» закрывает приложение (так задумано).
+                if (expanded()) {
+                    val current = activity()
+                    onMain { current.onBackPressedDispatcher.onBackPressed() }
+                }
                 nextTap = System.currentTimeMillis() + 2_500
             }
             assertTrue("Главный поток отвечает", mainThreadResponds(2_000))

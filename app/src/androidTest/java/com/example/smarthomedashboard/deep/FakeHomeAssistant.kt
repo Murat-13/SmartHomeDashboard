@@ -59,7 +59,8 @@ internal class FakeHomeAssistant(val token: String = "FAKE-DEEP-TEST-TOKEN") : A
 
     /** Обрыв всех соединений (как перезагрузка HA или пропавший Wi-Fi). */
     fun dropAll() {
-        sockets.forEach { it.first.cancel() }
+        // Серверный сокет MockWebServer нельзя cancel() (NPE внутри OkHttp): закрываем кадром «перезапуск сервера».
+        sockets.forEach { runCatching { it.first.close(1012, "restart") } }
         sockets.clear()
     }
 
