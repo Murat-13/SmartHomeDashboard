@@ -100,7 +100,8 @@ class ExpansionSmoothnessTest {
         assertNull("карточка снята", card.parent)
         assertTrue("перед удалением карточка почти прозрачна: ${last.first}", last.first < 0.25f)
         assertTrue("перед удалением плитка почти видна: ${last.second}", last.second > 0.75f)
-        assertTrue("тень почти погасла: ${last.third}", last.third < elevation * 0.25f)
+        // 0.9.14: тень не пересчитывается по кадрам — она гаснет вместе с прозрачностью карточки (проверено выше).
+        assertEquals("elevation постоянна", elevation, last.third, 0.001f)
         // Уменьшенная карточка совпадает с прямоугольником плитки (без сдвига в конце).
         assertEquals(source.x, lastX, 6f)
         assertEquals(300f, 1000 * lastScale, 6f)

@@ -3,16 +3,16 @@ package com.example.smarthomedashboard
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.RenderEffect
-import android.graphics.Shader
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
-import androidx.annotation.RequiresApi
+import android.widget.ImageView
 
 /** Карточка, которую раскрытие показывает поверх панели и освобождает при закрытии. */
 internal interface ModernOverlayCard {
@@ -41,13 +41,19 @@ internal interface ModernHideAware {
  *
  * Таймер: [timeoutMs] после последнего взаимодействия пользователя ([touch]). События HA его
  * не трогают: отрисовка данных не вызывает методы этого класса. [pause] останавливает отсчёт.
+ *
+ * Размытие фона (0.9.14): один снимок панели [backdrop] в начале раскрытия, размытый один раз, —
+ * слой над панелью, у которого анимируется только прозрачность. Раньше RenderEffect с растущим радиусом
+ * пересоздавался на всю панель на каждом кадре: на Huawei MatePad SE (Adreno 610) анимация шла ~30 кадров/с.
+ * На время движения карточка рисуется аппаратным слоем, тень постоянная (гаснет вместе с прозрачностью).
  */
 internal class BatteryModernExpansion(
     private val handler: Handler,
     private val overlay: () -> FrameLayout?,
     private val blurTarget: () -> View?,
     private val blurSupported: Boolean,
-    private val timeoutMs: Long = TIMEOUT_MS
+    private val timeoutMs: Long = TIMEOUT_MS,
+    private val backdrop: ExpansionBackdrop = PixelCopyBackdrop(handler)
 ) {
     data class Bounds(val x: Float, val y: Float, val width: Int, val height: Int)
 
@@ -69,7 +75,17 @@ internal class BatteryModernExpansion(
     private var scrim: View? = null
     private var animator: ValueAnimator? = null
     private var closing = false
-    private var blurred: View? = null
+    /** Затемнение раскрытой карточки: слабее при размытии, сильнее без него (в т. ч. если снимок не удался). */
+    private var dimTarget = DIM_ONLY
+    /** Запрос снимка текущего раскрытия; ответ с другим токеном отбрасывается (и его bitmap освобождается). */
+    private var backdropToken: Any? = null
+    /** Размытый слой над панелью и его bitmap. */
+    internal var backdropView: ImageView? = null
+        private set
+    private var backdropBitmap: Bitmap? = null
+    /** Доля раскрытия, к которой снимок был готов: отсюда слой проявляется до 1 к концу раскрытия. */
+    private var backdropFrom = 0f
+    private var openProgress = 0f
     private val timeout = Runnable {
         collapseAt = null
         collapse()
@@ -96,25 +112,30 @@ internal class BatteryModernExpansion(
             isClickable = false
         }
         scrim = dim
+        // Снимок — до первого кадра раскрытия: в нём ещё нет карточки и затемнения.
+        dimTarget = dimAlpha()
+        requestBackdrop(start)
         host.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         expandedCard.layoutParams = FrameLayout.LayoutParams(target.width, target.height)
-        expandedCard.elevation = 24f
+        expandedCard.elevation = ELEVATION
         expandedCard.pivotX = 0f
         expandedCard.pivotY = 0f
         host.addView(expandedCard)
         from.alpha = 0f
         notifyHidden(from, true)
+        expandedCard.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         val sx = start.width / target.width.toFloat().coerceAtLeast(1f)
         val sy = start.height / target.height.toFloat().coerceAtLeast(1f)
-        run(OPEN_MS, onEnd = null) { t ->
+        run(OPEN_MS, onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null) }) { t ->
             expandedCard.x = start.x + (target.x - start.x) * t
             expandedCard.y = start.y + (target.y - start.y) * t
             expandedCard.scaleX = sx + (1f - sx) * t
             expandedCard.scaleY = sy + (1f - sy) * t
             expandedCard.alpha = 0.6f + 0.4f * t
-            dim.alpha = dimAlpha() * t
-            blur(t)
+            dim.alpha = dimTarget * t
+            openProgress = t
+            backdropView?.alpha = if (backdropFrom >= 1f) 1f else ((t - backdropFrom) / (1f - backdropFrom)).coerceIn(0f, 1f)
         }
         scheduleTimer()
     }
@@ -125,6 +146,8 @@ internal class BatteryModernExpansion(
      * - в последней части карточка уходит в прозрачность, а компактная плитка проявляется на своём месте, тень
      *   гаснет: в конце удаляется уже невидимая карточка (раньше — скачок 60% уменьшенной карточки с тенью
      *   к 100% компактной плитки за один кадр).
+     * - тень (elevation) не меняется по кадрам (0.9.14): она гаснет вместе с прозрачностью карточки, без
+     *   пересчёта тени на каждом кадре; карточка рисуется аппаратным слоем, размытый слой гаснет.
      */
     fun collapse() {
         val expandedCard = card ?: return
@@ -133,13 +156,15 @@ internal class BatteryModernExpansion(
         closing = true
         stopTimer()
         (expandedCard as? ModernOverlayCard)?.collapsing()
-        val from = Frame(expandedCard.x, expandedCard.y, expandedCard.scaleX, expandedCard.scaleY, expandedCard.alpha,
-            expandedCard.elevation)
+        val from = Frame(expandedCard.x, expandedCard.y, expandedCard.scaleX, expandedCard.scaleY, expandedCard.alpha)
         val sx = start.width / expandedCard.layoutParams.width.toFloat().coerceAtLeast(1f)
         val sy = start.height / expandedCard.layoutParams.height.toFloat().coerceAtLeast(1f)
         val dim = scrim
         val dimStart = dim?.alpha ?: 0f
+        val layer = backdropView
+        val layerStart = layer?.alpha ?: 0f
         val compact = source
+        expandedCard.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         run(CLOSE_MS, onEnd = ::clear) { t ->
             expandedCard.x = from.x + (start.x - from.x) * t
             expandedCard.y = from.y + (start.y - from.y) * t
@@ -147,14 +172,13 @@ internal class BatteryModernExpansion(
             expandedCard.scaleY = from.scaleY + (sy - from.scaleY) * t
             val fade = crossfade(t)
             expandedCard.alpha = from.alpha * (1f - fade)
-            expandedCard.elevation = from.elevation * (1f - t)
             compact?.alpha = fade
             dim?.alpha = dimStart * (1f - t)
-            blur(1f - t)
+            layer?.alpha = layerStart * (1f - t)
         }
     }
 
-    private data class Frame(val x: Float, val y: Float, val scaleX: Float, val scaleY: Float, val alpha: Float, val elevation: Float)
+    private data class Frame(val x: Float, val y: Float, val scaleX: Float, val scaleY: Float, val alpha: Float)
 
     /** Взаимодействие пользователя с открытой карточкой: перезапуск таймера. */
     fun touch() {
@@ -173,7 +197,7 @@ internal class BatteryModernExpansion(
         if (isOpen) scheduleTimer()
     }
 
-    /** Немедленное освобождение: анимация, таймер, overlay, blur; компактная плитка снова видна. */
+    /** Немедленное освобождение: анимация, таймер, overlay, размытый слой и его bitmap; компактная плитка снова видна. */
     fun clear() {
         stopTimer()
         animator?.let {
@@ -182,8 +206,9 @@ internal class BatteryModernExpansion(
             it.removeAllUpdateListeners()
             it.cancel()
         }
-        clearBlur()
+        clearBackdrop()
         card?.let { view ->
+            view.setLayerType(View.LAYER_TYPE_NONE, null)
             (view as? ModernOverlayCard)?.dispose()
             (view.parent as? ViewGroup)?.removeView(view)
         }
@@ -244,33 +269,84 @@ internal class BatteryModernExpansion(
         next.start()
     }
 
-    private fun dimAlpha() = if (blurSupported) 0.35f else 0.6f
+    private fun blurOn() = blurSupported && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
-    private fun blur(fraction: Float) {
-        if (!blurSupported || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        val target = blurTarget() ?: return
-        blurred = target
-        Blur.apply(target, BLUR_RADIUS * fraction)
+    private fun dimAlpha() = if (blurOn()) DIM_WITH_BLUR else DIM_ONLY
+
+    /** Запрос одного снимка панели; раскрытие его не ждёт. Место исходной плитки закрашивается фоном (она скрыта). */
+    private fun requestBackdrop(tile: Bounds) {
+        backdropFrom = 0f
+        openProgress = 0f
+        if (!blurOn()) return
+        val panel = blurTarget() ?: return
+        val token = Any()
+        backdropToken = token
+        val hole = Rect(tile.x.toInt(), tile.y.toInt(), (tile.x + tile.width).toInt(), (tile.y + tile.height).toInt())
+        val accepted = runCatching { backdrop.capture(panel, hole) { bitmap -> onBackdrop(token, panel, bitmap) } }
+        if (accepted.isFailure) onBackdrop(token, panel, null)
     }
 
-    private fun clearBlur() {
-        val target = blurred ?: return
-        blurred = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Blur.apply(target, 0f)
-    }
-
-    @RequiresApi(Build.VERSION_CODES.S)
-    private object Blur {
-        fun apply(view: View, radius: Float) {
-            view.setRenderEffect(if (radius < 0.5f) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
+    private fun onBackdrop(token: Any, panel: View, bitmap: Bitmap?) {
+        if (token !== backdropToken || card == null || closing) {
+            bitmap?.recycle()
+            return
         }
+        backdropToken = null
+        val parent = panel.parent as? ViewGroup
+        if (bitmap == null || parent == null || panel.width <= 0 || panel.height <= 0) {
+            bitmap?.recycle()
+            // Размытия не будет: затемнение как на устройствах без размытия.
+            dimTarget = DIM_ONLY
+            if (animator == null) scrim?.alpha = dimTarget
+            return
+        }
+        val layer = ImageView(panel.context).apply {
+            tag = BACKDROP_TAG
+            scaleType = ImageView.ScaleType.FIT_XY
+            setImageBitmap(bitmap)
+            alpha = 0f
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            x = panel.left.toFloat()
+            y = panel.top.toFloat()
+        }
+        parent.addView(layer, parent.indexOfChild(panel) + 1, ViewGroup.LayoutParams(panel.width, panel.height))
+        backdropView = layer
+        backdropBitmap = bitmap
+        if (animator != null) {
+            backdropFrom = openProgress
+        } else {
+            // Раскрытие уже закончилось: короткое проявление слоя.
+            run(BACKDROP_FADE_MS, onEnd = null) { t -> layer.alpha = t }
+        }
+    }
+
+    private fun clearBackdrop() {
+        backdropToken = null
+        backdropView?.let { layer ->
+            (layer.parent as? ViewGroup)?.removeView(layer)
+            layer.setImageDrawable(null)
+        }
+        backdropView = null
+        backdropBitmap?.recycle()
+        backdropBitmap = null
+        backdropFrom = 0f
+        openProgress = 0f
+        dimTarget = DIM_ONLY
     }
 
     companion object {
         const val TIMEOUT_MS = 30_000L
         const val OPEN_MS = 300L
         const val CLOSE_MS = 250L
+        /** Радиус размытия фона в пикселях экрана (как прежний RenderEffect). */
         const val BLUR_RADIUS = 28f
+        const val ELEVATION = 24f
+        const val DIM_WITH_BLUR = 0.35f
+        const val DIM_ONLY = 0.6f
+        const val BACKDROP_FADE_MS = 150L
+        const val BACKDROP_TAG = "bm_backdrop"
         /** Доля закрытия, с которой карточка и компактная плитка плавно меняются местами. */
         const val CROSSFADE_FROM = 0.6f
 
