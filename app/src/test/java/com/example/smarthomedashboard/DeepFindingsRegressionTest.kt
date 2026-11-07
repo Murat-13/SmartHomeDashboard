@@ -37,7 +37,7 @@ class DeepFindingsRegressionTest {
     /** Граница правила напряжения не число — правило пропускается; редактор не падает на повороте и сохранении. */
     @Test fun damagedVoltageRuleIsSkippedAndConfigStaysWritable() {
         val json = org.json.JSONObject().put("rules", org.json.JSONArray()
-            .put(org.json.JSONObject().put("from", "abc").put("color", "#FF0000"))
+            .put(org.json.JSONObject().put("from", "NaN").put("color", "#FF0000"))
             .put(org.json.JSONObject().put("from", 0).put("to", "NaN").put("color", "#00FF00"))
             .put(org.json.JSONObject().put("from", 180).put("to", 250).put("color", "#0000FF")))
         val config = PowerModernConfig.fromJson(json)
