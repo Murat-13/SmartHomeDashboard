@@ -97,6 +97,7 @@ class InverterModernVisualTest {
         val file = File("build/reports/inverter-modern/$name.png")
         file.parentFile!!.mkdirs()
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        VisualGolden.verify(file, bitmap)
     }
 
     @Test fun rendersCompactSquaresAtSeveralSizes() {

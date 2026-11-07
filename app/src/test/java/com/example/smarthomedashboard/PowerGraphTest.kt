@@ -85,6 +85,7 @@ class PowerGraphTest {
         val file = File("build/reports/power-graph/$name.png")
         file.parentFile?.mkdirs()
         file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        VisualGolden.verify(file, bitmap)
     }
 
     private fun touch(view: View, action: Int, x: Float, time: Long) {

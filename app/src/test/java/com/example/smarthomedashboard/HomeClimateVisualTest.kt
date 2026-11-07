@@ -53,7 +53,8 @@ class HomeClimateVisualTest {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         view.draw(Canvas(bitmap))
         val path = File("build/reports/home-climate-visual/$name.png"); path.parentFile!!.mkdirs()
-        path.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }; bitmap.recycle()
+        path.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        VisualGolden.verify(path, bitmap); bitmap.recycle()
     }
     @Test fun compactZeroToFiveAndLargeFontRenderInsideTwoToOneBounds() {
         val all = snapshot()

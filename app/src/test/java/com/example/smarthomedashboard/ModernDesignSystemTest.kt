@@ -165,6 +165,7 @@ class ModernDesignSystemTest {
         val path = File("build/reports/modern-design-system/$name.png")
         path.parentFile!!.mkdirs()
         path.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        VisualGolden.verify(path, bitmap)
         bitmap.recycle()
     }
 }

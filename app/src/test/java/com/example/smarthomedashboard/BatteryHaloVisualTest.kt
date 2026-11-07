@@ -50,5 +50,6 @@ class BatteryHaloVisualTest {
         val file = File("build/reports/battery-halo/tiles.png")
         file.parentFile?.mkdirs()
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        VisualGolden.verify(file, bitmap)
     }
 }

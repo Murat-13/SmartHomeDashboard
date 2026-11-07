@@ -1,0 +1,17 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ImplicitDefaultLocale:PowerModernConfig.kt$PowerModernConfig$String.format("#%08X", rule.color)</ID>
+    <ID>ImplicitDefaultLocale:PowerModernEditorActivity.kt$PowerModernEditorActivity$String.format("#%06X", rule.color and 0xFFFFFF)</ID>
+    <ID>ImplicitDefaultLocale:PowerModernEditorActivity.kt$PowerModernEditorActivity$String.format("#%06X", value and 0xFFFFFF)</ID>
+    <ID>ImplicitDefaultLocale:SensorValueFormatter.kt$SensorValueFormatter$String.format("%.${safe(d)}f", it)</ID>
+    <ID>ImplicitDefaultLocale:SensorValueFormatter.kt$SensorValueFormatter$String.format("%.${safe(decimals)}f", floatVal)</ID>
+    <ID>InstanceOfCheckForException:SettingsActivity.kt$SettingsActivity$e !is IOException</ID>
+    <ID>InstanceOfCheckForException:SettingsActivity.kt$SettingsActivity$e !is IllegalArgumentException</ID>
+    <ID>InstanceOfCheckForException:SettingsActivity.kt$SettingsActivity$e !is JSONException</ID>
+    <ID>InstanceOfCheckForException:SettingsActivity.kt$SettingsActivity$e !is SecurityException</ID>
+    <ID>RethrowCaughtException:AndroidSecretStore.kt$AtomicSecretContainerFile$throw e</ID>
+    <ID>SpreadOperator:VoiceAlertsActivity.kt$VoiceAlertsActivity$("События", *events.toTypedArray())</ID>
+  </CurrentIssues>
+</SmellBaseline>

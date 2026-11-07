@@ -1,0 +1,30 @@
+# Статический анализ (0.9.13, docs/deep-testing.md): только потенциальные ошибки, корутины, исключения, производительность.
+# Стиль кода не проверяется. Принятые находки — в baseline.xml (новые находки роняют проверку).
+style:
+  active: false
+complexity:
+  active: false
+naming:
+  active: false
+comments:
+  active: false
+empty-blocks:
+  active: false
+exceptions:
+  active: true
+  TooGenericExceptionCaught:
+    active: false
+  SwallowedException:
+    active: false
+  TooGenericExceptionThrown:
+    active: false
+potential-bugs:
+  active: true
+  UnsafeCallOnNullableType:
+    active: true
+  LateinitUsage:
+    active: false
+coroutines:
+  active: true
+performance:
+  active: true

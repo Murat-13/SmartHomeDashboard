@@ -86,6 +86,7 @@ class DoorbellVisualTest {
         val file = File("build/reports/doorbell/$name.png")
         file.parentFile?.mkdirs()
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        VisualGolden.verify(file, bitmap)
         assertTrue(file.length() > 0)
     }
 

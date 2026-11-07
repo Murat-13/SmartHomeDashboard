@@ -139,6 +139,7 @@ class AdvancedSettingsLookTest {
         val file = File("build/reports/advanced-settings/$name.png")
         file.parentFile!!.mkdirs()
         file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        VisualGolden.verify(file, bitmap)
         bitmap.recycle()
     }
 }

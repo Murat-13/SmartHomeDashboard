@@ -42,6 +42,7 @@ class ModernLivePowerVisualTest {
         val path = File("build/reports/modern-power-visual/buttons.png")
         path.parentFile!!.mkdirs()
         path.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        VisualGolden.verify(path, bitmap)
         assertTrue(path.length() > 5000)
         bitmap.recycle()
     }

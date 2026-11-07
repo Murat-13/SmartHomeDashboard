@@ -43,6 +43,15 @@ jobs:
           ./gradlew testDebugUnitTest --tests '*PanelChaosTest*' --tests '*HaProtocolFuzzTest*' --tests '*EditorChaosTest*'
           --tests '*DataCompatibilityTest*' -Ptest.maxHeap=3g
           -Pchaos.iterations=${{ github.event_name == 'schedule' && '1500' || inputs.chaos_iterations || '300' }} --stacktrace
+      # Статический анализ без плагина в сборке: отдельный detekt-cli, только потенциальные ошибки
+      # (config/detekt). Принятые находки — в baseline; новая находка роняет проверку.
+      - name: Статический анализ (detekt)
+        if: ${{ !cancelled() }}
+        run: |
+          curl -sSL -o detekt.jar https://github.com/detekt/detekt/releases/download/v1.23.8/detekt-cli-1.23.8-all.jar
+          java -jar detekt.jar --input app/src/main/java --config config/detekt/detekt.yml --build-upon-default-config \
+            --baseline config/detekt/baseline.xml --report txt:detekt.txt
+
       - name: Отчёт хаос-прогона
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
@@ -51,6 +60,7 @@ jobs:
           path: |
             app/build/reports/chaos/
             app/build/test-results/testDebugUnitTest/
+            detekt.txt
           if-no-files-found: ignore
           retention-days: 14
 

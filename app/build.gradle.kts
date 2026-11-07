@@ -91,7 +91,7 @@ android {
 // Глубокие прогоны (docs/deep-testing.md): размер и сид хаос-тестов задаются из командной строки,
 // например ./gradlew testDebugUnitTest -Pchaos.iterations=400 (ночной прогон CI) или -Pchaos.seed=7919.
 tasks.withType<Test>().configureEach {
-    listOf("chaos.iterations", "chaos.seed", "chaos.heapdump").forEach { key ->
+    listOf("chaos.iterations", "chaos.seed", "chaos.heapdump", "golden.record").forEach { key ->
         (project.findProperty(key) as String?)?.let { systemProperty(key, it) }
     }
     // Поиск утечек памяти в самих тестах: -Ptest.heapDump=<папка> пишет снимок кучи при OutOfMemoryError.

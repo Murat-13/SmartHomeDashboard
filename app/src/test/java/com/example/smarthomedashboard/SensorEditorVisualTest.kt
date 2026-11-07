@@ -55,6 +55,7 @@ class SensorEditorVisualTest {
                 val path = File("build/reports/editor-visual/$name.png")
                 requireNotNull(path.parentFile).mkdirs()
                 path.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                VisualGolden.verify(path, bitmap)
                 bitmap.recycle()
                 assertTrue(path.length() > 10_000)
                 assertEquals(2, editor.draft.compact.size)

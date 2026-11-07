@@ -191,6 +191,7 @@ class SettingsSectionsTest {
             val file = File("build/reports/settings-sections/$name-$index.png")
             file.parentFile!!.mkdirs()
             file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            VisualGolden.verify(file, bitmap)
             bitmap.recycle()
         }
     }
