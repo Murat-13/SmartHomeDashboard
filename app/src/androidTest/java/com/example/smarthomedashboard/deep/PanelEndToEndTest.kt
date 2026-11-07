@@ -117,7 +117,8 @@ class PanelEndToEndTest {
         log("Шторм $seconds с, событий $events: $summary")
         // Эмулятор рисует программно (~10 кадров/с): число кадров — признак жизни, а не замер плавности планшета.
         assertTrue("Кадры шли: $summary", summary.frames > seconds)
-        assertTrue("Нет подвисаний больше 1 с: $summary", summary.max < 1_000)
+        // Порог для эмулятора с программной отрисовкой (в прогонах 07.11 — 0,67–1,03 с); ловит настоящие зависания.
+        assertTrue("Нет подвисаний больше 2 с: $summary", summary.max < 2_000)
         assertEquals("Шторм событий и касания плиток не шлют команд устройствам: " +
             ha.commands.joinToString { "${it.optString("domain")}.${it.optString("service")} ${it.optJSONObject("service_data")}" },
             0, ha.commands.size)
@@ -184,13 +185,18 @@ class PanelEndToEndTest {
         log("Soak старт: $baseline")
         val samples = mutableListOf(baseline)
         val rnd = Random(7)
+        // Звонки — только плановые (раз в 10 минут); случайные «on» датчика звонка ночью включали бы свет постоянно.
+        val noiseIds = ids.filter { it != "binary_sensor.deep_visitor" }
+        // Прогрев первые 5 минут: пулы потоков (WorkManager, OkHttp, Media3) и кеши заполняются один раз.
+        // Рост считается от состояния после прогрева (первый прогон 07.11: потоки 51 → 62 за 5 минут, дальше ровно).
+        var warm: Resources? = null
         val monitor = StallMonitor().apply { start() }
         val end = System.currentTimeMillis() + minutes * 60_000L
         var minute = 0
         while (System.currentTimeMillis() < end) {
             val minuteEnd = System.currentTimeMillis() + 60_000
             while (System.currentTimeMillis() < minuteEnd) {
-                repeat(5) { val id = ids[rnd.nextInt(ids.size)]; ha.push(id, value(id, rnd)) }
+                repeat(5) { val id = noiseIds[rnd.nextInt(noiseIds.size)]; ha.push(id, value(id, rnd)) }
                 Thread.sleep(100)
             }
             minute++
@@ -199,6 +205,7 @@ class PanelEndToEndTest {
             if (minute % 5 == 0) {
                 val now = Resources.sample()
                 samples += now
+                if (minute == 5) warm = now
                 log("Soak $minute мин: $now; кадры: ${monitor.snapshot()}")
             }
             assertTrue("Главный поток отвечает (минута $minute)", mainThreadResponds(5_000))
@@ -206,10 +213,12 @@ class PanelEndToEndTest {
         val frames = monitor.stop()
         val last = Resources.sample()
         log("Soak конец $minutes мин: $last; кадры: $frames")
-        // Рост после прогрева: куча Java — не более 24 МБ, потоки — не более 8, дескрипторы — не более 40.
-        assertTrue("Куча Java растёт: $baseline → $last", last.javaKb - baseline.javaKb < 24 * 1024)
-        assertTrue("Потоки копятся: $baseline → $last", last.threads - baseline.threads <= 8)
-        assertTrue("Дескрипторы копятся: $baseline → $last", last.fds - baseline.fds <= 40)
+        // Рост после прогрева: куча Java — не более 24 МБ, native — не более 32 МБ, потоки — не более 8, дескрипторы — 40.
+        val from = warm ?: baseline
+        assertTrue("Куча Java растёт: $from → $last", last.javaKb - from.javaKb < 24 * 1024)
+        assertTrue("Native-память растёт: $from → $last", last.nativeKb - from.nativeKb < 32 * 1024)
+        assertTrue("Потоки копятся: $from → $last", last.threads - from.threads <= 8)
+        assertTrue("Дескрипторы копятся: $from → $last", last.fds - from.fds <= 40)
         assertTrue("Нет подвисаний больше 2 с: $frames", frames.max < 2_000)
     }
 
