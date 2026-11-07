@@ -86,6 +86,16 @@ internal class BatteryModernExpansion(
     /** Доля раскрытия, к которой снимок был готов: отсюда слой проявляется до 1 к концу раскрытия. */
     private var backdropFrom = 0f
     private var openProgress = 0f
+    /** Копия кадра текущего раскрытия ещё идёт на фоновом потоке; дождаться до первого кадра. */
+    private var pendingCopy: ExpansionBackdrop.Pending? = null
+
+    /** Снимок, начатый до [expand] ([prefetch]): пока собирается карточка, кадр уже копируется. */
+    private class Prefetch(val source: View, val panel: View, val token: Any) {
+        var pending: ExpansionBackdrop.Pending = ExpansionBackdrop.DONE
+        var delivered = false
+        var result: Bitmap? = null
+    }
+    private var prefetch: Prefetch? = null
     private val timeout = Runnable {
         collapseAt = null
         collapse()
@@ -94,7 +104,28 @@ internal class BatteryModernExpansion(
     /** Таймер текущего раскрытия; null — карточка не сворачивается сама (решение владельца для домофона). */
     private var currentTimeout: Long? = timeoutMs
 
+    /**
+     * Начать снимок фона для скорого [expand] из [from] — до сборки раскрытой карточки (0.9.15): копия кадра
+     * идёт параллельно с созданием и заполнением карточки, а не после них. Без [expand] снимок освобождается
+     * следующим [clear] / [prefetch].
+     */
+    fun prefetch(from: View) {
+        dropPrefetch()
+        if (!blurOn() || card != null) return
+        val panel = blurTarget() ?: return
+        val next = Prefetch(from, panel, Any())
+        prefetch = next
+        next.pending = runCatching {
+            backdrop.capture(panel, holeOf(from)) { bitmap -> onSnapshot(next.token, panel, bitmap) }
+        }.getOrElse {
+            next.delivered = true
+            ExpansionBackdrop.DONE
+        }
+    }
+
     fun expand(id: String, from: View, expandedCard: View, target: Bounds, timeout: Long? = timeoutMs) {
+        val early = prefetch?.takeIf { it.source === from }
+        if (early != null) prefetch = null
         clear()
         currentTimeout = timeout
         val host = overlay() ?: return
@@ -114,7 +145,7 @@ internal class BatteryModernExpansion(
         scrim = dim
         // Снимок — до первого кадра раскрытия: в нём ещё нет карточки и затемнения.
         dimTarget = dimAlpha()
-        requestBackdrop(start)
+        requestBackdrop(start, early)
         host.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         expandedCard.layoutParams = FrameLayout.LayoutParams(target.width, target.height)
         expandedCard.elevation = ELEVATION
@@ -138,6 +169,29 @@ internal class BatteryModernExpansion(
             backdropView?.alpha = if (backdropFrom >= 1f) 1f else ((t - backdropFrom) / (1f - backdropFrom)).coerceIn(0f, 1f)
         }
         scheduleTimer()
+        // Снимок, начатый заранее, уже готов — слой сразу (проявляется вместе с раскрытием).
+        if (early != null && early.delivered && backdropToken === early.token) {
+            val panel = early.panel
+            onBackdrop(early.token, panel, early.result)
+        }
+        awaitCopy()
+    }
+
+    /**
+     * До первого кадра раскрытия копия кадра должна закончиться: иначе в снимок попадёт сама карточка.
+     * Обычно она уже готова (шла параллельно со сборкой карточки); не успела за [COPY_WAIT_MS] —
+     * снимок отбрасывается, раскрытие идёт с одним затемнением.
+     */
+    private fun awaitCopy() {
+        val pending = pendingCopy ?: return
+        pendingCopy = null
+        if (backdropToken == null) return
+        android.os.Trace.beginSection("SHD await copy")
+        val copied = try { pending.awaitCopied(COPY_WAIT_MS) } finally { android.os.Trace.endSection() }
+        if (!copied) {
+            backdropToken = null
+            dimTarget = DIM_ONLY
+        }
     }
 
     /**
@@ -274,16 +328,46 @@ internal class BatteryModernExpansion(
     private fun dimAlpha() = if (blurOn()) DIM_WITH_BLUR else DIM_ONLY
 
     /** Запрос одного снимка панели; раскрытие его не ждёт. Место исходной плитки закрашивается фоном (она скрыта). */
-    private fun requestBackdrop(tile: Bounds) {
+    private fun requestBackdrop(tile: Bounds, early: Prefetch?) {
         backdropFrom = 0f
         openProgress = 0f
-        if (!blurOn()) return
+        if (!blurOn()) {
+            early?.result?.recycle()
+            return
+        }
+        if (early != null) {
+            // Снимок уже идёт (или готов): тот же токен, без второй копии.
+            backdropToken = early.token
+            pendingCopy = early.pending
+            return
+        }
         val panel = blurTarget() ?: return
         val token = Any()
         backdropToken = token
         val hole = Rect(tile.x.toInt(), tile.y.toInt(), (tile.x + tile.width).toInt(), (tile.y + tile.height).toInt())
-        val accepted = runCatching { backdrop.capture(panel, hole) { bitmap -> onBackdrop(token, panel, bitmap) } }
+        val accepted = runCatching { backdrop.capture(panel, hole) { bitmap -> onSnapshot(token, panel, bitmap) } }
+        accepted.onSuccess { pendingCopy = it }
         if (accepted.isFailure) onBackdrop(token, panel, null)
+    }
+
+    private fun holeOf(from: View) = Rect(from.x.toInt(), from.y.toInt(),
+        (from.x + from.layoutParams.width).toInt(), (from.y + from.layoutParams.height).toInt())
+
+    /** Ответ снимка: текущему раскрытию, в запас (раскрытие ещё не началось) или в освобождение. */
+    private fun onSnapshot(token: Any, panel: View, bitmap: Bitmap?) {
+        if (token === backdropToken) return onBackdrop(token, panel, bitmap)
+        val waiting = prefetch
+        if (waiting != null && waiting.token === token) {
+            waiting.result = bitmap
+            waiting.delivered = true
+            return
+        }
+        bitmap?.recycle()
+    }
+
+    private fun dropPrefetch() {
+        prefetch?.result?.recycle()
+        prefetch = null
     }
 
     private fun onBackdrop(token: Any, panel: View, bitmap: Bitmap?) {
@@ -324,6 +408,8 @@ internal class BatteryModernExpansion(
 
     private fun clearBackdrop() {
         backdropToken = null
+        pendingCopy = null
+        dropPrefetch()
         backdropView?.let { layer ->
             (layer.parent as? ViewGroup)?.removeView(layer)
             layer.setImageDrawable(null)
@@ -347,6 +433,8 @@ internal class BatteryModernExpansion(
         const val DIM_ONLY = 0.6f
         const val BACKDROP_FADE_MS = 150L
         const val BACKDROP_TAG = "bm_backdrop"
+        /** Сколько главный поток может ждать копию кадра перед первым кадром раскрытия (как раньше в худшем случае). */
+        const val COPY_WAIT_MS = 50L
         /** Доля закрытия, с которой карточка и компактная плитка плавно меняются местами. */
         const val CROSSFADE_FROM = 0.6f
 

@@ -52,13 +52,19 @@ class ExpansionBackdropTest {
         }
     }
 
-    /** Снимок по требованию теста: ответ приходит, когда тест вызовет [deliver]. */
-    class FakeBackdrop : ExpansionBackdrop {
+    /**
+     * Снимок по требованию теста: ответ приходит, когда тест вызовет [deliver]. [copied] — успела ли копия
+     * кадра к первому кадру раскрытия; [awaits] — сколько раз главный поток её дожидался.
+     */
+    internal class FakeBackdrop : ExpansionBackdrop {
         val holes = mutableListOf<Rect>()
         private val pending = mutableListOf<(Bitmap?) -> Unit>()
-        override fun capture(panel: View, hole: Rect, done: (Bitmap?) -> Unit) {
+        var copied = true
+        var awaits = 0
+        override fun capture(panel: View, hole: Rect, done: (Bitmap?) -> Unit): ExpansionBackdrop.Pending {
             holes += hole
             pending += done
+            return ExpansionBackdrop.Pending { awaits++; copied }
         }
         fun deliver(bitmap: Bitmap?) = pending.removeAt(0).invoke(bitmap)
         val waiting get() = pending.size
@@ -225,6 +231,77 @@ class ExpansionBackdropTest {
         backdrop.deliver(bitmap())
         advance(400)
         assertEquals("один слой", 1, backdropLayers().size)
+    }
+
+    @Test fun prefetchStartsSnapshotBeforeCardAndExpandReusesIt() {
+        val expansion = expansion()
+        expansion.prefetch(source)
+        assertEquals("снимок начат до сборки карточки", 1, backdrop.holes.size)
+        assertEquals(Rect(40, 60, 340, 280), backdrop.holes.single())
+        expansion.expand("m", source, View(activity), target)
+        assertEquals("второй копии нет", 1, backdrop.holes.size)
+        assertEquals("до первого кадра копия дождана", 1, backdrop.awaits)
+        advance(32)
+        val snapshot = bitmap()
+        backdrop.deliver(snapshot)
+        assertEquals("слой из заранее начатого снимка", 1, backdropLayers().size)
+        advance(400)
+        assertEquals(1f, backdropLayers().single().alpha, 0f)
+        expansion.collapse()
+        advance(400)
+        assertTrue(snapshot.isRecycled)
+        assertTrue(backdropLayers().isEmpty())
+    }
+
+    @Test fun prefetchedSnapshotReadyBeforeExpandIsShownWithAnimation() {
+        advance(16) // панель разложена, как в приложении к моменту касания
+        val expansion = expansion()
+        expansion.prefetch(source)
+        val snapshot = bitmap()
+        backdrop.deliver(snapshot)
+        assertTrue("до раскрытия слоя нет", backdropLayers().isEmpty())
+        expansion.expand("m", source, View(activity), target)
+        val layer = backdropLayers().single()
+        assertEquals("проявляется с начала раскрытия", 0f, layer.alpha, 0f)
+        advance(400)
+        assertEquals(1f, layer.alpha, 0f)
+        assertEquals(BatteryModernExpansion.DIM_WITH_BLUR, scrim().alpha, 0.001f)
+        expansion.clear()
+        assertTrue(snapshot.isRecycled)
+    }
+
+    @Test fun copyNotFinishedBeforeFirstFrameIsDropped() {
+        val expansion = expansion()
+        backdrop.copied = false
+        expansion.prefetch(source)
+        expansion.expand("m", source, View(activity), target)
+        advance(32)
+        val late = bitmap()
+        backdrop.deliver(late)
+        assertTrue("снимок мог захватить карточку — отброшен", late.isRecycled)
+        assertTrue(backdropLayers().isEmpty())
+        advance(400)
+        assertEquals("только затемнение", BatteryModernExpansion.DIM_ONLY, scrim().alpha, 0.001f)
+    }
+
+    @Test fun prefetchForAnotherTileOrWithoutExpandIsReleased() {
+        val expansion = expansion()
+        val other = View(activity).apply { layoutParams = FrameLayout.LayoutParams(100, 100) }
+        panel.addView(other)
+        expansion.prefetch(other)
+        val stale = bitmap()
+        backdrop.deliver(stale)
+        expansion.expand("m", source, View(activity), target)
+        assertTrue("снимок другой плитки освобождён", stale.isRecycled)
+        assertEquals("для раскрытия — свой снимок", 2, backdrop.holes.size)
+        expansion.clear()
+        expansion.prefetch(source)
+        expansion.clear()
+        val dropped = bitmap()
+        backdrop.deliver(bitmap().also { it.recycle() })
+        backdrop.deliver(dropped)
+        assertTrue("clear отменяет заранее начатый снимок", dropped.isRecycled)
+        assertTrue(backdropLayers().isEmpty())
     }
 
     @Test fun boxBlurRadiusMatchesPreviousRenderEffect() {

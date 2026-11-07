@@ -12,11 +12,12 @@ import android.graphics.RectF
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.view.PixelCopy
 import android.view.View
 import androidx.annotation.RequiresApi
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -25,49 +26,78 @@ import kotlin.math.roundToInt
  * Снимок фона под раскрытой карточкой (0.9.14): один раз за раскрытие, уже размытый.
  * [capture] не блокирует: результат приходит в главный поток через [done]; null — снимка не будет
  * (тогда раскрытие идёт с одним затемнением). Получатель владеет bitmap и освобождает его сам.
+ *
+ * 0.9.15: копия кадра идёт не на главном потоке (на Android ≤ 13 PixelCopy копирует синхронно в вызывающем потоке:
+ * на Huawei главный поток стоял до полусотни миллисекунд на старте раскрытия). [Pending.awaitCopied] — дождаться
+ * именно копии (не размытия): до первого кадра раскрытия, иначе в снимок попала бы сама карточка.
  */
 internal fun interface ExpansionBackdrop {
     /** [hole] — прямоугольник исходной плитки в координатах [panel]: на снимке закрашивается фоном (плитка скрыта). */
-    fun capture(panel: View, hole: Rect, done: (Bitmap?) -> Unit)
+    fun capture(panel: View, hole: Rect, done: (Bitmap?) -> Unit): Pending
+
+    fun interface Pending {
+        /** Ждёт окончания копии кадра не дольше [timeoutMs]; false — не успела. */
+        fun awaitCopied(timeoutMs: Long): Boolean
+    }
+
+    companion object {
+        val DONE = Pending { true }
+    }
 }
 
 /**
  * PixelCopy окна (API 26+) — копия последнего показанного кадра, в том числе TextureView с видео домофона
- * (View.draw() видео не рисует). Область панели копируется сразу в уменьшенный bitmap ([SCALE]), размывается
- * на фоновом потоке по радиусу, эквивалентному прежнему RenderEffect ([BatteryModernExpansion.BLUR_RADIUS]).
+ * (View.draw() видео не рисует). Область панели копируется сразу в уменьшенный bitmap ([SCALE]) на
+ * фоновом потоке и там же размывается по радиусу, эквивалентному прежнему RenderEffect
+ * ([BatteryModernExpansion.BLUR_RADIUS]).
  */
 internal class PixelCopyBackdrop(private val main: Handler) : ExpansionBackdrop {
-    override fun capture(panel: View, hole: Rect, done: (Bitmap?) -> Unit) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return done(null)
-        Api26.capture(panel, hole, main, done)
+    override fun capture(panel: View, hole: Rect, done: (Bitmap?) -> Unit): ExpansionBackdrop.Pending {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            done(null)
+            return ExpansionBackdrop.DONE
+        }
+        return Api26.capture(panel, hole, main, done)
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
     private object Api26 {
-        fun capture(panel: View, hole: Rect, main: Handler, done: (Bitmap?) -> Unit) {
-            val window = panel.context.findActivity()?.window ?: return done(null)
+        fun capture(panel: View, hole: Rect, main: Handler, done: (Bitmap?) -> Unit): ExpansionBackdrop.Pending {
+            val fail: () -> ExpansionBackdrop.Pending = {
+                done(null)
+                ExpansionBackdrop.DONE
+            }
+            val window = panel.context.findActivity()?.window ?: return fail()
             val w = panel.width
             val h = panel.height
-            if (w <= 0 || h <= 0 || !panel.isAttachedToWindow) return done(null)
+            if (w <= 0 || h <= 0 || !panel.isAttachedToWindow) return fail()
             val location = IntArray(2)
             panel.getLocationInWindow(location)
             val source = Rect(location[0], location[1], location[0] + w, location[1] + h)
             val bitmap = try {
                 Bitmap.createBitmap(max(1, w / SCALE), max(1, h / SCALE), Bitmap.Config.ARGB_8888)
             } catch (_: OutOfMemoryError) {
-                return done(null)
+                return fail()
             }
             val background = backgroundColor(panel)
             val scale = bitmap.width / w.toFloat()
             val scaledHole = RectF(hole.left * scale, hole.top * scale, hole.right * scale, hole.bottom * scale)
-            try {
-                PixelCopy.request(window, source, bitmap, { result ->
-                    if (result != PixelCopy.SUCCESS) {
-                        bitmap.recycle()
-                        done(null)
-                        return@request
-                    }
-                    WORKER.execute {
+            val copied = CountDownLatch(1)
+            val failed: () -> Unit = {
+                copied.countDown()
+                bitmap.recycle()
+                main.post { done(null) }
+            }
+            WORKER.post {
+                try {
+                    // Синхронная копия идёт здесь; результат — в этом же потоке следом.
+                    PixelCopy.request(window, source, bitmap, { result ->
+                        copied.countDown()
+                        if (result != PixelCopy.SUCCESS) {
+                            bitmap.recycle()
+                            main.post { done(null) }
+                            return@request
+                        }
                         val ok = runCatching {
                             Canvas(bitmap).drawRect(scaledHole, Paint().apply { color = background })
                             BoxBlur.blur(bitmap, BoxBlur.boxRadiusFor(BatteryModernExpansion.BLUR_RADIUS, scale))
@@ -78,21 +108,24 @@ internal class PixelCopyBackdrop(private val main: Handler) : ExpansionBackdrop 
                                 done(null)
                             }
                         }
-                    }
-                }, main)
-            } catch (_: IllegalArgumentException) {
-                // Окно без поверхности (экран гаснет, Activity закрывается) — без размытия.
-                bitmap.recycle()
-                done(null)
+                    }, WORKER)
+                } catch (_: IllegalArgumentException) {
+                    // Окно без поверхности (экран гаснет, Activity закрывается) — без размытия.
+                    failed()
+                } catch (_: RuntimeException) {
+                    failed()
+                }
             }
+            return ExpansionBackdrop.Pending { timeoutMs -> copied.await(timeoutMs, TimeUnit.MILLISECONDS) }
         }
     }
 
     companion object {
         /** Снимок в 1/4 размера: размытый фон не теряет деталей, а копия и размытие дёшевы (2000×1200 → 500×300). */
         const val SCALE = 4
-        private val WORKER: ExecutorService = Executors.newSingleThreadExecutor { r ->
-            Thread(r, "expansion-backdrop").apply { isDaemon = true }
+        /** Копия кадра и размытие — один фоновый поток на процесс (снимки идут по одному). */
+        private val WORKER: Handler by lazy {
+            Handler(HandlerThread("expansion-backdrop").apply { isDaemon = true; start() }.looper)
         }
 
         /** Цвет под панелью: первый сплошной фон панели или её родителей (у главного экрана — фон корня). */

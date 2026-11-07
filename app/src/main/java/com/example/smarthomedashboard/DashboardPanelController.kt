@@ -1138,17 +1138,36 @@ internal class DashboardPanelController(
         if (interactive) modernExpansion.resume() else modernExpansion.pause()
     }
 
-    private fun expandModernBattery(tile: TileEntity, source: View) {
-        collapseChildButtons()
-        modernGroup.close()
+    /** Метка для системного трейса (atrace/Perfetto): старт раскрытия по частям; без записи трейса почти бесплатна. */
+    private inline fun <T> traced(name: String, block: () -> T): T {
+        android.os.Trace.beginSection(name)
+        try {
+            return block()
+        } finally {
+            android.os.Trace.endSection()
+        }
+    }
+
+    private fun expandModernBattery(tile: TileEntity, source: View) = traced("SHD expand ${tile.type}") {
+        expandModernBatteryTraced(tile, source)
+    }
+
+    private fun expandModernBatteryTraced(tile: TileEntity, source: View) {
+        // Снимок фона копируется на фоновом потоке, пока ниже собирается карточка (0.9.15).
+        traced("SHD prefetch") { modernExpansion.prefetch(source) }
+        traced("SHD close others") {
+            collapseChildButtons()
+            modernGroup.close()
+        }
         if (tile.type == HomeClimateConfig.TYPE) {
             // Та же механика: рост из плитки к центру, blur панели, автосворачивание, закрытие тапом.
             val width = minOf((screenW * 0.92f).toInt(), 1700)
             val height = if (screenW < screenH) (screenH * 0.92f).toInt()
                 else minOf((screenH * 0.92f).toInt(), (width * 0.74f).toInt()).coerceAtLeast((screenH * 0.6f).toInt())
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-            modernExpansion.expand(tile.id, source, HomeClimateExpandedCard(activity), target)
-            renderModern(tile, null, animate = false)
+            val card = traced("SHD card create") { HomeClimateExpandedCard(activity) }
+            traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
+            traced("SHD card bind") { renderModern(tile, null, animate = false) }
             return
         }
         if (tile.type == DoorbellConfig.TYPE) {
@@ -1190,23 +1209,25 @@ internal class DashboardPanelController(
             val width = minOf((screenW * 0.9f).toInt(), 1700)
             val height = minOf((screenH * 0.9f).toInt(), (width * 0.68f).toInt()).coerceAtLeast(screenH / 2)
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-            val card = PowerModernCard(activity, expanded = true)
+            val card = traced("SHD card create") { PowerModernCard(activity, expanded = true) }
             val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
             val state = PowerGraphState(PowerGraphPanel.savedPeriod(prefs, tile.id))
-            val panel = PowerGraphPanel(activity, viewModel.powerHistory, tile.id, state, prefs,
-                onExpand = { openPowerGraph(card, tile.id, state) }, onTouch = modernExpansion::touch)
-            card.attachGraph(panel)
-            panel.bind(PowerModernConfig.from(tile.config).graphSource)
-            modernExpansion.expand(tile.id, source, card, target)
-            renderModern(tile, null, animate = false)
+            val panel = traced("SHD graph create") {
+                PowerGraphPanel(activity, viewModel.powerHistory, tile.id, state, prefs,
+                    onExpand = { openPowerGraph(card, tile.id, state) }, onTouch = modernExpansion::touch)
+            }
+            traced("SHD graph attach") { card.attachGraph(panel) }
+            traced("SHD graph bind") { panel.bind(PowerModernConfig.from(tile.config).graphSource) }
+            traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
+            traced("SHD card bind") { renderModern(tile, null, animate = false) }
             return
         }
-        val card = BatteryModernCard(activity, expanded = true)
+        val card = traced("SHD card create") { BatteryModernCard(activity, expanded = true) }
         val width = minOf((screenW * 0.92f).toInt(), 1600)
         val height = minOf((screenH * 0.9f).toInt(), (width * 0.8f).toInt().coerceAtLeast(screenH / 2))
         val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-        card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit)
-        modernExpansion.expand(tile.id, source, card, target)
+        traced("SHD card bind") { card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit) }
+        traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
     }
 
     /**
