@@ -1,6 +1,9 @@
 package com.example.smarthomedashboard.deep
 
+import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.View
+import android.widget.FrameLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
@@ -63,6 +66,58 @@ class PanelEndToEndTest {
             val controller = MainActivity::class.java.getDeclaredMethod("getPanelController").apply { isAccessible = true }.invoke(current)
             controller.javaClass.getMethod("hasExpansion").invoke(controller) as Boolean
         }
+    }
+
+    /**
+     * 0.9.16: пока палец на Modern-плитке, раскрытая карточка собирается и размечается заранее (невидимой);
+     * отпускание только показывает её. Замер — сколько главный поток занят обработкой отпускания: с заранее
+     * собранной карточкой и при мгновенном касании (сборка в момент отпускания, как до 0.9.16).
+     */
+    @Test fun holdingModernTilePreparesExpandedCard() {
+        launch()
+        waitFor(10_000, "плитки построены") { tile("deep_bms") != null }
+        val content = activity().findViewById<FrameLayout>(android.R.id.content)
+        fun hidden() = onMain { (0 until content.childCount).map { content.getChildAt(it) }.filter { it.visibility == View.INVISIBLE } }
+        val upTimes = mutableListOf<Long>()
+        val quickTimes = mutableListOf<Long>()
+        repeat(3) { round ->
+            val view = tile("deep_bms")!!
+            val location = IntArray(2)
+            onMain { view.getLocationOnScreen(location) }
+            val x = location[0] + view.width / 2f
+            val y = location[1] + view.height / 2f
+            // Удержание как у обычного нажатия, затем отпускание.
+            val down = SystemClock.uptimeMillis()
+            instrumentation.sendPointerSync(MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, x, y, 0))
+            Thread.sleep(250)
+            val ready = hidden().singleOrNull { it is com.example.smarthomedashboard.BatteryModernCard }
+            assertNotNull("Круг $round: карточка собрана, пока палец на плитке", ready)
+            assertTrue("Круг $round: карточка размечена заранее", onMain { ready!!.width > 0 && ready.height > 0 })
+            val upStart = SystemClock.uptimeMillis()
+            instrumentation.sendPointerSync(MotionEvent.obtain(down, upStart, MotionEvent.ACTION_UP, x, y, 0))
+            upTimes += SystemClock.uptimeMillis() - upStart
+            waitFor(2_000, "раскрыта заранее собранная карточка") { onMain { ready!!.visibility == View.VISIBLE && ready.isShown } }
+            assertTrue("Круг $round: раскрыто", expanded())
+            Thread.sleep(600)
+            if (expanded()) { val current = activity(); onMain { current.onBackPressedDispatcher.onBackPressed() } }
+            waitFor(3_000, "свёрнуто") { !expanded() }
+            assertTrue("Круг $round: после сворачивания невидимых карточек не осталось", hidden().isEmpty())
+            Thread.sleep(500)
+            // Мгновенное касание (без удержания): сборка в момент отпускания.
+            onMain { view.getLocationOnScreen(location) }
+            val quick = SystemClock.uptimeMillis()
+            instrumentation.sendPointerSync(MotionEvent.obtain(quick, quick, MotionEvent.ACTION_DOWN, x, y, 0))
+            val quickUp = SystemClock.uptimeMillis()
+            instrumentation.sendPointerSync(MotionEvent.obtain(quick, quickUp, MotionEvent.ACTION_UP, x, y, 0))
+            quickTimes += SystemClock.uptimeMillis() - quickUp
+            waitFor(2_000, "раскрыто мгновенным касанием") { expanded() }
+            Thread.sleep(600)
+            if (expanded()) { val current = activity(); onMain { current.onBackPressedDispatcher.onBackPressed() } }
+            waitFor(3_000, "свёрнуто") { !expanded() }
+            Thread.sleep(500)
+        }
+        log("Старт раскрытия АКБ, обработка отпускания: с заранее собранной карточкой $upTimes мс, мгновенное касание $quickTimes мс")
+        assertEquals("Команд устройствам нет", 0, ha.commands.size)
     }
 
     @Test fun startsConnectsAndShowsEveryTileType() {

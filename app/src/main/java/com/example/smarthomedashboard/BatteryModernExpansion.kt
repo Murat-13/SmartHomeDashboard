@@ -91,6 +91,7 @@ internal class BatteryModernExpansion(
 
     /** Снимок, начатый до [expand] ([prefetch]): пока собирается карточка, кадр уже копируется. */
     private class Prefetch(val source: View, val panel: View, val token: Any) {
+        val startedAt = android.os.SystemClock.uptimeMillis()
         var pending: ExpansionBackdrop.Pending = ExpansionBackdrop.DONE
         var delivered = false
         var result: Bitmap? = null
@@ -109,7 +110,11 @@ internal class BatteryModernExpansion(
      * идёт параллельно с созданием и заполнением карточки, а не после них. Без [expand] снимок освобождается
      * следующим [clear] / [prefetch].
      */
-    fun prefetch(from: View) {
+    fun prefetch(from: View, reuseFresh: Boolean = false) {
+        // 0.9.16: снимок начат ещё при касании плитки (ACTION_DOWN) — при отпускании он уже готов, второй не нужен.
+        val current = prefetch
+        if (reuseFresh && current != null && current.source === from &&
+            android.os.SystemClock.uptimeMillis() - current.startedAt <= PREFETCH_FRESH_MS) return
         dropPrefetch()
         if (!blurOn() || card != null) return
         val panel = blurTarget() ?: return
@@ -123,6 +128,16 @@ internal class BatteryModernExpansion(
         }
     }
 
+    /** Касание плитки оказалось не нажатием (сдвиг, отмена): заранее начатый снимок не понадобится. */
+    fun cancelPrefetch(from: View) {
+        if (prefetch?.source === from) dropPrefetch()
+    }
+
+    /**
+     * [expandedCard] может быть уже добавлена в overlay заранее — невидимой (INVISIBLE), собранной и размеченной,
+     * пока палец ещё на плитке (0.9.16): тогда она не пересоздаётся и не переразмечается, затемнение
+     * встаёт под неё.
+     */
     fun expand(id: String, from: View, expandedCard: View, target: Bounds, timeout: Long? = timeoutMs) {
         val early = prefetch?.takeIf { it.source === from }
         if (early != null) prefetch = null
@@ -146,12 +161,20 @@ internal class BatteryModernExpansion(
         // Снимок — до первого кадра раскрытия: в нём ещё нет карточки и затемнения.
         dimTarget = dimAlpha()
         requestBackdrop(start, early)
-        host.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        expandedCard.layoutParams = FrameLayout.LayoutParams(target.width, target.height)
+        val preattached = expandedCard.parent === host
+        if (!preattached) (expandedCard.parent as? ViewGroup)?.removeView(expandedCard)
+        host.addView(dim, if (preattached) host.indexOfChild(expandedCard) else -1,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Те же размеры — без новой разметки (разметка заранее собранной карточки уже сделана).
+        val lp = expandedCard.layoutParams
+        if (lp !is FrameLayout.LayoutParams || lp.width != target.width || lp.height != target.height) {
+            expandedCard.layoutParams = FrameLayout.LayoutParams(target.width, target.height)
+        }
         expandedCard.elevation = ELEVATION
         expandedCard.pivotX = 0f
         expandedCard.pivotY = 0f
-        host.addView(expandedCard)
+        if (!preattached) host.addView(expandedCard)
+        expandedCard.visibility = View.VISIBLE
         from.alpha = 0f
         notifyHidden(from, true)
         expandedCard.setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -432,6 +455,8 @@ internal class BatteryModernExpansion(
         const val DIM_WITH_BLUR = 0.35f
         const val DIM_ONLY = 0.6f
         const val BACKDROP_FADE_MS = 150L
+        /** Снимок, начатый при касании, годен для раскрытия по отпусканию не дольше этого (данные под размытием не видны). */
+        const val PREFETCH_FRESH_MS = 1_500L
         const val BACKDROP_TAG = "bm_backdrop"
         /** Сколько главный поток может ждать копию кадра перед первым кадром раскрытия (как раньше в худшем случае). */
         const val COPY_WAIT_MS = 50L

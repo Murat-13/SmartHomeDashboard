@@ -133,6 +133,10 @@ internal class DashboardPanelController(
         internal const val PREF_PAGE_COUNT = "page_count"
         /** Подтверждение смены приоритета инвертора закрывается само без команды. */
         internal const val PRIORITY_DIALOG_MS = 30_000L
+        /** Пауза после касания Modern-плитки до сборки раскрытой карточки (0.9.16): листание успевает отменить. */
+        internal const val PREPARE_DELAY_MS = 40L
+        /** Заранее собранная карточка годна не дольше (долгое удержание — карточка удаляется). */
+        internal const val PREPARED_MAX_AGE_MS = 1_500L
     }
 
     fun dispatchTouch(event: MotionEvent): Boolean? =
@@ -451,17 +455,22 @@ internal class DashboardPanelController(
                     hasMoved = false
                     startX = event.rawX
                     startY = event.rawY
+                    if (isModern(tile.type)) startPreparing(tile.id, view)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!gestureActive) return@setOnTouchListener true
                     if (kotlin.math.abs(event.rawX - startX) > 10 ||
-                        kotlin.math.abs(event.rawY - startY) > 10) hasMoved = true
+                        kotlin.math.abs(event.rawY - startY) > 10) {
+                        if (!hasMoved) cancelPreparing(view)
+                        hasMoved = true
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!gestureActive) return@setOnTouchListener true
                     gestureActive = false
+                    if (hasMoved) cancelPreparing(view)
                     view.performClick()
                     if (!hasMoved && isModern(tile.type)) {
                         // Актуальная плитка: настройки могли измениться после построения дерева.
@@ -476,6 +485,7 @@ internal class DashboardPanelController(
                 MotionEvent.ACTION_CANCEL -> {
                     gestureActive = false
                     hasMoved = false
+                    cancelPreparing(view)
                     true
                 }
                 else -> false
@@ -1152,22 +1162,174 @@ internal class DashboardPanelController(
         expandModernBatteryTraced(tile, source)
     }
 
+    /**
+     * Раскрытая карточка, собранная, пока палец ещё на плитке (0.9.16). Трейс на Huawei MatePad SE (0.9.15):
+     * от касания до первого кадра раскрытия 40–140 мс уходило на создание карточки, заполнение данными и первую
+     * разметку (масштаб карточек применяется после первой разметки ещё одним проходом). Обычное нажатие длится
+     * 70–150 мс: эту работу можно сделать за это время. Карточка добавляется в overlay невидимой (INVISIBLE —
+     * не рисуется и не получает касаний), размечается обычным проходом; по отпусканию [BatteryModernExpansion.expand]
+     * только показывает её. Сдвиг пальца, отмена, перестроение панели или ожидание дольше [PREPARED_MAX_AGE_MS] —
+     * карточка удаляется. Домофон не готовится заранее (видео одалживается в момент раскрытия), только снимок фона.
+     */
+    private class Prepared(val tileId: String, val config: String, val type: String, val source: View,
+                           val target: BatteryModernExpansion.Bounds) {
+        val startedAt = android.os.SystemClock.uptimeMillis()
+        var card: View? = null
+        /** Данные уже в карточке (АКБ, климат): по отпусканию не заполнять повторно. */
+        var bound = false
+        var graphState: PowerGraphState? = null
+    }
+    private var prepared: Prepared? = null
+    private val prepareCreate = Runnable { prepared?.let(::prepareCreate) }
+    private val prepareBind = Runnable { prepared?.let(::prepareBind) }
+    private val preparedExpired = Runnable { discardPrepared() }
+
+    private fun canPrepare(): Boolean = !isEditMode && !isResizing && expandedSensorView == null &&
+        modernExpansion.card == null && !modernGroup.isOpen
+
+    private fun startPreparing(tileId: String, source: View) {
+        discardPrepared()
+        if (!canPrepare()) return
+        val tile = tileManager.getAllTiles().find { it.id == tileId } ?: return
+        // Снимок фона — сразу: копия кадра идёт на фоновом потоке, главный поток почти не занят (0.9.15).
+        modernExpansion.prefetch(source)
+        val target = expandedTarget(tile) ?: return
+        prepared = Prepared(tile.id, tile.config, tile.type, source, target)
+        // Небольшая пауза: если это начало листания страницы, палец за это время уходит дальше порога сдвига,
+        // и карточка не собирается вовсе (иначе сборка на главном потоке притормозила бы начало листания).
+        handler.postDelayed(prepareCreate, PREPARE_DELAY_MS)
+        handler.postDelayed(preparedExpired, PREPARED_MAX_AGE_MS)
+    }
+
+    private fun cancelPreparing(source: View) {
+        if (prepared?.source === source) discardPrepared()
+        modernExpansion.cancelPrefetch(source)
+    }
+
+    private fun prepareCreate(p: Prepared) = traced("SHD prepare create") {
+        if (prepared !== p || p.card != null || !canPrepare()) return@traced
+        val tile = tileManager.getAllTiles().find { it.id == p.tileId && it.config == p.config } ?: return@traced discardPrepared()
+        p.card = when (tile.type) {
+            HomeClimateConfig.TYPE -> HomeClimateExpandedCard(activity)
+            InverterModernConfig.TYPE -> InverterModernCard(activity, expanded = true)
+            PowerModernConfig.TYPE -> {
+                val card = PowerModernCard(activity, expanded = true)
+                val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
+                val state = PowerGraphState(PowerGraphPanel.savedPeriod(prefs, tile.id))
+                p.graphState = state
+                card.attachGraph(PowerGraphPanel(activity, viewModel.powerHistory, tile.id, state, prefs,
+                    onExpand = { openPowerGraph(card, tile.id, state) }, onTouch = modernExpansion::touch))
+                card.graph?.bind(PowerModernConfig.from(tile.config).graphSource)
+                card
+            }
+            BatteryModernConfig.TYPE -> BatteryModernCard(activity, expanded = true)
+            else -> null
+        }
+        if (p.card == null) return@traced discardPrepared()
+        // Заполнение и разметка — следующим шагом, чтобы не занимать главный поток одним куском.
+        handler.post(prepareBind)
+    }
+
+    private fun prepareBind(p: Prepared) = traced("SHD prepare bind") {
+        val card = p.card ?: return@traced
+        if (prepared !== p || card.parent != null) return@traced
+        val tile = tileManager.getAllTiles().find { it.id == p.tileId && it.config == p.config } ?: return@traced discardPrepared()
+        when (card) {
+            is HomeClimateExpandedCard -> {
+                card.bind(HomeClimateSnapshot.from(tile.title, climateConfigs.of(tile), viewModel.uiState.value.haSession,
+                    viewModel.devices, viewModel.uiState.value.yandexWeather))
+                p.bound = true
+            }
+            is BatteryModernCard -> {
+                card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit)
+                p.bound = true
+            }
+        }
+        val overlay = activity.findViewById<FrameLayout>(android.R.id.content) ?: return@traced discardPrepared()
+        card.visibility = View.INVISIBLE
+        // Разметка обычным проходом, в том числе отложенный пересчёт масштаба карточки после первого размера.
+        overlay.addView(card, FrameLayout.LayoutParams(p.target.width, p.target.height))
+    }
+
+    /** Заранее собранная карточка для раскрытия [tile] из [source]; null — собирать как обычно. */
+    private fun takePrepared(tile: TileEntity, source: View): Prepared? {
+        val p = prepared ?: return null
+        prepared = null
+        handler.removeCallbacks(prepareCreate)
+        handler.removeCallbacks(prepareBind)
+        handler.removeCallbacks(preparedExpired)
+        val fresh = android.os.SystemClock.uptimeMillis() - p.startedAt <= PREPARED_MAX_AGE_MS
+        if (p.card != null && fresh && p.tileId == tile.id && p.config == tile.config && p.source === source &&
+            p.target == expandedTarget(tile)) return p
+        release(p)
+        return null
+    }
+
+    private fun discardPrepared() {
+        handler.removeCallbacks(prepareCreate)
+        handler.removeCallbacks(prepareBind)
+        handler.removeCallbacks(preparedExpired)
+        val p = prepared ?: return
+        prepared = null
+        release(p)
+    }
+
+    private fun release(p: Prepared) {
+        val card = p.card ?: return
+        p.card = null
+        (card as? ModernOverlayCard)?.dispose()
+        (card.parent as? ViewGroup)?.removeView(card)
+    }
+
+    /** Размер и место раскрытой карточки — одно правило и для заранее собранной, и для обычной. */
+    private fun expandedTarget(tile: TileEntity): BatteryModernExpansion.Bounds? {
+        val (width, height) = when (tile.type) {
+            HomeClimateConfig.TYPE -> {
+                val width = minOf((screenW * 0.92f).toInt(), 1700)
+                width to (if (screenW < screenH) (screenH * 0.92f).toInt()
+                    else minOf((screenH * 0.92f).toInt(), (width * 0.74f).toInt()).coerceAtLeast((screenH * 0.6f).toInt()))
+            }
+            InverterModernConfig.TYPE -> {
+                val width = minOf((screenW * 0.9f).toInt(), 1600)
+                width to minOf((screenH * 0.9f).toInt(), (width * 0.64f).toInt()).coerceAtLeast(screenH / 2)
+            }
+            PowerModernConfig.TYPE -> {
+                val width = minOf((screenW * 0.9f).toInt(), 1700)
+                width to minOf((screenH * 0.9f).toInt(), (width * 0.68f).toInt()).coerceAtLeast(screenH / 2)
+            }
+            BatteryModernConfig.TYPE -> {
+                val width = minOf((screenW * 0.92f).toInt(), 1600)
+                width to minOf((screenH * 0.9f).toInt(), (width * 0.8f).toInt().coerceAtLeast(screenH / 2))
+            }
+            else -> return null
+        }
+        return BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
+    }
+
     private fun expandModernBatteryTraced(tile: TileEntity, source: View) {
-        // Снимок фона копируется на фоновом потоке, пока ниже собирается карточка (0.9.15).
-        traced("SHD prefetch") { modernExpansion.prefetch(source) }
+        val ready = takePrepared(tile, source)
+        try {
+            expandModern(tile, source, ready)
+        } finally {
+            // Заранее собранная карточка не пригодилась (другой тип, ошибка) — не оставлять её невидимой в overlay.
+            if (ready != null && ready.card != null && ready.card !== modernExpansion.card) release(ready)
+        }
+    }
+
+    private fun expandModern(tile: TileEntity, source: View, ready: Prepared?) {
+        // Снимок фона копируется на фоновом потоке, пока ниже собирается карточка (0.9.15); начатый при касании
+        // плитки (0.9.16) — переиспользуется.
+        traced("SHD prefetch") { modernExpansion.prefetch(source, reuseFresh = true) }
         traced("SHD close others") {
             collapseChildButtons()
             modernGroup.close()
         }
         if (tile.type == HomeClimateConfig.TYPE) {
             // Та же механика: рост из плитки к центру, blur панели, автосворачивание, закрытие тапом.
-            val width = minOf((screenW * 0.92f).toInt(), 1700)
-            val height = if (screenW < screenH) (screenH * 0.92f).toInt()
-                else minOf((screenH * 0.92f).toInt(), (width * 0.74f).toInt()).coerceAtLeast((screenH * 0.6f).toInt())
-            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-            val card = traced("SHD card create") { HomeClimateExpandedCard(activity) }
+            val target = checkNotNull(expandedTarget(tile))
+            val card = ready?.card as? HomeClimateExpandedCard ?: traced("SHD card create") { HomeClimateExpandedCard(activity) }
             traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
-            traced("SHD card bind") { renderModern(tile, null, animate = false) }
+            if (ready?.bound != true) traced("SHD card bind") { renderModern(tile, null, animate = false) }
             return
         }
         if (tile.type == DoorbellConfig.TYPE) {
@@ -1192,10 +1354,8 @@ internal class DashboardPanelController(
         }
         if (tile.type == InverterModernConfig.TYPE) {
             // Слева схема крупно, справа подробности узлов и приоритет источника.
-            val width = minOf((screenW * 0.9f).toInt(), 1600)
-            val height = minOf((screenH * 0.9f).toInt(), (width * 0.64f).toInt()).coerceAtLeast(screenH / 2)
-            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-            val card = InverterModernCard(activity, expanded = true)
+            val target = checkNotNull(expandedTarget(tile))
+            val card = ready?.card as? InverterModernCard ?: InverterModernCard(activity, expanded = true)
             card.onPriority = { option -> confirmPriority(tile.id, option) }
             card.onClosing = ::closePriorityDialog
             card.scroll?.setOnScrollChangeListener { _, _, _, _, _ -> modernExpansion.touch() }
@@ -1206,27 +1366,28 @@ internal class DashboardPanelController(
         if (tile.type == PowerModernConfig.TYPE) {
             // Компоновка по эскизу: слева линия и главные цифры, справа строки и «История мощности».
             // С графиком карточка выше (до 90% экрана), центр панели под камеры не затрагивается.
-            val width = minOf((screenW * 0.9f).toInt(), 1700)
-            val height = minOf((screenH * 0.9f).toInt(), (width * 0.68f).toInt()).coerceAtLeast(screenH / 2)
-            val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-            val card = traced("SHD card create") { PowerModernCard(activity, expanded = true) }
-            val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
-            val state = PowerGraphState(PowerGraphPanel.savedPeriod(prefs, tile.id))
-            val panel = traced("SHD graph create") {
-                PowerGraphPanel(activity, viewModel.powerHistory, tile.id, state, prefs,
-                    onExpand = { openPowerGraph(card, tile.id, state) }, onTouch = modernExpansion::touch)
+            val target = checkNotNull(expandedTarget(tile))
+            val card = ready?.card as? PowerModernCard ?: traced("SHD card create") {
+                val card = PowerModernCard(activity, expanded = true)
+                val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
+                val state = PowerGraphState(PowerGraphPanel.savedPeriod(prefs, tile.id))
+                val panel = traced("SHD graph create") {
+                    PowerGraphPanel(activity, viewModel.powerHistory, tile.id, state, prefs,
+                        onExpand = { openPowerGraph(card, tile.id, state) }, onTouch = modernExpansion::touch)
+                }
+                traced("SHD graph attach") { card.attachGraph(panel) }
+                traced("SHD graph bind") { panel.bind(PowerModernConfig.from(tile.config).graphSource) }
+                card
             }
-            traced("SHD graph attach") { card.attachGraph(panel) }
-            traced("SHD graph bind") { panel.bind(PowerModernConfig.from(tile.config).graphSource) }
             traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
             traced("SHD card bind") { renderModern(tile, null, animate = false) }
             return
         }
-        val card = traced("SHD card create") { BatteryModernCard(activity, expanded = true) }
-        val width = minOf((screenW * 0.92f).toInt(), 1600)
-        val height = minOf((screenH * 0.9f).toInt(), (width * 0.8f).toInt().coerceAtLeast(screenH / 2))
-        val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-        traced("SHD card bind") { card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit) }
+        val target = checkNotNull(expandedTarget(tile))
+        val card = ready?.card as? BatteryModernCard ?: traced("SHD card create") { BatteryModernCard(activity, expanded = true) }
+        if (ready?.bound != true) {
+            traced("SHD card bind") { card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit) }
+        }
         traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
     }
 
@@ -1310,6 +1471,7 @@ internal class DashboardPanelController(
     fun clearPanelInteractions() = clearPanel(keepModernGroup = false)
 
     private fun clearPanel(keepModernGroup: Boolean) {
+        discardPrepared()
         if (!keepModernGroup) modernGroup.clear()
         renderedViews.clear()
         scannedChildren = -1
