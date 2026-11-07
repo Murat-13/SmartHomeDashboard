@@ -151,6 +151,18 @@ SDK/зависимости, настройки Mac/VPN/прокси или хр�
   (старые плитки Classic, редактор стиля, раскрытие групп, виброотклик) и профилирование 30–50
   раскрытий. [docs/buttons-modern.md](docs/buttons-modern.md).
 
+### 07.11.2026 — агент Android Studio на MacBook владельца: CI 0.9.15 и пропущенные красные запуски
+
+- `afe100f` (0.9.15): Android CI и Deep tests — success.
+- Ошибка агента: после предыдущих push CI не проверялся. `07580a7` (0.9.14) — Deep tests failure: 3 сквозных теста
+  эмулятора с раскрытием (`DoorbellStreamTest.mainStreamAfterExpandIsHd`, `PanelEndToEndTest.eventStormWithExpansions…`,
+  `recreatedScreensAreNotLeaked`) — «input event injection … not directed at a window owned by uid» (поверх панели чужое
+  окно). Вероятная причина — синхронный PixelCopy 0.9.14 на главном потоке (на программной отрисовке эмулятора);
+  logcat эмулятора в артефакте нет, подтверждение косвенное: с 0.9.15 (копия на фоновом потоке) те же тесты зелёные.
+  Вывод: 0.9.14 в стабильный канал не выпускать, только 0.9.15+. `a99a8be` (только журнал) — Android CI failure:
+  тайм-ауты `WeatherConsumerIntegrationTest`/`WeatherBridgeRegressionTest` (известная нестабильность под
+  нагрузкой, см. запись 05.11), код не менялся; следующие запуски зелёные.
+
 ### 07.11.2026 — агент Android Studio на MacBook владельца: 0.9.15 — трейс раскрытия на Huawei и старт раскрытия
 
 - Задача владельца: ~60 кадров/с на Huawei MatePad SE, сначала трейс, потом правки с замером. Подробно и таблицы —
