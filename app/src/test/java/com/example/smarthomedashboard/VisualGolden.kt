@@ -17,8 +17,8 @@ import kotlin.math.abs
 internal object VisualGolden {
     private const val CHANNEL_TOLERANCE = 40
     private const val PIXEL_TOLERANCE = 0.004
-    /** Рендеры с настоящими часами (время меняется от запуска к запуску) — без эталона. */
-    private val LIVE_CLOCK = setOf("home-climate-visual")
+    /** Рендеры с настоящими часами и данными «от текущего момента» (подписи времени меняются) — без эталона. */
+    private val LIVE_CLOCK = setOf("home-climate-visual", "power-graph")
 
     fun verify(rendered: File, bitmap: Bitmap) {
         val group = rendered.parentFile?.name ?: "misc"

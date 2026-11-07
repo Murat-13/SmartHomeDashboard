@@ -97,20 +97,20 @@ class DoorbellStreamTest {
             val monitor = StallMonitor().apply { start() }
             val seconds = argument("stallSeconds")?.toIntOrNull() ?: 45
             val until = System.currentTimeMillis() + seconds * 1000L
+            val seen = linkedSetOf<DoorbellVideoView.Status>()
             while (System.currentTimeMillis() < until) {
                 assertTrue("$name: главный поток отвечает", mainThreadResponds(2_000))
+                status()?.let { seen += it }
                 Thread.sleep(250)
             }
             val summary = monitor.stop()
             val finalStatus = status()
-            log("Домофон, $name: $summary; статус $finalStatus")
+            log("Домофон, $name: $summary; статус $finalStatus, были: $seen")
             assertTrue("$name: нет подвисаний больше 700 мс ($summary)", summary.max < 700)
             assertTrue("$name: плитка не показывает живое видео ($finalStatus)", finalStatus != DoorbellVideoView.Status.PLAYING)
-            if (name == "молчащая камера") {
-                // Молчащая камера не должна навсегда оставаться «Подключение…»: попытка обязана закончиться ошибкой.
-                assertTrue("$name: подключение не висит вечно ($finalStatus)", finalStatus != DoorbellVideoView.Status.CONNECTING ||
-                    card()?.let { c -> onMain { c.video.unreachable } } == true)
-            }
+            // Каждый вид пропавшей камеры обязан закончиться ошибкой и повтором, а не вечным «Подключение…»
+            // (молчащая камера — через проверку первого кадра за 20 с, 0.9.13).
+            assertTrue("$name: попытка заканчивается ошибкой (были: $seen)", DoorbellVideoView.Status.ERROR in seen)
             scenario?.close()
             scenario = null
             ha.close()
