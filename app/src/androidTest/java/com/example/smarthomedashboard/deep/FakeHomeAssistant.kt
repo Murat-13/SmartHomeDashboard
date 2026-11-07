@@ -104,6 +104,8 @@ internal class FakeHomeAssistant(val token: String = "FAKE-DEEP-TEST-TOKEN") : A
                 "camera/stream" -> result(success = false)
                 "call_service" -> {
                     commands += json
+                    log("Команда устройству: ${json.optString("domain")}.${json.optString("service")} " +
+                        json.optJSONObject("service_data")?.optString("entity_id").orEmpty())
                     result(JSONObject().put("context", JSONObject().put("id", "c$id")))
                     val entity = json.optJSONObject("service_data")?.optString("entity_id").orEmpty()
                     val service = json.optString("service")

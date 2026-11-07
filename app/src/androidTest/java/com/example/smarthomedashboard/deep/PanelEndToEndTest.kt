@@ -87,22 +87,27 @@ class PanelEndToEndTest {
         val until = System.currentTimeMillis() + seconds * 1000L
         val expandable = listOf("deep_sensor", "deep_bms", "deep_grid", "deep_inverter", "deep_climate", "deep_door")
         var events = 0
+        // Звонок домофона ночью законно включает свет (автоматика DoorbellHub) — в шторме его нет, звонки проверяет soak.
+        val stormIds = ids.filter { it != "binary_sensor.deep_visitor" }
         var nextTap = System.currentTimeMillis() + 3_000
         while (System.currentTimeMillis() < until) {
             // ~200 событий в секунду: больше, чем реальный дом (замер 03.11: десятки в секунду в пике).
             repeat(20) {
-                val id = ids[rnd.nextInt(ids.size)]
+                val id = stormIds[rnd.nextInt(stormIds.size)]
                 ha.push(id, value(id, rnd), JSONObject().put("unit_of_measurement", if (rnd.nextBoolean()) "W" else "kW"))
                 events++
             }
             if (System.currentTimeMillis() > nextTap) {
-                tile(expandable[rnd.nextInt(expandable.size)])?.let { tap(activity(), it) }
+                val target = expandable[rnd.nextInt(expandable.size)]
+                val before = ha.commands.size
+                tile(target)?.let { tap(activity(), it) }
                 Thread.sleep(900)
                 // «Назад» — только если что-то раскрылось: на пустой панели «Назад» закрывает приложение (так задумано).
                 if (expanded()) {
                     val current = activity()
                     onMain { current.onBackPressedDispatcher.onBackPressed() }
                 }
+                if (ha.commands.size > before) log("Касание плитки $target: команд ${ha.commands.size - before}, раскрыто: ${expanded()}")
                 nextTap = System.currentTimeMillis() + 2_500
             }
             assertTrue("Главный поток отвечает", mainThreadResponds(2_000))
@@ -113,7 +118,9 @@ class PanelEndToEndTest {
         // Эмулятор рисует программно (~10 кадров/с): число кадров — признак жизни, а не замер плавности планшета.
         assertTrue("Кадры шли: $summary", summary.frames > seconds)
         assertTrue("Нет подвисаний больше 1 с: $summary", summary.max < 1_000)
-        assertEquals("Шторм событий не шлёт команд устройствам", 0, ha.commands.size)
+        assertEquals("Шторм событий и касания плиток не шлют команд устройствам: " +
+            ha.commands.joinToString { "${it.optString("domain")}.${it.optString("service")} ${it.optJSONObject("service_data")}" },
+            0, ha.commands.size)
     }
 
     @Test fun connectionLossAndReturnRecoversWithoutRestart() {
