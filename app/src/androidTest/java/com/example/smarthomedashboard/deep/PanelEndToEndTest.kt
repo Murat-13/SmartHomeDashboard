@@ -11,6 +11,7 @@ import com.example.smarthomedashboard.MainActivity
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -214,6 +215,48 @@ class PanelEndToEndTest {
         // Пересоздания не плодят соединений: не больше одного живого.
         Thread.sleep(3_000)
         assertTrue("Соединений не больше одного: ${ha.connected()}", ha.connected() <= 1)
+    }
+
+    /** 0.9.19: раскрытая карточка не закрывается от поворота (пересоздания экрана) — открывается на новом экране. */
+    @Test fun expandedCardSurvivesRecreation() {
+        launch()
+        waitFor(10_000, "плитка климата") { tile("deep_climate") != null }
+        tap(activity(), tile("deep_climate")!!)
+        waitFor(3_000, "раскрыто") { expanded() }
+        scenario!!.recreate()
+        waitFor(10_000, "плитки после пересоздания") { tile("deep_door") != null }
+        waitFor(5_000, "снова раскрыто после пересоздания") { expanded() }
+        collapseIfExpanded()
+        waitFor(3_000, "свёрнуто") { !expanded() }
+    }
+
+    /** 0.9.19: в вертикальном положении плитки не накладываются и не выходят за экран. */
+    @Test fun portraitLayoutHasNoOverlaps() {
+        launch()
+        scenario!!.onActivity { it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+        try {
+            waitFor(15_000, "портрет") {
+                val current = activity()
+                onMain { current.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT &&
+                    current.window.decorView.findViewWithTag<View>("deep_door") != null }
+            }
+            Thread.sleep(1_000)
+            val current = activity()
+            val boxes = onMain {
+                val panel = current.window.decorView.findViewWithTag<View>("deep_door").parent as android.view.ViewGroup
+                (0 until panel.childCount).map { panel.getChildAt(it) }.filter { it.tag is String && it.visibility == View.VISIBLE }
+                    .map { android.graphics.RectF(it.x, it.y, it.x + it.width, it.y + it.height) to panel }
+            }
+            val panel = boxes.first().second
+            val rects = boxes.map { it.first }
+            rects.forEach { r -> assertTrue("Внутри экрана: $r", r.left >= -1 && r.top >= -1 && r.right <= panel.width + 1 && r.bottom <= panel.height + 1) }
+            for (i in rects.indices) for (j in i + 1 until rects.size) {
+                val a = android.graphics.RectF(rects[i]).apply { inset(1f, 1f) }
+                assertFalse("Наложение ${rects[i]} / ${rects[j]}", android.graphics.RectF.intersects(a, rects[j]))
+            }
+        } finally {
+            scenario!!.onActivity { it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+        }
     }
 
     /**

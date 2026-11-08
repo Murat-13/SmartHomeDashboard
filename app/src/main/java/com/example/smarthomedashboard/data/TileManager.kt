@@ -29,7 +29,13 @@ data class TileEntity(
     val icon: String = "",
     val sourceType: String = "auto",
     /** Страница панели: 0 — главная. В старых данных поля нет, Gson даёт 0 — плитки остаются на главной. */
-    val page: Int = 0
+    val page: Int = 0,
+    /**
+     * Своё место в вертикальном положении (`PortraitLayout.Place` в JSON) — только если владелец правил раскладку
+     * в портрете; пусто — вертикальная раскладка строится автоматически из горизонтальной. Старые версии поле
+     * игнорируют; горизонтальные x/y и размеры от него не зависят.
+     */
+    val portrait: String = ""
 )
 
 class TileManager(context: Context) {

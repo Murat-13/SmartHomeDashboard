@@ -180,22 +180,93 @@ internal class DashboardPanelController(
 
     fun showPage(page: Int) {
         currentPage = page.coerceIn(0, pageCount() - 1)
+        currentPart = 0
         refreshBottomPanel()
         host.pageChanged()
+    }
+
+    // ===== Экраны: страницы и их продолжения в вертикальном положении (0.9.19, docs/adaptive-layout.md) =====
+    private val screens by lazy { PanelScreens(activity.resources.displayMetrics.density) }
+
+    /** Часть страницы в портрете (0 — первая); в горизонтали всегда 0. */
+    private var currentPart: Int
+        get() = viewModel.currentPart
+        set(value) { viewModel.currentPart = value }
+
+    private fun plan(page: Int) = screens.plan(tileManager.getAllTiles(), page, screenW, screenH)
+
+    /** Все экраны по порядку листания: (страница, часть). */
+    private fun screenList(): List<Pair<Int, Int>> =
+        (0 until pageCount()).flatMap { page -> (0 until (plan(page)?.parts ?: 1)).map { page to it } }
+
+    fun screenCount() = screenList().size
+
+    fun screenIndex(): Int = screenList().indexOf(currentPage to currentPart).coerceAtLeast(0)
+
+    fun showScreen(index: Int) {
+        val list = screenList()
+        val (page, part) = list[index.coerceIn(0, list.size - 1)]
+        currentPage = page
+        currentPart = part
+        refreshBottomPanel()
+        host.pageChanged()
+    }
+
+    /** Плитки контейнера на экране (страница, часть) — с местом и размером этого экрана. */
+    private fun tilesOnScreen(container: String, page: Int, part: Int): List<TileEntity> {
+        val base = tileManager.getTilesByContainer(container).filter { it.page == page }
+        val plan = plan(page) ?: return base
+        return base.mapNotNull { tile ->
+            val place = plan.places[tile.id] ?: return@mapNotNull null
+            if (PortraitLayout.visible(place, part)) screens.effective(tile, place) else null
+        }
+    }
+
+    /** В портрете открыта своя раскладка страницы — её можно вернуть к автоматической. */
+    fun hasCustomPortrait() = plan(currentPage)?.custom == true
+
+    fun resetPortraitLayout() {
+        val page = currentPage
+        val tiles = tileManager.loadTiles().map { if (it.page == page && it.portrait.isNotEmpty()) it.copy(portrait = "") else it }
+        tileManager.saveTiles(tiles)
+        currentPart = 0
+        refreshBottomPanel()
+        host.pageChanged()
+    }
+
+    /**
+     * Правка в портрете: при первой правке страницы её текущая (автоматическая) раскладка целиком становится своей
+     * (иначе остальные плитки «поехали» бы), затем меняется место плитки [id]. Горизонтальные x/y не трогаются.
+     */
+    private fun writePortrait(id: String, change: (PortraitLayout.Place) -> PortraitLayout.Place): Boolean {
+        val plan = plan(currentPage) ?: return false
+        val tiles = tileManager.loadTiles().toMutableList()
+        var found = false
+        for (i in tiles.indices) {
+            val tile = tiles[i]
+            if (tile.page != currentPage || !tile.enabled) continue
+            val place = plan.places[tile.id] ?: continue
+            val next = if (tile.id == id) change(place).also { found = true } else place
+            if (tile.id == id || tile.portrait.isEmpty()) tiles[i] = tile.copy(portrait = next.json())
+        }
+        if (!found) return false
+        tileManager.saveTiles(tiles)
+        return true
     }
 
     /**
      * Превью соседней страницы на время листания: те же плитки и уже известные данные, но без регистрации
      * в панели — после листания страница строится заново обычным путём.
      */
-    fun renderPeek(page: Int, container: FrameLayout) {
+    fun renderPeek(screen: Int, container: FrameLayout) {
         container.removeAllViews()
-        tileManager.getTilesByContainer("grid").filter { it.page == page }.forEach { tile ->
+        val (page, part) = screenList().let { it[screen.coerceIn(0, it.size - 1)] }
+        tilesOnScreen("grid", page, part).forEach { tile ->
             val card = createSensorView(tile)
             placeTile(card, tile.x.toFloat(), tile.y.toFloat(), card.layoutParams.width, card.layoutParams.height)
             container.addView(card)
         }
-        tileManager.getTilesByContainer("bottom_panel").filter { it.page == page }.forEach { tile ->
+        tilesOnScreen("bottom_panel", page, part).forEach { tile ->
             val button = createTileButton(tile)
             val size = getButtonSize(tile)
             button.layoutParams = FrameLayout.LayoutParams(size, size)
@@ -208,23 +279,69 @@ internal class DashboardPanelController(
 
     /** Перенос плитки на соседнюю страницу (удержание у края в режиме редактирования). */
     private fun moveTileToPage(id: String, direction: Int) {
+        if (plan(currentPage) != null) { moveTileToScreen(id, direction); return }
         val target = currentPage + direction
         if (target < 0 || target >= pageCount()) return
         if (!host.adminAction { if (writePage(id, target, direction)) showPage(target) }) return
         if (writePage(id, target, direction)) showPage(target)
     }
 
+    /**
+     * Портрет: соседний экран той же страницы — меняется только часть (своя раскладка, у края, с которого пришла);
+     * другая страница — как в горизонтали, а на новой странице плитка встаёт на свободное место.
+     */
+    private fun moveTileToScreen(id: String, direction: Int) {
+        val list = screenList()
+        val target = list.getOrNull(screenIndex() + direction) ?: return
+        val apply = {
+            val ok = if (target.first == currentPage) {
+                writePortrait(id) { place ->
+                    val x = if (direction > 0) screens.margin else screenW - place.w - screens.margin
+                    if (place.part == PortraitLayout.ALL_PARTS) place else place.copy(x = x, part = target.second)
+                }
+            } else writePage(id, target.first, direction, clearPortrait = true)
+            if (ok) showScreen(screenList().indexOf(target).coerceAtLeast(0))
+        }
+        if (!host.adminAction { apply() }) return
+        apply()
+    }
+
     /** Страница и x — одной записью; на новой странице плитка встаёт у края, с которого пришла. */
-    private fun writePage(id: String, target: Int, direction: Int): Boolean {
+    private fun writePage(id: String, target: Int, direction: Int, clearPortrait: Boolean = false): Boolean {
         val tiles = tileManager.loadTiles().toMutableList()
         val index = tiles.indexOfFirst { it.id == id }
         if (index < 0) return false
         val tile = tiles[index]
-        val width = TilePlacement.displaySize(tile.container, tile.config, screenW, screenH).width
-        val x = if (direction > 0) 20 else screenW - width - 20
-        tiles[index] = tile.copy(page = target, x = x)
+        // x — горизонтальный: в портрете ширина горизонтального экрана — бо́льшая сторона.
+        val landscapeW = maxOf(screenW, screenH)
+        val width = TilePlacement.displaySize(tile.container, tile.config, landscapeW, minOf(screenW, screenH)).width
+        val x = if (direction > 0) 20 else landscapeW - width - 20
+        tiles[index] = tile.copy(page = target, x = x, portrait = if (clearPortrait) "" else tile.portrait)
         tileManager.saveTiles(tiles)
         return true
+    }
+
+    /**
+     * Перед пересозданием экрана (поворот): раскрытая Modern-карточка запоминается и открывается снова на новом
+     * экране — как у Apple Home / Google Home карточка не закрывается от поворота (0.9.19).
+     */
+    fun rememberForRecreation(changingConfigurations: Boolean) {
+        viewModel.reopenExpansion = modernExpansion.tileId
+            ?.takeIf { changingConfigurations && modernExpansion.isOpen && !isEditMode }
+    }
+
+    private fun reopenAfterRecreation() {
+        val id = viewModel.reopenExpansion ?: return
+        viewModel.reopenExpansion = null
+        // После первого кадра нового экрана: снимок фона для размытия берётся уже с нарисованной панели.
+        bottomPanel.postOnAnimation {
+            bottomPanel.postOnAnimation {
+                if (isEditMode || hasExpansion()) return@postOnAnimation
+                val view = renderedViews[id]?.takeIf { it.parent === bottomPanel } ?: return@postOnAnimation
+                val tile = tileManager.getAllTiles().find { it.id == id && isModern(it.type) } ?: return@postOnAnimation
+                expandModernBattery(tile, view)
+            }
+        }
     }
 
     /** Раскрыт виджет или идёт изменение размера: навигационные жесты в это время не работают. */
@@ -253,13 +370,16 @@ internal class DashboardPanelController(
         bottomPanel.removeAllViews()
 
         val page = currentPage
-        val tiles = tileManager.getTilesByContainer("bottom_panel").filter { it.page == page }
+        // После поворота в горизонталь (или удаления плиток) части может уже не быть.
+        currentPart = currentPart.coerceIn(0, (plan(page)?.parts ?: 1) - 1)
+        val part = currentPart
+        val tiles = tilesOnScreen("bottom_panel", page, part)
         // Состояния удалённых плиток «Электропитание Modern» не накапливаются.
         viewModel.retainPowerTrackers(tileManager.getAllTiles().filter { it.type == PowerModernConfig.TYPE }.mapTo(HashSet()) { it.id })
         viewModel.retainInverterTrackers(tileManager.getAllTiles().filter { it.type == InverterModernConfig.TYPE }.mapTo(HashSet()) { it.id })
 
         // Сенсоры
-        tileManager.getTilesByContainer("grid").filter { it.page == page }.forEach { tile ->
+        tilesOnScreen("grid", page, part).forEach { tile ->
             val card = createSensorView(tile)
             placeTile(card, tile.x.toFloat(), tile.y.toFloat(), card.layoutParams.width, card.layoutParams.height)
             bottomPanel.addView(card)
@@ -297,6 +417,7 @@ internal class DashboardPanelController(
         contentController.updateSensorDisplay()
         contentController.updateClockViews()
         host.updateHint()
+        reopenAfterRecreation()
     }
 
     private fun getButtonSize(tile: TileEntity): Int =
@@ -341,6 +462,7 @@ internal class DashboardPanelController(
     }
 
     private fun writeSensorSize(tileId: String, width: Int, height: Int): Boolean {
+        if (plan(currentPage) != null) return writePortrait(tileId) { it.copy(w = width, h = height) }
         // Читаем актуальную плитку на UP, не сохраняя старую копию из начала жеста.
         val tiles = tileManager.loadTiles().toMutableList()
         val idx = tiles.indexOfFirst { it.id == tileId }
@@ -772,6 +894,7 @@ internal class DashboardPanelController(
     }
 
     private fun writePosition(id: String, x: Int, y: Int) {
+        if (plan(currentPage) != null) { writePortrait(id) { it.copy(x = x, y = y) }; return }
         val tiles = tileManager.loadTiles().toMutableList()
         val idx = tiles.indexOfFirst { it.id == id }
         if (idx >= 0) {

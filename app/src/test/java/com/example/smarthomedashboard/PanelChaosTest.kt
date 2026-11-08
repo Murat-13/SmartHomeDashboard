@@ -127,6 +127,10 @@ class PanelChaosTest(private val shard: Int) {
 
     private inner class Run(seed: Long) {
         val rnd = Random(seed)
+        // Каждое третье сочетание — в вертикальном положении (0.9.19): авто-раскладка, продолжения страниц.
+        val portrait = seed % 3 == 0L
+        val screenW = if (portrait) 1200 else 1920
+        val screenH = if (portrait) 1920 else 1200
         var step = "создание экрана"
         val activity: MainActivity = Robolectric.buildActivity(MainActivity::class.java).get().apply { pinGestureFixture(this) }
         val manager = TileManager(activity)
@@ -140,8 +144,8 @@ class PanelChaosTest(private val shard: Int) {
             ShadowChoreographer.setPaused(true)
             ShadowChoreographer.setFrameDelay(Duration.ofMillis(16))
             activity.setTheme(android.R.style.Theme_Material_Light_NoActionBar)
-            activity.resources.displayMetrics.widthPixels = 1920
-            activity.resources.displayMetrics.heightPixels = 1200
+            activity.resources.displayMetrics.widthPixels = screenW
+            activity.resources.displayMetrics.heightPixels = screenH
             step = "сохранение плиток"
             val tiles = ChaosTiles.generate(rnd)
             manager.saveTiles(tiles)
@@ -151,7 +155,7 @@ class PanelChaosTest(private val shard: Int) {
             ReflectionHelpers.setField(activity, "dimOverlay", View(activity).apply { visibility = View.GONE })
             ReflectionHelpers.setField(activity, "yandexWeatherManager", YandexWeatherManager(activity))
             val root = FrameLayout(activity)
-            root.addView(panel, FrameLayout.LayoutParams(1920, 1200))
+            root.addView(panel, FrameLayout.LayoutParams(screenW, screenH))
             activity.window.setContentView(root)
             ReflectionHelpers.setField(activity.delegate, "mSubDecorInstalled", true)
             ReflectionHelpers.setField(activity.delegate, "mWindow", activity.window)
@@ -235,8 +239,8 @@ class PanelChaosTest(private val shard: Int) {
                 v.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
                 v.layout(0, 0, w, h)
             }
-            panel.measure(View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1200, View.MeasureSpec.EXACTLY))
-            panel.layout(0, 0, 1920, 1200)
+            panel.measure(View.MeasureSpec.makeMeasureSpec(screenW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(screenH, View.MeasureSpec.EXACTLY))
+            panel.layout(0, 0, screenW, screenH)
             canvas.drawColor(0xFF000000.toInt())
             panel.draw(canvas)
         }

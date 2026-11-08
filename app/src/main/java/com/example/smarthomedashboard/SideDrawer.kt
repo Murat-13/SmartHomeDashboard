@@ -33,6 +33,9 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         fun stateChanged(open: Boolean) {}
         /** Подпись текущей страницы, например «Страница 2 из 3»; null — не показывать. */
         fun pageText(): String? = null
+        /** В вертикальном положении у страницы своя раскладка — показать «Вернуть автоматическую раскладку». */
+        fun portraitCustom(): Boolean = false
+        fun resetPortrait() {}
     }
 
     private val context = root.context
@@ -67,6 +70,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
     val updateButton = ModernUi.secondaryButton(context, "Установить обновление") { close(); host.installUpdate() }
         .apply { visibility = View.GONE }
     private val pageLabel = ModernUi.caption(context, "")
+    private val resetPortrait = ModernUi.secondaryButton(context, "Вернуть автоматическую раскладку") { close(); host.resetPortrait() }
+        .apply { visibility = View.GONE }
     private val endAdmin = ModernUi.secondaryButton(context, "Завершить админ-режим") { host.endAdmin(); refreshAdmin() }
 
     val panel: View = ScrollView(context).apply {
@@ -91,6 +96,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
             action(ModernUi.secondaryButton(context, "⚙  Настройки") { close(); host.settings() })
             action(ModernUi.secondaryButton(context, "+  Добавить") { close(); host.addTile() })
             action(ModernUi.secondaryButton(context, "Редактировать панель") { close(); host.edit() })
+            action(resetPortrait)
             action(endAdmin)
             addView(pageLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
@@ -151,6 +157,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         scrim.visibility = View.VISIBLE
         panel.visibility = View.VISIBLE
         handle.visibility = View.INVISIBLE
+        resetPortrait.visibility = if (host.portraitCustom()) View.VISIBLE else View.GONE
         host.stateChanged(true)
     }
 

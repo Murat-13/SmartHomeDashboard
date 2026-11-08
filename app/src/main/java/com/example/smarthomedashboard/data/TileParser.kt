@@ -50,6 +50,7 @@ object TileParser {
             icon = o.string("icon") ?: "",
             sourceType = o.string("sourceType") ?: "auto",
             page = o.int("page")?.takeIf { it >= 0 } ?: 0,
+            portrait = o.string("portrait") ?: "",
         )
     }
 

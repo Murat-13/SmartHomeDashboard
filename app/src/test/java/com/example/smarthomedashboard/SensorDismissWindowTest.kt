@@ -403,7 +403,11 @@ class SensorDismissWindowTest {
         send(MotionEvent.ACTION_MOVE, p.first + 40 to p.second + 40)
         send(MotionEvent.ACTION_UP, p.first + 40 to p.second + 40)
         assertFalse(get<Boolean>("isResizing"))
-        assertEquals(280, JSONObject(manager.loadTiles().single { it.id == "a" }.config).getInt("button_size"))
+        // Узкое окно — вертикальное положение: размер пишется в свою вертикальную раскладку (0.9.19), горизонтальный
+        // размер плитки не меняется.
+        val resized = manager.loadTiles().single { it.id == "a" }
+        assertEquals(280, PortraitLayout.Place.parse(resized.portrait)!!.w)
+        assertEquals(240, JSONObject(resized.config).getInt("button_size"))
         tap(point(view("button")))
         awaitPinGate(activity)
         assertEquals(TileSettingsActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)

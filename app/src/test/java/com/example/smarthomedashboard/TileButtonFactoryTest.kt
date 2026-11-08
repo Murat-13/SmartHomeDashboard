@@ -332,6 +332,9 @@ class TileButtonFactoryTest {
     }
 
     private fun panel(vararg tiles: TileEntity): FrameLayout {
+        // Горизонтальный экран: проверяются сохранённые места (в вертикальном — авто-раскладка 0.9.19).
+        activity.resources.displayMetrics.widthPixels = 1920
+        activity.resources.displayMetrics.heightPixels = 1200
         val manager = com.example.smarthomedashboard.data.TileManager(activity)
         manager.saveTiles(tiles.toList())
         set(activity, "tileManager", manager)

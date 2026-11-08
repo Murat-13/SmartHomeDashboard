@@ -75,13 +75,15 @@ class ExpandedFitTest {
         val big = HomeClimateExpandedCard(host).apply { bind(climate(2)) }
         host.setContentView(big)
         layout(big, 3000, 2400)
-        assertEquals(1f, big.findViewWithTag<FitScrollView>("hc_summary_scroll").fitScale)
+        // Карточка 1500 dp — шире опорной (850 dp): содержимое крупнее, но не больше предела 1,4.
+        assertEquals(1.4f, big.findViewWithTag<FitScrollView>("hc_summary_scroll").fitScale, 0.001f)
         big.dispose()
         val crowded = HomeClimateExpandedCard(host).apply { bind(climate(24)) }
         host.setContentView(crowded)
         layout(crowded, 1700, 1104)
         val fit = crowded.findViewWithTag<FitScrollView>("hc_summary_scroll")
-        assertEquals(FitScrollView.MIN_SCALE, fit.fitScale, 0.001f)
+        // Предел читаемости: самый мелкий текст «Климата» (13 sp) не мельче 11 sp — масштаб не ниже 11/13.
+        assertEquals(11f / 13f, fit.fitScale, 0.01f)
         assertTrue("Не влезло и при минимуме — прокрутка", fit.canScrollVertically(1))
         crowded.dispose()
     }

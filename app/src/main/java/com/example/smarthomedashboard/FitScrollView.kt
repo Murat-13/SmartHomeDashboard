@@ -5,6 +5,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ScrollView
+import android.widget.TextView
+import android.util.TypedValue
 
 /**
  * Вертикальная прокрутка раскрытых Modern-карточек, которая сначала **вписывает** содержимое: если оно выше
@@ -19,6 +21,17 @@ import android.widget.ScrollView
 internal class FitScrollView(context: Context, private val minScale: Float = MIN_SCALE) : ScrollView(context) {
     private val box = Box(context)
     private var viewport = 0
+
+    /**
+     * Верхний предел масштаба (по умолчанию 1 — только уменьшение). Больше 1 — содержимое может и увеличиваться,
+     * заполняя высоту большой карточки (0.9.19: «Климат» на экранах крупнее Huawei).
+     */
+    var maxScale = 1f
+        set(value) {
+            if (field == value) return
+            field = value.coerceAtLeast(1f)
+            box.requestLayout()
+        }
 
     /** Текущий масштаб содержимого (1 — без уменьшения). */
     val fitScale: Float get() = box.scale
@@ -65,21 +78,26 @@ internal class FitScrollView(context: Context, private val minScale: Float = MIN
                 return
             }
             val v = viewport
-            var s = if (v <= 0) 1f else scale.coerceIn(minScale, 1f)
+            // Предел читаемости: самый мелкий видимый текст не мельче READABLE_SP (Material: подпись 11 sp).
+            val floor = (TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, READABLE_SP, resources.displayMetrics) /
+                smallestText(child).coerceAtLeast(1f)).coerceIn(minScale, 1f)
+            val low = maxOf(minScale, floor)
+            val high = maxScale
+            var s = if (v <= 0) 1f else scale.coerceIn(low, high)
             var h = measureContent(child, width, s)
             if (v > 0) {
                 // Цель — наибольший s, при котором h(s)·s ≤ v. h(s) почти не зависит от ширины, поэтому s = v / h
                 // сходится за 1–2 шага; финальная проверка вниз — на случай, если при меньшей ширине появился перенос.
                 repeat(3) {
                     val fits = h * s <= v + 0.5f
-                    val target = (v / h.toFloat().coerceAtLeast(1f)).coerceIn(minScale, 1f)
-                    val tight = fits && (s >= 1f || h * s >= v * 0.985f)
-                    if (tight || (!fits && s <= minScale) || kotlin.math.abs(target - s) < 0.004f) return@repeat
-                    s = if (fits) target else minOf(target, s - 0.004f).coerceAtLeast(minScale)
+                    val target = (v / h.toFloat().coerceAtLeast(1f)).coerceIn(low, high)
+                    val tight = fits && (s >= high || h * s >= v * 0.985f)
+                    if (tight || (!fits && s <= low) || kotlin.math.abs(target - s) < 0.004f) return@repeat
+                    s = if (fits) target else minOf(target, s - 0.004f).coerceAtLeast(low)
                     h = measureContent(child, width, s)
                 }
-                if (h * s > v + 0.5f && s > minScale) {
-                    s = (v / h.toFloat()).coerceIn(minScale, s)
+                if (h * s > v + 0.5f && s > low) {
+                    s = (v / h.toFloat()).coerceIn(low, s)
                     h = measureContent(child, width, s)
                 }
             }
@@ -100,8 +118,20 @@ internal class FitScrollView(context: Context, private val minScale: Float = MIN
         }
     }
 
+    /** Самый мелкий видимый непустой текст содержимого, px (без учёта масштаба вписывания). */
+    private fun smallestText(view: View): Float {
+        if (view.visibility != View.VISIBLE) return Float.MAX_VALUE
+        if (view is TextView) return if (view.text.isNullOrEmpty()) Float.MAX_VALUE else view.textSize
+        if (view !is ViewGroup) return Float.MAX_VALUE
+        var min = Float.MAX_VALUE
+        for (i in 0 until view.childCount) min = minOf(min, smallestText(view.getChildAt(i)))
+        return min
+    }
+
     companion object {
         /** Ниже — текст на настенном планшете читать тяжело: дальше прокрутка. */
         const val MIN_SCALE = 0.7f
+        /** Самый мелкий текст после уменьшения — не мельче этого (Material 3: самая мелкая подпись 11 sp). */
+        const val READABLE_SP = 11f
     }
 }

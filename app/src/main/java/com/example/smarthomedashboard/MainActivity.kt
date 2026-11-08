@@ -103,7 +103,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun adminAction(retry: () -> Unit) = this@MainActivity.adminAction(retry)
             override fun pageChanged() {
-                showDots(highlight = panelController.currentPage)
+                showDots(highlight = panelController.screenIndex())
                 drawer?.refreshPage()
                 scheduleAutoHome()
             }
@@ -342,6 +342,7 @@ class MainActivity : AppCompatActivity() {
         pageRunner.cancel()
         pageHandler.removeCallbacksAndMessages(null)
         pillHandler.removeCallbacksAndMessages(null)
+        panelController.rememberForRecreation(isChangingConfigurations)
         panelController.clearPanelInteractions()
         idleHandler.removeCallbacks(idleRunnable)
         clockHandler.removeCallbacks(clockRunnable)
@@ -443,6 +444,15 @@ class MainActivity : AppCompatActivity() {
             override fun settings() = openWithPinCheck { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
             override fun addTile() = openWithPinCheck { chooseAddition() }
             override fun edit() = openWithPinCheck { enterEditMode() }
+            override fun portraitCustom() = panelController.hasCustomPortrait()
+            override fun resetPortrait() = openWithPinCheck {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Вернуть автоматическую раскладку?")
+                    .setMessage("Вертикальная раскладка этой страницы снова будет строиться из горизонтальной. " +
+                        "Горизонтальная раскладка не изменится.")
+                    .setPositiveButton("Вернуть") { _, _ -> panelController.resetPortraitLayout() }
+                    .setNegativeButton("Отмена", null).show()
+            }
             override fun installUpdate() = openWithPinCheck { UpdateInstallUi.start(this@MainActivity) }
             override fun endAdmin() {
                 PinSecurityUi.session.revoke()
@@ -464,11 +474,12 @@ class MainActivity : AppCompatActivity() {
                 private var pages = false
                 // На главной слева направо — панель; иначе листание на соседнюю существующую страницу.
                 override fun onStart(direction: Int): Boolean {
-                    val page = panelController.currentPage
-                    pages = !(direction > 0 && page == 0)
+                    // Листание идёт по экранам: страницы и их продолжения в вертикальном положении (0.9.19).
+                    val screen = panelController.screenIndex()
+                    pages = !(direction > 0 && screen == 0)
                     if (!pages) return true
-                    val target = page - direction
-                    if (target < 0 || target >= panelController.pageCount()) return false
+                    val target = screen - direction
+                    if (target < 0 || target >= panelController.screenCount()) return false
                     beginPageDrag(target)
                     return true
                 }
@@ -492,6 +503,8 @@ class MainActivity : AppCompatActivity() {
     private var pagePeek: FrameLayout? = null
     private var pageDots: LinearLayout? = null
     private var pageTarget = 0
+    /** Экран, с которого началось листание (не пересчитывается на каждом кадре). */
+    private var pageFrom = 0
     private var pageOffset = 0f
     private var pageCommit = false
     private val pageHandler = Handler(Looper.getMainLooper())
@@ -522,19 +535,20 @@ class MainActivity : AppCompatActivity() {
         pageRunner.cancel()
         pageHandler.removeCallbacks(peekFallback)
         pageTarget = target
+        pageFrom = panelController.screenIndex()
         pagePeek?.let { panelController.renderPeek(target, it); it.visibility = View.VISIBLE }
-        showDots(highlight = panelController.currentPage)
+        showDots(highlight = panelController.screenIndex())
     }
 
     /** Соседняя страница выезжает вслед за пальцами; дальше её края движения нет. */
     private fun dragPage(dx: Float) {
         val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
-        applyPageOffset(if (pageTarget < panelController.currentPage) dx.coerceIn(0f, width) else dx.coerceIn(-width, 0f))
+        applyPageOffset(if (pageTarget < pageFrom) dx.coerceIn(0f, width) else dx.coerceIn(-width, 0f))
     }
 
     private fun releasePage(velocityX: Float) {
         val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
-        val toLeftPage = pageTarget < panelController.currentPage
+        val toLeftPage = pageTarget < pageFrom
         pageCommit = kotlin.math.abs(pageOffset) > width / 3 ||
             (toLeftPage && velocityX > PAGE_FLING) || (!toLeftPage && velocityX < -PAGE_FLING)
         val end = if (!pageCommit) 0f else if (toLeftPage) width else -width
@@ -545,12 +559,12 @@ class MainActivity : AppCompatActivity() {
         pageOffset = offset
         val width = bottomPanel.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
         bottomPanel.translationX = offset
-        pagePeek?.translationX = offset + if (pageTarget < panelController.currentPage) -width else width
+        pagePeek?.translationX = offset + if (pageTarget < pageFrom) -width else width
     }
 
     private fun pageSettled() {
         val committed = pageCommit
-        if (committed) panelController.showPage(pageTarget)
+        if (committed) panelController.showScreen(pageTarget)
         pageCommit = false
         pageOffset = 0f
         bottomPanel.translationX = 0f
@@ -561,7 +575,7 @@ class MainActivity : AppCompatActivity() {
             peek.translationX = 0f
             revealPageAfterFit(peek)
         } else peek?.let { clearPeek(it) }
-        showDots(highlight = panelController.currentPage)
+        showDots(highlight = panelController.screenIndex())
         scheduleAutoHome()
     }
 
@@ -592,7 +606,7 @@ class MainActivity : AppCompatActivity() {
     /** Точки страниц видны во время листания и ~2 с после; при одной странице не показываются. */
     private fun showDots(highlight: Int) {
         val dots = pageDots ?: return
-        val count = panelController.pageCount()
+        val count = panelController.screenCount()
         pageHandler.removeCallbacks(hideDots)
         if (count < 2) { dots.visibility = View.GONE; return }
         dots.removeAllViews()
@@ -609,14 +623,14 @@ class MainActivity : AppCompatActivity() {
     /** Отсчёт автовозврата на главную; любое касание на второстепенной странице начинает его заново. */
     private fun scheduleAutoHome() {
         pageHandler.removeCallbacks(autoHome)
-        if (panelController.currentPage == 0) return
+        if (panelController.screenIndex() == 0) return
         val seconds = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getInt(PREF_HOME_SECONDS, 60).coerceAtLeast(10)
         pageHandler.postDelayed(autoHome, seconds * 1000L)
     }
 
     /** Не возвращаемся посреди редактирования, раскрытого виджета, открытой панели или жеста. */
     private fun goHomeIfIdle() {
-        if (panelController.currentPage == 0) return
+        if (panelController.screenIndex() == 0) return
         if (isEditMode || panelController.hasExpansion() || drawer?.isOpen == true || navigation?.active == true ||
             pendingPin?.isActive == true || pageRunner.running) {
             scheduleAutoHome()

@@ -34,6 +34,10 @@ class MainViewModel : ViewModel() {
     internal var openModernGroup: String? = null
     /** Текущая страница панели (0 — главная); переживает пересоздание экрана, но не перезапуск. */
     internal var currentPage = 0
+    /** Часть страницы в вертикальном положении (экран-продолжение); переживает поворот (0.9.19). */
+    internal var currentPart = 0
+    /** Раскрытая Modern-карточка на момент пересоздания экрана (поворот): открывается снова (0.9.19). */
+    internal var reopenExpansion: String? = null
     internal val commands = DashboardDeviceCommands(
         devices, { domain, service, id, result -> callService(domain, service, id, onResult = result) }, ::publishDevices,
         render = { id -> commandStateCallback?.invoke(id) },

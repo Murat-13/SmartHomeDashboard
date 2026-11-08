@@ -195,6 +195,9 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val narrow = MeasureSpec.getSize(widthMeasureSpec) / density < 760f
+        // Карточка шире опорной (Huawei MatePad SE, 850 dp) — содержимое крупнее, чтобы на большом экране был виден
+        // примерно тот же объём, а не та же мелкая раскладка с пустыми полями (0.9.19, docs/adaptive-layout.md).
+        fit.maxScale = (MeasureSpec.getSize(widthMeasureSpec) / density / REFERENCE_WIDTH_DP).coerceIn(1f, MAX_SCALE)
         if (narrowLayout != narrow) {
             narrowLayout = narrow
             top.orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
@@ -474,6 +477,9 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
     }
 
     companion object {
+        /** Опорная ширина раскрытой карточки, dp (Huawei MatePad SE в горизонтали) и предел увеличения. */
+        private const val REFERENCE_WIDTH_DP = 850f
+        private const val MAX_SCALE = 1.4f
         private const val NEON = 0xFF22D3F5.toInt()
         private const val TIME = 0xFFF4F8FF.toInt()
         private const val DATE = 0xFFC6D4E8.toInt()
