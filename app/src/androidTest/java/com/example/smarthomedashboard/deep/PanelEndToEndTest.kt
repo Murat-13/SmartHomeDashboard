@@ -60,6 +60,19 @@ class PanelEndToEndTest {
         return onMain { activity.window.decorView.findViewWithTag<View>(id) }
     }
 
+    /**
+     * Свернуть раскрытое тем же путём, что «Назад», но атомарно на главном потоке: проверка «раскрыто?» и нажатие
+     * «Назад» отдельными вызовами давали гонку на медленном эмуляторе — между ними раскрытие успевало закрыться,
+     * и «Назад» закрывало приложение (Deep tests 08.11, eventStorm…).
+     */
+    private fun collapseIfExpanded() {
+        val current = activity()
+        onMain {
+            val controller = MainActivity::class.java.getDeclaredMethod("getPanelController").apply { isAccessible = true }.invoke(current)
+            controller.javaClass.getMethod("collapseOnBack").invoke(controller)
+        }
+    }
+
     private fun expanded(): Boolean {
         val current = activity()
         return onMain {
@@ -99,7 +112,7 @@ class PanelEndToEndTest {
             waitFor(2_000, "раскрыта заранее собранная карточка") { onMain { ready!!.visibility == View.VISIBLE && ready.isShown } }
             assertTrue("Круг $round: раскрыто", expanded())
             Thread.sleep(600)
-            if (expanded()) { val current = activity(); onMain { current.onBackPressedDispatcher.onBackPressed() } }
+            collapseIfExpanded()
             waitFor(3_000, "свёрнуто") { !expanded() }
             assertTrue("Круг $round: после сворачивания невидимых карточек не осталось", hidden().isEmpty())
             Thread.sleep(500)
@@ -112,7 +125,7 @@ class PanelEndToEndTest {
             quickTimes += SystemClock.uptimeMillis() - quickUp
             waitFor(2_000, "раскрыто мгновенным касанием") { expanded() }
             Thread.sleep(600)
-            if (expanded()) { val current = activity(); onMain { current.onBackPressedDispatcher.onBackPressed() } }
+            collapseIfExpanded()
             waitFor(3_000, "свёрнуто") { !expanded() }
             Thread.sleep(500)
         }
@@ -158,10 +171,7 @@ class PanelEndToEndTest {
                 tile(target)?.let { tap(activity(), it) }
                 Thread.sleep(900)
                 // «Назад» — только если что-то раскрылось: на пустой панели «Назад» закрывает приложение (так задумано).
-                if (expanded()) {
-                    val current = activity()
-                    onMain { current.onBackPressedDispatcher.onBackPressed() }
-                }
+                collapseIfExpanded()
                 if (ha.commands.size > before) log("Касание плитки $target: команд ${ha.commands.size - before}, раскрыто: ${expanded()}")
                 nextTap = System.currentTimeMillis() + 2_500
             }
