@@ -124,6 +124,8 @@ jobs:
           script: |
             adb shell svc power stayon true
             adb shell settings put system screen_off_timeout 2147483647
+            # Окно «Приложение не отвечает» чужого лаунчера на медленном эмуляторе перехватывало касания тестов (07.11).
+            adb shell settings put global hide_error_dialogs 1
             adb logcat -c
             (adb logcat -v time DeepTest:I AndroidRuntime:E '*:S' > deep-log.txt &) ; sleep 1
             ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.package=com.example.smarthomedashboard.deep -Pandroid.testInstrumentationRunnerArguments.rtspHost=10.0.2.2 -Pandroid.testInstrumentationRunnerArguments.soakMinutes=$SOAK_MINUTES -Pandroid.testInstrumentationRunnerArguments.stormSeconds=60 --stacktrace

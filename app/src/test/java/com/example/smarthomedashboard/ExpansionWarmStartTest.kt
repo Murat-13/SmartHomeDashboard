@@ -54,13 +54,13 @@ class ExpansionWarmStartTest {
         return config.writeTo("""{"button_size":520,"widget_height":380}""")
     }
 
-    private fun open() {
+    private fun open(tiles: List<TileEntity>? = null) {
         ShadowChoreographer.setPaused(true)
         ShadowChoreographer.setFrameDelay(Duration.ofMillis(16))
         activity.setTheme(android.R.style.Theme_Material_Light_NoActionBar)
         activity.resources.displayMetrics.widthPixels = 1920
         activity.resources.displayMetrics.heightPixels = 1200
-        manager.saveTiles(listOf(
+        manager.saveTiles(tiles ?: listOf(
             TileEntity("modern", BatteryModernConfig.TYPE, "grid", "АКБ", 40, 140, 1, 1, config = modernConfig()),
             TileEntity("classic", "battery", "grid", "Classic", 700, 140, 1, 1,
                 config = """{"entity_id":"sensor.bms_soc","button_size":260,"widget_height":210}"""),
@@ -184,6 +184,33 @@ class ExpansionWarmStartTest {
         advance(400)
         assertTrue(expansion.isOpen)
         assertEquals("power", expansion.tileId)
+    }
+
+    /**
+     * Ночной хаос-тест 0.9.16: в повреждённой конфигурации две плитки с одним id; по id находилась классическая «АКБ»,
+     * и раскрытие плитки «Сеть» роняло панель (checkNotNull размера карточки). Теперь ничего не раскрывается и не падает.
+     */
+    @Test fun duplicateTileIdDoesNotCrashExpansion() {
+        open(listOf(
+            TileEntity("dup", "battery", "grid", "Classic", 40, 140, 1, 1,
+                config = """{"entity_id":"sensor.bms_soc","button_size":260,"widget_height":210}"""),
+            TileEntity("dup", PowerModernConfig.TYPE, "grid", "Сеть", 700, 140, 1, 1,
+                config = PowerModernConfig.newTileConfig(PowerModernConfig.PROFILE_GRID, """{"button_size":420,"widget_height":300}"""))
+        ))
+        val children = content.childCount
+        val power = (0 until panel.childCount).map { panel.getChildAt(it) }.last { it.tag == "dup" }
+        listOf(true, false).forEach { hold ->
+            val time = SystemClock.uptimeMillis()
+            listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { action ->
+                val e = MotionEvent.obtain(time, SystemClock.uptimeMillis(), action, 20f, 20f, 0)
+                try { power.dispatchTouchEvent(e) } finally { e.recycle() }
+                if (hold && action == MotionEvent.ACTION_DOWN) advance(96)
+            }
+            advance(400)
+            assertFalse(expansion.isOpen)
+            assertTrue("Заранее собранная карточка не осталась в overlay", hiddenCards().isEmpty())
+            assertEquals(children, content.childCount)
+        }
     }
 
     @Test fun quickTapWorksAsBeforeWithoutLeftovers() {

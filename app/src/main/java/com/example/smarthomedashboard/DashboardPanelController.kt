@@ -1326,7 +1326,7 @@ internal class DashboardPanelController(
         }
         if (tile.type == HomeClimateConfig.TYPE) {
             // Та же механика: рост из плитки к центру, blur панели, автосворачивание, закрытие тапом.
-            val target = checkNotNull(expandedTarget(tile))
+            val target = expandedTarget(tile) ?: return
             val card = ready?.card as? HomeClimateExpandedCard ?: traced("SHD card create") { HomeClimateExpandedCard(activity) }
             traced("SHD expansion") { modernExpansion.expand(tile.id, source, card, target) }
             if (ready?.bound != true) traced("SHD card bind") { renderModern(tile, null, animate = false) }
@@ -1354,7 +1354,7 @@ internal class DashboardPanelController(
         }
         if (tile.type == InverterModernConfig.TYPE) {
             // Слева схема крупно, справа подробности узлов и приоритет источника.
-            val target = checkNotNull(expandedTarget(tile))
+            val target = expandedTarget(tile) ?: return
             val card = ready?.card as? InverterModernCard ?: InverterModernCard(activity, expanded = true)
             card.onPriority = { option -> confirmPriority(tile.id, option) }
             card.onClosing = ::closePriorityDialog
@@ -1366,7 +1366,7 @@ internal class DashboardPanelController(
         if (tile.type == PowerModernConfig.TYPE) {
             // Компоновка по эскизу: слева линия и главные цифры, справа строки и «История мощности».
             // С графиком карточка выше (до 90% экрана), центр панели под камеры не затрагивается.
-            val target = checkNotNull(expandedTarget(tile))
+            val target = expandedTarget(tile) ?: return
             val card = ready?.card as? PowerModernCard ?: traced("SHD card create") {
                 val card = PowerModernCard(activity, expanded = true)
                 val prefs = activity.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
@@ -1383,7 +1383,10 @@ internal class DashboardPanelController(
             traced("SHD card bind") { renderModern(tile, null, animate = false) }
             return
         }
-        val target = checkNotNull(expandedTarget(tile))
+        // Сюда доходит только «АКБ Modern». Плитка другого типа (например, повреждённая конфигурация с повторным id,
+        // когда по id находится не та плитка) раньше раскрывалась пустой карточкой АКБ, а в 0.9.16 роняла панель.
+        if (tile.type != BatteryModernConfig.TYPE) return
+        val target = expandedTarget(tile) ?: return
         val card = ready?.card as? BatteryModernCard ?: traced("SHD card create") { BatteryModernCard(activity, expanded = true) }
         if (ready?.bound != true) {
             traced("SHD card bind") { card.bind(tile.title, BatteryModernConfig.from(tile.config), modernReadings(), host.temperatureUnit) }
