@@ -16,7 +16,6 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.ScrollView
 import androidx.core.widget.TextViewCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -44,8 +43,7 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
     }
     private lateinit var top: LinearLayout
     private lateinit var clockWeather: LinearLayout
-    private lateinit var headerScroller: ScrollView
-    private var headerLimit = Int.MAX_VALUE
+    private lateinit var fit: FitScrollView
     private var narrowLayout: Boolean? = null
 
     // ---- Часы и текущая погода ----
@@ -82,7 +80,8 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
         layoutManager = LinearLayoutManager(context)
         adapter = roomsAdapter
         itemAnimator = null
-        isVerticalScrollBarEnabled = true
+        // Список целиком внутри общей вписывающей прокрутки карточки.
+        isNestedScrollingEnabled = false
         overScrollMode = OVER_SCROLL_NEVER
     }
 
@@ -98,7 +97,7 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
             cornerRadius = dp(28f).toFloat()
             setStroke(dp(2f), NEON)
         }
-        val column = LinearLayout(context).apply {
+        val outer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22f), dp(18f), dp(22f), dp(18f))
         }
@@ -136,14 +135,12 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
         summary.addView(dailyNote)
         summary.addView(dailyRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        // На низких экранах верхние разделы прокручиваются, оставляя место списку комнат.
-        headerScroller = object : ScrollView(context) {
-            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(
-                    minOf(MeasureSpec.getSize(heightMeasureSpec), headerLimit), MeasureSpec.AT_MOST))
-            }
-        }.apply { tag = "hc_summary_scroll"; addView(summary); isFillViewport = false }
-        column.addView(headerScroller, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // Всё содержимое вписывается в карточку уменьшением (FitScrollView); прокрутка — только если и так не влезло.
+        val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(summary)
+        fit = FitScrollView(context).apply { tag = "hc_summary_scroll"; isVerticalScrollBarEnabled = true; addView(body) }
+        outer.addView(fit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val column = body
         column.addView(roomsTitle)
         roomsHeader.addView(text(14f, MUTED).apply { text = "Комната"; maxLines = 1 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.2f))
         roomsHeader.addView(text(14f, MUTED).apply { text = "Температура"; maxLines = 1; gravity = Gravity.END },
@@ -153,8 +150,8 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
         roomsHeader.setPadding(dp(12f), dp(2f), dp(12f), dp(4f))
         column.addView(roomsHeader)
         column.addView(roomsNote)
-        column.addView(roomsList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(2f) })
-        addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        column.addView(roomsList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2f) })
+        addView(outer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
         // Крестик — подсказка: закрывает, как и любой тап по раскрытой карточке (общая механика).
         addView(text(26f, DATE).apply { text = "✕"; gravity = Gravity.CENTER; contentDescription = "Закрыть" },
@@ -205,7 +202,6 @@ internal class HomeClimateExpandedCard(context: Context, private val now: () -> 
             clockWeather.layoutParams = if (narrow) clockNarrow else clockWide
             details.layoutParams = if (narrow) detailsNarrow else detailsWide
         }
-        headerLimit = (MeasureSpec.getSize(heightMeasureSpec) * if (MeasureSpec.getSize(heightMeasureSpec) / density < 420f) 0.5f else 0.62f).toInt().coerceAtLeast(1)
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 

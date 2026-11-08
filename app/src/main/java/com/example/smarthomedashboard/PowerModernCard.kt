@@ -89,7 +89,7 @@ internal class PowerModernCard(
     private val voltageLine = line(voltage, voltageUnit)
     private val powerLine = line(power, powerUnit)
     private val divider = View(context)
-    val scroll: ScrollView? = if (expanded) ScrollView(context).apply { tag = "pm_scroll" } else null
+    val scroll: ScrollView? = if (expanded) FitScrollView(context).apply { tag = "pm_scroll" } else null
     /** Правая колонка раскрытой карточки: строки сверху, под ними — «История мощности». */
     private val rightColumn = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; tag = "pm_right" }
     private var leftColumn: View? = null

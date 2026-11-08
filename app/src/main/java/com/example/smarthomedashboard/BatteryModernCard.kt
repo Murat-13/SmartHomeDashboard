@@ -86,7 +86,7 @@ internal class BatteryModernCard(
         contentDescription = "Закрыть"
     } else null
     /** Прокрутка списка показателей; в компактном виде отсутствует. */
-    val scroll: ScrollView? = if (expanded) ScrollView(context).apply {
+    val scroll: ScrollView? = if (expanded) FitScrollView(context).apply {
         tag = "bm_scroll"
         isVerticalScrollBarEnabled = true
         isFillViewport = false

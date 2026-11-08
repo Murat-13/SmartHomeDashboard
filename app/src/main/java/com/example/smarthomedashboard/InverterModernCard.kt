@@ -72,7 +72,7 @@ internal class InverterModernCard(
     }
     val flow = InverterFlowView(context).apply { tag = "inv_flow" }
     private val divider = View(context)
-    val scroll: ScrollView? = if (expanded) ScrollView(context).apply { tag = "inv_scroll"; isVerticalScrollBarEnabled = false } else null
+    val scroll: ScrollView? = if (expanded) FitScrollView(context).apply { tag = "inv_scroll"; isVerticalScrollBarEnabled = false } else null
     private val details = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; tag = "inv_details" }
     private val values = mutableMapOf<String, TextView>()
     private val groupIcons = mutableListOf<TextView>()
