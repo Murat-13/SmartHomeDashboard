@@ -25,10 +25,14 @@ class GroupFaultToleranceTest {
     private val callbacks = mutableListOf<(ServiceCommandResult) -> Unit>()
     private val errors = mutableListOf<String>()
     private var online = true
+    /** false — транспорт не принял запрос (нет связи): команда не уходит в HA. */
+    private var transport = true
     private val commands = DashboardDeviceCommands(state, { _, service, id, callback ->
-        sent.add(service to id)
-        callbacks.add(callback)
-        true
+        if (transport) {
+            sent.add(service to id)
+            callbacks.add(callback)
+        }
+        transport
     }, {}, error = { errors.add(it) }, connected = { online })
 
     private val five = listOf("switch.r1", "switch.r2", "switch.r3", "switch.r4", "switch.far")
@@ -252,5 +256,57 @@ class GroupFaultToleranceTest {
         assertTrue(sentSince(from).isEmpty())
         repeat(5) { event("switch.far", "on"); advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50) }
         assertEquals("Не больше одной корректировки", 1, sentSince(from).size)
+    }
+
+    // Аудит 18.11 (до выпуска 0.9.20): догоняющая команда — только после тайм-аута РЕАЛЬНО отправленной команды.
+
+    @Test fun rejectedCommandIsNeverCorrected() {
+        all("on")
+        tap()                                              // цель off
+        callbacks[4](ServiceCommandResult.REJECTED)        // HA отказал дальнему реле
+        all("off", healthy)
+        advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50)
+        event("switch.far", "on")                          // событие со старым состоянием
+        advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50)
+        assertEquals("Отказ HA не повторяется догоняющей командой", five.map { "turn_off" to it }, sent)
+    }
+
+    @Test fun commandThatNeverLeftWhileOfflineIsNeverCorrected() {
+        all("on")
+        transport = false
+        tap()                                              // нажали без связи: ничего не ушло
+        assertTrue(sent.isEmpty())
+        transport = true
+        all("off", healthy)                                // остальные выключили, например, из HA
+        advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50)
+        event("switch.far", "on")                          // связь есть, реле прислало событие
+        advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50)
+        assertEquals("Неотправленное нажатие не досылается автоматически", emptyList<Pair<String, String>>(), sent)
+    }
+
+    @Test fun singleTileCommandCancelsGroupPlanForThatRelay() {
+        all("on", healthy)
+        event("switch.far", "unavailable")
+        tap()                                              // цель off; дальнее недоступно и не ответит
+        all("off", healthy)
+        advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50)
+        val from = sent.size
+        assertEquals("on", commands.toggleSingle("switch.far"))   // пользователь включает отдельной плиткой
+        event("switch.far", "on")                          // HA подтвердил «вкл»
+        advance(DashboardDeviceCommands.GROUP_DEADLINE_MS + 50)
+        event("switch.far", "on")
+        assertEquals("Группа не спорит с пользователем: без turn_off", listOf("turn_on" to "switch.far"), sentSince(from))
+    }
+
+    @Test fun singleTileReplacesPendingGroupCommandOfThatRelay() {
+        all("on")
+        tap()                                              // цель off, все ждут
+        all("off", healthy)
+        // Нажатие плитки во время ожидания группы не игнорируется: индивидуальная команда заменяет групповую.
+        assertEquals("off", commands.toggleSingle("switch.far"))
+        assertNull(commands.pendingFor("switch.far")?.groupId)
+        event("switch.far", "off")
+        advance(DashboardDeviceCommands.CORRECTION_WINDOW_MS)
+        assertEquals(five.map { "turn_off" to it } + ("turn_off" to "switch.far"), sent)
     }
 }

@@ -8,7 +8,8 @@ import android.util.Log
 /**
  * Цель общей кнопки группы (docs/group-fault-tolerance.md, 0.9.20). Только память ViewModel: после перезапуска
  * приложения ничего автоматически не отправляется. [unresolved] — участники, ещё не подтвердившие [target];
- * [corrected] — кому уже ушла единственная догоняющая команда.
+ * [timedOut] — чья команда этого нажатия реально ушла в HA и не дождалась подтверждения (только им разрешена
+ * догоняющая команда; отказ HA и неотправленный запрос сюда не попадают); [corrected] — кому она уже ушла.
  */
 internal data class GroupIntent(
     val target: String,
@@ -16,6 +17,7 @@ internal data class GroupIntent(
     val tappedAtMs: Long,
     val members: List<String>,
     val unresolved: Set<String>,
+    val timedOut: Set<String> = emptySet(),
     val corrected: Set<String> = emptySet()
 )
 
@@ -59,7 +61,12 @@ internal class DashboardDeviceCommands(
 
     fun toggleSingle(id: String): String? {
         expireOverdue()
+        // Индивидуальное нажатие (своя плитка или кнопка в раскрытой группе) важнее общей команды группы:
+        // её ожидание для этого реле снимается. Собственное ожидание одиночной кнопки — как раньше, повтор игнорируется.
+        if (pending[id]?.groupId != null) remove(id)
         if (id in pending) return null
+        // Новая индивидуальная команда отменяет прежние планы групп для этого реле: догоняющей команды не будет.
+        supersede(id, keep = null)
         // Направление по последнему факту, как раньше. Неизвестное показание не объявляется OFF в UI.
         val expected = if (state.singleStates[id] == "on") "off" else "on"
         val command = begin(id, expected)
@@ -70,9 +77,6 @@ internal class DashboardDeviceCommands(
     fun toggleMember(group: String, id: String): String? {
         // Проекция группы содержит те же факты, что и одиночная кнопка.
         state.groupIsOn(group, state.groupStates[group].orEmpty().keys.toList() + id)
-        // Индивидуальное нажатие важнее общей команды группы: её ожидание и догоняющий план для этого реле снимаются.
-        if (pending[id]?.groupId != null) remove(id)
-        supersede(id, keep = null)
         return toggleSingle(id)
     }
 
@@ -148,6 +152,9 @@ internal class DashboardDeviceCommands(
                 return@forEach
             }
             val actual = state.singleStates[id]
+            // Только после тайм-аута реально отправленной команды этого нажатия: не после отказа HA и не после
+            // запроса, который вообще не ушёл (нажатие без связи) — иначе это была бы «призрачная» команда.
+            if (id !in intent.timedOut) return@forEach
             if (!fromEvent || id in pending || actual != "on" && actual != "off" || id in intent.corrected) return@forEach
             if (!connected()) return@forEach
             val others = intent.members - id
@@ -160,6 +167,13 @@ internal class DashboardDeviceCommands(
             notifyChanged(listOf(id))
             dispatch(command)
         }
+    }
+
+    /** Участник [command] (её нажатие всё ещё последнее для группы) отправлен и не подтвердил цель вовремя. */
+    private fun markTimedOut(command: PendingCommand) {
+        val group = command.groupId ?: return
+        val intent = intents[group]?.takeIf { it.generation == command.groupGeneration } ?: return
+        if (command.entityId in intent.unresolved) intents[group] = intent.copy(timedOut = intent.timedOut + command.entityId)
     }
 
     /** Смена Home Assistant или его настроек: цели групп и ожидания прежнего сервера не переносятся. */
@@ -205,13 +219,16 @@ internal class DashboardDeviceCommands(
         pending[id] = command
         val deadline = Runnable {
             if (isCurrent(command)) {
-                val observed = pending.getValue(id).observedAfterStart
+                val current = pending.getValue(id)
+                val observed = current.observedAfterStart
                 remove(id)
                 // Вариант select: последнее значение HA остаётся фактом (иначе блок выбора заблокирован
                 // до переподключения, если значение так и не изменилось).
                 if (!observed && !command.option) state.markUnconfirmed(id)
                 failed(id)
                 if (command.groupId != null) {
+                    // Реально отправленная команда текущего нажатия не дождалась факта: допустима одна догоняющая.
+                    if (current.sent) markTimedOut(command)
                     // Участник группы: отметка только на его миниатюре/кнопке, без общей плашки — остальные исправны.
                     log("не подтверждено за ${GROUP_DEADLINE_MS / 1000} с: группа=${command.groupId} реле=$id цель=${command.expectedState}")
                 } else {
