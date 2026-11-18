@@ -51,6 +51,7 @@ class RecordingEditorTest {
         assertEquals(RecordingConfig(), activity.recording)
         root.findViewWithTag<SwitchCompat>("rec_here").isChecked = true
         root.findViewWithTag<View>("rec_mode_2").performClick() // «Круглосуточно»
+        root.findViewWithTag<View>("rec_remote_mode_1").performClick() // издалека — «Только события»
         root.findViewWithTag<SwitchCompat>("rec_audio_continuous").isChecked = false
         root.findViewWithTag<EditText>("rec_keep_continuous").setText("3")
         root.findViewWithTag<EditText>("rec_limit").setText("40")
@@ -65,6 +66,7 @@ class RecordingEditorTest {
         val savedTile = manager.loadTiles().single()
         val rec = RecordingConfig.from(savedTile.config)
         assertEquals(RecordingConfig.Mode.CONTINUOUS, rec.mode)
+        assertEquals(RecordingConfig.Mode.EVENTS, rec.remoteMode)
         assertFalse(rec.audioContinuous)
         assertEquals(3, rec.keepContinuousDays)
         assertEquals("Настройки домофона не потерялись", "rtsp://10.0.0.5/sub", DoorbellConfig.from(savedTile.config).rtspSub)

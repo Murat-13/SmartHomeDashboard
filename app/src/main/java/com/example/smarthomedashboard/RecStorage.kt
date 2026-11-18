@@ -28,14 +28,22 @@ internal data class RecordingConfig(
     val keepContinuousDays: Int = 7,
     val keepEventDays: Int = 30,
     /** Голосом об остановке записи (нет места, карта пропала). */
-    val voiceProblems: Boolean = true
+    val voiceProblems: Boolean = true,
+    /**
+     * Режим, когда камера не в сети этого планшета (видна через VPN/интернет): та же запись тратит трафик,
+     * поэтому настраивается отдельно и по умолчанию выключена (решение владельца 18.11.2026).
+     */
+    val remoteMode: Mode = Mode.OFF
 ) {
+    /** Что писать сейчас: камера в сети планшета — [mode], иначе — [remoteMode]. */
+    fun effectiveMode(local: Boolean) = if (local) mode else remoteMode
+
     enum class Mode(val key: String, val title: String, val continuous: Boolean, val events: Boolean) {
         OFF("off", "Выключено", false, false),
         EVENTS("events", "Только события", false, true),
         CONTINUOUS("continuous", "Круглосуточно", true, false),
         CONTINUOUS_EVENTS("continuous_events", "Круглосуточно + события в HD", true, true);
-        companion object { fun of(key: String?) = entries.firstOrNull { it.key == key } ?: CONTINUOUS_EVENTS }
+        companion object { fun of(key: String?, default: Mode = CONTINUOUS_EVENTS) = entries.firstOrNull { it.key == key } ?: default }
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -46,6 +54,7 @@ internal data class RecordingConfig(
         put("audio_continuous", audioContinuous); put("audio_events", audioEvents)
         put("keep_continuous_days", keepContinuousDays); put("keep_event_days", keepEventDays)
         put("voice_problems", voiceProblems)
+        put("remote_mode", remoteMode.key)
     }
 
     fun writeTo(config: String): String {
@@ -76,7 +85,8 @@ internal data class RecordingConfig(
                 audioEvents = json.optBoolean("audio_events", d.audioEvents),
                 keepContinuousDays = int("keep_continuous_days", d.keepContinuousDays, 1..90),
                 keepEventDays = int("keep_event_days", d.keepEventDays, 1..365),
-                voiceProblems = json.optBoolean("voice_problems", d.voiceProblems)
+                voiceProblems = json.optBoolean("voice_problems", d.voiceProblems),
+                remoteMode = Mode.of(json.optString("remote_mode"), d.remoteMode)
             )
         }
     }
@@ -191,12 +201,66 @@ internal object RecLayout {
     }
 }
 
+/**
+ * Камера в сети этого планшета или видна издалека (VPN, интернет). Локальная — адрес в подсети одного из
+ * обычных сетевых интерфейсов планшета (Wi-Fi, Ethernet). Туннели VPN на самом планшете (tun, ppp, wg, ipsec)
+ * локальными не считаются: через них камера — издалека.
+ */
+internal object RecLocality {
+    data class Iface(val name: String, val address: java.net.InetAddress, val prefix: Int)
+
+    fun isLocal(camera: java.net.InetAddress, interfaces: List<Iface>): Boolean {
+        if (camera.isLoopbackAddress) return true
+        return interfaces.any { i ->
+            TUNNELS.none { i.name.startsWith(it) } && i.address.javaClass == camera.javaClass && sameSubnet(camera, i.address, i.prefix)
+        }
+    }
+
+    fun sameSubnet(a: java.net.InetAddress, b: java.net.InetAddress, prefix: Int): Boolean {
+        val x = a.address
+        val y = b.address
+        if (x.size != y.size || prefix <= 0) return false
+        val bits = prefix.coerceAtMost(x.size * 8)
+        for (i in 0 until bits) {
+            val mask = 0x80 ushr (i % 8)
+            if ((x[i / 8].toInt() and mask) != (y[i / 8].toInt() and mask)) return false
+        }
+        return true
+    }
+
+    /** По rtsp-адресу; null — адрес непонятен или имя не разрешилось. Блокирующее — не с главного потока. */
+    fun isLocal(rtspUrl: String): Boolean? {
+        val host = try { java.net.URI(rtspUrl.trim()).host } catch (_: Exception) { null } ?: return null
+        val address = try { java.net.InetAddress.getByName(host) } catch (_: Exception) { return null }
+        return isLocal(address, interfaces())
+    }
+
+    fun interfaces(): List<Iface> = try {
+        java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().filter { it.isUp }.flatMap { ni ->
+            ni.interfaceAddresses.mapNotNull { a -> a.address?.let { Iface(ni.name, it, a.networkPrefixLength.toInt()) } }
+        }
+    } catch (_: Exception) { emptyList() }
+
+    private val TUNNELS = listOf("tun", "ppp", "wg", "ipsec", "utun", "tap")
+}
+
 /** Что удалить и можно ли писать дальше. Чистая логика: тестируется без файлов. */
 internal object RecRetention {
     data class Rules(val keepContinuousMs: Long, val keepEventMs: Long)
     data class Plan(val delete: List<RecFile>, val pause: Boolean)
 
     const val GB = 1024L * 1024 * 1024
+
+    /**
+     * Средний объём круглосуточной записи камеры, байт в сутки, по отрезкам последних суток; null — записано
+     * меньше 30 минут (оценка была бы случайной).
+     */
+    fun bytesPerDay(files: List<RecFile>, camera: String, now: Long): Long? {
+        val recent = files.filter { it.camera == camera && it.kind == RecFile.Kind.CONTINUOUS && !it.open && it.startMs >= now - 86_400_000L }
+        val duration = recent.sumOf { it.durationMs }
+        if (duration < 30 * 60_000L) return null
+        return recent.sumOf { it.bytes } * 86_400_000L / duration
+    }
     const val AUTO_LIMIT = 20 * GB
 
     /** Лимит: заданный или авто — меньшее из 20 ГБ и половины (свободного + уже занятого записями). */

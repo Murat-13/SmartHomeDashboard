@@ -40,6 +40,8 @@ class RecorderService : Service() {
     @Volatile private var freeCacheAt = 0L
     @Volatile private var paused = false
     private var started = false
+    /** Пишем в память планшета, хотя выбрана SD-карта (карту вынули или она сломалась). */
+    private var sdMissing = false
 
     private data class Key(val url: String, val user: String, val passwordHash: Int, val audio: Boolean)
     private class Running(val key: Key, val recorder: ContinuousRecorder, val config: RecordingConfig)
@@ -51,7 +53,8 @@ class RecorderService : Service() {
         val notification = notification()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
-        control.scheduleWithFixedDelay({ safe { retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
+        // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
+        control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -81,10 +84,12 @@ class RecorderService : Service() {
         for (tile in tiles) {
             if (!device.enabled(tile.id)) continue
             val rec = RecordingConfig.from(tile.config)
-            if (!rec.mode.continuous) continue
             val door = DoorbellConfig.from(tile.config)
             val url = door.rtspSub.ifBlank { door.rtspMain }
             if (url.isBlank()) continue
+            // Камера не в подсети планшета (VPN, интернет) — свой режим, по умолчанию выключен (трафик).
+            val local = RecLocality.isLocal(url) ?: true
+            if (!rec.effectiveMode(local).continuous) continue
             if (!passwordRead) { password = readPassword(); passwordRead = true }
             wanted[tile.id] = Key(url, door.rtspUser, password?.hashCode() ?: 0, rec.audioContinuous) to rec
         }
@@ -121,7 +126,9 @@ class RecorderService : Service() {
             recorders[id] = Running(want.first, r, want.second)
             r.start()
         }
-        if (recorders.isEmpty()) {
+        // Останавливаемся, только если запись не включена ни для одной плитки: камера, ставшая доступной лишь
+        // издалека, вернётся в запись при следующей сверке (раз в 10 минут).
+        if (recorders.isEmpty() && tiles.none { device.enabled(it.id) }) {
             Log.i(TAG, "Запись: включённых камер нет — сервис остановлен")
             main.post { stopSelf() }
         }
@@ -170,6 +177,21 @@ class RecorderService : Service() {
         return freeCache >= RecordingDevice(this).reserveGb * RecRetention.GB
     }
 
+    /** SD-карта пропала или вернулась — сказать один раз (решение владельца 18.11), запись не прерывается. */
+    private fun checkSdCard() {
+        val missing = onFallback()
+        if (missing == sdMissing) return
+        sdMissing = missing
+        if (missing) {
+            Log.w(TAG, "Запись: SD-карта не найдена — пишем в память планшета")
+            val voice = recorders.values.any { it.config.voiceProblems }
+            if (voice) main.post { PanelAlerts.external(Alert(AlertEvent.RECORDING_STOPPED, SD_MISSING_PHRASE)) }
+        } else {
+            Log.i(TAG, "Запись: SD-карта снова доступна")
+        }
+        recorders.keys.forEach { id -> RecordingStatus.setSdMissing(id, missing) }
+    }
+
     private fun segmentClosed(file: RecFile) {
         files += file
         retention(forceScan = false)
@@ -177,6 +199,7 @@ class RecorderService : Service() {
 
     /** Очистка по сроку, лимиту и остатку (поток управления). */
     private fun retention(forceScan: Boolean) {
+        checkSdCard()
         val root = storageRoot() ?: return
         val now = System.currentTimeMillis()
         if (forceScan || now - lastScan > 6 * 3_600_000L) {
@@ -233,6 +256,7 @@ class RecorderService : Service() {
         private const val TAG = "Recording"
         private const val CHANNEL = "recording"
         private const val NOTIFICATION_ID = 4107
+        const val SD_MISSING_PHRASE = "Карта памяти не найдена, запись идёт в память планшета"
 
         /**
          * Привести запись в соответствие с настройками. Безопасно вызывать часто: сервис запускается, только
@@ -260,11 +284,16 @@ internal object RecordingStatus {
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())
 
+    private val sd = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     val active get() = map.isNotEmpty()
+    /** Выбрана SD-карта, но её нет — пишем в память планшета. */
+    fun sdMissing(tileId: String) = tileId in sd
+    fun setSdMissing(tileId: String, missing: Boolean) { if (if (missing) sd.add(tileId) else sd.remove(tileId)) notifyListeners() }
     fun of(tileId: String): ContinuousRecorder.Status? = map[tileId]
     fun set(tileId: String, status: ContinuousRecorder.Status) { map[tileId] = status; notifyListeners() }
     fun remove(tileId: String) { if (map.remove(tileId) != null) notifyListeners() }
-    fun clear() { if (map.isNotEmpty()) { map.clear(); notifyListeners() } }
+    fun clear() { sd.clear(); if (map.isNotEmpty()) { map.clear(); notifyListeners() } }
     fun listen(listener: () -> Unit) = listeners.add(listener)
     fun unlisten(listener: () -> Unit) = listeners.remove(listener)
     private fun notifyListeners() = main.post { listeners.forEach { it() } }

@@ -100,4 +100,53 @@ class RecordingStorageTest {
         assertEquals(setOf("person"), broken.eventTriggers)
         assertEquals(RecordingConfig(), RecordingConfig.from("not json"))
     }
+    @Test fun remoteModeIsSeparateAndOffByDefault() {
+        val d = RecordingConfig()
+        assertEquals(RecordingConfig.Mode.OFF, d.remoteMode)
+        assertEquals(RecordingConfig.Mode.CONTINUOUS_EVENTS, d.effectiveMode(local = true))
+        assertEquals(RecordingConfig.Mode.OFF, d.effectiveMode(local = false))
+        val custom = d.copy(remoteMode = RecordingConfig.Mode.EVENTS)
+        assertEquals(custom, RecordingConfig.from(custom.writeTo("{}")))
+        // Старая конфигурация без ключа — удалённо не пишем.
+        assertEquals(RecordingConfig.Mode.OFF, RecordingConfig.from("{\"recording\":{\"mode\":\"continuous\"}}").remoteMode)
+    }
+
+    @Test fun cameraIsLocalOnlyInPlainInterfaceSubnet() {
+        fun ip(s: String) = java.net.InetAddress.getByName(s)
+        val wifi = RecLocality.Iface("wlan0", ip("192.168.1.23"), 24)
+        val vpn = RecLocality.Iface("tun0", ip("10.8.0.2"), 8)
+        assertTrue(RecLocality.isLocal(ip("192.168.1.50"), listOf(wifi, vpn)))
+        assertFalse("Камера в Чечне через роутерный VPN", RecLocality.isLocal(ip("192.168.8.50"), listOf(wifi, vpn)))
+        assertFalse("Через туннель на самом планшете — издалека", RecLocality.isLocal(ip("10.1.2.3"), listOf(wifi, vpn)))
+        assertTrue(RecLocality.isLocal(ip("127.0.0.1"), emptyList()))
+        assertTrue(RecLocality.sameSubnet(ip("10.0.5.7"), ip("10.0.1.1"), 16))
+        assertFalse(RecLocality.sameSubnet(ip("10.0.5.7"), ip("10.0.1.1"), 24))
+        assertTrue(RecLocality.sameSubnet(ip("192.168.1.200"), ip("192.168.1.2"), 25) == false)
+    }
+
+    @Test fun bytesPerDayFromLastDayOfContinuousRecording() {
+        val minute = 60_000L
+        fun seg(ageMin: Long, bytes: Long, camera: String = "door", kind: RecFile.Kind = RecFile.Kind.CONTINUOUS) =
+            RecFile(File("/x"), camera, kind, now - ageMin * minute, minute, bytes)
+        val hour = (1L..60L).map { seg(it, 3_000_000) }
+        // 3 МБ в минуту → ~4,3 ГБ в сутки; события, другие камеры и старше суток не считаются.
+        val noise = listOf(seg(5, 999_000_000, kind = RecFile.Kind.EVENT), seg(5, 999_000_000, camera = "gate"), seg(2_000, 999_000_000))
+        assertEquals(3_000_000L * 1440, RecRetention.bytesPerDay(hour + noise, "door", now))
+        assertNull("Меньше получаса — без оценки", RecRetention.bytesPerDay(hour.take(20), "door", now))
+    }
+
+    @Test fun g711DecodesStandardValuesAndAacConfig() {
+        assertEquals(8, G711Depacketizer.decodeALaw(0xD5))
+        assertEquals(-8, G711Depacketizer.decodeALaw(0x55))
+        assertEquals(32256, G711Depacketizer.decodeALaw(0xAA))
+        assertEquals(0, G711Depacketizer.decodeULaw(0xFF))
+        assertEquals(-32124, G711Depacketizer.decodeULaw(0x00))
+        assertEquals(32124, G711Depacketizer.decodeULaw(0x80))
+        val track = SdpParser.parse("m=audio 0 RTP/AVP 8\r\n").single()
+        val d = G711Depacketizer.create(track)!!
+        val pcm = d.push(RtpPacket.parse(RecordingTestSupport.rtp(8, false, 1, 160, byteArrayOf(0xD5.toByte(), 0x55)), 14)!!)
+        assertEquals(160L, pcm.timestamp); assertEquals(listOf<Short>(8, -8), pcm.samples.toList())
+        assertEquals(listOf(0x15, 0x88), AacConfig.audioSpecificConfig(8000, 1).map { it.toInt() and 0xFF })
+        assertEquals(listOf(0x14, 0x08), AacConfig.audioSpecificConfig(16000, 1).map { it.toInt() and 0xFF })
+    }
 }

@@ -234,6 +234,11 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(switch("rec_here", "Записывать на этом планшете", recordHere) { recordHere = it })
         side.addView(choice("rec_mode", "Что записывать", RecordingConfig.Mode.entries.map { it.title },
             RecordingConfig.Mode.entries.indexOf(recording.mode)) { recording = recording.copy(mode = RecordingConfig.Mode.entries[it]) })
+        side.addView(choice("rec_remote_mode", "Если камера видна только издалека (VPN, интернет)", RecordingConfig.Mode.entries.map { it.title },
+            RecordingConfig.Mode.entries.indexOf(recording.remoteMode)) { recording = recording.copy(remoteMode = RecordingConfig.Mode.entries[it]) })
+        localityLabel = kit.label("Камера не в сети планшета — запись тратит трафик: круглосуточно ~3–6 ГБ в сутки на камеру.", 13f)
+            .apply { tag = "rec_locality" }
+        side.addView(localityLabel)
         side.addView(switch("rec_audio_continuous", "Звук в круглосуточной записи", recording.audioContinuous) {
             recording = recording.copy(audioContinuous = it) })
         side.addView(switch("rec_audio_events", "Звук в записи событий", recording.audioEvents) { recording = recording.copy(audioEvents = it) })
@@ -244,7 +249,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(switch("rec_voice", "Сказать голосом, если запись остановилась", recording.voiceProblems) {
             recording = recording.copy(voiceProblems = it) })
         side.addView(header("Место для записей — этот планшет"))
-        side.addView(number("rec_limit", "Лимит записей, ГБ (0 — авто: до 20 ГБ, не больше половины места)", limitGb, 0..4096) { limitGb = it })
+        side.addView(number("rec_limit", "Лимит записей, ГБ (0 — авто: до 20 ГБ, не больше половины места)", limitGb, 0..4096) {
+            limitGb = it; refreshRecordingStatus() })
         side.addView(number("rec_reserve", "Всегда оставлять свободными, ГБ (1–10)", reserveGb, 1..10) { reserveGb = it })
         val hasSd = try { getExternalFilesDirs(null).size > 1 && getExternalFilesDirs(null)[1] != null } catch (_: Exception) { false }
         side.addView(switch("rec_sd", if (hasSd) "Писать на SD-карту" else "Писать на SD-карту (карта не найдена)", useSd) { useSd = it })
@@ -252,16 +258,47 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(recordingStatus)
         refreshRecordingStatus()
         RecordingStatus.listen(statusListener)
-        // Занятое место — обход папок записей на фоновом потоке.
+        // Занятое место, средний объём записи и где камера — на фоновом потоке (обход папок, разрешение имени).
         val root = getExternalFilesDir(null)
+        val camera = RecLayout.cameraKey(original.id)
+        val url = config.rtspSub.ifBlank { config.rtspMain }
         Thread {
-            val used = root?.let { r -> RecLayout.scan(r).sumOf { it.bytes } } ?: 0L
+            val files = root?.let { r -> RecLayout.scan(r) }.orEmpty()
+            val used = files.sumOf { it.bytes }
             val free = root?.let { try { android.os.StatFs(it.path).availableBytes } catch (_: Exception) { 0L } } ?: 0L
-            runOnUiThread { usedText = "Занято записями: %.1f ГБ · свободно: %.1f ГБ".format(used / 1e9, free / 1e9); refreshRecordingStatus() }
+            val perDay = RecRetention.bytesPerDay(files, camera, System.currentTimeMillis())
+            val local = if (url.isBlank()) null else RecLocality.isLocal(url)
+            runOnUiThread {
+                usedBytes = used; freeBytes = free; bytesPerDay = perDay; cameraLocal = local
+                refreshRecordingStatus()
+            }
         }.apply { isDaemon = true }.start()
     }
 
-    private var usedText = ""
+    private lateinit var localityLabel: TextView
+    private var usedBytes = -1L
+    private var freeBytes = 0L
+    private var bytesPerDay: Long? = null
+    private var cameraLocal: Boolean? = null
+
+    /** «≈ N дней» круглосуточной записи в текущий лимит при среднем объёме последних суток. */
+    internal fun estimateText(): String {
+        if (usedBytes < 0) return ""
+        val limit = RecRetention.limit(limitGb, freeBytes, usedBytes)
+        val head = "Занято записями: %.1f ГБ · свободно: %.1f ГБ · лимит: %.1f ГБ".format(usedBytes / 1e9, freeBytes / 1e9, limit / 1e9)
+        val perDay = bytesPerDay ?: return "$head\nОценка дней появится после получаса записи."
+        val days = limit.toDouble() / perDay
+        return "$head\nПри текущем объёме (~%.1f ГБ в сутки) круглосуточной записи хватит примерно на %s.".format(perDay / 1e9, daysText(days))
+    }
+
+    private fun daysText(days: Double): String = when {
+        days < 1 -> "%.0f ч".format(days * 24)
+        else -> {
+            val n = kotlin.math.floor(days).toInt()
+            val word = when { n % 100 in 11..14 -> "дней"; n % 10 == 1 -> "день"; n % 10 in 2..4 -> "дня"; else -> "дней" }
+            "$n $word"
+        }
+    }
 
     private fun refreshRecordingStatus() {
         if (!::recordingStatus.isInitialized) return
@@ -273,7 +310,17 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             ContinuousRecorder.State.NO_SPACE, ContinuousRecorder.State.NO_STORAGE -> status.detail
             ContinuousRecorder.State.STOPPED, null -> if (device.enabled(original.id)) "Запись не идёт" else "Запись на этом планшете выключена"
         }
-        recordingStatus.text = listOf(state, usedText).filter { it.isNotBlank() }.joinToString("\n")
+        val sd = if (RecordingStatus.sdMissing(original.id)) "SD-карта не найдена — запись идёт в память планшета" else ""
+        recordingStatus.text = listOf(state, sd, estimateText()).filter { it.isNotBlank() }.joinToString("\n")
+        if (::localityLabel.isInitialized) {
+            val where = when (cameraLocal) {
+                true -> "Сейчас камера в сети этого планшета — действует «Что записывать»."
+                false -> "Сейчас камера видна только издалека — действует режим для удалённой камеры."
+                null -> ""
+            }
+            localityLabel.text = listOf(where, "Издалека запись тратит трафик: круглосуточно ~3–6 ГБ в сутки на камеру.")
+                .filter { it.isNotBlank() }.joinToString("\n")
+        }
     }
 
     // ---- Строки редактора ----

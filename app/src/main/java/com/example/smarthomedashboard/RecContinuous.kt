@@ -20,12 +20,14 @@ internal class ContinuousRecorder(
     private val onSegment: (RecFile) -> Unit,
     private val onStatus: (ContinuousRecorder, Status) -> Unit,
     private val segmentMs: Long = SEGMENT_MS,
-    private val sessionFactory: (String, String, String?) -> RtspSession = { u, l, p -> RtspSession(u, l, p) }
+    private val sessionFactory: (String, String, String?) -> RtspSession = { u, l, p -> RtspSession(u, l, p) },
+    private val encoderFactory: () -> AacEncoder = { AacEncoder() }
 ) {
     enum class State { CONNECTING, RECORDING, RETRYING, NO_SPACE, NO_STORAGE, STOPPED }
     data class Status(val state: State, val detail: String = "", val sinceMs: Long = System.currentTimeMillis())
 
     @Volatile private var running = false
+    private var encoder: AacEncoder? = null
     @Volatile private var session: RtspSession? = null
     private var thread: Thread? = null
     @Volatile var status = Status(State.STOPPED)
@@ -68,10 +70,20 @@ internal class ContinuousRecorder(
                 val depacketizer = VideoDepacketizer.create(video.track) ?: throw RtspException("Кодек не поддерживается")
                 val audioSetup = setups.firstOrNull { it.track.isAudio }
                 val aac = audioSetup?.let { AacDepacketizer.create(it.track) }
-                if (audioSetup != null && aac == null) {
-                    Log.i(TAG, "$camera: звук ${audioSetup.track.encoding} не записывается (нужен AAC)")
+                // G.711 (PCMA/PCMU) — перекодируется в AAC; не вышло — запись без звука.
+                val g711 = if (aac == null) audioSetup?.let { G711Depacketizer.create(it.track) } else null
+                encoder = g711?.let {
+                    try { encoderFactory() } catch (e: Exception) {
+                        Log.w(TAG, "$camera: AAC-кодер недоступен (${e.javaClass.simpleName}), запись без звука")
+                        null
+                    }
+                }
+                if (audioSetup != null && aac == null && encoder == null) {
+                    Log.i(TAG, "$camera: звук ${audioSetup.track.encoding} не записывается")
                 }
                 writer.audioParams = aac?.let { AudioParams(it.config, it.sampleRate, it.channels) }
+                    ?: encoder?.let { AudioParams(it.config, it.sampleRate, it.channels) }
+                val enc = encoder
                 writer.videoClock = video.track.clockRate.takeIf { it > 0 } ?: 90_000
                 s.read(object : RtspSession.Sink {
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
@@ -80,6 +92,11 @@ internal class ContinuousRecorder(
                             for (frame in depacketizer.push(rtp)) writer.video(frame, depacketizer)
                         } else if (setup === audioSetup && aac != null) {
                             for (frame in aac.push(rtp)) writer.audio(frame, aac.sampleRate)
+                        } else if (setup === audioSetup && g711 != null && enc != null) {
+                            val pcm = g711.push(rtp)
+                            // Привязка звука — по приходу отсчётов, а не по выходу кодера (у него своя задержка).
+                            writer.audioArrival(pcm.timestamp)
+                            for (frame in enc.encode(pcm)) writer.audio(frame, enc.sampleRate)
                         }
                     }
                 })
@@ -92,6 +109,8 @@ internal class ContinuousRecorder(
                 try { writer.close() } catch (e: Exception) { Log.w(TAG, "$camera: отрезок не закрыт: ${e.message}") }
                 session?.close()
                 session = null
+                encoder?.release()
+                encoder = null
             }
             if (!running) break
             // Сессия держалась дольше минуты — начинаем отсчёт заново.
@@ -135,6 +154,13 @@ internal class ContinuousRecorder(
             val target = current ?: return
             target.writeVideo(frame, us - segStartUs)
             lastUs = us
+        }
+
+        /** Отсчёты звука пришли с меткой [ts]: первая такая метка привязывает звук ко времени видео. */
+        fun audioArrival(ts: Long) {
+            if (videoAnchorTs == Long.MIN_VALUE || audioAnchorTs != Long.MIN_VALUE) return
+            audioAnchorTs = ts
+            audioAnchorUs = (System.nanoTime() - anchorNanos) / 1_000
         }
 
         fun audio(frame: AudioFrame, rate: Int) {
