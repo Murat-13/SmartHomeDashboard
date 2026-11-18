@@ -335,18 +335,25 @@ class ModernButtonsTest {
         }
     }
 
-    @Test fun shortTapSendsGroupCommandWithOneParentSpinnerAndLongPressOpensPanel() {
+    /** 0.9.20: ожидание — на миниатюре каждого участника, родитель сразу показывает цель и не крутит общий spinner. */
+    @Test fun shortTapSendsGroupCommandWithMemberSpinnersAndLongPressOpensPanel() {
         open(group("g", "light.a", "light.b"))
         event("light.a", "off")
         event("light.b", "off")
         tap(tile("g"))
         assertEquals(listOf("turn_on", "turn_on"), calls().map { it.getString("service") })
         advance(350)
-        assertTrue(modernTile("g").isSpinnerVisible)
+        assertFalse(modernTile("g").isSpinnerVisible)
+        assertTrue(modernTile("g").isThumbSpinnerVisible(0))
+        assertTrue(modernTile("g").isThumbSpinnerVisible(1))
+        assertEquals(ModernTileView.Visual.ON, modernTile("g").displayedVisual)
         assertEquals("g", owner().commands.pendingFor("light.a")?.groupId)
         event("light.a", "on")
+        assertFalse(modernTile("g").isThumbSpinnerVisible(0))
+        assertTrue("Ждём только второе реле", modernTile("g").isThumbSpinnerVisible(1))
         event("light.b", "on")
         assertFalse(modernTile("g").isSpinnerVisible)
+        assertFalse(modernTile("g").isThumbSpinnerVisible(1))
 
         socket.messages.clear()
         touch(tile("g"), MotionEvent.ACTION_DOWN)

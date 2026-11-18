@@ -322,7 +322,9 @@ class ButtonStateIntegrationTest {
         children[1].performClick()
         assertEquals("turn_off", calls().single().getString("service"))
         assertEquals("light.a", calls().single().getJSONObject("service_data").getString("entity_id"))
-        assertEquals(ButtonCommandAppearance.PENDING, color("group"))
+        // 0.9.20: ожидание видно у дочерней кнопки; родитель — по фактам, без «Выполняется…» за всю группу.
+        assertEquals(ButtonCommandAppearance.PENDING, childColor(children[1]))
+        assertEquals(ButtonCommandAppearance.ON, color("group"))
     }
 
     @Test fun holdForSystemLongPressTimeoutExpandsGroupWithoutCommand() {
@@ -443,13 +445,16 @@ class ButtonStateIntegrationTest {
         invoke(activity, "expandChildButtons", manager.loadTiles().single { it.id == "group" }, view("group"))
         val child = ArchitectureTestAccess.getField<List<Button>>(activity, "expandedChildButtons").single()
         child.performClick()
-        listOf("first", "second", "group").forEach { assertEquals(ButtonCommandAppearance.PENDING, color(it)) }
+        listOf("first", "second").forEach { assertEquals(ButtonCommandAppearance.PENDING, color(it)) }
         assertEquals(ButtonCommandAppearance.PENDING, childColor(child))
+        assertEquals("Родитель группы — по фактам, без общего ожидания (0.9.20)", ButtonCommandAppearance.OFF, color("group"))
         view("first").performClick()
-        tap("group")
+        assertEquals("Одиночная кнопка во время ожидания по-прежнему не шлёт вторую команду", 1, calls().size)
+        tap("group")   // группа раскрыта: касание родителя — не команда
         assertEquals(1, calls().size)
         ack(calls().single())
-        listOf("first", "second", "group").forEach { assertEquals(ButtonCommandAppearance.PENDING, color(it)) }
+        listOf("first", "second").forEach { assertEquals(ButtonCommandAppearance.PENDING, color(it)) }
+        assertEquals(ButtonCommandAppearance.OFF, color("group"))
         event("switch.test", "on")
         listOf("first", "second", "group").forEach { assertEquals(ButtonCommandAppearance.ON, color(it)) }
         assertEquals(ButtonCommandAppearance.ON, childColor(child))
@@ -461,14 +466,16 @@ class ButtonStateIntegrationTest {
         event("switch.b", "off")
         tap("group")
         calls().forEach { ack(it) }
-        assertEquals(ButtonCommandAppearance.PENDING, color("group"))
+        // 0.9.20: родитель сразу показывает цель группы; ожидание — у кнопок самих участников.
+        assertEquals(ButtonCommandAppearance.ON, color("group"))
         assertEquals(ButtonCommandAppearance.PENDING, color("a"))
         event("switch.a", "on")
         assertEquals(ButtonCommandAppearance.ON, color("a"))
-        assertEquals(ButtonCommandAppearance.PENDING, color("group"))
+        assertEquals(ButtonCommandAppearance.PENDING, color("b"))
+        assertEquals(ButtonCommandAppearance.ON, color("group"))
         // Второй участник не переключился: ожидание ограничено и не создаёт повторной команды.
         shadowOf(Looper.getMainLooper()).idleFor(21, TimeUnit.SECONDS)
-        assertEquals(ButtonCommandAppearance.ON, color("group")) // Прежняя семантика any-on.
+        assertEquals(ButtonCommandAppearance.ON, color("group"))
         assertEquals(ButtonCommandAppearance.UNAVAILABLE, color("b"))
         assertEquals("off", owner().uiState.value.singleStates["switch.b"])
         assertEquals(2, calls().size)

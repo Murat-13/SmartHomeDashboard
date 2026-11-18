@@ -3,6 +3,21 @@ package com.example.smarthomedashboard
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
+
+/**
+ * Цель общей кнопки группы (docs/group-fault-tolerance.md, 0.9.20). Только память ViewModel: после перезапуска
+ * приложения ничего автоматически не отправляется. [unresolved] — участники, ещё не подтвердившие [target];
+ * [corrected] — кому уже ушла единственная догоняющая команда.
+ */
+internal data class GroupIntent(
+    val target: String,
+    val generation: Long,
+    val tappedAtMs: Long,
+    val members: List<String>,
+    val unresolved: Set<String>,
+    val corrected: Set<String> = emptySet()
+)
 
 /** Ожидания принадлежат ViewModel, не View; команд повторной отправки здесь нет. */
 internal class DashboardDeviceCommands(
@@ -14,7 +29,9 @@ internal class DashboardDeviceCommands(
     private val connectionGeneration: () -> Int = { 0 },
     private val error: (String) -> Unit = {},
     /** Выбор варианта сущности `select` (`select.select_option`): id, вариант, результат. */
-    private val sendOption: (String, String, (ServiceCommandResult) -> Unit) -> Boolean = { _, _, _ -> false }
+    private val sendOption: (String, String, (ServiceCommandResult) -> Unit) -> Boolean = { _, _, _ -> false },
+    /** Соединение с HA открыто и авторизовано: условие догоняющей команды группы. */
+    private val connected: () -> Boolean = { true }
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var nextOperationId = 0L
@@ -24,6 +41,8 @@ internal class DashboardDeviceCommands(
     // Только для краткой индикации Modern: факты и Classic от неё не зависят. Разрыв связи
     // ошибкой команды не считается: для него есть состояние «недоступно».
     private val failures = mutableMapOf<String, Long>()
+    private val intents = mutableMapOf<String, GroupIntent>()
+    private var nextGeneration = 0L
     val pendingCommands: Map<String, PendingCommand> get() = pending.toMap()
 
     fun pendingFor(id: String): PendingCommand? = pending[id]
@@ -51,18 +70,106 @@ internal class DashboardDeviceCommands(
     fun toggleMember(group: String, id: String): String? {
         // Проекция группы содержит те же факты, что и одиночная кнопка.
         state.groupIsOn(group, state.groupStates[group].orEmpty().keys.toList() + id)
+        // Индивидуальное нажатие важнее общей команды группы: её ожидание и догоняющий план для этого реле снимаются.
+        if (pending[id]?.groupId != null) remove(id)
+        supersede(id, keep = null)
         return toggleSingle(id)
     }
 
+    /** Действующая цель группы (её показывает родительская кнопка), пока не все участники её подтвердили. */
+    fun groupTarget(group: String): String? = activeIntent(group, SystemClock.elapsedRealtime())?.target
+
+    /**
+     * Общая кнопка группы. Каждое нажатие принимается сразу, даже если какое-то реле ещё не ответило:
+     * команды уходят всем участникам в одном цикле, без ожидания ответов. Пока прежняя цель не подтверждена
+     * всеми, повторное нажатие переворачивает её (а не пересчитывает по возможно устаревшим статусам);
+     * в покое направление — как раньше: хоть одно включено — выключить.
+     */
     fun toggleGroup(group: String, ids: List<String>) {
         expireOverdue()
-        if (ids.isEmpty() || ids.any { it in pending }) return
-        val active = state.groupIsOn(group, ids)
-        val expected = if (active) "off" else "on"
-        val commands = ids.distinct().associateWith { begin(it, expected, group) }
+        if (ids.isEmpty()) return
+        val now = SystemClock.elapsedRealtime()
+        val members = ids.distinct()
+        val previous = activeIntent(group, now)?.takeIf { it.members == members }
+        val anyOn = state.groupIsOn(group, ids)
+        val target = when {
+            previous != null -> if (previous.target == "on") "off" else "on"
+            anyOn -> "off"
+            else -> "on"
+        }
+        val generation = ++nextGeneration
+        // Новая цель отменяет ожидания и догоняющие планы прежних нажатий: старые команды не досылаются.
+        members.forEach { id ->
+            supersede(id, keep = group)
+            if (id in pending) remove(id)
+        }
+        val commands = members.associateWith { begin(it, target, group, generation = generation) }
+        intents[group] = GroupIntent(target, generation, now, members,
+            unresolved = members.filterNot { reached(it, target) }.toSet())
+        log("нажатие: группа=$group поколение=$generation цель=$target участников=${members.size}")
         notifyChanged(commands.keys)
         // Сохраняем прежние порядок, сервис и дубликаты списка участников.
         ids.forEach { id -> commands[id]?.takeIf { pending[id]?.operationId == it.operationId }?.let(::dispatch) }
+    }
+
+    private fun reached(id: String, target: String) =
+        state.confirmedState(id) != ConfirmedState.UNAVAILABLE && state.singleStates[id] == target
+
+    private fun activeIntent(group: String, now: Long): GroupIntent? {
+        val intent = intents[group] ?: return null
+        if (intent.unresolved.isEmpty() || now - intent.tappedAtMs > CORRECTION_WINDOW_MS) {
+            intents.remove(group)
+            return null
+        }
+        return intent
+    }
+
+    /** Реле получило более новое действие ([keep] — группа, которая его отдаёт): прежние планы для него снимаются. */
+    private fun supersede(id: String, keep: String?) {
+        intents.entries.toList().forEach { (group, intent) ->
+            if (group != keep && id in intent.unresolved) intents[group] = intent.copy(unresolved = intent.unresolved - id)
+        }
+    }
+
+    /**
+     * Свежий факт об участнике группы. Совпал с целью — участник подтверждён. Не совпал, а его команда уже
+     * завершилась (тайм-аут) и пришло новое событие от устройства, — единственная догоняющая команда к ПОСЛЕДНЕЙ
+     * цели, если: окно [CORRECTION_WINDOW_MS] не истекло, соединение живо, остальные доступные участники уже
+     * в цели и их команды завершены. Снимок `get_states` после переподключения поводом не служит.
+     */
+    private fun groupFact(id: String, fromEvent: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        intents.keys.toList().forEach { group ->
+            val intent = activeIntent(group, now) ?: return@forEach
+            if (id !in intent.unresolved) return@forEach
+            if (reached(id, intent.target)) {
+                intents[group] = intent.copy(unresolved = intent.unresolved - id)
+                log("подтверждено: группа=$group реле=$id поколение=${intent.generation}")
+                return@forEach
+            }
+            val actual = state.singleStates[id]
+            if (!fromEvent || id in pending || actual != "on" && actual != "off" || id in intent.corrected) return@forEach
+            if (!connected()) return@forEach
+            val others = intent.members - id
+            if (others.any { it in pending || state.confirmedState(it) != ConfirmedState.UNAVAILABLE && state.singleStates[it] != intent.target }) {
+                return@forEach
+            }
+            intents[group] = intent.copy(corrected = intent.corrected + id)
+            log("догоняющая команда: группа=$group реле=$id поколение=${intent.generation} было=$actual цель=${intent.target}")
+            val command = begin(id, intent.target, group, generation = intent.generation)
+            notifyChanged(listOf(id))
+            dispatch(command)
+        }
+    }
+
+    /** Смена Home Assistant или его настроек: цели групп и ожидания прежнего сервера не переносятся. */
+    fun reset() {
+        intents.clear()
+        pending.keys.toList().forEach(::remove)
+    }
+
+    private fun log(message: String) {
+        try { Log.i(TAG, message) } catch (_: RuntimeException) {}
     }
 
     /**
@@ -78,14 +185,22 @@ internal class DashboardDeviceCommands(
         return dispatch(command) { result -> sendOption(id, option, result) }
     }
 
-    private fun begin(id: String, expected: String, groupId: String? = null, option: Boolean = false): PendingCommand {
+    private fun begin(
+        id: String, expected: String, groupId: String? = null, option: Boolean = false, generation: Long = 0L
+    ): PendingCommand {
         val now = SystemClock.elapsedRealtime()
         failures.remove(id)
+        val wait = when {
+            option -> OPTION_DEADLINE_MS
+            groupId != null -> GROUP_DEADLINE_MS
+            else -> DEADLINE_MS
+        }
         val command = PendingCommand(
-            id, expected, ++nextOperationId, connectionGeneration(), now, now + if (option) OPTION_DEADLINE_MS else DEADLINE_MS,
+            id, expected, ++nextOperationId, connectionGeneration(), now, now + wait,
             alreadyConfirmed = state.confirmedState(id) != ConfirmedState.UNAVAILABLE && state.singleStates[id] == expected,
             groupId = groupId,
-            option = option
+            option = option,
+            groupGeneration = generation
         )
         pending[id] = command
         val deadline = Runnable {
@@ -96,8 +211,13 @@ internal class DashboardDeviceCommands(
                 // до переподключения, если значение так и не изменилось).
                 if (!observed && !command.option) state.markUnconfirmed(id)
                 failed(id)
-                error(if (command.option) "Устройство не подтвердило выбранный вариант. Проверьте его состояние"
-                    else "Устройство не подтвердило переключение. Проверьте его состояние")
+                if (command.groupId != null) {
+                    // Участник группы: отметка только на его миниатюре/кнопке, без общей плашки — остальные исправны.
+                    log("не подтверждено за ${GROUP_DEADLINE_MS / 1000} с: группа=${command.groupId} реле=$id цель=${command.expectedState}")
+                } else {
+                    error(if (command.option) "Устройство не подтвердило выбранный вариант. Проверьте его состояние"
+                        else "Устройство не подтвердило переключение. Проверьте его состояние")
+                }
                 notifyChanged(listOf(id))
             }
         }
@@ -157,7 +277,13 @@ internal class DashboardDeviceCommands(
         pending[command.entityId]?.operationId == command.operationId
 
     // Вызывается ПОСЛЕ записи факта. Не откатываем его при позднем ACK/ошибке.
-    fun entityChanged(id: String) {
+    // fromEvent=false — снимок get_states: подтверждает цель группы, но не служит поводом для догоняющей команды.
+    fun entityChanged(id: String, fromEvent: Boolean = true) {
+        pendingFact(id)
+        if (intents.isNotEmpty()) groupFact(id, fromEvent)
+    }
+
+    private fun pendingFact(id: String) {
         val command = pending[id] ?: return
         val actual = state.singleStates[id]
         // У select любое значение, кроме недоступного, — обычный факт (прежний вариант ещё не применён).
@@ -195,9 +321,14 @@ internal class DashboardDeviceCommands(
         ids.forEach(render)
     }
 
-    private companion object {
-        const val DEADLINE_MS = 20_000L
+    companion object {
+        private const val TAG = "GroupCommands"
+        private const val DEADLINE_MS = 20_000L
+        /** Ожидание факта от участника общей команды группы; дольше — отметка «не подтверждено» только у него. */
+        const val GROUP_DEADLINE_MS = 5_000L
+        /** Окно единственной догоняющей команды после последнего нажатия группы; позже — ничего автоматически. */
+        const val CORRECTION_WINDOW_MS = 5 * 60_000L
         /** Интеграции инверторов опрашивают устройство раз в 30–60 с: ждём факт дольше, чем у выключателей. */
-        const val OPTION_DEADLINE_MS = 90_000L
+        private const val OPTION_DEADLINE_MS = 90_000L
     }
 }

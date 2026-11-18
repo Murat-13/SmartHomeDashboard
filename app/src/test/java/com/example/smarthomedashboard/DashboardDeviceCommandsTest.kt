@@ -117,19 +117,33 @@ class DashboardDeviceCommandsTest {
         assertEquals("off", state.singleStates["switch.test"])
     }
 
-    @Test fun partialGroupFailureKeepsOtherMembersPendingAndAnyOnSemantics() {
+    /**
+     * 0.9.20 (ТЗ отказоустойчивости групп): отказ одного участника не блокирует группу. Повторное нажатие, пока
+     * прежняя цель не подтверждена, принимается сразу и переворачивает ЦЕЛЬ (а не пересчитывает её по фактам);
+     * поздний ответ прежней команды не завершает новую.
+     */
+    @Test fun partialGroupFailureDoesNotBlockNextTapWhichFlipsTheTarget() {
         fact("switch.first", "off")
         fact("switch.second", "off")
         commands.toggleGroup("group", listOf("switch.first", "switch.second"))
+        assertTrue(sent.all { it.second == "turn_on" })
+        assertEquals("on", commands.groupTarget("group"))
         callbacks[1](ServiceCommandResult.REJECTED)
         assertNull(commands.pendingFor("switch.second"))
         assertNotNull(commands.pendingFor("switch.first"))
         commands.toggleGroup("group", listOf("switch.first", "switch.second"))
-        assertEquals(2, sent.size)
-        fact("switch.first", "on")
+        assertEquals("Второе нажатие отправлено обоим, а не проигнорировано", 4, sent.size)
+        assertEquals(listOf("turn_off", "turn_off"), sent.drop(2).map { it.second })
+        callbacks[0](ServiceCommandResult.ACKNOWLEDGED)   // поздний ACK первой команды — уже не текущей
+        assertEquals("off", commands.pendingFor("switch.first")?.expectedState)
+        fact("switch.first", "on")                        // поздний факт первой цели не завершает новую
+        assertEquals("off", commands.pendingFor("switch.first")?.expectedState)
+        fact("switch.first", "off")
+        assertNull(commands.pendingFor("switch.first"))
+        callbacks[3](ServiceCommandResult.ACKNOWLEDGED)   // second уже был выключен — идемпотентно
         assertTrue(commands.pendingCommands.isEmpty())
-        assertTrue(state.groupIsOn("group", listOf("switch.first", "switch.second")))
-        assertEquals("off", state.singleStates["switch.second"])
+        assertNull("Все участники в цели: группа в покое", commands.groupTarget("group"))
+        assertFalse(state.groupIsOn("group", listOf("switch.first", "switch.second")))
     }
 
     @Test fun deadlineAndDisconnectDoNotAccumulateCallbacksOrReplayCommands() {

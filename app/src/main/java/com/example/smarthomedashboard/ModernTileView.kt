@@ -34,7 +34,8 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     /** Визуальное состояние. ERROR — временная индикация ошибки команды поверх фактического состояния. */
     enum class Visual { ON, OFF, UNAVAILABLE, ERROR }
 
-    data class Item(val icon: ModernIcon, val state: ConfirmedState, val failedAtMs: Long? = null)
+    /** Миниатюра участника группы; [pendingSinceMs] — его неподтверждённая команда (свой маленький spinner). */
+    data class Item(val icon: ModernIcon, val state: ConfirmedState, val failedAtMs: Long? = null, val pendingSinceMs: Long? = null)
 
     data class Model(
         val title: String,
@@ -80,6 +81,8 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     private var transition: ValueAnimator? = null
 
     private var spinnerVisible = false
+    /** Миниатюры с собственным spinner (ожидание конкретного реле группы). */
+    private var thumbSpinners = BooleanArray(0)
     private var spinnerAngle = 0f
     private var spinner: ValueAnimator? = null
     private val refresh = Runnable { model?.let { bind(it, animate = true) } }
@@ -102,6 +105,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
 
     private val card = RectF()
     private val tmp = RectF()
+    private val thumbArc = RectF()
     private var thumbCell = 0f
     private var thumbCols = 1
     private var thumbOriginX = 0f
@@ -152,6 +156,11 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
         val pendingAge = next.pendingSinceMs?.let { now - it }
         val showSpinner = pendingAge != null && pendingAge >= SPINNER_DELAY_MS
         if (pendingAge != null && !showSpinner) nextCheck = min(nextCheck, SPINNER_DELAY_MS - pendingAge)
+        thumbSpinners = BooleanArray(next.items.size) { i ->
+            val age = next.items[i].pendingSinceMs?.let { now - it }
+            if (age != null && age < SPINNER_DELAY_MS) nextCheck = min(nextCheck, SPINNER_DELAY_MS - age)
+            age != null && age >= SPINNER_DELAY_MS
+        }
         (listOfNotNull(next.failedAtMs) + next.items.mapNotNull { it.failedAtMs }).forEach { at ->
             val left = ERROR_MS - (now - at)
             if (left > 0) nextCheck = min(nextCheck, left)
@@ -175,6 +184,8 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     var displayedVisual: Visual = Visual.OFF
         private set
     val isSpinnerVisible get() = spinnerVisible
+    /** Есть ли spinner на миниатюре [index] (для тестов). */
+    fun isThumbSpinnerVisible(index: Int) = thumbSpinners.getOrElse(index) { false }
     /** Последняя привязанная модель (предпросмотр и тесты). */
     val boundModel: Model? get() = model
 
@@ -215,7 +226,8 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
 
     private fun setSpinner(visible: Boolean) {
         spinnerVisible = visible
-        if (visible && isAttachedToWindow && windowVisibility == VISIBLE) {
+        // Один аниматор на общий spinner и на spinner-ы миниатюр.
+        if ((visible || thumbSpinners.any { it }) && isAttachedToWindow && windowVisibility == VISIBLE) {
             if (spinner == null) spinner = ValueAnimator.ofFloat(0f, 360f).apply {
                 duration = 900
                 repeatCount = ValueAnimator.INFINITE
@@ -376,6 +388,7 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
             iconPaint.color = if (failed) ERROR.icon else base.icon
             val icon = if (item.state == ConfirmedState.UNAVAILABLE && !failed) ModernIcon.HELP else item.icon
             icon.draw(canvas, tmp.centerX() - iconSize / 2, tmp.centerY() - iconSize / 2, iconSize, iconPaint)
+            if (thumbSpinners.getOrElse(i) { false }) drawThumbSpinner(canvas, tmp, item.state)
         }
     }
 
@@ -443,6 +456,22 @@ internal class ModernTileView(context: Context, val kind: Kind) : View(context) 
     private fun groupIconGap() = min(card.width(), card.height()) * 0.03f
 
     private fun spinnerRadius() = (min(card.width(), card.height()) * 0.06f).coerceIn(dp(4f), dp(10f))
+
+    /** Маленький spinner в правом верхнем углу миниатюры: ждём ответа именно этого реле. */
+    private fun drawThumbSpinner(canvas: Canvas, thumb: RectF, state: ConfirmedState) {
+        val radius = (thumb.width() * 0.17f).coerceAtLeast(dp(3f))
+        val cx = thumb.right - radius * 0.35f
+        val cy = thumb.top + radius * 0.35f
+        fill.color = if (state == ConfirmedState.ON) ON.background else OFF.background
+        canvas.drawCircle(cx, cy, radius * 1.25f, fill)
+        stroke.color = if (state == ConfirmedState.ON) ON.icon else SPINNER
+        stroke.strokeWidth = max(dp(1f), radius * 0.3f)
+        stroke.strokeCap = Paint.Cap.ROUND
+        val arc = thumbArc
+        arc.set(cx - radius, cy - radius, cx + radius, cy + radius)
+        canvas.drawArc(arc, spinnerAngle, 270f, false, stroke)
+        stroke.strokeCap = Paint.Cap.BUTT
+    }
 
     private fun drawSpinner(canvas: Canvas) {
         val side = min(card.width(), card.height())

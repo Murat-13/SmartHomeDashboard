@@ -675,15 +675,21 @@ internal class DashboardPanelController(
         if (tile.type == "group") {
             val ids = modernEntries(tile).map { it.entityId }
             val states = ids.map { viewModel.devices.confirmedState(it) }
-            val state = when {
-                ConfirmedState.ON in states -> ConfirmedState.ON
-                ConfirmedState.OFF in states || ids.isEmpty() -> ConfirmedState.OFF
-                else -> ConfirmedState.UNAVAILABLE
+            // Пока не все участники подтвердили общую команду, родитель показывает её цель (0.9.20): поздний или
+            // застрявший ответ одного реле не «откатывает» всю группу. Ожидание — только на миниатюре этого реле.
+            val state = when (viewModel.commands.groupTarget(tile.id)) {
+                "on" -> ConfirmedState.ON
+                "off" -> ConfirmedState.OFF
+                else -> when {
+                    ConfirmedState.ON in states -> ConfirmedState.ON
+                    ConfirmedState.OFF in states || ids.isEmpty() -> ConfirmedState.OFF
+                    else -> ConfirmedState.UNAVAILABLE
+                }
             }
-            // Один общий spinner — только для общей команды этой группы.
-            val pending = ids.mapNotNull { viewModel.commands.pendingFor(it)?.takeIf { p -> p.groupId == tile.id }?.startedAtMs }.minOrNull()
-            val items = ids.mapIndexed { i, id -> ModernTileView.Item(chosen ?: modernIcon(id), states[i], recentFailure(id)) }
-            return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, pending, null, items, groupIcon = chosen)
+            val items = ids.mapIndexed { i, id ->
+                ModernTileView.Item(chosen ?: modernIcon(id), states[i], recentFailure(id), viewModel.commands.pendingFor(id)?.startedAtMs)
+            }
+            return ModernTileView.Model(tile.title, ModernIcon.EMPTY_GRID, state, null, null, items, groupIcon = chosen)
         }
         val id = (buttonEntities.of(tile) as? ButtonConfigResult.Valid)?.value
             ?: return ModernTileView.Model(tile.title, chosen ?: ModernIcon.POWER, ConfirmedState.OFF)
@@ -696,13 +702,13 @@ internal class DashboardPanelController(
         )
     }
 
-    /** Дочерняя кнопка панели: свой spinner только при индивидуальной команде. */
+    /** Дочерняя кнопка панели: свой spinner — и при индивидуальной, и при общей команде группы (0.9.20). */
     private fun modernChildModel(tileId: String, entityId: String, name: String): ModernTileView.Model {
         val tile = tileManager.getAllTiles().find { it.id == tileId }
         val icon = tile?.takeIf { it.type == "group" }?.let { iconConfigs.of(it) }
         return ModernTileView.Model(
             name, icon ?: modernIcon(entityId), viewModel.devices.confirmedState(entityId),
-            viewModel.commands.pendingFor(entityId)?.takeIf { it.groupId == null }?.startedAtMs, recentFailure(entityId),
+            viewModel.commands.pendingFor(entityId)?.startedAtMs, recentFailure(entityId),
             powerText = powerText(tile?.let { childPower.of(it)[entityId] } ?: LivePowerConfig())
         )
     }
@@ -724,8 +730,19 @@ internal class DashboardPanelController(
             ids.all { viewModel.devices.confirmedState(it) == ConfirmedState.OFF } -> ConfirmedState.OFF
             else -> ConfirmedState.UNAVAILABLE
         }
+        if (tile.type == "group") {
+            // Classic-группа: родитель показывает цель общей команды, без «Выполняется…» за всех (0.9.20);
+            // ожидание и «нет данных» видны у дочерних кнопок раскрытой группы.
+            val shown = when (viewModel.commands.groupTarget(tile.id)) {
+                "on" -> ConfirmedState.ON
+                "off" -> ConfirmedState.OFF
+                else -> confirmed
+            }
+            ButtonCommandAppearance.render(button, tile.title, shown, null, isGroup = true)
+            return
+        }
         val pending = ids.firstNotNullOfOrNull { viewModel.commands.pendingFor(it) }
-        ButtonCommandAppearance.render(button, tile.title, confirmed, pending, isGroup = tile.type == "group")
+        ButtonCommandAppearance.render(button, tile.title, confirmed, pending, isGroup = false)
     }
 
     private fun buttonEntityId(tile: TileEntity, reportError: Boolean = false): String? {

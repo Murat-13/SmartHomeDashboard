@@ -44,7 +44,8 @@ class MainViewModel : ViewModel() {
         cancelRequest = { id -> webSocket?.cancelServiceRequests(id) },
         connectionGeneration = { webSocket?.connectionGeneration ?: generation },
         error = ::publishOperationError,
-        sendOption = { id, option, result -> callService("select", "select_option", id, mapOf("option" to option), result) }
+        sendOption = { id, option, result -> callService("select", "select_option", id, mapOf("option" to option), result) },
+        connected = { _uiState.value.haSession.connected }
     )
 
     private var webSocket: HomeAssistantWebSocket? = null
@@ -167,6 +168,8 @@ class MainViewModel : ViewModel() {
             }
             return
         }
+        // Другой сервер или настройки: цели групп прежнего соединения не переносятся.
+        commands.reset()
         commands.disconnected()
         powerHistory?.onDisconnected()
         val currentGeneration = ++generation
@@ -279,6 +282,7 @@ class MainViewModel : ViewModel() {
 
     fun disconnectWebSocket() {
         cancelIdentify()
+        commands.reset()
         commands.disconnected()
         powerHistory?.onDisconnected()
         generation++
@@ -326,7 +330,8 @@ class MainViewModel : ViewModel() {
 
     internal fun onStatesSnapshot(states: List<HaEntityState>) {
         devices.applySnapshot(states)
-        states.forEach { commands.entityChanged(it.entityId) }
+        // Снимок после (пере)подключения — не доказательство, что реле снова на связи: без догоняющих команд групп.
+        states.forEach { commands.entityChanged(it.entityId, fromEvent = false) }
         publishDevices()
     }
 
