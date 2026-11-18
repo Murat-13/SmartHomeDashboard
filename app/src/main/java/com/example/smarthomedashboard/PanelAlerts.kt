@@ -20,6 +20,7 @@ internal enum class AlertEvent(
     GRID_RESTORED("grid_restored", "Сеть 220 В появилась", true, 3 * 60_000L),
     DOORBELL_RING("doorbell_ring", "Звонок в калитку", true, 10_000L),
     DOORBELL_OFFLINE("doorbell_offline", "Домофон не на связи", true, 10 * 60_000L),
+    RECORDING_STOPPED("recording_stopped", "Запись с камеры остановлена", true, 10 * 60_000L),
     BATTERY_LOW("battery_low", "Низкий заряд АКБ", false, 30 * 60_000L),
     INVERTER_OVERLOAD("inverter_overload", "Перегрузка инвертора", false, 5 * 60_000L),
     INVERTER_FAULT("inverter_fault", "Авария инвертора", false, 5 * 60_000L);

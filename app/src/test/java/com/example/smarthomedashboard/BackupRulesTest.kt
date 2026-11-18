@@ -49,6 +49,22 @@ class BackupRulesTest {
         assertEquals(1, sections.length)
         assertPrefsRules(sections.item(0) as Element)
     }
+    /** Запись с камер: «записывать на этом планшете» не переезжает на другой планшет, видео не уходит в облако. */
+    @Test fun recordingDeviceSettingsAndVideoAreNotBackedUp() {
+        val legacy = xml("res/xml/backup_rules.xml")
+        val rules = xml("res/xml/data_extraction_rules.xml")
+        val roots = listOf(legacy, rules.getElementsByTagName("cloud-backup").item(0) as Element,
+            rules.getElementsByTagName("device-transfer").item(0) as Element)
+        for (root in roots) {
+            assertFalse(rulesPermit(root, "recording_device.xml"))
+            assertTrue("Плитки (и настройки записи камеры в них) остаются в backup", rulesPermit(root, "tiles_prefs.xml"))
+            val excludes = root.getElementsByTagName("exclude").let { nodes ->
+                (0 until nodes.length).map { nodes.item(it) as Element }.map { it.getAttribute("domain") to it.getAttribute("path") }
+            }
+            assertTrue(("external" to "records/") in excludes)
+        }
+    }
+
     @Test fun manifestUsesBothRulesWithoutDisablingBackup() {
         val app = xml("AndroidManifest.xml").getElementsByTagName("application").item(0) as Element
         val ns = "http://schemas.android.com/apk/res/android"

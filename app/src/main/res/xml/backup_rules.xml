@@ -10,4 +10,7 @@
     <!-- История мощности (до десятков МБ) не идёт в облачную квоту Android: у неё свой бэкап в папку копий. -->
     <exclude domain="database" path="power_history.db" />
     <exclude domain="database" path="power_history.db-journal" />
+    <!-- Запись с камер: «записывать на этом планшете» и лимиты — только этого планшета; видео — не в облако. -->
+    <exclude domain="sharedpref" path="recording_device.xml" />
+    <exclude domain="external" path="records/" />
 </full-backup-content>
