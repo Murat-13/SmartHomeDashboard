@@ -73,4 +73,51 @@ class VoiceAnnouncerTest {
         announcer()
         assertEquals("Громкость будильника владельца возвращена", 3, audio.getStreamVolume(AudioManager.STREAM_ALARM))
     }
+
+    /**
+     * Чечня, 18.11: при пропаже и появлении сети звучал сигнал, а фразы не было. Синтез запускается секундами; раньше
+     * фраза после сигнала ждала его 3 с и пропадала, а поздняя готовность синтеза её не возвращала (только без сигнала).
+     */
+    @Test fun phraseAfterToneWaitsForSlowSpeechEngine() {
+        val looper = shadowOf(Looper.getMainLooper())
+        val voice = announcer()
+        // Сигнал, который Robolectric не проигрывает: сразу переход к фразе — как по окончании настоящего сигнала.
+        voice.speak(VoiceAnnouncer.Sound("Сеть пропала", android.net.Uri.parse("android.resource://test/1"), 1f, "grid"))
+        idle()
+        looper.idleFor(java.time.Duration.ofSeconds(5))   // синтез всё ещё запускается
+        assertTrue("Фраза ждёт синтез", voice.busy)
+        val tts = shadowOf(ShadowTextToSpeech.getLastTextToSpeechInstance())
+        tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertEquals("Фраза произнесена, когда синтез готов", "Сеть пропала", tts.lastSpokenText)
+    }
+
+    @Test fun phraseIsDroppedOnlyAfterLongWait() {
+        val looper = shadowOf(Looper.getMainLooper())
+        val voice = announcer()
+        voice.speak(VoiceAnnouncer.Sound("Сеть пропала", null, 1f, "grid"))
+        idle()
+        looper.idleFor(java.time.Duration.ofMillis(VoiceAnnouncer.WAIT_MS + 100))
+        assertFalse("Синтез так и не готов: очередь не зависает", voice.busy)
+        assertTrue(voice.status, voice.status.contains("не запустился"))
+    }
+
+    /** Неудачный запуск синтеза больше не держится до перезапуска панели: следующий сигнал пробует снова. */
+    @Test fun failedSpeechEngineIsRetried() {
+        val looper = shadowOf(Looper.getMainLooper())
+        val voice = announcer()
+        voice.speak(VoiceAnnouncer.Sound("Сеть пропала", null, 1f, "grid"))
+        val first = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        shadowOf(first).onInitListener.onInit(TextToSpeech.ERROR)
+        idle()
+        assertFalse("Без синтеза — только сигнал, очередь свободна", voice.busy)
+        assertTrue(voice.status, voice.status.contains("не запустился"))
+        looper.idleFor(java.time.Duration.ofMillis(VoiceAnnouncer.RETRY_MS + 100))
+        voice.speak(VoiceAnnouncer.Sound("Сеть появилась", null, 1f, "grid"))
+        val second = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        assertNotSame("Синтез запущен заново", first, second)
+        shadowOf(second).onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertEquals("Сеть появилась", shadowOf(second).lastSpokenText)
+    }
 }

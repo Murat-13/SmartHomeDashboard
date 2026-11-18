@@ -15,12 +15,31 @@ import androidx.core.content.ContextCompat
  */
 class VoiceAlertsActivity : PinProtectedActivity() {
     private var current = VoiceAlertSettings()
+    private lateinit var ttsStatus: TextView
+    /** Состояние синтеза меняется само (запуск, ошибка фразы) — строка обновляется, пока экран открыт. */
+    private val statusTick = object : Runnable {
+        override fun run() {
+            ttsStatus.text = PanelAlerts.voiceStatus()
+            ttsStatus.postDelayed(this, 1_000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PanelAlerts.attach(applicationContext)
         current = PanelAlerts.settings()
         setContentView(build())
+        PanelAlerts.announcer()?.warmUp()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        statusTick.run()
+    }
+
+    override fun onPause() {
+        ttsStatus.removeCallbacks(statusTick)
+        super.onPause()
     }
 
     private fun build(): ScrollView {
@@ -45,8 +64,9 @@ class VoiceAlertsActivity : PinProtectedActivity() {
             change(current.copy(volumePercent = value))
             PanelAlerts.preview("Сеть появилась", value / 100f)
         }
+        ttsStatus = ModernUi.caption(this, PanelAlerts.voiceStatus()).apply { tag = "voice_tts_status" }
         column.addView(gap()); column.addView(section("Громкость", volumeLabel, volume,
-            ModernUi.caption(this, "Не зависит от громкости планшета. Отпустите ползунок — прозвучит пример.")))
+            ModernUi.caption(this, "Не зависит от громкости планшета. Отпустите ползунок — прозвучит пример."), ttsStatus))
 
         val start = ModernUi.input(this, VoiceAlertSettings.minuteText(current.quietStartMin), "23:00").apply { tag = "voice_quiet_start" }
         val end = ModernUi.input(this, VoiceAlertSettings.minuteText(current.quietEndMin), "07:00").apply { tag = "voice_quiet_end" }

@@ -236,6 +236,8 @@ internal object PanelAlerts {
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var lastReadings: BatteryReadings? = null
     private val recheck = Runnable { lastReadings?.let(::evaluate) }
+    /** Синтез речи запускается после старта панели, не мешая её первой отрисовке. */
+    private const val WARM_UP_DELAY_MS = 5_000L
 
     /** Отключение на время тестов и для экранов без панели. */
     @Volatile internal var enabled = true
@@ -245,7 +247,15 @@ internal object PanelAlerts {
         app = context.applicationContext
         tiles = com.example.smarthomedashboard.data.TileManager(context.applicationContext)
         DoorbellHub.attach(context)
+        // Синтез речи — заранее, а не при первом событии: его запуск занимает секунды, и первая фраза после старта
+        // панели («Сеть пропала») иначе могла не дождаться его и прозвучать одним сигналом.
+        main.postDelayed(warmUp, WARM_UP_DELAY_MS)
     }
+
+    private val warmUp = Runnable { if (app != null && enabled && settings().enabled.isNotEmpty()) announcer()?.warmUp() }
+
+    /** Что с синтезом речи — для экрана настроек голоса. */
+    fun voiceStatus(): String = announcer?.status ?: "Синтез речи ещё не запускался"
 
     fun settings(): VoiceAlertSettings = settings ?: app?.let { VoiceAlertSettings.load(it) }?.also { settings = it } ?: VoiceAlertSettings()
 
@@ -326,6 +336,7 @@ internal object PanelAlerts {
     /** ViewModel очищен (панель закрыта): голос освобождается. */
     fun detach() {
         main.removeCallbacks(recheck)
+        main.removeCallbacks(warmUp)
         DoorbellHub.detach()
         announcer?.release()
         announcer = null

@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -22,6 +23,8 @@ import java.util.Locale
  *   уровень задаёт множитель [Sound.volume]; после очереди прежний уровень возвращается. Поток будильника не
  *   глушится режимом «без звука» и не зависит от громкости медиа.
  * - Синтез речи может отсутствовать или не знать русский: тогда звучит только сигнал (честно, без падений).
+ *   Неудачный запуск синтеза повторяется не чаще раза в [RETRY_MS]; голос выбирается русский без интернета, если он
+ *   установлен (иначе при пропаже интернета фраза не прозвучит). Что с синтезом — [status], видно в настройках голоса.
  * Только главный поток.
  */
 internal class VoiceAnnouncer(context: Context) {
@@ -34,6 +37,12 @@ internal class VoiceAnnouncer(context: Context) {
         .build()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var ttsFailedAt = 0L
+    /** Фраза ждёт запуска синтеза (сигнал уже прозвучал). */
+    private var waiting: Sound? = null
+    /** Состояние синтеза речи для экрана настроек: что услышит владелец и почему. */
+    var status: String = "Синтез речи ещё не запускался"
+        private set
     private val queue = ArrayDeque<Sound>()
     private var playing: Sound? = null
     private var player: MediaPlayer? = null
@@ -73,6 +82,11 @@ internal class VoiceAnnouncer(context: Context) {
         }
     }
 
+    /** Запустить синтез заранее: первая фраза после старта панели не ждёт его запуска. */
+    fun warmUp() {
+        if (!released) ensureTts()
+    }
+
     fun release() {
         released = true
         queue.clear()
@@ -84,24 +98,59 @@ internal class VoiceAnnouncer(context: Context) {
 
     private fun ensureTts() {
         if (tts != null) return
-        tts = TextToSpeech(app) { status ->
-            main.post {
-                val engine = tts ?: return@post
-                ttsReady = status == TextToSpeech.SUCCESS &&
-                    engine.setLanguage(Locale("ru", "RU")) >= TextToSpeech.LANG_AVAILABLE
-                if (!ttsReady) Log.w(TAG, "Синтез речи недоступен или без русского: только сигналы")
-                engine.setAudioAttributes(attributes)
-                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) { main.post { finished(utteranceId) } }
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { main.post { finished(utteranceId) } }
-                    override fun onError(utteranceId: String?, errorCode: Int) { main.post { finished(utteranceId) } }
-                })
-                // Если очередь ждала готовности синтеза — продолжить.
-                if (playing?.let { it.tone == null && it.phrase != null } == true) sayPhrase(playing!!)
-            }
+        if (ttsFailedAt != 0L && SystemClock.uptimeMillis() - ttsFailedAt < RETRY_MS) return
+        status = "Синтез речи запускается…"
+        tts = TextToSpeech(app) { result -> main.post { onTtsInit(result) } }
+    }
+
+    private fun onTtsInit(result: Int) {
+        val engine = tts ?: return
+        val language = if (result == TextToSpeech.SUCCESS) engine.setLanguage(Locale("ru", "RU")) else TextToSpeech.ERROR
+        ttsReady = result == TextToSpeech.SUCCESS && language >= TextToSpeech.LANG_AVAILABLE
+        if (!ttsReady) {
+            status = if (result != TextToSpeech.SUCCESS) "Синтез речи на планшете не запустился — звучат только сигналы"
+                else "В синтезе речи нет русского языка — звучат только сигналы (установите русский голос в настройках Android)"
+            Log.w(TAG, "Синтез речи недоступен или без русского: только сигналы")
+            // Движок отпускается: следующий сигнал попробует снова (раньше неудача держалась до перезапуска панели).
+            engine.shutdown()
+            tts = null
+            ttsFailedAt = SystemClock.uptimeMillis()
+            waiting?.let { if (playing === it) { waiting = null; finished() } }
+            return
         }
+        ttsFailedAt = 0L
+        status = chooseOfflineVoice(engine)
+        engine.setAudioAttributes(attributes)
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) { main.post { finished(utteranceId) } }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) { main.post { failed(utteranceId, TextToSpeech.ERROR) } }
+            override fun onError(utteranceId: String?, errorCode: Int) { main.post { failed(utteranceId, errorCode) } }
+        })
+        // Фраза ждала запуска синтеза (в том числе после сигнала) — произнести сейчас.
+        waiting?.let { if (playing === it) { waiting = null; sayPhrase(it) } }
+    }
+
+    /**
+     * Русский голос без интернета, если установлен: у пропавшей сети 220 В часто пропадает и интернет, а голос «из
+     * облака» тогда молчит. Нет такого — остаётся голос движка, а в [status] — подсказка скачать русский голос.
+     */
+    private fun chooseOfflineVoice(engine: TextToSpeech): String = try {
+        val russian = engine.voices.orEmpty().filter {
+            it.locale.language == "ru" && TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in it.features
+        }
+        val current = engine.voice
+        val offline = if (current != null && current.locale.language == "ru" && !current.isNetworkConnectionRequired) current
+            else russian.filter { !it.isNetworkConnectionRequired }.maxByOrNull { it.quality }
+        when {
+            offline != null -> { if (offline != current) engine.voice = offline; "Синтез речи готов: русский голос работает без интернета" }
+            russian.isNotEmpty() -> "Синтез речи готов, но русский голос работает только с интернетом — без него будут " +
+                "звучать только сигналы. Скачайте русский голос в настройках синтеза речи Android"
+            else -> "Синтез речи готов (русский)"
+        }
+    } catch (e: Exception) {
+        "Синтез речи готов (русский)"
     }
 
     private fun next() {
@@ -141,8 +190,17 @@ internal class VoiceAnnouncer(context: Context) {
         val engine = tts
         if (text.isNullOrBlank()) { finished(); return }
         if (engine == null || !ttsReady) {
-            // Синтез ещё готовится: подождём до 3 с, иначе фраза пропускается (сигнал уже прозвучал).
-            main.postDelayed({ if (playing === sound && !ttsReady) finished() }, 3_000)
+            ensureTts()
+            if (tts == null) { finished(); return } // синтеза нет, повтор запуска позже: только сигнал
+            // Синтез ещё запускается: фраза прозвучит, как только он будет готов, но ждём не дольше WAIT_MS.
+            waiting = sound
+            main.postDelayed({
+                if (playing === sound && waiting === sound) {
+                    waiting = null
+                    status = "Синтез речи не запустился за ${WAIT_MS / 1000} с — фраза пропущена"
+                    finished()
+                }
+            }, WAIT_MS)
             return
         }
         val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, sound.volume) }
@@ -157,6 +215,19 @@ internal class VoiceAnnouncer(context: Context) {
         finished()
     }
 
+    /** Ошибка синтеза о текущей фразе: причина — в [status] (чаще всего голос «из облака» без интернета). */
+    private fun failed(utteranceId: String?, errorCode: Int) {
+        if (utteranceId != utterance) return
+        status = when (errorCode) {
+            TextToSpeech.ERROR_NETWORK, TextToSpeech.ERROR_NETWORK_TIMEOUT ->
+                "Фраза не прозвучала: русскому голосу нужен интернет. Скачайте русский голос в настройках синтеза речи Android"
+            TextToSpeech.ERROR_NOT_INSTALLED_YET -> "Фраза не прозвучала: русский голос ещё скачивается"
+            else -> "Фраза не прозвучала: ошибка синтеза речи ($errorCode)"
+        }
+        Log.w(TAG, "Ошибка синтеза речи: $errorCode")
+        finished()
+    }
+
     private fun finished() {
         if (playing == null) return
         utterance = null
@@ -166,6 +237,7 @@ internal class VoiceAnnouncer(context: Context) {
 
     private fun stopCurrent() {
         utterance = null
+        waiting = null
         releasePlayer()
         tts?.stop()
         playing = null
@@ -204,6 +276,10 @@ internal class VoiceAnnouncer(context: Context) {
         private const val TAG = "VoiceAnnouncer"
         const val PREFS = "dashboard_prefs"
         private const val KEY_SAVED_ALARM = "voice_saved_alarm_volume"
+        /** Сколько фраза ждёт запуска синтеза после сигнала. */
+        const val WAIT_MS = 10_000L
+        /** Неудачный запуск синтеза повторяется не чаще. */
+        const val RETRY_MS = 60_000L
 
         fun resource(context: Context, id: Int): Uri = Uri.parse("android.resource://${context.packageName}/$id")
     }
