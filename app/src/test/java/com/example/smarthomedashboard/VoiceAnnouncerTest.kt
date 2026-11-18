@@ -16,6 +16,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import org.robolectric.shadows.ShadowTextToSpeech
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 // Очередь голоса: запоздавший ответ синтеза о прошлой фразе не обрывает новую; громкость будильника возвращается.
 @RunWith(RobolectricTestRunner::class)
@@ -121,5 +122,72 @@ class VoiceAnnouncerTest {
         shadowOf(second).onInitListener.onInit(TextToSpeech.SUCCESS)
         idle()
         assertEquals("Сеть появилась", shadowOf(second).lastSpokenText)
+    }
+
+    // Аудит 18.11: движок принял speak(), но не сообщает о завершении (упал/перезапустился).
+    private val silent = object : android.speech.tts.UtteranceProgressListener() {
+        override fun onStart(utteranceId: String?) {}
+        override fun onDone(utteranceId: String?) {}
+        @Deprecated("Deprecated in Java")
+        override fun onError(utteranceId: String?) {}
+    }
+
+    /** Синтез готов и первая фраза отправлена; дальше движок молчит. */
+    private fun silentEngineSpeaking(voice: VoiceAnnouncer, phrase: String): ShadowTextToSpeech {
+        val looper = shadowOf(Looper.getMainLooper())
+        voice.speak(VoiceAnnouncer.Sound(phrase, null, 1f, "a"))
+        val engine = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        val tts = shadowOf(engine)
+        tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        looper.runOneTask()                          // ответ движка: язык и голос
+        looper.runOneTask()                          // синтез готов → фраза отправлена
+        engine.setOnUtteranceProgressListener(silent) // о завершении никто не сообщит
+        idle()
+        assertEquals(phrase, tts.lastSpokenText)
+        return tts
+    }
+
+    @Test fun silentEngineDoesNotBlockQueueAndAlarmVolumeReturns() {
+        audio.setStreamVolume(AudioManager.STREAM_ALARM, 3, 0)
+        val voice = announcer()
+        val tts = silentEngineSpeaking(voice, "Первая")
+        voice.speak(VoiceAnnouncer.Sound("Вторая", null, 1f, "b"))
+        shadowOf(Looper.getMainLooper()).idleFor(VoiceAnnouncer.PHRASE_MAX_MS - 1_000, TimeUnit.MILLISECONDS)
+        assertEquals("До предела ждём ответа о первой", "Первая", tts.lastSpokenText)
+        shadowOf(Looper.getMainLooper()).idleFor(2_000, TimeUnit.MILLISECONDS)
+        assertEquals("Зависшая фраза остановлена, очередь пошла", "Вторая", tts.lastSpokenText)
+        assertTrue(voice.status, voice.status.contains("не сообщил"))
+        shadowOf(Looper.getMainLooper()).idleFor(VoiceAnnouncer.PHRASE_MAX_MS + 1_000, TimeUnit.MILLISECONDS)
+        assertFalse("Очередь пуста", voice.busy)
+        assertEquals("Громкость будильника владельца возвращена", 3, audio.getStreamVolume(AudioManager.STREAM_ALARM))
+    }
+
+    @Test fun finishedPhraseTimerDoesNotStopTheNextPhrase() {
+        val looper = shadowOf(Looper.getMainLooper())
+        val voice = announcer()
+        voice.speak(VoiceAnnouncer.Sound("Первая", null, 1f, "a"))
+        val engine = ShadowTextToSpeech.getLastTextToSpeechInstance()
+        shadowOf(engine).onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()                                       // первая сказана и завершена штатно
+        assertFalse(voice.busy)
+        looper.idleFor(15, TimeUnit.SECONDS)
+        engine.setOnUtteranceProgressListener(silent)
+        voice.speak(VoiceAnnouncer.Sound("Вторая", null, 1f, "b"))
+        looper.idleFor(10, TimeUnit.SECONDS)         // таймер первой (если бы остался) сработал бы здесь
+        assertTrue("Вторая звучит: её обрывает только собственный предел", voice.busy)
+        assertEquals("Вторая", shadowOf(engine).lastSpokenText)
+    }
+
+    @Test fun releaseAndCancelClearThePhraseTimer() {
+        audio.setStreamVolume(AudioManager.STREAM_ALARM, 4, 0)
+        val voice = announcer()
+        silentEngineSpeaking(voice, "Первая")
+        voice.cancel("a")
+        assertFalse(voice.busy)
+        voice.speak(VoiceAnnouncer.Sound("Вторая", null, 1f, "b"))
+        voice.release()
+        shadowOf(Looper.getMainLooper()).idleFor(VoiceAnnouncer.PHRASE_MAX_MS * 2, TimeUnit.MILLISECONDS)
+        assertFalse(voice.busy)
+        assertEquals(4, audio.getStreamVolume(AudioManager.STREAM_ALARM))
     }
 }

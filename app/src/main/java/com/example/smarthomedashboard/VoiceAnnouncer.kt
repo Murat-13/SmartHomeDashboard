@@ -47,6 +47,8 @@ internal class VoiceAnnouncer(
     private var ttsFailedAt = 0L
     /** Фраза ждёт запуска синтеза (сигнал уже прозвучал). */
     private var waiting: Sound? = null
+    /** Ограничение ожидания ответа о текущей (уже отправленной в синтез) фразе. */
+    private var phraseTimeout: Runnable? = null
     /** Состояние синтеза речи для экрана настроек: что услышит владелец и почему. */
     var status: String = "Синтез речи ещё не запускался"
         private set
@@ -225,7 +227,19 @@ internal class VoiceAnnouncer(
         val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, sound.volume) }
         val id = "u" + System.nanoTime()
         utterance = id
-        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, id) != TextToSpeech.SUCCESS) finished()
+        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, id) != TextToSpeech.SUCCESS) { finished(); return }
+        // Движок может не сообщить о завершении (упал, перезапустился): без предела очередь стояла бы вечно, а громкость
+        // будильника оставалась бы максимальной. Таймер привязан к этой фразе: ответ о старой не снимает новую.
+        val timeout = Runnable {
+            if (utterance == id) {
+                status = "Синтез речи не сообщил о конце фразы за ${PHRASE_MAX_MS / 1000} с — фраза остановлена"
+                Log.w(TAG, "Нет ответа синтеза о фразе: остановлена по тайм-ауту")
+                try { tts?.stop() } catch (_: RuntimeException) {}
+                finished()
+            }
+        }
+        phraseTimeout = timeout
+        main.postDelayed(timeout, PHRASE_MAX_MS)
     }
 
     /** Ответ синтеза: только о текущей фразе (запоздавший ответ о прерванной не обрывает новую). */
@@ -248,13 +262,20 @@ internal class VoiceAnnouncer(
     }
 
     private fun finished() {
+        clearPhraseTimeout()
         if (playing == null) return
         utterance = null
         playing = null
         next()
     }
 
+    private fun clearPhraseTimeout() {
+        phraseTimeout?.let(main::removeCallbacks)
+        phraseTimeout = null
+    }
+
     private fun stopCurrent() {
+        clearPhraseTimeout()
         utterance = null
         waiting = null
         releasePlayer()
@@ -304,6 +325,8 @@ internal class VoiceAnnouncer(
         private const val KEY_SAVED_ALARM = "voice_saved_alarm_volume"
         /** Сколько фраза ждёт запуска синтеза после сигнала. */
         const val WAIT_MS = 10_000L
+        /** Предел ожидания ответа синтеза об уже отправленной фразе (фразы панели — несколько секунд). */
+        const val PHRASE_MAX_MS = 20_000L
         /** Неудачный запуск синтеза повторяется не чаще. */
         const val RETRY_MS = 60_000L
 
