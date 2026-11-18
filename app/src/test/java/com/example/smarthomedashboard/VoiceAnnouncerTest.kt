@@ -36,7 +36,8 @@ class VoiceAnnouncerTest {
 
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
-    private fun announcer() = VoiceAnnouncer(context).also { made += it }
+    // Медленные вызовы движка в тесте выполняются сразу: порядок задач главного потока детерминирован.
+    private fun announcer() = VoiceAnnouncer(context) { it.run() }.also { made += it }
 
     /**
      * Движок (здесь — тень Robolectric) сообщает о фразах через главный поток. Прерванная первая фраза
@@ -48,6 +49,7 @@ class VoiceAnnouncerTest {
         voice.speak(VoiceAnnouncer.Sound("Первая", null, 1f, "a"))
         val tts = shadowOf(ShadowTextToSpeech.getLastTextToSpeechInstance())
         tts.onInitListener.onInit(TextToSpeech.SUCCESS)
+        looper.runOneTask()                          // ответ движка: язык и голос (в тесте сразу)
         looper.runOneTask()                          // синтез готов → «Первая»
         assertEquals("Первая", tts.lastSpokenText)
         voice.speak(VoiceAnnouncer.Sound("Вторая", null, 1f, "b"))

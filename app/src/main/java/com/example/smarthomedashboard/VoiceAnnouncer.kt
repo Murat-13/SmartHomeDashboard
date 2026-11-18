@@ -27,7 +27,14 @@ import java.util.Locale
  *   установлен (иначе при пропаже интернета фраза не прозвучит). Что с синтезом — [status], видно в настройках голоса.
  * Только главный поток.
  */
-internal class VoiceAnnouncer(context: Context) {
+internal class VoiceAnnouncer(
+    context: Context,
+    /**
+     * Где выполнять медленные вызовы движка синтеза (язык, перебор голосов — запросы к другому процессу, на эмуляторе
+     * до 0,8 с): не в главном потоке, иначе панель подвисает. Тесты подставляют немедленное выполнение.
+     */
+    private val background: (Runnable) -> Unit = defaultBackground()
+) {
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val audio = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -105,8 +112,20 @@ internal class VoiceAnnouncer(context: Context) {
 
     private fun onTtsInit(result: Int) {
         val engine = tts ?: return
-        val language = if (result == TextToSpeech.SUCCESS) engine.setLanguage(Locale("ru", "RU")) else TextToSpeech.ERROR
-        ttsReady = result == TextToSpeech.SUCCESS && language >= TextToSpeech.LANG_AVAILABLE
+        // Язык и выбор голоса — запросы к процессу синтеза: в фоне, затем результат — в главный поток.
+        background(Runnable {
+            val language = try {
+                if (result == TextToSpeech.SUCCESS) engine.setLanguage(Locale("ru", "RU")) else TextToSpeech.ERROR
+            } catch (e: RuntimeException) { TextToSpeech.ERROR }
+            val ready = result == TextToSpeech.SUCCESS && language >= TextToSpeech.LANG_AVAILABLE
+            val voiceStatus = if (ready) chooseOfflineVoice(engine) else null
+            main.post { applyTtsInit(engine, result, ready, voiceStatus) }
+        })
+    }
+
+    private fun applyTtsInit(engine: TextToSpeech, result: Int, ready: Boolean, voiceStatus: String?) {
+        if (tts !== engine || released) return
+        ttsReady = ready
         if (!ttsReady) {
             status = if (result != TextToSpeech.SUCCESS) "Синтез речи на планшете не запустился — звучат только сигналы"
                 else "В синтезе речи нет русского языка — звучат только сигналы (установите русский голос в настройках Android)"
@@ -119,7 +138,7 @@ internal class VoiceAnnouncer(context: Context) {
             return
         }
         ttsFailedAt = 0L
-        status = chooseOfflineVoice(engine)
+        status = voiceStatus ?: "Синтез речи готов (русский)"
         engine.setAudioAttributes(attributes)
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
@@ -274,6 +293,13 @@ internal class VoiceAnnouncer(context: Context) {
 
     companion object {
         private const val TAG = "VoiceAnnouncer"
+
+        /** Один фоновый поток на процесс: новые экземпляры (после пересоздания панели) не плодят потоки. */
+        private val ttsWorker by lazy {
+            java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "voice-tts").apply { isDaemon = true } }
+        }
+
+        private fun defaultBackground(): (Runnable) -> Unit = { ttsWorker.execute(it) }
         const val PREFS = "dashboard_prefs"
         private const val KEY_SAVED_ALARM = "voice_saved_alarm_volume"
         /** Сколько фраза ждёт запуска синтеза после сигнала. */
