@@ -225,6 +225,17 @@ class RecordingEngineTest {
         assertFalse(part.exists())
     }
 
+    @Test fun base64MatchesJdkForAllLengths() {
+        val rnd = java.util.Random(7)
+        for (n in 0..40) {
+            val data = ByteArray(n).also(rnd::nextBytes)
+            val jdk = java.util.Base64.getEncoder().encodeToString(data)
+            assertEquals(jdk, RecBase64.encode(data))
+            assertArrayEquals(data, RecBase64.decode(jdk))
+        }
+        assertNull(RecBase64.decode("a*b"))
+    }
+
     @Test fun parametersChangeIsDetected() {
         val a = VideoParams(VideoDepacketizer.Codec.H264, null, byteArrayOf(0x67, 1), byteArrayOf(0x68, 1))
         val b = a.copy(sps = byteArrayOf(0x67, 2))

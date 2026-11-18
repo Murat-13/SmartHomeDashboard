@@ -1,7 +1,6 @@
 package com.example.smarthomedashboard
 
 import java.io.ByteArrayOutputStream
-import java.util.Base64
 
 /**
  * Запись с камер: разбор RTP в кадры без декодирования (docs/recording.md).
@@ -187,9 +186,7 @@ internal abstract class VideoDepacketizer(val codec: Codec) {
             else -> null
         }
 
-        private fun decode(b64: String): ByteArray? = try {
-            Base64.getDecoder().decode(b64.trim()).takeIf { it.isNotEmpty() }
-        } catch (_: Exception) { null }
+        private fun decode(b64: String): ByteArray? = RecBase64.decode(b64)?.takeIf { it.isNotEmpty() }
     }
 }
 

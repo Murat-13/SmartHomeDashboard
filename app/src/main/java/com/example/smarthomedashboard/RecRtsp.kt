@@ -10,7 +10,6 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
 import java.security.MessageDigest
-import java.util.Base64
 import java.util.Locale
 
 /**
@@ -358,7 +357,7 @@ internal class RtspSession(
     private fun authorization(method: String, url: String): String? {
         val c = auth ?: return null
         val pass = password.orEmpty()
-        if (c.scheme == "Basic") return "Basic " + Base64.getEncoder().encodeToString("$user:$pass".toByteArray(Charsets.UTF_8))
+        if (c.scheme == "Basic") return "Basic " + RecBase64.encode("$user:$pass".toByteArray(Charsets.UTF_8))
         val ha1 = md5("$user:${c.realm}:$pass")
         val ha2 = md5("$method:$url")
         val parts = mutableListOf("username=\"$user\"", "realm=\"${c.realm}\"", "nonce=\"${c.nonce}\"", "uri=\"$url\"")
@@ -376,4 +375,40 @@ internal class RtspSession(
 
     private fun md5(text: String): String =
         MessageDigest.getInstance("MD5").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+}
+
+/** Base64 (RFC 4648) без Android и без java.util.Base64 (minSdk 24): SDP sprop-* и Basic-авторизация. */
+internal object RecBase64 {
+    private const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    fun encode(data: ByteArray): String {
+        val out = StringBuilder((data.size + 2) / 3 * 4)
+        var i = 0
+        while (i < data.size) {
+            val b0 = data[i].toInt() and 0xFF
+            val b1 = if (i + 1 < data.size) data[i + 1].toInt() and 0xFF else 0
+            val b2 = if (i + 2 < data.size) data[i + 2].toInt() and 0xFF else 0
+            out.append(ALPHABET[b0 shr 2]).append(ALPHABET[((b0 and 3) shl 4) or (b1 shr 4)])
+            out.append(if (i + 1 < data.size) ALPHABET[((b1 and 15) shl 2) or (b2 shr 6)] else '=')
+            out.append(if (i + 2 < data.size) ALPHABET[b2 and 63] else '=')
+            i += 3
+        }
+        return out.toString()
+    }
+
+    /** Некорректная строка — null. */
+    fun decode(text: String): ByteArray? {
+        val clean = text.trim().trimEnd('=')
+        val out = java.io.ByteArrayOutputStream(clean.length * 3 / 4)
+        var buffer = 0
+        var bits = 0
+        for (ch in clean) {
+            val v = ALPHABET.indexOf(ch)
+            if (v < 0) return null
+            buffer = (buffer shl 6) or v
+            bits += 6
+            if (bits >= 8) { bits -= 8; out.write((buffer shr bits) and 0xFF) }
+        }
+        return out.toByteArray()
+    }
 }
