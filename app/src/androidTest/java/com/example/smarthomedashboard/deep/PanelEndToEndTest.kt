@@ -297,7 +297,9 @@ class PanelEndToEndTest {
         val noiseIds = ids.filter { it != "binary_sensor.deep_visitor" }
         // Прогрев первые 5 минут: пулы потоков (WorkManager, OkHttp, Media3) и кеши заполняются один раз.
         // Рост считается от состояния после прогрева (первый прогон 07.11: потоки 51 → 62 за 5 минут, дальше ровно).
-        var warm: Resources? = null
+        // Сравниваются медианы, а не единичные замеры: число потоков пулов «дышит» ±5 (прогон 18.11: 47 на 5-й минуте,
+        // дальше 54–60 без роста — по одной точке тест падал ложно).
+        val warm = mutableListOf<Resources>()
         val monitor = StallMonitor().apply { start() }
         val end = System.currentTimeMillis() + minutes * 60_000L
         var minute = 0
@@ -313,7 +315,7 @@ class PanelEndToEndTest {
             if (minute % 5 == 0) {
                 val now = Resources.sample()
                 samples += now
-                if (minute == 5) warm = now
+                if (minute in 5..15) warm += now
                 log("Soak $minute мин: $now; кадры: ${monitor.snapshot()}")
             }
             assertTrue("Главный поток отвечает (минута $minute)", mainThreadResponds(5_000))
@@ -322,11 +324,14 @@ class PanelEndToEndTest {
         val last = Resources.sample()
         log("Soak конец $minutes мин: $last; кадры: $frames")
         // Рост после прогрева: куча Java — не более 24 МБ, native — не более 32 МБ, потоки — не более 8, дескрипторы — 40.
-        val from = warm ?: baseline
-        assertTrue("Куча Java растёт: $from → $last", last.javaKb - from.javaKb < 24 * 1024)
-        assertTrue("Native-память растёт: $from → $last", last.nativeKb - from.nativeKb < 32 * 1024)
-        assertTrue("Потоки копятся: $from → $last", last.threads - from.threads <= 8)
-        assertTrue("Дескрипторы копятся: $from → $last", last.fds - from.fds <= 40)
+        // «Было» — медиана замеров 5–15 минут, «стало» — медиана трёх последних (с финальным).
+        val from = Resources.median(warm.ifEmpty { listOf(baseline) })
+        val to = Resources.median((samples.drop(1) + last).takeLast(3))
+        log("Soak сравнение медиан: $from → $to")
+        assertTrue("Куча Java растёт: $from → $to", to.javaKb - from.javaKb < 24 * 1024)
+        assertTrue("Native-память растёт: $from → $to", to.nativeKb - from.nativeKb < 32 * 1024)
+        assertTrue("Потоки копятся: $from → $to", to.threads - from.threads <= 8)
+        assertTrue("Дескрипторы копятся: $from → $to", to.fds - from.fds <= 40)
         assertTrue("Нет подвисаний больше 2 с: $frames", frames.max < 2_000)
     }
 

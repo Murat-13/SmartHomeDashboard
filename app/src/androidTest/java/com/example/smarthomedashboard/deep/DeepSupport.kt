@@ -200,6 +200,13 @@ internal data class Resources(val javaKb: Long, val nativeKb: Long, val threads:
             return Resources((rt.totalMemory() - rt.freeMemory()) / 1024, Debug.getNativeHeapAllocatedSize() / 1024,
                 Thread.getAllStackTraces().size, File("/proc/self/fd").list()?.size ?: -1)
         }
+
+        /** Медиана по каждому показателю отдельно: одиночный всплеск или провал не решает исход проверки. */
+        fun median(list: List<Resources>): Resources {
+            fun <T : Comparable<T>> mid(values: List<T>) = values.sorted()[values.size / 2]
+            return Resources(mid(list.map { it.javaKb }), mid(list.map { it.nativeKb }),
+                mid(list.map { it.threads }), mid(list.map { it.fds }))
+        }
     }
     override fun toString() = "java ${javaKb / 1024} МБ, native ${nativeKb / 1024} МБ, потоков $threads, fd $fds"
 }
