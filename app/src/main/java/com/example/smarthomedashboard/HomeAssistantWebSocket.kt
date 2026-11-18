@@ -420,8 +420,8 @@ class HomeAssistantWebSocket(
                 event.optJSONObject("c")?.let { changed ->
                     changed.keys().forEach { entityId ->
                         changed.optJSONObject(entityId)?.optJSONObject("+")?.let {
-                            deliverState(entityId, it.optString("s", "unknown"),
-                                it.optJSONObject("a") ?: JSONObject())
+                            // Патч только атрибутов (без "s") не затирает прежнее достоверное состояние на «unknown».
+                            if (it.has("s")) deliverState(entityId, it.optString("s"), it.optJSONObject("a") ?: JSONObject())
                         }
                     }
                 }

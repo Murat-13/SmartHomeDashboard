@@ -46,6 +46,31 @@ class HaProtocolFuzzTest {
             .apply { isAccessible = true }.invoke(client, message)
     }
 
+    /** ТЗ групп, п. 6: сжатый патч только атрибутов (без "+".s) не превращает достоверное состояние в «unknown». */
+    @Test fun attributeOnlyCompressedPatchKeepsPreviousState() {
+        val owner = MainViewModel()
+        val delivered = mutableListOf<Pair<String, String>>()
+        owner.connectWebSocket("http://[", "artificial-token", autoReconnect = false,
+            onStatesSnapshotCallback = {}, onStateChangedCallback = { id, st, _ -> delivered += id to st },
+            onForecastChangedCallback = { _, _ -> })
+        val client = requireNotNull(owner.getWebSocket())
+        ReflectionHelpers.setField(client, "running", true)
+        ReflectionHelpers.setField(client, "authenticated", true)
+        ReflectionHelpers.setField(client, "webSocket", Socket())
+        try {
+            deliver(client, JSONObject().put("type", "event").put("id", 1).put("event", JSONObject()
+                .put("a", JSONObject().put("switch.far", JSONObject().put("s", "on").put("a", JSONObject())))).toString())
+            deliver(client, JSONObject().put("type", "event").put("id", 1).put("event", JSONObject()
+                .put("c", JSONObject().put("switch.far", JSONObject().put("+", JSONObject().put("a", JSONObject().put("linkquality", 40))))))
+                .toString())
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf("switch.far" to "on"), delivered)
+            assertEquals("on", owner.uiState.value.singleStates["switch.far"])
+        } finally {
+            owner.disconnectWebSocket()
+        }
+    }
+
     @Test fun garbageFromServerNeverCrashesAndEveryCommandEndsOnce() {
         val iterations = System.getProperty("chaos.iterations")?.toIntOrNull()?.times(50) ?: 3_000
         val rnd = Random(System.getProperty("chaos.seed")?.toLongOrNull() ?: 20261107L)
