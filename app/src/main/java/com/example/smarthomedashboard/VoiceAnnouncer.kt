@@ -180,7 +180,9 @@ internal class VoiceAnnouncer(context: Context) {
         try {
             savedAlarmVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
             // Записано до повышения: если процесс прервётся во время фразы, следующий запуск вернёт громкость.
-            prefs.edit().putInt(KEY_SAVED_ALARM, savedAlarmVolume!!).commit()
+            // apply(), не commit(): синхронный fsync в главном потоке подвешивал панель на 2+ с в начале звонка
+            // (ночной soak 18.11.2026). Значение сразу в памяти, на диск — фоном за миллисекунды.
+            prefs.edit().putInt(KEY_SAVED_ALARM, savedAlarmVolume!!).apply()
             audio.setStreamVolume(AudioManager.STREAM_ALARM, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
         } catch (e: SecurityException) {
             // «Не беспокоить» на некоторых прошивках запрещает менять громкость: играем на текущей.
