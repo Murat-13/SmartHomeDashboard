@@ -31,7 +31,7 @@ internal object DirectEvents {
     data class Status(val level: Level, val text: String)
 
     private const val TAG = "DirectEvents"
-    private const val PREFS = "camera_events"
+    const val PREFS = "camera_events"
     private const val CHECK_EVERY_MS = 15 * 60_000L
     private const val NETWORK_SETTLE_MS = 5_000L
     private const val POLL_MS = 1_000L
@@ -56,6 +56,13 @@ internal object DirectEvents {
         { host, user, password, pin, onPin -> ReolinkDriver("https://$host", user, password, ReolinkDriver.client(host, pin, onPin)) }
     /** Пароль камеры (в тестах — задан). */
     internal var passwordSource: (Context, (String?) -> Unit) -> Unit = { context, result -> DoorbellHub.cameraPassword(context, result) }
+    /** Пароль камеры плитки: у «Камеры» — свой ([CameraPasswords]), у домофона — [passwordSource]. */
+    private fun passwordFor(context: Context, tileId: String, result: (String?) -> Unit) {
+        val key = prefs(context).getString("$tileId.secret_key", "").orEmpty()
+        if (key.isEmpty()) passwordSource(context, result) else CameraPasswords.read(context, key, result)
+    }
+    /** Плитка «Камера» (не домофон): звонка нет, запасной опрос звонка не нужен. */
+    private fun isCamera(context: Context, tileId: String) = !prefs(context).getString("$tileId.secret_key", "").isNullOrEmpty()
     /** Куда уходит звонок (в тестах — запись). */
     internal var onRing: (tileId: String, source: String) -> Unit = { tileId, source -> DoorbellHub.directRing(tileId, source) }
     /** События для записи (в тестах — запись вызовов). */
@@ -113,7 +120,7 @@ internal object DirectEvents {
         statuses[tileId] ?: if (enabled(context, tileId)) Status(Level.WORKING, "Проверка…") else Status(Level.OFF, "Выключено")
 
     /** Включить или выключить на этом планшете (из «Сохранить» редактора). */
-    fun setEnabled(context: Context, tileId: String, config: DoorbellConfig, on: Boolean) {
+    fun setEnabled(context: Context, tileId: String, config: DoorbellConfig, on: Boolean, secretKey: String = "") {
         val application = context.applicationContext
         if (app == null) attach(application)
         val p = prefs(application)
@@ -129,6 +136,7 @@ internal object DirectEvents {
         }
         val changedCamera = p.getString("$tileId.host", null) != host
         p.edit().putBoolean("$tileId.enabled", true).putString("$tileId.host", host).putString("$tileId.user", config.rtspUser)
+            .putString("$tileId.secret_key", secretKey)
             .apply { if (changedCamera) remove("$tileId.pin").remove("$tileId.slot") }
             .apply { if (p.getString("$tileId.secret", null) == null) putString("$tileId.secret", newSecret()) }
             .apply()
@@ -140,7 +148,7 @@ internal object DirectEvents {
         val context = app ?: return
         if (!enabled(context, tileId)) return
         setStatus(tileId, Status(Level.WORKING, "Проверка камеры…"))
-        passwordSource(context) { password ->
+        passwordFor(context, tileId) { password ->
             io.execute { checkNow(context, tileId, password) }
         }
     }
@@ -187,6 +195,11 @@ internal object DirectEvents {
         return map.filterValues { it > now }.keys.mapNotNullTo(LinkedHashSet()) { DETECTIONS[it] }
     }
 
+    /** События из другого источника (ONVIF у камер, docs/camera-tz.md): значки, запись, охрана — как у вебхука. */
+    fun external(tileId: String, events: List<CameraEventType>, source: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) onEvents(tileId, events, source) else main.post { onEvents(tileId, events, source) }
+    }
+
     private fun onEvents(tileId: String, events: List<CameraEventType>, source: String) {
         val context = app ?: return
         if (events.isEmpty()) return
@@ -203,7 +216,7 @@ internal object DirectEvents {
         // Вебхук дошёл — путь здоров: запасной опрос не нужен.
         if (source == "вебхук") { stopPoll(tileId); okStatus(context, tileId) }
         else if (statuses[tileId]?.level == Level.OK) okStatus(context, tileId)
-        if (CameraEventType.RING in events) onRing(tileId, source)
+        if (CameraEventType.RING in events && !isCamera(context, tileId)) onRing(tileId, source)
         Log.i(TAG, "Событие с камеры ($source): ${events.joinToString { it.name }}")
         // Этап 2: события камеры — в запуск HD-записи наравне с датчиками HA.
         onRecordingEvents(tileId, events.map { RECORDING_KEYS.getValue(it) })
@@ -261,14 +274,16 @@ internal object DirectEvents {
         val host = p.getString("$tileId.host", null)
         val user = p.getString("$tileId.user", null)
         val secret = p.getString("$tileId.secret", null)
+        val secretKey = p.getString("$tileId.secret_key", "").orEmpty()
         stopPoll(tileId)
         routes.entries.removeIf { it.value.tileId == tileId }
-        p.edit().apply { listOf("enabled", "host", "user", "secret", "slot", "pin", "model", "last_at", "last_type").forEach { remove("$tileId.$it") } }.apply()
+        p.edit().apply { listOf("enabled", "host", "user", "secret", "slot", "pin", "model", "last_at", "last_type", "secret_key").forEach { remove("$tileId.$it") } }.apply()
         setStatus(tileId, Status(Level.OFF, "Выключено"))
         if (routes.isEmpty()) stopServer()
         if (host == null || user == null || secret == null) return
-        passwordSource(context) { password ->
-            if (password.isNullOrEmpty()) return@passwordSource
+        val read: (Context, (String?) -> Unit) -> Unit = if (secretKey.isEmpty()) passwordSource else { c, r -> CameraPasswords.read(c, secretKey, r) }
+        read(context) { password ->
+            if (password.isNullOrEmpty()) return@read
             io.execute {
                 val driver = driverFactory(host, user, password, null) {}
                 try { driver.uninstall(secret); Log.i(TAG, "Вебхук убран из камеры") }
@@ -289,6 +304,8 @@ internal object DirectEvents {
 
     /** Вебхук не настроен: звонок идёт через HA и запасной опрос камеры. */
     private fun fallBack(context: Context, tileId: String, password: String, reason: String) {
+        // У камеры звонка нет — опрашивать нечего; события остаются по ONVIF.
+        if (isCamera(context, tileId)) { post(tileId, Status(Level.WARN, "$reason — события идут по ONVIF")); return }
         post(tileId, Status(Level.WARN, "$reason — звонок идёт через Home Assistant и опрос камеры"))
         startPoll(context, tileId, password)
     }

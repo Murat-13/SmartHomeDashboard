@@ -331,6 +331,21 @@ class DirectEventsTest {
         card.dispose()
     }
 
+    /** Камера (docs/camera-tz.md, часть 2): события ONVIF/вебхука — значки и запись, но не звонок. */
+    @Test fun cameraEventsShowIconsAndRecordButNeverRing() {
+        DirectEvents.attach(context)
+        context.getSharedPreferences("camera_events", Context.MODE_PRIVATE).edit().putString("cam.secret_key", "cam").commit()
+        DirectEvents.external("cam", listOf(CameraEventType.RING, CameraEventType.PERSON), "ONVIF")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("у камеры звонка нет", rings.isEmpty())
+        assertTrue(DoorbellConfig.Detection.PERSON in DirectEvents.activeDetections("cam"))
+        assertEquals("cam" to listOf("visitor", "person"), recordingEvents.last())
+        // Домофон (без ключа пароля камеры) по-прежнему звонит.
+        DirectEvents.external("door", listOf(CameraEventType.RING), "вебхук")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf("door" to "вебхук"), rings.toList())
+    }
+
     @Test fun missingAddressOrLoginIsExplained() {
         DirectEvents.attach(context)
         DirectEvents.setEnabled(context, "door", DoorbellConfig(), true)

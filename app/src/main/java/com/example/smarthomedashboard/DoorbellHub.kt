@@ -62,12 +62,14 @@ internal object DoorbellHub {
         DirectEvents.attach(application)
         // Охрана (docs/guard-tz.md): раз в секунду — стоит ли человек у входа.
         DoorbellGuard.attach(application)
+        OnvifEvents.attach(application)
     }
 
     fun detach() {
         DirectEvents.detach()
         DoorbellAway.reset()
         DoorbellGuard.detach()
+        OnvifEvents.detach()
         main.removeCallbacks(recheck)
         lightOffs.values.forEach(main::removeCallbacks)
         lightOffs.clear()
@@ -100,14 +102,14 @@ internal object DoorbellHub {
 
     fun tile(tileId: String): TileEntity? = tileList.firstOrNull { it.id == tileId }
 
-    /** Плитки домофонов: из последнего состояния панели, а пока HA не ответил — из хранилища (охрана без HA). */
-    fun doorbellTiles(): List<TileEntity> = tileList.ifEmpty {
+    /** Плитки с видео (домофоны и камеры): из последнего состояния панели, а пока HA не ответил — из хранилища (охрана без HA). */
+    fun doorbellTiles(): List<TileEntity> = videoTiles.ifEmpty {
         val context = app ?: return emptyList()
         storedDoorbells ?: com.example.smarthomedashboard.data.TileManager(context).loadTiles()
-            .filter { it.type == DoorbellConfig.TYPE }.also { storedDoorbells = it }
+            .filter { DoorbellConfig.isVideo(it.type) }.also { storedDoorbells = it }
     }
     private var storedDoorbells: List<TileEntity>? = null
-    fun config(tileId: String): DoorbellConfig? = tile(tileId)?.let { DoorbellConfig.from(it.config) }
+    fun config(tileId: String): DoorbellConfig? = (tile(tileId) ?: videoTiles.firstOrNull { it.id == tileId })?.let { DoorbellConfig.from(it.config) }
     fun offline(tileId: String) = monitor.offline(tileId)
 
     // ---- Состояние HA ----
@@ -124,7 +126,9 @@ internal object DoorbellHub {
         tileList = tiles.filter { it.type == DoorbellConfig.TYPE }
         DirectEvents.onTiles(tiles, SystemClock.uptimeMillis())
         // Плитки «Камера» (docs/camera-tz.md): запись событий в HD по датчикам HA и снимки камеры HA — как у домофона.
-        val videoTiles = tiles.filter { DoorbellConfig.isVideo(it.type) }
+        videoTiles = tiles.filter { DoorbellConfig.isVideo(it.type) }
+        // События камер по ONVIF (docs/camera-tz.md, часть 2).
+        OnvifEvents.onTiles(videoTiles)
         attributeIds = videoTiles.flatMapTo(LinkedHashSet()) { tile ->
             DoorbellConfig.from(tile.config).let { listOf(it.camera, it.quickReply) }.filter { it.isNotBlank() }
         }
@@ -150,13 +154,19 @@ internal object DoorbellHub {
     }
 
     /** Плитка домофона: из последнего состояния панели или (HA ещё не отвечал) из хранилища. */
-    fun storedTile(tileId: String): TileEntity? = tile(tileId) ?: app?.let { context ->
-        com.example.smarthomedashboard.data.TileManager(context).loadTiles().firstOrNull { it.id == tileId && it.type == DoorbellConfig.TYPE }
+    fun storedTile(tileId: String): TileEntity? = tile(tileId) ?: videoTiles.firstOrNull { it.id == tileId } ?: app?.let { context ->
+        com.example.smarthomedashboard.data.TileManager(context).loadTiles().firstOrNull { it.id == tileId && DoorbellConfig.isVideo(it.type) }
     }
+
+    /** Все плитки с видео (домофоны и камеры) из последнего состояния панели. */
+    var videoTiles: List<TileEntity> = emptyList()
+        private set
 
     /** Звонок напрямую с камеры ([DirectEvents]); тот же звонок из HA сливается в [DoorbellMonitor]. */
     fun directRing(tileId: String, source: String) {
         if (app == null) return
+        // Звонок — только у домофона (у плитки «Камера» звонка нет).
+        if (storedTile(tileId)?.type != DoorbellConfig.TYPE) return
         // HA может быть недоступен с самого запуска панели — тогда плитки берутся из хранилища.
         if (tile(tileId) == null) {
             val stored = storedTile(tileId) ?: return

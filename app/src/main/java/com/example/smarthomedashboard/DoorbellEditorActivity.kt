@@ -204,6 +204,10 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         if (!camera) {
             buildTalk(side)
             buildDirect(side)
+        } else {
+            buildCameraEvents(side)
+            buildDirect(side)
+            buildGuard(side)
         }
         buildRecording(side)
 
@@ -247,6 +251,19 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(slider("door_night_brightness", config.nightBrightness, 100, { "Яркость окна звонка ночью: ${it.coerceAtLeast(5)}%" }) {
             update(config.copy(nightBrightness = it.coerceAtLeast(5))) })
         side.addView(switch("door_offline_sound", "Сигнал, если домофон пропал из сети", config.offlineSound) { update(config.copy(offlineSound = it)) })
+    }
+
+    // ---- Камера: события по ONVIF (docs/camera-tz.md, часть 2) ----
+
+    private fun buildCameraEvents(side: LinearLayout) {
+        side.addView(header("События с камеры (ONVIF)"))
+        side.addView(kit.label("Человек, машина, животное, движение — прямо с камеры по ONVIF, без Home Assistant: значки на плитке, " +
+            "запись событий в HD, охрана. Работает, пока открыта панель этого планшета.", 13f))
+        side.addView(switch("door_onvif_events", "Получать события камеры на этом планшете", OnvifEvents.enabled(this, original.id)) {
+            OnvifEvents.setEnabled(this, original.id, it)
+        })
+        side.addView(kit.label(OnvifEvents.status(original.id)?.text ?: "Состояние появится после «Сохранить» и открытия панели", 13f)
+            .apply { tag = "door_onvif_status" })
     }
 
     // ---- Камера: адрес, ONVIF (docs/camera-tz.md) ----
@@ -358,9 +375,17 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     private fun buildGuard(side: LinearLayout) {
         side.addView(header("Охрана"))
-        side.addView(kit.label("Человек стоит у входа дольше заданного времени — уведомление на телефон (выбранный выше) и " +
-            "★ у ролика (не удалится и скопируется в папку копий). Прошёл мимо — тревоги нет. Включается по расписанию и " +
-            "кнопкой «Охрана» в раскрытом домофоне. Настройки только этого планшета.", 13f))
+        side.addView(kit.label("Человек стоит " + (if (camera) "в кадре" else "у входа") + " дольше заданного времени — уведомление " +
+            "на телефон и ★ у ролика (не удалится и скопируется в папку копий). Прошёл мимо — тревоги нет. Включается по " +
+            "расписанию и кнопкой «Охрана» в раскрытой плитке. Настройки только этого планшета.", 13f))
+        // У камеры нет раздела «Когда никто не подошёл» — телефон выбирается здесь.
+        if (camera) {
+            val phone = kit.button("Уведомление на телефон: " + DoorbellAway.settings(this, original.id).notifyService.ifEmpty { "не отправлять" },
+                "door_guard_phone") {}
+            phone.setOnClickListener { pickPhone { phone.text = "Уведомление на телефон: " +
+                DoorbellAway.settings(this, original.id).notifyService.ifEmpty { "не отправлять" } } }
+            side.addView(phone)
+        }
         val g = DoorbellGuard.settings(this, original.id)
         fun update(change: (DoorbellGuard.Settings) -> DoorbellGuard.Settings) =
             DoorbellGuard.save(this, original.id, change(DoorbellGuard.settings(this, original.id)))
@@ -421,7 +446,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     }
 
     /** Список телефонов — службы `notify.mobile_app_…` из Home Assistant. */
-    private fun pickPhone() {
+    private fun pickPhone(done: () -> Unit = {}) {
         val ws = DoorbellHub.connection?.invoke()
         if (ws == null) { Toast.makeText(this, "Нет связи с Home Assistant", Toast.LENGTH_SHORT).show(); return }
         ws.read("get_services", timeoutMs = 15_000L) { services ->
@@ -435,7 +460,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             val items = listOf("Не отправлять") + phones
             AlertDialog.Builder(this).setTitle("Уведомление о звонке — на какой телефон").setItems(items.toTypedArray()) { _, i ->
                 DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(notifyService = if (i == 0) "" else items[i]))
-                renderAway()
+                if (::awayBox.isInitialized) renderAway()
+                done()
             }.setNegativeButton("Отмена", null).show()
         }
     }
@@ -548,12 +574,14 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     // ---- Прямые события с камеры ----
 
     private fun buildDirect(side: LinearLayout) {
-        side.addView(header("Прямые события с камеры"))
-        side.addView(kit.label("Звонок приходит прямо с камеры по домашней сети — без Home Assistant и интернета, быстрее. " +
+        side.addView(header(if (camera) "Вебхук Reolink (быстрее ONVIF)" else "Прямые события с камеры"))
+        side.addView(kit.label(if (camera) "Только для камер Reolink: события приходят на планшет вебхуком сразу. Приложение само " +
+            "пропишет вебхук в камере. События по ONVIF при этом тоже работают — срабатывает то, что пришло первым."
+            else "Звонок приходит прямо с камеры по домашней сети — без Home Assistant и интернета, быстрее. " +
             "Приложение само пропишет в камере вебхук на этот планшет (нужны адрес RTSP, логин и пароль камеры). " +
             "Звонок через Home Assistant тоже остаётся: звонит тот, кто сообщил первым. Сейчас — камеры Reolink. " +
             "Совет: закрепите за планшетом постоянный адрес в настройках роутера.", 13f))
-        side.addView(switch("direct_here", "Получать звонок напрямую с камеры", directHere) { directHere = it })
+        side.addView(switch("direct_here", if (camera) "Получать события вебхуком" else "Получать звонок напрямую с камеры", directHere) { directHere = it })
         side.addView(number("direct_port", "Порт приёмника на планшете", directPort, 1024..65535) { directPort = it })
         directStatus = kit.label("", 13f).apply { tag = "direct_status" }
         side.addView(directStatus)
@@ -934,11 +962,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         val saved = config
         // Прямые события: порт и флаг — после пароля (включение входит в камеру с ним). Выключение убирает вебхук.
         val applyDirect = {
-            // Прямые события камер — часть 2 (docs/camera-tz.md); пока только домофон.
-            if (!camera) {
-                DirectEvents.setPort(this, directPort)
-                DirectEvents.setEnabled(this, original.id, saved, directHere)
-            }
+            DirectEvents.setPort(this, directPort)
+            DirectEvents.setEnabled(this, original.id, saved, directHere, secretKey)
         }
         if (secret == null) { RecorderService.sync(this); applyDirect(); finishSaved(); return true }
         CameraPasswords.save(this, secretKey, secret) { ok ->

@@ -1183,9 +1183,7 @@ internal class DashboardPanelController(
         val missed = DoorbellHub.missed(tile.id)
         val last = DoorbellHub.lastRing(tile.id)
         // Охрана (docs/guard-tz.md): null — на этом планшете не включена в редакторе.
-        // Охрана у камер — часть 2 (docs/camera-tz.md): пока только у домофона.
-        val guard = if (tile.type != DoorbellConfig.TYPE) null
-            else DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
+        val guard = DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
         view?.findViewWithTag<DoorbellCard>("door_compact")?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
             (modernExpansion.card as? DoorbellCard)?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
@@ -1498,8 +1496,9 @@ internal class DashboardPanelController(
             if (!camera) {
                 expanded.onCalls = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id, calls = true) }
                 expanded.phrases = DoorbellPhrases.ready(activity, tile.id)
-                expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
             }
+            // Охрана — и у камер (docs/camera-tz.md, часть 2).
+            expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
             // Автоответ (docs/ring-away-tz.md): кнопка — если на этом планшете выбрана фраза; без PIN.
             if (!camera && DoorbellAway.autoReplyConfigured(activity, tile.id)) {
                 expanded.autoReply(DoorbellAway.settings(activity, tile.id).autoReply)

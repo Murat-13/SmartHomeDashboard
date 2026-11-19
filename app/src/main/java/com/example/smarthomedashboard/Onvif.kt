@@ -122,6 +122,82 @@ internal object Onvif {
             info.find("FirmwareVersion")?.text.orEmpty(), port, main, sub, streams, events)
     }
 
+    // ---- События (часть 2, docs/camera-tz.md): подписка PullPoint ----
+
+    private const val EVENTS_NS = "http://www.onvif.org/ver10/events/wsdl"
+    private const val WSN_NS = "http://docs.oasis-open.org/wsn/b-2"
+
+    /** Подписка на события: адрес подписки и поправка часов камеры. */
+    data class Subscription(val address: String, val offset: Long, val user: String, val password: String)
+
+    /** Найти службу событий камеры и подписаться (PullPoint, срок [ttlSeconds]). */
+    fun subscribe(host: String, port: Int, user: String, password: String, ttlSeconds: Int = 120): Subscription {
+        val ports = if (port > 0) listOf(port) else PORTS
+        var last: Exception? = null
+        for (p in ports) {
+            try {
+                val device = "http://$host:$p/onvif/device_service"
+                val offset = runCatching { cameraClockOffset(device) }.getOrDefault(0L)
+                val caps = call(device, user, password, offset, "<GetCapabilities xmlns=\"$DEVICE_NS\"><Category>Events</Category></GetCapabilities>")
+                val events = caps.find("Events")?.find("XAddr")?.text?.takeIf { it.startsWith("http") }?.let { sameHost(it, host, p) }
+                    ?: throw OnvifException("Камера не сообщила службу событий ONVIF")
+                val created = call(events, user, password, offset,
+                    "<CreatePullPointSubscription xmlns=\"$EVENTS_NS\"><InitialTerminationTime>PT${ttlSeconds}S</InitialTerminationTime>" +
+                        "</CreatePullPointSubscription>",
+                    action = "$EVENTS_NS/EventPortType/CreatePullPointSubscriptionRequest")
+                val address = created.find("SubscriptionReference")?.find("Address")?.text?.takeIf { it.startsWith("http") }
+                    ?.let { sameHost(it, host, p) } ?: throw OnvifException("Камера не дала адрес подписки на события")
+                return Subscription(address, offset, user, password)
+            } catch (e: OnvifException) { if (e.auth) throw e; last = e } catch (e: Exception) { last = e }
+        }
+        throw (last as? OnvifException) ?: OnvifException("Камера не ответила по ONVIF")
+    }
+
+    /** Событие: тема (как у камеры) и состояние (true — началось, false — кончилось, null — разовое). */
+    data class Event(val topic: String, val state: Boolean?)
+
+    /** Забрать накопившиеся события (камера держит запрос до [waitSeconds] с, если событий нет). */
+    fun pull(sub: Subscription, waitSeconds: Int = 4): List<Event> {
+        val root = call(sub.address, sub.user, sub.password, sub.offset,
+            "<PullMessages xmlns=\"$EVENTS_NS\"><Timeout>PT${waitSeconds}S</Timeout><MessageLimit>32</MessageLimit></PullMessages>",
+            action = "$EVENTS_NS/PullPointSubscription/PullMessagesRequest")
+        return events(root)
+    }
+
+    /** Продлить подписку. */
+    fun renew(sub: Subscription, ttlSeconds: Int = 120) {
+        call(sub.address, sub.user, sub.password, sub.offset,
+            "<Renew xmlns=\"$WSN_NS\"><TerminationTime>PT${ttlSeconds}S</TerminationTime></Renew>",
+            action = "$WSN_NS/SubscriptionManager/RenewRequest")
+    }
+
+    fun unsubscribe(sub: Subscription) {
+        runCatching { call(sub.address, sub.user, sub.password, sub.offset, "<Unsubscribe xmlns=\"$WSN_NS\"/>",
+            action = "$WSN_NS/SubscriptionManager/UnsubscribeRequest") }
+    }
+
+    /** Разбор ответа PullMessages: тема и булево значение из SimpleItem (State, IsMotion, IsPeople, …). */
+    fun events(root: Node): List<Event> = root.all("NotificationMessage").map { m ->
+        val topic = m.find("Topic")?.text.orEmpty()
+        val items = m.find("Data")?.all("SimpleItem").orEmpty()
+        val state = items.firstNotNullOfOrNull { item -> item.attrs["Value"]?.lowercase()?.let { v ->
+            when (v) { "true", "1" -> true; "false", "0" -> false; else -> null } } }
+        Event(topic, state)
+    }
+
+    /** Тема события → тип: люди, машины, животные, звонок, движение (у разных производителей — свои названия тем). */
+    fun typeOf(topic: String): CameraEventType? {
+        val t = topic.lowercase()
+        return when {
+            listOf("people", "person", "human", "face").any { it in t } -> CameraEventType.PERSON
+            listOf("vehicle", "car").any { it in t } -> CameraEventType.VEHICLE
+            listOf("dog", "cat", "animal", "pet").any { it in t } -> CameraEventType.ANIMAL
+            listOf("visitor", "doorbell").any { it in t } -> CameraEventType.RING
+            "motion" in t -> CameraEventType.MOTION
+            else -> null
+        }
+    }
+
     /** Основной поток — наибольшее разрешение, субпоток — наименьшее (если поток один — он и то, и другое). */
     fun pick(streams: List<Stream>): Pair<Stream?, Stream?> {
         val sorted = streams.sortedByDescending { it.width.toLong() * it.height }
@@ -144,8 +220,13 @@ internal object Onvif {
         return cal.timeInMillis - now()
     }
 
-    private fun call(url: String, user: String, password: String, offset: Long, body: String): Node {
-        val (code, text) = transport(url, envelope(security(user, password, offset), body))
+    private fun call(url: String, user: String, password: String, offset: Long, body: String, action: String? = null): Node {
+        // WS-Addressing (Action, To) — службе событий он нужен (PullPoint), остальным не мешает.
+        val addressing = action?.let {
+            "<a:Action s:mustUnderstand=\"1\">$it</a:Action><a:MessageID>urn:uuid:${java.util.UUID.randomUUID()}</a:MessageID>" +
+                "<a:To s:mustUnderstand=\"1\">${escape(url)}</a:To>"
+        }.orEmpty()
+        val (code, text) = transport(url, envelope(addressing + security(user, password, offset), body))
         val root = runCatching { parse(text) }.getOrNull()
         val fault = root?.find("Fault")
         if (code == 401 || fault?.let { f -> f.texts().any { it.contains("NotAuthorized") || it.contains("ailedAuthentication") || it.contains("Sender not Authorized") } } == true) {
@@ -178,7 +259,8 @@ internal object Onvif {
     }
 
     private fun envelope(header: String?, body: String) =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">" +
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" " +
+            "xmlns:a=\"http://www.w3.org/2005/08/addressing\">" +
             (header?.let { "<s:Header>$it</s:Header>" } ?: "") + "<s:Body>$body</s:Body></s:Envelope>"
 
     private fun escape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
