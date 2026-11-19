@@ -229,6 +229,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(switch("door_auto_collapse", "Сворачивать автоматически", config.autoCollapse) { update(config.copy(autoCollapse = it)) })
         side.addView(number("door_collapse_seconds", "Через, секунд", config.collapseSeconds, 5..3600) { update(config.copy(collapseSeconds = it)) })
 
+        buildTalk(side)
         buildDirect(side)
         buildRecording(side)
 
@@ -237,6 +238,23 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(kit.footer("door", { leave() }, { save() }))
         setContentView(root)
+    }
+
+    // ---- Разговор через домофон ----
+
+    private fun buildTalk(side: LinearLayout) {
+        side.addView(header("Разговор через домофон"))
+        side.addView(kit.label("В окне звонка и в раскрытом домофоне — кнопка «Говорить»: удерживайте и говорите, голос " +
+            "идёт в динамик домофона прямо по домашней сети. Нужен прямой поток (RTSP) и включённый ONVIF в настройках " +
+            "камеры. При первом нажатии планшет спросит разрешение на микрофон.", 13f))
+        side.addView(switch("door_talk", "Разговор через домофон", config.talk) { update(config.copy(talk = it)) })
+        val result = kit.label("", 13f).apply { tag = "door_talk_result" }
+        side.addView(kit.button("Проверить звук в домофоне", "door_talk_check") {
+            if (config.talkRtsp.isBlank()) { result.text = "Сначала укажите прямой поток (RTSP)"; return@button }
+            result.text = "Отправляю «динь-дон» в домофон…"
+            TalkCheck.chime(this, config.talkRtsp, config.rtspUser) { if (!isDestroyed) result.text = it }
+        })
+        side.addView(result)
     }
 
     // ---- Прямые события с камеры ----

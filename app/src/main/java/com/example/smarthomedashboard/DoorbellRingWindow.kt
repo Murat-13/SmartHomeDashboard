@@ -53,6 +53,12 @@ internal class DoorbellRingWindow private constructor(
     private val buttons = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL }
     private val spacer = View(host)
     val openButton = HoldButton(host, "Открыть калитку", R.drawable.ic_door_unlock).apply { tag = "door_open" }
+    /** Разговор (docs/talk-tz.md): удержание — голос в домофон; сессия открывается вместе с окном. */
+    private val talk = DoorbellTalk(host)
+    private val talkButton = TalkButton(host, talk).apply {
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        visibility = GONE
+    }
     private val lightButton = pill("Свет у входа", R.drawable.ic_door_light).apply { tag = "door_light" }
     private val replyButton = pill("Ответить", R.drawable.ic_door_reply).apply { tag = "door_reply" }
     private val closeButton = pill("Закрыть", R.drawable.ic_close).apply { tag = "door_close" }
@@ -93,6 +99,7 @@ internal class DoorbellRingWindow private constructor(
         // Кнопки — внизу панели, на уровне руки и рядом с нижним краем видео (как у Ring/Nest).
         controls.addView(spacer, LinearLayout.LayoutParams(1, 0, 1f))
         buttons.addView(openButton)
+        buttons.addView(talkButton)
         buttons.addView(lightButton)
         buttons.addView(replyButton)
         buttons.addView(closeButton)
@@ -106,6 +113,8 @@ internal class DoorbellRingWindow private constructor(
         openButton.onComplete = { openGate() }
         openButton.onTouchStart = { touched() }
         lightButton.setOnClickListener { touched(); toggleLight() }
+        talkButton.onActivity = { touched() }
+        talk.onDuck = { card.video.ducked = it }
         replyButton.setOnClickListener { touched(); showReplies(replies.visibility != VISIBLE) }
         closeButton.setOnClickListener { touched(); close() }
         card.setOnClickListener { touched() }
@@ -148,7 +157,7 @@ internal class DoorbellRingWindow private constructor(
                 width = LinearLayout.LayoutParams.MATCH_PARENT
                 val base = (72 * unit * density / 1.5f).toInt().coerceAtLeast((56 * density).toInt())
                 // Главное действие — крупнее: удерживать удобно и с первого взгляда понятно, где оно.
-                height = if (buttons.getChildAt(i) === openButton) (base * 1.4f).toInt() else base
+                height = if (buttons.getChildAt(i) === openButton || buttons.getChildAt(i) === talkButton) (base * 1.4f).toInt() else base
                 topMargin = (12 * unit * density / 1.5f).toInt()
             }
         }
@@ -158,7 +167,7 @@ internal class DoorbellRingWindow private constructor(
         val k = unit * density / 1.5f
         heading.setTextSize(TypedValue.COMPLEX_UNIT_PX, 30f * k)
         sub.setTextSize(TypedValue.COMPLEX_UNIT_PX, 19f * k)
-        listOf(lightButton, replyButton, closeButton).forEach { it.setTextSize(TypedValue.COMPLEX_UNIT_PX, 22f * k) }
+        listOf(lightButton, replyButton, closeButton, talkButton).forEach { it.setTextSize(TypedValue.COMPLEX_UNIT_PX, 22f * k) }
         openButton.textPx = 23f * k
         for (i in 0 until replies.childCount) (replies.getChildAt(i) as? TextView)?.setTextSize(TypedValue.COMPLEX_UNIT_PX, 20f * k)
     }
@@ -277,6 +286,7 @@ internal class DoorbellRingWindow private constructor(
         main.removeCallbacksAndMessages(null)
         animator?.let { animator = null; it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
         restoreBrightness()
+        talk.dispose()
         // Экраны настроек и редакторов сами по себе экран не держат: флаг окна снимается.
         if (host !is MainActivity) host.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         card.dispose()
@@ -312,6 +322,8 @@ internal class DoorbellRingWindow private constructor(
             DoorbellHub.offline(tileId), 0, DoorbellHub.lastRing(tileId), now)
         openButton.visibility = if (config.lock.isNotBlank() && DoorbellModel.openCommand(config.lock) != null) VISIBLE else GONE
         lightButton.visibility = if (config.light.isNotBlank()) VISIBLE else GONE
+        talkButton.visibility = if (config.canTalk) VISIBLE else GONE
+        if (config.canTalk) talk.prepare(config.talkRtsp, config.rtspUser)
         val lightOn = snapshot.lightOn == true
         lightButton.text = if (lightOn) "Свет у входа · вкл" else "Свет у входа"
         style(lightButton, if (lightOn) DoorbellFrame.PERSON else null)

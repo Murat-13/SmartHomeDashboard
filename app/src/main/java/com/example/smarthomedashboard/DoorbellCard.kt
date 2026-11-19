@@ -308,9 +308,22 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private val sound = text(22f, SECONDARY).apply { text = "🔊 Звук включён · касание — свернуть"; visibility = if (expanded) VISIBLE else GONE }
     private var lastBound: DoorbellModel.Snapshot? = null
 
+    /** Разговор (docs/talk-tz.md) — у раскрытой карточки; в окне звонка кнопка своя, у окна. */
+    private val talk: DoorbellTalk? = if (expanded) DoorbellTalk(context) else null
+    private val talkButton: TalkButton? = talk?.let { t ->
+        t.onDuck = { video.ducked = it }
+        TalkButton(context, t).apply { visibility = GONE; onActivity = { this@DoorbellCard.onActivity?.invoke() } }
+    }
+    /** Касание кнопок карточки — для таймера автосворачивания владельца. */
+    var onActivity: (() -> Unit)? = null
+
     /** Карточка в окне звонка: без подсказки «касание — свернуть» и без счётчика пропущенных. */
     var ringMode = false
-        set(value) { field = value; sound.visibility = if (expanded && !value) VISIBLE else GONE }
+        set(value) {
+            field = value
+            sound.visibility = if (expanded && !value) VISIBLE else GONE
+            if (value) talkButton?.visibility = GONE
+        }
 
     init {
         tag = if (expanded) "door_expanded" else "door_compact"
@@ -336,6 +349,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         left.addView(last)
         if (expanded) left.addView(sound)
         footer.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        talkButton?.let { footer.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
         iconViews.values.forEach { icons.addView(it, LinearLayout.LayoutParams(1, 1)) }
         footer.addView(icons)
         content.addView(footer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
@@ -368,6 +382,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         rec.setPadding((10 * next).toInt(), 0, (6 * next).toInt(), 0)
         archive.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
         archive.minHeight = (48 * next).toInt()
+        talkButton?.let { b ->
+            b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 24 * next)
+            b.minHeight = (56 * next).toInt(); b.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
+            (b.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
+        }
         (archive.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         missedBadge.minWidth = (30 * next).toInt()
         missedBadge.setPadding((10 * next).toInt(), (3 * next).toInt(), (10 * next).toInt(), (3 * next).toInt())
@@ -410,6 +429,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         ), snapshot.picture)
         // HA точно знает, что домофона нет: видео не подключается, пока он не вернётся (без лишних попыток).
         video.deviceOffline = snapshot.haStatus == null && (offline || snapshot.online == false)
+        talkButton?.let { button ->
+            val show = !ringMode && config.canTalk
+            button.visibility = if (show) VISIBLE else GONE
+            if (show) talk?.prepare(config.talkRtsp, config.rtspUser)
+        }
         refresh()
     }
 
@@ -504,6 +528,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
 
     override fun dispose() {
         releaseAnimations()
+        talk?.dispose()
         video.dispose()
     }
 

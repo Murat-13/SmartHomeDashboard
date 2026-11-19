@@ -95,9 +95,22 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     var muted = true
         set(value) {
             field = value
-            if (loanedTo == null) player?.volume = if (value) 0f else 1f
-            guest?.volume = if (value) 0f else 1f
+            applyVolume()
         }
+
+    /** Приглушение на время разговора (docs/talk-tz.md): звук с улицы не попадает обратно в микрофон. */
+    var ducked = false
+        set(value) {
+            field = value
+            applyVolume()
+        }
+
+    private val volume get() = if (muted || ducked) 0f else 1f
+
+    private fun applyVolume() {
+        if (loanedTo == null) player?.volume = volume
+        guest?.volume = volume
+    }
 
     /**
      * HA сообщает, что домофон недоступен (камера/датчик «unavailable» дольше порога). Как у NVR-клиентов:
@@ -316,7 +329,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         firstFrameRendered = false
         main.removeCallbacks(firstFrameWatchdog)
         main.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
-        exo.volume = if (muted) 0f else 1f
+        exo.volume = volume
         exo.setVideoTextureView(texture)
         exo.addAnalyticsListener(object : AnalyticsListener {
             override fun onVideoDecoderInitialized(
@@ -454,7 +467,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         guestOwner = owner
         guestAspect = aspect
         exo.setVideoTextureView(guestTexture)
-        exo.volume = if (muted) 0f else 1f
+        exo.volume = volume
         guestTexture.alpha = 1f
         fitTexture()
         onStatus?.invoke(status)
@@ -479,7 +492,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (player !== exo) return
         loanedTo = null
         exo.setVideoTextureView(texture)
-        exo.volume = if (muted) 0f else 1f
+        exo.volume = volume
         updateQuality()
     }
 

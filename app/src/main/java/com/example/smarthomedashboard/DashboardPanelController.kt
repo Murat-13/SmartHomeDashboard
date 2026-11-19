@@ -1484,6 +1484,8 @@ internal class DashboardPanelController(
             expanded.tileId = tile.id
             // Архив записей (docs/recording.md): карточка сворачивается, поверх панели — экран архива.
             expanded.onArchive = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id) }
+            // Разговор (docs/talk-tz.md): пока держат «Говорить», карточка не сворачивается по таймеру.
+            expanded.onActivity = { modernExpansion.touch() }
             modernExpansion.expand(tile.id, source, expanded, target,
                 if (config.autoCollapse) config.collapseSeconds * 1000L else null)
             renderModern(tile, null, animate = false)

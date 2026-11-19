@@ -45,6 +45,8 @@ internal data class DoorbellConfig(
     val lightOffMinutes: Int = 3,
     /** Звук при потере связи с домофоном. */
     val offlineSound: Boolean = true,
+    /** Разговор через домофон по ONVIF-обратному каналу (docs/talk-tz.md); нужен прямой поток RTSP. */
+    val talk: Boolean = true,
     /** Пропорция картинки (ширина/высота). По умолчанию 4:3; уточняется по реальному видео. */
     val aspect: Float = DEFAULT_ASPECT
 ) {
@@ -65,6 +67,10 @@ internal data class DoorbellConfig(
         if (autoLight && light.isNotBlank()) SUN else "").filter { it.isNotBlank() }.toCollection(LinkedHashSet())
 
     val hasVideo get() = camera.isNotBlank() || rtspMain.isNotBlank() || rtspSub.isNotBlank()
+
+    /** Поток для разговора (обратный канал есть у обоих потоков Reolink; субпоток легче). */
+    val talkRtsp get() = rtspSub.ifBlank { rtspMain }
+    val canTalk get() = talk && talkRtsp.isNotBlank()
 
     /** Общая с плиткой камеры часть: потоки и датчики событий (этап 4, docs/recording.md). */
     val source get() = CameraSource(camera, rtspMain, rtspSub, rtspUser, linkedMapOf(
@@ -87,7 +93,7 @@ internal data class DoorbellConfig(
         put("ring_tone", ringTone); put("ring_volume", ringVolume); put("ring_voice", ringVoice)
         put("quiet_start", quietStartMin); put("quiet_end", quietEndMin); put("quiet_percent", quietPercent)
         put("night_brightness", nightBrightness); put("auto_light", autoLight); put("light_off_minutes", lightOffMinutes)
-        put("offline_sound", offlineSound); put("aspect", aspect.toDouble())
+        put("offline_sound", offlineSound); put("aspect", aspect.toDouble()); put("talk", talk)
     }
 
     fun writeTo(config: String): String {
@@ -129,6 +135,7 @@ internal data class DoorbellConfig(
                 autoLight = j.optBoolean("auto_light", d.autoLight),
                 lightOffMinutes = int("light_off_minutes", d.lightOffMinutes, 0..120),
                 offlineSound = j.optBoolean("offline_sound", d.offlineSound),
+                talk = j.optBoolean("talk", d.talk),
                 aspect = j.optDouble("aspect", DEFAULT_ASPECT.toDouble()).toFloat().takeIf { it.isFinite() && it in 0.3f..4f }
                     ?: DEFAULT_ASPECT
             )

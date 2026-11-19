@@ -26,7 +26,9 @@ internal data class SdpTrack(
     val clockRate: Int,
     val channels: Int,
     val fmtp: Map<String, String>,
-    val control: String
+    val control: String,
+    /** `sendonly`/`recvonly`/`sendrecv`/`inactive` дорожки; пусто — не указано. У ONVIF-обратного канала — `sendonly`. */
+    val direction: String = ""
 ) {
     val isVideo get() = media == "video"
     val isAudio get() = media == "audio"
@@ -42,9 +44,10 @@ internal object SdpParser {
         var channels = 1
         var fmtp = emptyMap<String, String>()
         var control = ""
+        var direction = ""
         fun flush() {
             val m = media ?: return
-            if (pt >= 0) tracks += SdpTrack(m, pt, encoding, clock, channels, fmtp, control)
+            if (pt >= 0) tracks += SdpTrack(m, pt, encoding, clock, channels, fmtp, control, direction)
         }
         for (raw in text.lineSequence()) {
             val line = raw.trim()
@@ -57,7 +60,7 @@ internal object SdpParser {
                     // Статические типы без rtpmap (RFC 3551).
                     encoding = when (pt) { 0 -> "PCMU"; 8 -> "PCMA"; 26 -> "JPEG"; else -> "" }
                     clock = when (pt) { 0, 8 -> 8000; 26 -> 90000; else -> 0 }
-                    channels = 1; fmtp = emptyMap(); control = ""
+                    channels = 1; fmtp = emptyMap(); control = ""; direction = ""
                 }
                 media == null -> {}
                 line.startsWith("a=rtpmap:") -> {
@@ -79,6 +82,7 @@ internal object SdpParser {
                     }
                 }
                 line.startsWith("a=control:") -> control = line.substringAfter("a=control:").trim()
+                line == "a=sendonly" || line == "a=recvonly" || line == "a=sendrecv" || line == "a=inactive" -> direction = line.substring(2)
             }
         }
         flush()
@@ -116,7 +120,9 @@ internal class RtspSession(
     private val password: String?,
     private val connectTimeoutMs: Int = 4_000,
     private val readTimeoutMs: Int = 20_000,
-    private val clock: () -> Long = { System.nanoTime() / 1_000_000 }
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Заголовок `Require` во всех запросах (ONVIF-обратный канал: `www.onvif.org/ver20/backchannel`). */
+    private val require: String? = null
 ) : Closeable {
     /** Дорожка, для которой выполнен SETUP: RTP идёт в канал [rtpChannel], RTCP — в [rtpChannel] + 1. */
     data class Setup(val track: SdpTrack, val rtpChannel: Int)
@@ -219,6 +225,19 @@ internal class RtspSession(
         }
     }
 
+    /** Отправить RTP-пакет камере по каналу [channel] (обратный канал); из любого потока. */
+    fun sendRtp(channel: Int, packet: ByteArray, length: Int) {
+        if (closed) throw RtspException("Сессия закрыта")
+        val frame = ByteArray(4 + length)
+        frame[0] = '$'.code.toByte(); frame[1] = channel.toByte()
+        frame[2] = (length shr 8).toByte(); frame[3] = length.toByte()
+        System.arraycopy(packet, 0, frame, 4, length)
+        synchronized(this) {
+            output.write(frame)
+            output.flush()
+        }
+    }
+
     override fun close() {
         if (closed) return
         closed = true
@@ -274,6 +293,7 @@ internal class RtspSession(
         text.append("User-Agent: SmartHomeDashboard\r\n")
         session?.let { text.append("Session: ").append(it).append("\r\n") }
         authorization(method, url)?.let { text.append("Authorization: ").append(it).append("\r\n") }
+        require?.let { text.append("Require: ").append(it).append("\r\n") }
         for ((k, v) in headers) text.append(k).append(": ").append(v).append("\r\n")
         text.append("\r\n")
         synchronized(this) {

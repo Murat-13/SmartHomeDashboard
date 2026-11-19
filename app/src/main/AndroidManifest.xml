@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Разговор через домофон (docs/talk-tz.md): голос в динамик домофона; запрашивается при первом «Говорить». -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Самообновление из GitHub Releases (этап 09): установка проверенного APK через PackageInstaller;
          на Android 12+ — без окна подтверждения, если система разрешит. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
