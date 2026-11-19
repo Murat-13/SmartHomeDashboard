@@ -63,6 +63,22 @@ class AutoBackupTest {
         assertEquals(ModernUi.Status.ERROR, AutoBackup.statusText(context).first)
     }
 
+    /** Статус показывает последнюю проверку ночной задачи, а не только последнюю созданную копию. */
+    @Test fun statusShowsLastCheckAndWarnsWhenTaskStopped() {
+        val p = context.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE)
+        val now = java.util.Calendar.getInstance().apply { set(2026, 10, 19, 23, 30, 0) }.timeInMillis
+        val copyAt = java.util.Calendar.getInstance().apply { set(2026, 10, 7, 3, 0, 0) }.timeInMillis
+        p.edit().putString(AutoBackup.PREF_LAST_RESULT, "ok").putLong(AutoBackup.PREF_LAST_TIME, copyAt)
+            .putLong(AutoBackup.PREF_LAST_CHECK, now - 8 * 3_600_000L).commit()
+        assertEquals(ModernUi.Status.OK to "Бэкап: проверен сегодня в 15:30 (копия от 7 нояб.)", AutoBackup.statusText(context, now))
+        p.edit().putLong(AutoBackup.PREF_LAST_CHECK, now - 26 * 3_600_000L).commit()
+        assertEquals("Бэкап: проверен вчера в 21:30 (копия от 7 нояб.)", AutoBackup.statusText(context, now).second)
+        p.edit().putLong(AutoBackup.PREF_LAST_CHECK, now - 3 * 86_400_000L).commit()
+        val stale = AutoBackup.statusText(context, now)
+        assertEquals(ModernUi.Status.ERROR, stale.first)
+        assertTrue(stale.second, stale.second.startsWith("Бэкап: проверки не было с 16 нояб."))
+    }
+
     @Test fun manualExportFilesAreNeverRotated() {
         dir.mkdirs()
         File(dir, "smarthome_config.json").writeText("{}")

@@ -174,18 +174,42 @@ internal object AutoBackup {
         true
     }.getOrDefault(false)
 
-    /** Короткий статус для «Устройства» и боковой панели. */
-    fun statusText(context: Context): Pair<ModernUi.Status, String> {
+    /**
+     * Короткий статус для «Устройства» и боковой панели: когда ночная задача последний раз **проверяла** (а не только
+     * когда создала копию — копия создаётся лишь при изменениях, и по её дате не отличить «ничего не менялось» от
+     * «задача не запускается»). Проверки не было дольше [STALE_MS] — ошибка.
+     */
+    fun statusText(context: Context, now: Long = System.currentTimeMillis()): Pair<ModernUi.Status, String> {
         val prefs = prefs(context)
         val time = prefs.getLong(PREF_LAST_TIME, 0L)
-        val format = SimpleDateFormat("d MMM, HH:mm", Locale("ru"))
+        val check = prefs.getLong(PREF_LAST_CHECK, 0L)
+        val copy = if (time > 0) " (копия от ${dayFormat.format(Date(time))})" else ""
         return when {
             prefs.getString(PREF_LAST_RESULT, null) == "damaged" ->
-                ModernUi.Status.ERROR to "Бэкап: пропущен — плитки повреждены" + if (time > 0) " (прошлый — ${format.format(Date(time))})" else ""
+                ModernUi.Status.ERROR to "Бэкап: пропущен — плитки повреждены" + if (time > 0) " (прошлый — ${whenText(time, now)})" else ""
             prefs.getString(PREF_LAST_RESULT, null) == "error" ->
-                ModernUi.Status.ERROR to "Бэкап: ошибка записи" + if (time > 0) " (прошлый — ${format.format(Date(time))})" else ""
-            time > 0 -> ModernUi.Status.OK to "Бэкап: ${format.format(Date(time))}"
+                ModernUi.Status.ERROR to "Бэкап: ошибка записи" + if (time > 0) " (прошлый — ${whenText(time, now)})" else ""
+            check > 0 && now - check > STALE_MS ->
+                ModernUi.Status.ERROR to "Бэкап: проверки не было с ${whenText(check, now)}$copy"
+            check > 0 && time > 0 -> ModernUi.Status.OK to "Бэкап: проверен ${whenText(check, now)}$copy"
+            time > 0 -> ModernUi.Status.OK to "Бэкап: ${whenText(time, now)}"
             else -> ModernUi.Status.UNKNOWN to "Бэкап: ещё не создавался"
+        }
+    }
+
+    /** Ночная задача не запускалась дольше двух суток — что-то не так (Android её отложил, приложение не запускалось). */
+    const val STALE_MS = 48 * 3_600_000L
+
+    private val dayFormat get() = SimpleDateFormat("d MMM", Locale("ru"))
+
+    /** «сегодня в 15:10», «вчера в 03:00», «7 нояб., 03:00». */
+    fun whenText(at: Long, now: Long = System.currentTimeMillis()): String {
+        val clock = SimpleDateFormat("HH:mm", Locale.ROOT).format(Date(at))
+        val today = RecArchive.dayStart(now)
+        return when {
+            at >= today -> "сегодня в $clock"
+            at >= RecArchive.dayStart(today - 1) -> "вчера в $clock"
+            else -> SimpleDateFormat("d MMM, HH:mm", Locale("ru")).format(Date(at))
         }
     }
 
