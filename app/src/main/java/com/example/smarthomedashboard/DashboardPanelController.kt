@@ -1181,9 +1181,11 @@ internal class DashboardPanelController(
         val offline = DoorbellHub.offline(tile.id)
         val missed = DoorbellHub.missed(tile.id)
         val last = DoorbellHub.lastRing(tile.id)
-        view?.findViewWithTag<DoorbellCard>("door_compact")?.bind(tile.title, config, snapshot, offline, missed, last, now, animate)
+        // Охрана (docs/guard-tz.md): null — на этом планшете не включена в редакторе.
+        val guard = DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
+        view?.findViewWithTag<DoorbellCard>("door_compact")?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
-            (modernExpansion.card as? DoorbellCard)?.bind(tile.title, config, snapshot, offline, missed, last, now, animate)
+            (modernExpansion.card as? DoorbellCard)?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
         }
         handler.removeCallbacks(doorbellTick)
         handler.postDelayed(doorbellTick, 60_000L)
@@ -1490,6 +1492,7 @@ internal class DashboardPanelController(
             expanded.onCollapse = { modernExpansion.collapse() }
             expanded.onCalls = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id, calls = true) }
             expanded.phrases = DoorbellPhrases.ready(activity, tile.id)
+            expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
             // Автоответ (docs/ring-away-tz.md): кнопка — если на этом планшете выбрана фраза; без PIN.
             if (DoorbellAway.autoReplyConfigured(activity, tile.id)) {
                 expanded.autoReply(DoorbellAway.settings(activity, tile.id).autoReply)

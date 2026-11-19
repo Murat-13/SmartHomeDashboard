@@ -291,7 +291,37 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         awayBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "door_away" }
         side.addView(awayBox)
         renderAway()
+        buildGuard(side)
     }
+
+    // ---- Охрана (docs/guard-tz.md) ----
+
+    private fun buildGuard(side: LinearLayout) {
+        side.addView(header("Охрана"))
+        side.addView(kit.label("Человек стоит у входа дольше заданного времени — уведомление на телефон (выбранный выше) и " +
+            "★ у ролика (не удалится и скопируется в папку копий). Прошёл мимо — тревоги нет. Включается по расписанию и " +
+            "кнопкой «Охрана» в раскрытом домофоне. Настройки только этого планшета.", 13f))
+        val g = DoorbellGuard.settings(this, original.id)
+        fun update(change: (DoorbellGuard.Settings) -> DoorbellGuard.Settings) =
+            DoorbellGuard.save(this, original.id, change(DoorbellGuard.settings(this, original.id)))
+        side.addView(switch("door_guard_switch", "Охрана на этом планшете", g.enabled) { on -> update { it.copy(enabled = on) } })
+        side.addView(switch("door_guard_schedule", "Включать по расписанию", g.schedule) { on -> update { it.copy(schedule = on) } })
+        side.addView(timeField("door_guard_start", "Начало (часы:минуты)", g.startMin) { m -> update { it.copy(startMin = m, offUntil = 0L) } })
+        side.addView(timeField("door_guard_end", "Конец (часы:минуты; раньше начала — через полночь)", g.endMin) { m -> update { it.copy(endMin = m, offUntil = 0L) } })
+        side.addView(number("door_guard_seconds", "Сколько секунд человек стоит у входа (${DoorbellGuard.SECONDS_RANGE.first}–" +
+            "${DoorbellGuard.SECONDS_RANGE.last})", g.seconds, DoorbellGuard.SECONDS_RANGE) { v -> update { it.copy(seconds = v) } })
+        side.addView(switch("door_guard_star", "Отмечать ролик ★", g.star) { on -> update { it.copy(star = on) } })
+    }
+
+    /** Поле времени «ЧЧ:ММ»: сохраняется, только когда введено верное время. */
+    private fun timeField(tag: String, label: String, minute: Int, onChange: (Int) -> Unit) = kit.column(
+        kit.label(label, 15f),
+        kit.input(DoorbellGuard.time(minute), "00:00").apply {
+            this.tag = tag
+            inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
+            addTextChangedListener(kit.watcher { text -> DoorbellGuard.parseTime(text)?.let(onChange) })
+        }
+    ).apply { setPadding(0, 0, 0, 0) }
 
     private fun renderAway() {
         awayBox.removeAllViews()

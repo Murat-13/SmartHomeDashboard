@@ -60,11 +60,14 @@ internal object DoorbellHub {
         app = application
         (application as? Application)?.registerActivityLifecycleCallbacks(activityTracker)
         DirectEvents.attach(application)
+        // Охрана (docs/guard-tz.md): раз в секунду — стоит ли человек у входа.
+        DoorbellGuard.attach(application)
     }
 
     fun detach() {
         DirectEvents.detach()
         DoorbellAway.reset()
+        DoorbellGuard.detach()
         main.removeCallbacks(recheck)
         lightOffs.values.forEach(main::removeCallbacks)
         lightOffs.clear()
@@ -96,6 +99,14 @@ internal object DoorbellHub {
         private set
 
     fun tile(tileId: String): TileEntity? = tileList.firstOrNull { it.id == tileId }
+
+    /** Плитки домофонов: из последнего состояния панели, а пока HA не ответил — из хранилища (охрана без HA). */
+    fun doorbellTiles(): List<TileEntity> = tileList.ifEmpty {
+        val context = app ?: return emptyList()
+        storedDoorbells ?: com.example.smarthomedashboard.data.TileManager(context).loadTiles()
+            .filter { it.type == DoorbellConfig.TYPE }.also { storedDoorbells = it }
+    }
+    private var storedDoorbells: List<TileEntity>? = null
     fun config(tileId: String): DoorbellConfig? = tile(tileId)?.let { DoorbellConfig.from(it.config) }
     fun offline(tileId: String) = monitor.offline(tileId)
 

@@ -307,6 +307,30 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private var autoReplyOn = false
     var onAutoReply: ((Boolean) -> Unit)? = null
 
+    /** «Охрана: вкл/выкл» (docs/guard-tz.md) — без PIN; null — охрана на этом планшете не включена в редакторе. */
+    private val guardButton = text(20f, Color.WHITE, bold = true).apply {
+        tag = "door_guard"
+        gravity = Gravity.CENTER
+        visibility = GONE
+        setOnClickListener { onGuard?.invoke() }
+    }
+    var onGuard: (() -> Unit)? = null
+
+    /** Пометка 🛡 (охрана включена) и кнопка у раскрытой карточки. [armed] null — охраны на этом планшете нет. */
+    fun guard(armed: Boolean?) {
+        set(guardMark, "🛡")
+        guardMark.visibility = if (armed == true) VISIBLE else GONE
+        if (armed == null || !expanded || ringMode) { guardButton.visibility = GONE; return }
+        guardButton.visibility = VISIBLE
+        set(guardButton, if (armed) "🛡 Охрана: вкл" else "Охрана: выкл")
+        guardButton.contentDescription = if (armed) "Охрана включена — коснитесь, чтобы выключить" else "Охрана выключена — коснитесь, чтобы включить"
+        guardButton.background = GradientDrawable().apply {
+            setColor(if (armed) Color.argb(170, 90, 60, 20) else Color.argb(150, 20, 34, 44)); cornerRadius = 999f
+            setStroke(2, if (armed) Color.argb(220, 255, 183, 77) else Color.argb(140, 95, 168, 211))
+        }
+    }
+    private val guardMark = text(if (expanded) 18f else 13f, Color.WHITE).apply { tag = "door_guard_mark"; visibility = GONE; contentDescription = "Охрана включена" }
+
     /** Показать кнопку автоответа с состоянием [on]; null — скрыть. */
     fun autoReply(on: Boolean?) {
         if (on == null || !expanded || ringMode) { autoReplyButton.visibility = GONE; return }
@@ -369,7 +393,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         set(value) {
             field = value
             sound.visibility = if (expanded && !value) VISIBLE else GONE
-            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; autoReplyButton.visibility = GONE; zoom?.reset() }
+            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; autoReplyButton.visibility = GONE; guardButton.visibility = GONE; zoom?.reset() }
         }
 
     /** Увеличение пальцами — только у раскрытой карточки на панели (решение владельца: не в окне звонка). */
@@ -398,6 +422,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         header.addView(icons)
         header.addView(rec, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(guardMark, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(guardButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(autoReplyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(calls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(archive, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -444,6 +470,10 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         calls.minHeight = (48 * next).toInt()
         autoReplyButton.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
         autoReplyButton.minHeight = (48 * next).toInt()
+        guardButton.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
+        guardButton.minHeight = (48 * next).toInt()
+        (guardButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
+        guardMark.setPadding((8 * next).toInt(), 0, (4 * next).toInt(), 0)
         (autoReplyButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (calls.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         for (i in 0 until phraseRow.childCount) styleChip(phraseRow.getChildAt(i) as TextView, next)
@@ -649,7 +679,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
             rawY >= hitLocation[1] && rawY < hitLocation[1] + v.height * scaleY
     }
 
-    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
+    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, guardButton, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
 
     private fun hit(v: View, windowX: Float, windowY: Float): Boolean {
         if (!v.isShown) return false
