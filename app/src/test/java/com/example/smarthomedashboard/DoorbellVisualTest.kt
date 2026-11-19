@@ -103,14 +103,19 @@ class DoorbellVisualTest {
         card.dispose()
     }
 
+    /** Все несовпадения с эталонами за один прогон (а не только первое): CI выкладывает рендеры всех изменившихся. */
+    private val mismatches = mutableListOf<String>()
+    private fun soft(render: () -> Unit) = try { render() } catch (e: AssertionError) { mismatches += e.message.orEmpty() }
+
     @Test fun rendersCompactStates() {
-        compact("compact_idle")
-        values["binary_sensor.p"] = "on"; compact("compact_person")
-        values["binary_sensor.v"] = "on"; values["binary_sensor.a"] = "on"; compact("compact_ring", missed = 2)
-        values["camera.door"] = "unavailable"; compact("compact_offline")
+        soft { compact("compact_idle") }
+        values["binary_sensor.p"] = "on"; soft { compact("compact_person") }
+        values["binary_sensor.v"] = "on"; values["binary_sensor.a"] = "on"; soft { compact("compact_ring", missed = 2) }
+        values["camera.door"] = "unavailable"; soft { compact("compact_offline") }
         values["camera.door"] = "idle"; values["binary_sensor.v"] = "off"; values["binary_sensor.p"] = "off"; values["binary_sensor.a"] = "off"
-        compact("compact_small", w = 320, h = 240)
-        compact("compact_large", w = 800, h = 600)
+        soft { compact("compact_small", w = 320, h = 240) }
+        soft { compact("compact_large", w = 800, h = 600) }
+        if (mismatches.isNotEmpty()) fail(mismatches.joinToString("\n"))
     }
 
     @Test fun rendersExpandedWithHd() {
