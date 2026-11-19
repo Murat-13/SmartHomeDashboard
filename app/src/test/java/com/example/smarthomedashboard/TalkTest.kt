@@ -146,6 +146,33 @@ class TalkTest {
         assertEquals(2, talk.sentVoice)
     }
 
+    /** Регрессия 19.11.2026: карточка обновляется раз в секунду — разговор не должен переподключаться. */
+    @Test fun repeatedPrepareKeepsOneSession() {
+        val camera = Camera(reolinkBackchannel)
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val talk = DoorbellTalk(activity) { _, result -> result(null) }
+        talk.prepare(camera.url, "")
+        val until = System.currentTimeMillis() + 5_000
+        while (talk.state != DoorbellTalk.State.READY) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (System.currentTimeMillis() > until) fail("Не подключились: ${talk.state}")
+            Thread.sleep(20)
+        }
+        repeat(10) { talk.prepare(camera.url, ""); shadowOf(Looper.getMainLooper()).idle() }
+        // И во время разговора (именно тогда канал рвался каждую секунду).
+        shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        talk.press()
+        assertEquals(DoorbellTalk.State.TALKING, talk.state)
+        repeat(10) { talk.prepare(camera.url, ""); shadowOf(Looper.getMainLooper()).idle() }
+        assertEquals(DoorbellTalk.State.TALKING, talk.state)
+        talk.release()
+        Thread.sleep(200)
+        assertEquals(DoorbellTalk.State.READY, talk.state)
+        assertEquals("одна сессия", 1, camera.requests.count { it.startsWith("DESCRIBE") })
+        assertTrue(camera.packets.isNotEmpty())
+        talk.dispose()
+    }
+
     @Test fun cameraWithoutBackchannelIsExplained() {
         val camera = Camera(reolinkBackchannel.substringBefore("m=audio 0 RTP/AVP 0"))
         val error = assertThrows(TalkException::class.java) { session(camera).open() }

@@ -239,7 +239,10 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
  * Разговор одной карточки (окно звонка или раскрытый домофон). Сессия обратного канала открывается заранее
  * ([prepare]), нажатие сразу шлёт голос; карточка закрылась — [dispose]. Колбэки — на главном потоке.
  */
-internal class DoorbellTalk(private val context: Context) {
+internal class DoorbellTalk(
+    private val context: Context,
+    private val password: (Context, (String?) -> Unit) -> Unit = { c, result -> DoorbellHub.cameraPassword(c, result) }
+) {
     enum class State { IDLE, CONNECTING, READY, TALKING, ERROR }
 
     var onState: ((State, String) -> Unit)? = null
@@ -261,14 +264,22 @@ internal class DoorbellTalk(private val context: Context) {
         try { s.send(pcm, n) } catch (e: Exception) { main.post { failed(reason(e)) } }
     }, { level -> main.post { if (pressed) onLevel?.invoke(level) } })
 
-    /** Адрес RTSP и логин; открыть сессию заранее. */
+    /**
+     * Адрес RTSP и логин; открыть сессию заранее. Вызывается при каждом обновлении карточки (раз в секунду и чаще):
+     * та же камера — ничего не делаем (иначе разговор рвался бы каждую секунду); после ошибки — повтор не чаще
+     * [RETRY_MS].
+     */
     fun prepare(rtsp: String, login: String) {
         if (disposed) return
-        if (rtsp == url && login == user && (state == State.READY || state == State.CONNECTING)) return
+        val same = rtsp == url && login == user
+        if (same && state != State.ERROR && state != State.IDLE) return
+        if (same && state == State.ERROR && System.currentTimeMillis() - failedAt < RETRY_MS) return
         url = rtsp; user = login
         closeSession()
         connect()
     }
+
+    private var failedAt = 0L
 
     /** Нажатие «Говорить». false — нужно разрешение на микрофон (запрошено). */
     fun press(): Boolean {
@@ -320,8 +331,8 @@ internal class DoorbellTalk(private val context: Context) {
         set(State.CONNECTING, "Подключение к домофону…")
         Log.i(TAG, "Подключение обратного канала")
         val target = url; val login = user
-        DoorbellHub.cameraPassword(context) { password ->
-            if (disposed) return@cameraPassword
+        password(context) { password ->
+            if (disposed) return@password
             io.execute {
                 val talk = TalkSession(RtspSession(target, login, password, connectTimeoutMs = 4_000, readTimeoutMs = 30_000,
                     require = TalkSession.BACKCHANNEL))
@@ -344,6 +355,7 @@ internal class DoorbellTalk(private val context: Context) {
     }
 
     private fun failed(text: String) {
+        failedAt = System.currentTimeMillis()
         mic.stop()
         if (pressed) onDuck?.invoke(false)
         pressed = false
@@ -373,6 +385,7 @@ internal class DoorbellTalk(private val context: Context) {
 
     companion object {
         const val REQUEST_MIC = 4711
+        private const val RETRY_MS = 15_000L
         private const val TAG = "Talk"
         private const val READY_TEXT = "Удерживайте и говорите"
     }
