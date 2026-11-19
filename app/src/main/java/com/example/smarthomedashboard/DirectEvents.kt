@@ -179,6 +179,7 @@ internal object DirectEvents {
         if (source == "вебхук") { stopPoll(tileId); okStatus(context, tileId) }
         else if (statuses[tileId]?.level == Level.OK) okStatus(context, tileId)
         if (CameraEventType.RING in events) onRing(tileId, source)
+        Log.i(TAG, "Событие с камеры ($source): ${events.joinToString { it.name }}")
         // Этап 2: события камеры — в запуск HD-записи наравне с датчиками HA.
         onRecordingEvents(tileId, events.map { RECORDING_KEYS.getValue(it) })
     }
