@@ -20,7 +20,10 @@ import java.io.ByteArrayOutputStream
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RtspCompatTest {
-    @After fun forgetUndecodable() = DoorbellVideoView.undecodable.clear()
+    @After fun forgetUndecodable() {
+        DoorbellVideoView.undecodable.clear()
+        DoorbellVideoView.hardwareRejected.clear()
+    }
 
     private val video = "m=video 0 RTP/AVP 96\r\nc=IN IP4 0.0.0.0\r\nb=AS:500\r\na=rtpmap:96 H264/90000\r\n" +
         "a=fmtp:96 packetization-mode=1;profile-level-id=640033;sprop-parameter-sets=Z2QAM6wVFKAoAPGQ,aO48sA==\r\n" +
@@ -230,6 +233,13 @@ class RtspCompatTest {
             view(sub).rtspFor(DoorbellVideoView.Source(main, "admin", "", false, sub)))
         v.playingRtsp = sub
         assertFalse("субпоток не декодируется — обычная ошибка", v.fallBackFromDecoder(error(PlaybackException.ERROR_CODE_DECODER_INIT_FAILED)))
+    }
+
+    @Test fun softwareDecodersAreRecognised() {
+        assertTrue(DoorbellVideoView.isSoftwareDecoder("c2.android.avc.decoder"))
+        assertTrue(DoorbellVideoView.isSoftwareDecoder("OMX.google.h264.decoder"))
+        assertFalse(DoorbellVideoView.isSoftwareDecoder("c2.qti.avc.decoder"))
+        assertFalse(DoorbellVideoView.isSoftwareDecoder("c2.qti.avc.decoder.low_latency"))
     }
 
     @Test fun otherErrorsAndCompactTileKeepUsualPath() {

@@ -22,7 +22,10 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import okhttp3.Call
@@ -49,8 +52,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     enum class Status { IDLE, CONNECTING, PLAYING, SNAPSHOT, NO_SOURCE, ERROR, OFFLINE }
 
     /**
-     * [fallbackRtsp] — субпоток для раскрытия и окна звонка: если этот планшет не может декодировать основной
-     * поток (Samsung SM-X216B — H.264 не больше 1920×1088, а основной Reolink — 2560×1920), показывается он.
+     * [fallbackRtsp] — субпоток для раскрытия и окна звонка: если основной поток на этом планшете не декодируется
+     * вовсе — ни аппаратно, ни программно, — показывается он. Samsung SM-X216B: аппаратный H.264 не больше
+     * 1920×1088, основной Reolink — 2560×1920; тогда сначала пробуется программный декодер Android.
      */
     data class Source(
         val rtsp: String,
@@ -251,28 +255,32 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     H264Params.forStream(rtsp, src.user, password)
                 })
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
-            play { it.setMediaSource(media) }
+            // Аппаратный декодер этот поток уже не принял — сразу программный, без лишней попытки.
+            play(software = rtsp == src.rtsp && rtsp in hardwareRejected) { it.setMediaSource(media) }
         }
     }
 
     private var attempt = 0
     /** Адрес RTSP текущей попытки (основной или запасной); пусто — HLS через HA. */
     internal var playingRtsp = ""
+    /** Декодер видео текущего плеера (для проверки на планшете и журнала). */
+    internal var decoderInUse: String? = null
+        private set
 
     /** Основной поток, если планшет его уже не декодировал, — сразу субпоток, без новой неудачи. */
     internal fun rtspFor(src: Source) =
         if (src.fallbackRtsp.isNotBlank() && src.fallbackRtsp != src.rtsp && src.rtsp in undecodable) src.fallbackRtsp else src.rtsp
 
     /**
-     * Декодер планшета отказался от основного потока (разрешение выше его предела): дальше — субпоток,
-     * сразу и без счёта неудач. Не переподключение и не «нет сигнала»: камера в порядке, не тянет планшет.
+     * Основной поток не принял ни один декодер планшета (плеер перебирает их сам, программный — после
+     * аппаратных): дальше — субпоток, сразу и без счёта неудач. Не «нет сигнала»: камера в порядке.
      */
     internal fun fallBackFromDecoder(error: PlaybackException): Boolean {
         if (error.errorCode !in DECODER_REJECTED) return false
         val src = source ?: return false
         if (playingRtsp != src.rtsp || src.fallbackRtsp.isBlank() || src.fallbackRtsp == src.rtsp) return false
         undecodable += src.rtsp
-        Log.w(TAG, "Основной поток не декодируется на этом планшете (${error.errorCodeName}) — показываю субпоток")
+        Log.w(TAG, "Основной поток не декодируется на этом планшете ни одним декодером (${error.errorCodeName}) — показываю субпоток")
         viaRelay = false
         releasePlayer()
         status = Status.CONNECTING
@@ -294,8 +302,12 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         }
     }
 
-    private fun play(setSource: (ExoPlayer) -> Unit) {
-        val exo = ExoPlayer.Builder(context)
+    private fun play(software: Boolean = false, setSource: (ExoPlayer) -> Unit) {
+        // Не открылся декодер — плеер пробует следующий: так основной поток выше предела аппаратного декодера
+        // показывает программный декодер Android (нагрузка на процессор — только пока он на экране).
+        val renderers = DefaultRenderersFactory(context).setEnableDecoderFallback(true)
+        if (software) renderers.setMediaCodecSelector(SOFTWARE_FIRST)
+        val exo = ExoPlayer.Builder(context, renderers)
             // Живое видео: минимальный буфер — задержка важнее плавности при обрывах сети.
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(300, 2_000, 150, 300).build())
             .build()
@@ -306,6 +318,18 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         main.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
         exo.volume = if (muted) 0f else 1f
         exo.setVideoTextureView(texture)
+        exo.addAnalyticsListener(object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long
+            ) {
+                if (player !== exo) return
+                decoderInUse = decoderName
+                val main = source?.rtsp ?: return
+                if (playingRtsp == main && isSoftwareDecoder(decoderName) && hardwareRejected.add(main)) {
+                    Log.i(TAG, "Основной поток — программным декодером ($decoderName): аппаратный его не принял")
+                }
+            }
+        })
         exo.addListener(object : Player.Listener {
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 if (player !== exo || videoSize.width <= 0 || videoSize.height <= 0) return
@@ -613,10 +637,18 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         /** Высота кадра, с которой поток считается основным (HD): субпотоки Reolink/Hikvision — 360–512 строк. */
         const val HD_HEIGHT = 720
         /**
-         * Основные потоки, которые декодер этого планшета не принял (адрес без логина). До перезапуска приложения:
-         * чтобы снова попробовать основной после смены разрешения камеры, панель перезапускают.
+         * Основные потоки, которые не принял ни один декодер этого планшета (адрес без логина), и те, что идут
+         * только программным декодером. До перезапуска приложения: после смены разрешения камеры панель перезапускают.
          */
         internal val undecodable = mutableSetOf<String>()
+        internal val hardwareRejected = mutableSetOf<String>()
+
+        internal fun isSoftwareDecoder(name: String) = name.startsWith("c2.android.") || name.startsWith("OMX.google.")
+
+        /** Программные декодеры — первыми (порядок внутри групп прежний). */
+        private val SOFTWARE_FIRST = MediaCodecSelector { mime, secure, tunneling ->
+            MediaCodecSelector.DEFAULT.getDecoderInfos(mime, secure, tunneling).sortedBy { !it.softwareOnly }
+        }
         private val DECODER_REJECTED = setOf(
             PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
             PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
