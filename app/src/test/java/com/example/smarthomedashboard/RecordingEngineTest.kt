@@ -175,6 +175,21 @@ class RecordingEngineTest {
         return params
     }
 
+    /** Отрезок во время записи — фрагментированный; обычный файл (уже с оглавлением, или не MP4) — нет. */
+    @Test fun finalizerRecognisesFragmentedSegments() {
+        val f = tmp.newFile("frag.mp4")
+        writeSegment(f, "sample.h264", hevc = false)
+        assertTrue(Mp4Finalize.isFragmented(f))
+        val plain = tmp.newFile("plain.mp4").apply {
+            // ftyp + moov без mvex (как у обычного MP4).
+            writeBytes(byteArrayOf(0, 0, 0, 16) + "ftypisom".toByteArray() + byteArrayOf(0, 0, 0, 0) +
+                byteArrayOf(0, 0, 0, 16) + "moov".toByteArray() + byteArrayOf(0, 0, 0, 8) + "mvhd".toByteArray())
+        }
+        assertFalse(Mp4Finalize.isFragmented(plain))
+        assertFalse(Mp4Finalize.isFragmented(tmp.newFile("empty.mp4")))
+        assertFalse(Mp4Finalize.isFragmented(File(tmp.root, "missing.mp4")))
+    }
+
     @Test fun h264SegmentIsFragmentedMp4WithSizeFromSps() {
         val f = tmp.newFile("c.mp4")
         val params = writeSegment(f, "sample.h264", hevc = false)

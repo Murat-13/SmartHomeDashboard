@@ -192,7 +192,10 @@ internal object RecLayout {
         if (!ok) { file.delete(); return null }
         val duration = contentMs.coerceAtLeast(0) + 40
         val done = File(file.parentFile, closedName(kind, startMs, duration))
-        return if (file.renameTo(done)) RecFile(done, camera, kind, startMs, duration, done.length()) else null
+        if (!file.renameTo(done)) return null
+        // Оглавление для перемотки в архиве — в фоне, запись следующего отрезка не ждёт.
+        Mp4Finalize.enqueue(done)
+        return RecFile(done, camera, kind, startMs, duration, done.length())
     }
 
     /** Все файлы записей под [root] (по всем камерам и дням). */
@@ -222,7 +225,8 @@ internal object RecLayout {
             val ok = try { Mp4Repair.truncateToLastFragment(f.path) > 0 } catch (_: Exception) { false }
             if (!ok) { f.path.delete(); continue }
             val duration = (modified - f.startMs).coerceIn(0, 24 * 3_600_000L)
-            if (f.path.renameTo(File(f.path.parentFile, closedName(f.kind, f.startMs, duration)))) fixed++
+            val done = File(f.path.parentFile, closedName(f.kind, f.startMs, duration))
+            if (f.path.renameTo(done)) { fixed++; Mp4Finalize.enqueue(done) }
         }
         return fixed
     }

@@ -8,6 +8,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.container.NalUnitUtil
 import androidx.media3.muxer.BufferInfo
 import androidx.media3.muxer.FragmentedMp4Muxer
+import androidx.media3.muxer.Mp4Muxer
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
@@ -171,6 +172,134 @@ internal object Mp4Repair {
             if (!sawMoov || fragments == 0 || goodEnd <= 0) return -1
             if (goodEnd < length) raf.setLength(goodEnd)
             return goodEnd
+        }
+    }
+}
+
+/**
+ * Закрытый отрезок — в обычный MP4 с оглавлением (найдено 19.11.2026 на планшете: у фрагментированного MP4 без
+ * индекса плеер не знает длительность и не перематывает — «0:00», «+10 с» отскакивало в начало). Пока отрезок
+ * пишется, он фрагментированный (переживает падение процесса); после закрытия кадры перекладываются как есть,
+ * без перекодирования, во временный файл, который заменяет исходный. Своя очередь — запись не ждёт.
+ */
+@OptIn(UnstableApi::class)
+internal object Mp4Finalize {
+    /** Переименования/удаления архива и замена файла здесь — под одним замком. */
+    val LOCK = Any()
+    private val queue = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "rec-finalize").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
+    private val pending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Поставить в очередь (повторная постановка того же файла игнорируется). */
+    fun enqueue(file: File) {
+        if (!pending.add(file.path)) return
+        queue.execute {
+            try { finalize(file) } catch (e: Exception) { android.util.Log.w("Recording", "Оглавление MP4 не записано: ${e.javaClass.simpleName}") }
+            finally { pending.remove(file.path) }
+        }
+    }
+
+    /** Фрагментированный MP4: в `moov` есть `mvex` (оглавление фрагментов вместо таблиц кадров). */
+    fun isFragmented(file: File): Boolean {
+        if (!file.isFile) return false
+        RandomAccessFile(file, "r").use { raf ->
+            var pos = 0L
+            val header = ByteArray(8)
+            while (pos + 8 <= raf.length()) {
+                raf.seek(pos); raf.readFully(header)
+                val size = ByteBuffer.wrap(header, 0, 4).int.toLong() and 0xFFFFFFFFL
+                val type = String(header, 4, 4, Charsets.ISO_8859_1)
+                if (type == "moov") {
+                    if (size < 16 || size > 4_000_000) return false
+                    val body = ByteArray((size - 8).toInt()); raf.readFully(body)
+                    var i = 0
+                    while (i + 8 <= body.size) {
+                        val child = ByteBuffer.wrap(body, i, 4).int
+                        if (String(body, i + 4, 4, Charsets.ISO_8859_1) == "mvex") return true
+                        if (child < 8) return false
+                        i += child
+                    }
+                    return false
+                }
+                if (size < 8) return false
+                pos += size
+            }
+        }
+        return false
+    }
+
+    /** true — файл заменён обычным MP4. Кадры, метки и флаги ключевых кадров — без изменений. */
+    fun finalize(file: File): Boolean {
+        if (!isFragmented(file)) return false
+        val originalLength = file.length()
+        val tmp = File(file.parentFile, file.name + ".remux")
+        val extractor = android.media.MediaExtractor()
+        var output: FileOutputStream? = null
+        try {
+            extractor.setDataSource(file.path)
+            output = FileOutputStream(tmp)
+            val muxer = Mp4Muxer.Builder(output).setLastSampleDurationBehavior(
+                Mp4Muxer.LAST_SAMPLE_DURATION_BEHAVIOR_SET_FROM_END_OF_STREAM_BUFFER_OR_DUPLICATE_PREVIOUS).build()
+            val tracks = HashMap<Int, Int>()
+            var maxInput = 1 shl 20
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                val format = toFormat(f) ?: continue
+                tracks[i] = muxer.addTrack(format)
+                extractor.selectTrack(i)
+                if (f.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE)) maxInput = maxOf(maxInput, f.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE))
+            }
+            if (tracks.isEmpty()) return false
+            var buffer = ByteBuffer.allocateDirect(maxInput)
+            while (true) {
+                buffer.clear()
+                var size = try { extractor.readSampleData(buffer, 0) } catch (_: IllegalArgumentException) { -2 }
+                // Кадр больше буфера (getSampleSize — только с API 28): буфер вдвое больше и ещё раз.
+                while (size == -2 && buffer.capacity() < MAX_SAMPLE) {
+                    buffer = ByteBuffer.allocateDirect(buffer.capacity() * 2)
+                    size = try { extractor.readSampleData(buffer, 0) } catch (_: IllegalArgumentException) { -2 }
+                }
+                if (size < 0) break
+                val track = tracks[extractor.sampleTrackIndex]
+                if (track != null) {
+                    buffer.position(0); buffer.limit(size)
+                    val key = extractor.sampleFlags and android.media.MediaExtractor.SAMPLE_FLAG_SYNC != 0
+                    muxer.writeSampleData(track, buffer, BufferInfo(extractor.sampleTime, size, if (key) C.BUFFER_FLAG_KEY_FRAME else 0))
+                }
+                extractor.advance()
+            }
+            muxer.close()
+            output.close(); output = null
+            synchronized(LOCK) {
+                // Пока перекладывали, файл переименовали (звёздочка), удалили или дописали — оставляем как есть.
+                if (!file.isFile || file.length() != originalLength || tmp.length() == 0L) { tmp.delete(); return false }
+                if (!tmp.renameTo(file)) { tmp.delete(); return false }
+            }
+            return true
+        } catch (e: Exception) {
+            tmp.delete()
+            throw e
+        } finally {
+            try { output?.close() } catch (_: Exception) {}
+            extractor.release()
+        }
+    }
+
+    private const val MAX_SAMPLE = 64 shl 20
+
+    private fun toFormat(f: android.media.MediaFormat): Format? {
+        val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: return null
+        fun csd(key: String): ByteArray? = if (f.containsKey(key)) f.getByteBuffer(key)?.let { b ->
+            val copy = b.duplicate(); copy.position(0); ByteArray(copy.remaining()).also { copy.get(it) } } else null
+        val init = listOfNotNull(csd("csd-0"), csd("csd-1"), csd("csd-2"))
+        return when {
+            mime == MimeTypes.VIDEO_H264 || mime == MimeTypes.VIDEO_H265 -> Format.Builder().setSampleMimeType(mime)
+                .setWidth(f.getInteger(android.media.MediaFormat.KEY_WIDTH)).setHeight(f.getInteger(android.media.MediaFormat.KEY_HEIGHT))
+                .setInitializationData(init).build()
+            mime == MimeTypes.AUDIO_AAC -> Format.Builder().setSampleMimeType(mime)
+                .setSampleRate(f.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE))
+                .setChannelCount(f.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT))
+                .setInitializationData(init).build()
+            else -> null
         }
     }
 }

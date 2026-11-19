@@ -153,6 +153,10 @@ class ArchiveActivity : AppCompatActivity() {
             val selected = keepDay?.takeIf { it in days } ?: days.firstOrNull()
             selectDay(selected, days)
             if (latest) snapshot.events.firstOrNull()?.let { play(it) }
+            // Ролики, записанные до появления оглавления (или если оно не успело записаться), — в очередь: после
+            // этого в них работает перемотка. Сначала события (новые первыми), затем 24/7 выбранного дня.
+            val files = snapshot.events.map { it.file } + snapshot.continuous.filter { RecArchive.dayStart(it.startMs) == selected }.reversed()
+            withContext(Dispatchers.IO) { files.forEach { f -> if (Mp4Finalize.isFragmented(f.path)) Mp4Finalize.enqueue(f.path) } }
         }
     }
 
@@ -212,9 +216,12 @@ class ArchiveActivity : AppCompatActivity() {
         if (done) p.play()
     }
 
+    /** Длительность текущего ролика: из плеера, а если файл ещё без оглавления — из имени файла. */
+    private fun knownDuration(): Long = player?.duration?.takeIf { it > 0 } ?: ui.value.current?.file?.durationMs ?: 0L
+
     private fun scrubClip(fraction: Float, done: Boolean) {
         val p = player ?: return
-        val duration = p.duration.takeIf { it > 0 } ?: return
+        val duration = knownDuration().takeIf { it > 0 } ?: return
         p.setSeekParameters(if (done) SeekParameters.EXACT else SeekParameters.CLOSEST_SYNC)
         p.seekTo((duration * fraction.coerceIn(0f, 1f)).toLong())
     }
@@ -236,7 +243,7 @@ class ArchiveActivity : AppCompatActivity() {
                 val d = day
                 val p = player
                 ui.value = ui.value.copy(positionWall = wall, cursor = if (wall != null && d != null) d.fraction(wall) else null,
-                    positionMs = p?.currentPosition ?: 0L, durationMs = p?.duration?.takeIf { it > 0 } ?: 0L)
+                    positionMs = p?.currentPosition ?: 0L, durationMs = knownDuration())
                 delay(250)
             }
         }
@@ -247,7 +254,8 @@ class ArchiveActivity : AppCompatActivity() {
         if (ui.value.continuous) {
             wallNow()?.let { now -> day?.locate(now + deltaMs)?.let { (i, o) -> p.seekTo(i, o) } }
         } else {
-            p.seekTo((p.currentPosition + deltaMs).coerceIn(0, maxOf(0, p.duration)))
+            val duration = knownDuration()
+            p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0).let { if (duration > 0) it.coerceAtMost(duration) else it })
         }
     }
 

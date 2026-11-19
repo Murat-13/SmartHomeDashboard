@@ -43,11 +43,12 @@ internal class RecArchive(private val context: Context, private val roots: () ->
     fun setStarred(file: RecFile, starred: Boolean): RecFile? {
         if (file.starred == starred) return file
         val target = File(file.path.parentFile, RecLayout.closedName(file.kind, file.startMs, file.durationMs, starred))
-        return if (file.path.renameTo(target)) file.copy(path = target, starred = starred) else null
+        val ok = synchronized(Mp4Finalize.LOCK) { file.path.renameTo(target) }
+        return if (ok) file.copy(path = target, starred = starred) else null
     }
 
     fun delete(file: RecFile): Boolean {
-        val ok = file.path.delete() || !file.path.exists()
+        val ok = synchronized(Mp4Finalize.LOCK) { file.path.delete() || !file.path.exists() }
         if (ok) try { index()?.remove(listOf(file)) } catch (_: Exception) {}
         thumbFile(file).delete()
         return ok
