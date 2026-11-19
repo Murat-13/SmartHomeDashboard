@@ -139,6 +139,9 @@ internal class RtspSession(
     @Volatile private var closed = false
     var setups: List<Setup> = emptyList()
         private set
+    /** Описание потока камеры (ответ DESCRIBE) — для локального ретранслятора живого видео ([RtspRelay]). */
+    var sdp: String = ""
+        private set
 
     private data class Challenge(val scheme: String, val realm: String, val nonce: String, val qop: String?, val opaque: String?)
     private var nonceCount = 0
@@ -162,6 +165,7 @@ internal class RtspSession(
         }
         val describe = request("DESCRIBE", requestUrl, listOf("Accept" to "application/sdp"))
         val base = (describe.header("content-base") ?: describe.header("content-location") ?: requestUrl).trimEnd()
+        sdp = describe.bodyText
         val tracks = SdpParser.parse(describe.bodyText).filter(wanted)
         if (tracks.isEmpty()) throw RtspException("Нет подходящих дорожек в SDP")
 

@@ -66,6 +66,10 @@ internal data class DoorbellConfig(
 
     val hasVideo get() = camera.isNotBlank() || rtspMain.isNotBlank() || rtspSub.isNotBlank()
 
+    /** Общая с плиткой камеры часть: потоки и датчики событий (этап 4, docs/recording.md). */
+    val source get() = CameraSource(camera, rtspMain, rtspSub, rtspUser, linkedMapOf(
+        "visitor" to visitor, "person" to person, "vehicle" to vehicle, "animal" to animal, "motion" to motion))
+
     fun isQuiet(minuteOfDay: Int) = VoiceAlertSettings(quietStartMin = quietStartMin, quietEndMin = quietEndMin).isQuiet(minuteOfDay)
 
     fun ringVolumeAt(minuteOfDay: Int): Float {

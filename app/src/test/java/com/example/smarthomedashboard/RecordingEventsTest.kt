@@ -60,11 +60,11 @@ class RecordingEventsTest {
         val rec = RecordingConfig() // по умолчанию всё, кроме движения
         val states = mutableMapOf("binary_sensor.v" to "off", "binary_sensor.p" to "on", "binary_sensor.m" to "on")
         fun readings(connected: Boolean) = BatteryReadings(HaSession(connected, connected), states::get, { false }, { null })
-        assertEquals(setOf("person"), RecordingEvents.labels(door, rec, readings(true)))
-        assertEquals(setOf("person", "motion"), RecordingEvents.labels(door, rec.copy(eventTriggers = rec.eventTriggers + "motion"), readings(true)))
-        assertNull("Без связи с HA — неизвестно", RecordingEvents.labels(door, rec, readings(false)))
+        assertEquals(setOf("person"), RecordingEvents.labels(door.source, rec, readings(true)))
+        assertEquals(setOf("person", "motion"), RecordingEvents.labels(door.source, rec.copy(eventTriggers = rec.eventTriggers + "motion"), readings(true)))
+        assertNull("Без связи с HA — неизвестно", RecordingEvents.labels(door.source, rec, readings(false)))
         states["binary_sensor.p"] = "unavailable"
-        assertEquals(emptySet<String>(), RecordingEvents.labels(door, rec, readings(true)))
+        assertEquals(emptySet<String>(), RecordingEvents.labels(door.source, rec, readings(true)))
 
         val tile = TileEntity("door1", DoorbellConfig.TYPE, "grid", "Домофон", 0, 0, 1, 1,
             config = RecordingConfig().writeTo(door.writeTo("{}")))

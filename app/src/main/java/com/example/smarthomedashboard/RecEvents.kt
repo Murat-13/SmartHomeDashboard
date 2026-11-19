@@ -31,9 +31,9 @@ internal object RecordingEvents {
     fun update(tiles: List<TileEntity>, readings: BatteryReadings) {
         val ids = HashSet<String>()
         for (tile in tiles) {
-            if (tile.type != DoorbellConfig.TYPE) continue
+            val source = CameraSource.of(tile) ?: continue
             ids += tile.id
-            val labels = labels(DoorbellConfig.from(tile.config), RecordingConfig.from(tile.config), readings)
+            val labels = labels(source, RecordingConfig.from(tile.config), readings)
             if (labels == null) { known -= tile.id; active.remove(tile.id) } else { active[tile.id] = labels; known += tile.id }
         }
         known.retainAll(ids)
@@ -43,18 +43,15 @@ internal object RecordingEvents {
     fun clear() { known.clear(); active.clear() }
 
     /** Сработавшие датчики, запускающие HD-запись; null — связи с HA нет или идёт синхронизация. */
-    fun labels(door: DoorbellConfig, rec: RecordingConfig, readings: BatteryReadings): Set<String>? {
+    fun labels(source: CameraSource, rec: RecordingConfig, readings: BatteryReadings): Set<String>? {
         if (readings.status != null) return null
         val out = LinkedHashSet<String>()
-        for ((key, entity) in sources(door)) {
+        for ((key, entity) in source.events) {
             if (key !in rec.eventTriggers || entity.isBlank()) continue
             if ((readings.of(entity) as? BatteryReading.Value)?.raw == "on") out += key
         }
         return out
     }
-
-    fun sources(door: DoorbellConfig) = listOf("visitor" to door.visitor, "person" to door.person,
-        "vehicle" to door.vehicle, "animal" to door.animal, "motion" to door.motion)
 }
 
 /**

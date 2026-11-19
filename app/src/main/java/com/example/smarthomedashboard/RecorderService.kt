@@ -78,7 +78,7 @@ class RecorderService : Service() {
     /** Сверить нужные записи с идущими (поток управления). */
     private fun sync() {
         val device = RecordingDevice(this)
-        val tiles = TileManager(this).loadTiles().filter { it.type == DoorbellConfig.TYPE }
+        val tiles = TileManager(this).loadTiles().filter { it.type in CameraSource.TYPES }
         // Ключ записи: id плитки — круглосуточная (субпоток), id + [HD] — события (основной поток).
         val wanted = HashMap<String, Pair<Key, RecordingConfig>>()
         var password: String? = null
@@ -86,17 +86,17 @@ class RecorderService : Service() {
         for (tile in tiles) {
             if (!device.enabled(tile.id)) continue
             val rec = RecordingConfig.from(tile.config)
-            val door = DoorbellConfig.from(tile.config)
-            val sub = door.rtspSub.ifBlank { door.rtspMain }
-            val hd = door.rtspMain.ifBlank { door.rtspSub }
+            val source = CameraSource.of(tile) ?: continue
+            val sub = source.subUrl
+            val hd = source.mainUrl
             if (sub.isBlank()) continue
             // Камера не в подсети планшета (VPN, интернет) — свой режим, по умолчанию выключен (трафик).
             val mode = rec.effectiveMode(RecLocality.isLocal(sub) ?: true)
             if (!mode.continuous && !mode.events) continue
             if (!passwordRead) { password = readPassword(); passwordRead = true }
             val hash = password?.hashCode() ?: 0
-            if (mode.continuous) wanted[tile.id] = Key(sub, door.rtspUser, hash, rec.audioContinuous) to rec
-            if (mode.events) wanted[tile.id + HD] = Key(hd, door.rtspUser, hash, rec.audioEvents,
+            if (mode.continuous) wanted[tile.id] = Key(sub, source.rtspUser, hash, rec.audioContinuous) to rec
+            if (mode.events) wanted[tile.id + HD] = Key(hd, source.rtspUser, hash, rec.audioEvents,
                 listOf(rec.preSeconds, rec.postSeconds, rec.maxClipMinutes)) to rec
         }
         // Остановить лишние и изменившиеся.

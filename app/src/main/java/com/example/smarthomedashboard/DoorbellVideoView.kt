@@ -222,11 +222,19 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         } else startRtsp(src)
     }
 
+    /** Текущая попытка идёт через ретранслятор планшета ([CameraHub]). */
+    private var viaRelay = false
+    /** Ретранслятор только что подвёл — следующая попытка напрямую к камере. */
+    private var skipRelay = false
+
     private fun startRtsp(src: Source) {
         val generation = ++attempt
         DoorbellHub.cameraPassword(context) { password ->
             if (generation != attempt || !visible || player != null) return@cameraPassword
-            val url = DoorbellConfig.withCredentials(src.rtsp, src.user, password)
+            // Этап 4 (docs/recording.md): этот поток уже идёт ради записи — смотрим через планшет, соединение с камерой одно.
+            val relay = if (skipRelay) null else CameraHub.relayUrl(src.rtsp, src.user)
+            viaRelay = relay != null
+            val url = relay ?: DoorbellConfig.withCredentials(src.rtsp, src.user, password)
             val media = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
                 .setTimeoutMs(RTSP_TIMEOUT_MS)
@@ -280,6 +288,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 failures = 0
                 consecutiveFailures = 0
                 unreachable = false
+                skipRelay = false
                 status = Status.PLAYING
                 updateQuality()
                 // Свой поток пошёл: проявляется поверх временного, затем временный возвращается или освобождается.
@@ -299,7 +308,18 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     internal fun failed(reason: String) {
-        Log.w(TAG, "Видео домофона: $reason")
+        Log.w(TAG, "Видео домофона: $reason" + if (viaRelay) " (через планшет)" else "")
+        // Ретранслятор подвёл (запись переподключается, выключена) — следующая попытка напрямую; не вышло напрямую —
+        // снова через планшет. Первый сбой ретранслятора не считается недоступностью камеры.
+        skipRelay = viaRelay
+        if (viaRelay) {
+            viaRelay = false
+            releasePlayer()
+            status = Status.ERROR
+            retryPending = true
+            main.postDelayed(retry, RETRY_BASE_MS / 4)
+            return
+        }
         releasePlayer()
         failures++
         val src = source ?: return

@@ -4,10 +4,12 @@ import android.util.Log
 import java.io.File
 
 /**
- * Запись с камер: одна RTSP-дорожка камеры на своём потоке (docs/recording.md). Общий цикл для круглосуточной
- * записи ([ContinuousRecorder]) и записи событий ([EventRecorder]): подключение, разбор RTP в кадры, звук
- * (AAC как есть, G.711 → AAC), переподключение 2→30 с. Что делать с кадрами — решает [Sink] наследника.
+ * Запись с камер: одна дорожка камеры (docs/recording.md). Подключение, разбор RTP, звук и переподключение — в общем
+ * потоке камеры ([CameraHub], этап 4): одно соединение на поток, сколько бы записей и плееров его ни использовали.
+ * Что делать с кадрами — решает [Sink] наследника: круглосуточные отрезки ([ContinuousRecorder]) или ролики
+ * событий ([EventRecorder]). [threadName] — прежнее имя потока, оставлено для журналов.
  */
+@Suppress("UNUSED_PARAMETER")
 internal abstract class CameraRecorder(
     val camera: String,
     private val url: String,
@@ -17,7 +19,7 @@ internal abstract class CameraRecorder(
     private val onStatus: (CameraRecorder, Status) -> Unit,
     private val sessionFactory: (String, String, String?) -> RtspSession,
     private val encoderFactory: () -> AacEncoder,
-    private val threadName: String
+    threadName: String
 ) {
     enum class State { CONNECTING, RECORDING, RETRYING, NO_SPACE, NO_STORAGE, STOPPED }
     data class Status(val state: State, val detail: String = "", val sinceMs: Long = System.currentTimeMillis())
@@ -33,101 +35,41 @@ internal abstract class CameraRecorder(
         fun close()
     }
 
-    @Volatile private var running = false
-    private var encoder: AacEncoder? = null
-    @Volatile private var session: RtspSession? = null
-    private var thread: Thread? = null
+    private var stream: SharedStream? = null
     @Volatile var status = Status(State.STOPPED)
         private set
 
-    protected abstract fun newSink(): Sink
+    /** Писать звук (кадры звука этой записи не передаются, если выключено). */
+    internal val wantsAudio get() = audio
+
+    /** Новый приёмник на сессию камеры (из потока камеры). */
+    internal abstract fun newSink(): Sink
 
     fun start() {
-        if (running) return
-        running = true
-        thread = Thread({ loop() }, threadName).apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1; start() }
+        if (stream != null) return
+        stream = CameraHub.attach(CameraHub.Key(url.trim(), user, password), this, sessionFactory, encoderFactory)
     }
 
-    /** Остановить и дождаться закрытия текущего файла (не дольше [waitMs]). */
+    /** Остановить: текущий файл закрывается сразу; последняя запись закрывает и поток камеры (ждём ≤ [waitMs]). */
     fun stop(waitMs: Long = 3_000) {
-        running = false
-        session?.close()
-        thread?.interrupt()
-        thread?.join(waitMs)
-        thread = null
+        val s = stream ?: return
+        stream = null
+        CameraHub.detach(s, this, waitMs)
+        report(State.STOPPED)
+    }
+
+    /**
+     * Состояние общего потока (подключение, повтор); null — без изменений. После [stop] запись уже отключена от
+     * потока и состояний не получает.
+     */
+    internal fun streamStatus(state: State?, detail: String) {
+        if (state != null) report(state, detail)
     }
 
     protected fun report(state: State, detail: String = "") {
         if (status.state == state && status.detail == detail) return
         status = Status(state, detail)
         onStatus(this, status)
-    }
-
-    private fun loop() {
-        var backoffMs = 2_000L
-        while (running) {
-            val started = System.nanoTime()
-            report(State.CONNECTING)
-            val writer = newSink()
-            try {
-                val s = sessionFactory(url, user, password)
-                session = s
-                if (!running) { s.close(); break }
-                val setups = s.open { t -> (t.isVideo && (t.encoding == "H264" || t.encoding == "H265" || t.encoding == "HEVC")) ||
-                    (audio && t.isAudio) }
-                val video = setups.firstOrNull { it.track.isVideo } ?: throw RtspException("Камера не отдаёт H.264/H.265")
-                val depacketizer = VideoDepacketizer.create(video.track) ?: throw RtspException("Кодек не поддерживается")
-                val audioSetup = setups.firstOrNull { it.track.isAudio }
-                val aac = audioSetup?.let { AacDepacketizer.create(it.track) }
-                // G.711 (PCMA/PCMU) — перекодируется в AAC; не вышло — запись без звука.
-                val g711 = if (aac == null) audioSetup?.let { G711Depacketizer.create(it.track) } else null
-                encoder = g711?.let {
-                    try { encoderFactory() } catch (e: Exception) {
-                        Log.w(TAG, "$camera: AAC-кодер недоступен (${e.javaClass.simpleName}), запись без звука")
-                        null
-                    }
-                }
-                if (audioSetup != null && aac == null && encoder == null) {
-                    Log.i(TAG, "$camera: звук ${audioSetup.track.encoding} не записывается")
-                }
-                writer.audioParams = aac?.let { AudioParams(it.config, it.sampleRate, it.channels) }
-                    ?: encoder?.let { AudioParams(it.config, it.sampleRate, it.channels) }
-                val enc = encoder
-                writer.videoClock = video.track.clockRate.takeIf { it > 0 } ?: 90_000
-                s.read(object : RtspSession.Sink {
-                    override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
-                        val rtp = RtpPacket.parse(packet, length) ?: return
-                        if (setup === video) {
-                            for (frame in depacketizer.push(rtp)) writer.video(frame, depacketizer)
-                        } else if (setup === audioSetup && aac != null) {
-                            for (frame in aac.push(rtp)) writer.audio(frame, aac.sampleRate)
-                        } else if (setup === audioSetup && g711 != null && enc != null) {
-                            val pcm = g711.push(rtp)
-                            // Привязка звука — по приходу отсчётов, а не по выходу кодера (у него своя задержка).
-                            writer.audioArrival(pcm.timestamp)
-                            for (frame in enc.encode(pcm)) writer.audio(frame, enc.sampleRate)
-                        }
-                    }
-                })
-            } catch (e: Exception) {
-                if (running) {
-                    Log.w(TAG, "$camera: ${e.javaClass.simpleName}: ${e.message}")
-                    report(State.RETRYING, e.message ?: e.javaClass.simpleName)
-                }
-            } finally {
-                try { writer.close() } catch (e: Exception) { Log.w(TAG, "$camera: файл не закрыт: ${e.message}") }
-                session?.close()
-                session = null
-                encoder?.release()
-                encoder = null
-            }
-            if (!running) break
-            // Сессия держалась дольше минуты — начинаем отсчёт заново.
-            if (System.nanoTime() - started > 60_000_000_000L) backoffMs = 2_000L
-            try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { if (!running) break }
-            backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
-        }
-        report(State.STOPPED)
     }
 
     /**
