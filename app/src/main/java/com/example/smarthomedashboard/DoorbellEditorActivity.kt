@@ -317,7 +317,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         awayBox.addView(switch("door_autoreply_switch", "Автоответ своей фразой", s.autoReply) {
             DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(autoReply = it))
         })
-        val chosen = phrases.firstOrNull { it.id == s.phraseId }
+        val chosen = DoorbellAway.phrase(this, original.id)
         awayBox.addView(kit.button("Фраза: ${chosen?.title ?: "выберите"}", "door_autoreply_phrase") {
             AlertDialog.Builder(this).setTitle("Фраза для автоответа").setItems(phrases.map { it.title }.toTypedArray()) { _, i ->
                 DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(phraseId = phrases[i].id))

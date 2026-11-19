@@ -47,14 +47,20 @@ internal object DoorbellAway {
             .apply()
     }
 
-    /** Автоответ готов на этом планшете: включён и выбранная фраза записана. */
-    fun autoReplyReady(context: Context, tileId: String): Boolean {
-        val s = settings(context, tileId)
-        return s.autoReply && DoorbellPhrases.has(context, tileId, s.phraseId)
+    /**
+     * Фраза автоответа: выбранная, а если её нет (не выбирали или удалили) — первая записанная. Иначе автоответ при
+     * включённом переключателе молчал бы (найдено на планшете 19.11.2026: «Фраза: выберите»).
+     */
+    fun phrase(context: Context, tileId: String): DoorbellPhrases.Phrase? {
+        val ready = DoorbellPhrases.ready(context, tileId)
+        return ready.firstOrNull { it.id == settings(context, tileId).phraseId } ?: ready.firstOrNull()
     }
 
-    /** Фраза для автоответа выбрана и записана (кнопка «Автоответ» в раскрытом домофоне видна). */
-    fun autoReplyConfigured(context: Context, tileId: String) = DoorbellPhrases.has(context, tileId, settings(context, tileId).phraseId)
+    /** Автоответ готов на этом планшете: включён и есть записанная фраза. */
+    fun autoReplyReady(context: Context, tileId: String) = settings(context, tileId).autoReply && phrase(context, tileId) != null
+
+    /** Есть записанная фраза (кнопка «Автоответ» в раскрытом домофоне видна). */
+    fun autoReplyConfigured(context: Context, tileId: String) = phrase(context, tileId) != null
 
     fun isNotifyService(name: String) = name.matches(Regex("^notify\\.[a-z0-9_]{1,80}$"))
 
@@ -73,6 +79,8 @@ internal object DoorbellAway {
             .put("priority", "high")
             .put("ttl", 0)
         if (cameraEntity.startsWith("camera.")) data.put("image", "/api/camera_proxy/$cameraEntity")
+        // iPhone (у владельца): звук и «срочное» — звонок проходит через режим «Фокус». Android эти поля пропускает.
+        data.put("push", JSONObject().put("sound", "default").put("interruption-level", "time-sensitive"))
         return mapOf(
             "title" to title.ifBlank { DoorbellConfig.DEFAULT_TITLE },
             "message" to "Звонят в калитку · " + SimpleDateFormat("HH:mm", Locale.ROOT).format(Date(atMs)),
@@ -120,7 +128,7 @@ internal object DoorbellAway {
             val now = clock()
             if (lastReply[tileId]?.let { now - it < REPEAT_MS } == true) { Log.i(TAG, "Автоответ был меньше минуты назад — пропущен"); return@Runnable }
             val current = settings(app, tileId)
-            val pcm = if (current.autoReply) DoorbellPhrases.load(app, tileId, current.phraseId) else null
+            val pcm = if (current.autoReply) phrase(app, tileId)?.let { DoorbellPhrases.load(app, tileId, it.id) } else null
             if (pcm == null) { Log.i(TAG, "Автоответ: фраза не записана или выключен"); return@Runnable }
             lastReply[tileId] = now
             Log.i(TAG, "Автоответ: к звонку не подошли за ${current.delaySeconds} с — фраза в домофон")

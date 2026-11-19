@@ -54,6 +54,7 @@ class DoorbellAwayTest {
         assertEquals("/api/camera_proxy/camera.door", (with["data"] as JSONObject).getString("image"))
         assertFalse("без камеры в HA — без снимка", (DoorbellAway.notification("", "", 0, tile)["data"] as JSONObject).has("image"))
         assertEquals(DoorbellConfig.DEFAULT_TITLE, DoorbellAway.notification("", "", 0, tile)["title"])
+        assertEquals("iPhone: звук и «срочное»", "time-sensitive", (with["data"] as JSONObject).getJSONObject("push").getString("interruption-level"))
         assertTrue(DoorbellAway.isNotifyService("notify.mobile_app_pixel"))
         assertFalse("чужая служба не принимается", DoorbellAway.isNotifyService("lock.unlock"))
     }
@@ -120,6 +121,16 @@ class DoorbellAwayTest {
         // Без RTSP разговора нет — и автоответа тоже.
         DoorbellAway.onRing(context, tile, "Домофон", DoorbellConfig())
         assertFalse(DoorbellAway.waiting(tile))
+    }
+
+    /** Найдено на планшете: переключатель включён, фраза не выбрана — автоответ берёт первую записанную. */
+    @Test fun autoReplyUsesFirstPhraseWhenNoneChosen() {
+        DoorbellAway.save(context, tile, DoorbellAway.Settings(autoReply = true, phraseId = ""))
+        assertTrue(DoorbellAway.autoReplyReady(context, tile))
+        assertEquals("abc123", DoorbellAway.phrase(context, tile)?.id)
+        DoorbellAway.onRing(context, tile, "Домофон", config)
+        looper.idleFor(25, TimeUnit.SECONDS)
+        assertEquals(listOf(8_000), spoken)
     }
 
     @Test fun expandedDoorbellAutoReplyButtonToggles() {
