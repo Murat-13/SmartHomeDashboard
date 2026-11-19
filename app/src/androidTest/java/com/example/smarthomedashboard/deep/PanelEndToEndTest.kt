@@ -103,8 +103,14 @@ class PanelEndToEndTest {
             // Удержание как у обычного нажатия, затем отпускание.
             val down = SystemClock.uptimeMillis()
             instrumentation.sendPointerSync(MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, x, y, 0))
-            Thread.sleep(250)
-            val ready = hidden().singleOrNull { it is com.example.smarthomedashboard.BatteryModernCard }
+            // Сборка начинается через 40 мс удержания; на эмуляторе CI с программной отрисовкой она бывает дольше
+            // 250 мс (упало 19.11). Ждём до 1,2 с — меньше порога 1,5 с, после которого заготовка сбрасывается.
+            var found: View? = null
+            waitFor(1_200, "Круг $round: карточка собрана, пока палец на плитке") {
+                found = hidden().singleOrNull { it is com.example.smarthomedashboard.BatteryModernCard }
+                found != null
+            }
+            val ready = found
             assertNotNull("Круг $round: карточка собрана, пока палец на плитке", ready)
             assertTrue("Круг $round: карточка размечена заранее", onMain { ready!!.width > 0 && ready.height > 0 })
             val upStart = SystemClock.uptimeMillis()
