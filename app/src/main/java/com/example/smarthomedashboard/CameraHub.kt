@@ -273,7 +273,8 @@ internal object RtspRelay {
 
     /**
      * Описание потока для плеера: только дорожки, для которых выполнен SETUP у камеры, со своими короткими
-     * адресами (`track0`, `track1`…). Остальное описание камеры — как есть.
+     * адресами (`track0`, `track1`…), кроме тех, что плеер не примет ([Media3Sdp.rejected]: звук AAC без fmtp —
+     * иначе Media3 отвергает всё описание). Остальное описание камеры — как есть.
      */
     fun sdpFor(raw: String, setups: List<RtspSession.Setup>): String {
         val lines = raw.lines().map { it.trimEnd('\r') }.filter { it.isNotEmpty() }
@@ -288,7 +289,7 @@ internal object RtspRelay {
             val block = lines.subList(i, j)
             val track = SdpParser.parse(block.joinToString("\r\n")).firstOrNull()
             val index = setups.indexOfFirst { it.track == track }
-            if (track != null && index >= 0) {
+            if (track != null && index >= 0 && !Media3Sdp.rejected(track)) {
                 block.filterNot { it.startsWith("a=control:") }.forEach { out += it }
                 out += "a=control:track$index"
             }

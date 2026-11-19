@@ -48,11 +48,16 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** OFFLINE — домофон недоступен по данным HA: не подключаемся вовсе, пока он не вернётся. */
     enum class Status { IDLE, CONNECTING, PLAYING, SNAPSHOT, NO_SOURCE, ERROR, OFFLINE }
 
+    /**
+     * [fallbackRtsp] — субпоток для раскрытия и окна звонка: если этот планшет не может декодировать основной
+     * поток (Samsung SM-X216B — H.264 не больше 1920×1088, а основной Reolink — 2560×1920), показывается он.
+     */
     data class Source(
         val rtsp: String,
         val user: String,
         val camera: String,
-        val snapshotOnly: Boolean
+        val snapshotOnly: Boolean,
+        val fallbackRtsp: String = ""
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -232,9 +237,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         DoorbellHub.cameraPassword(context) { password ->
             if (generation != attempt || !visible || player != null) return@cameraPassword
             // Этап 4 (docs/recording.md): этот поток уже идёт ради записи — смотрим через планшет, соединение с камерой одно.
-            val relay = if (skipRelay) null else CameraHub.relayUrl(src.rtsp, src.user)
+            val rtsp = rtspFor(src)
+            playingRtsp = rtsp
+            val relay = if (skipRelay) null else CameraHub.relayUrl(rtsp, src.user)
             viaRelay = relay != null
-            val url = relay ?: DoorbellConfig.withCredentials(src.rtsp, src.user, password)
+            val url = relay ?: DoorbellConfig.withCredentials(rtsp, src.user, password)
             val media = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
                 .setTimeoutMs(RTSP_TIMEOUT_MS)
@@ -247,9 +254,34 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     private var attempt = 0
+    /** Адрес RTSP текущей попытки (основной или запасной); пусто — HLS через HA. */
+    internal var playingRtsp = ""
+
+    /** Основной поток, если планшет его уже не декодировал, — сразу субпоток, без новой неудачи. */
+    internal fun rtspFor(src: Source) =
+        if (src.fallbackRtsp.isNotBlank() && src.fallbackRtsp != src.rtsp && src.rtsp in undecodable) src.fallbackRtsp else src.rtsp
+
+    /**
+     * Декодер планшета отказался от основного потока (разрешение выше его предела): дальше — субпоток,
+     * сразу и без счёта неудач. Не переподключение и не «нет сигнала»: камера в порядке, не тянет планшет.
+     */
+    internal fun fallBackFromDecoder(error: PlaybackException): Boolean {
+        if (error.errorCode !in DECODER_REJECTED) return false
+        val src = source ?: return false
+        if (playingRtsp != src.rtsp || src.fallbackRtsp.isBlank() || src.fallbackRtsp == src.rtsp) return false
+        undecodable += src.rtsp
+        Log.w(TAG, "Основной поток не декодируется на этом планшете (${error.errorCodeName}) — показываю субпоток")
+        viaRelay = false
+        releasePlayer()
+        status = Status.CONNECTING
+        retryPending = true
+        main.post(retry)
+        return true
+    }
 
     private fun startHls(src: Source) {
         val generation = ++attempt
+        playingRtsp = ""
         DoorbellHub.streamUrl(src.camera) { url ->
             if (generation != attempt || !visible || player != null) return@streamUrl
             if (url == null) { failed("HA не выдал поток"); return@streamUrl }
@@ -295,7 +327,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 texture.animate().alpha(1f).setDuration(FADE_MS).withEndAction { dropGuest() }.start()
             }
             override fun onPlayerError(error: PlaybackException) {
-                if (player === exo) failed(error.errorCodeName)
+                if (player === exo && !fallBackFromDecoder(error)) failed(error.errorCodeName)
             }
             override fun onPlaybackStateChanged(state: Int) {
                 // Поток домофона не заканчивается: конец — обрыв.
@@ -576,6 +608,17 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val FADE_MS = 220L
         /** Высота кадра, с которой поток считается основным (HD): субпотоки Reolink/Hikvision — 360–512 строк. */
         const val HD_HEIGHT = 720
+        /**
+         * Основные потоки, которые декодер этого планшета не принял (адрес без логина). До перезапуска приложения:
+         * чтобы снова попробовать основной после смены разрешения камеры, панель перезапускают.
+         */
+        internal val undecodable = mutableSetOf<String>()
+        private val DECODER_REJECTED = setOf(
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+        )
         /** В тестах Robolectric декодеров нет: только снимок. */
         internal val ENABLED = android.os.Build.FINGERPRINT != "robolectric"
     }
@@ -584,16 +627,17 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 /**
  * Фабрика сокетов RTSP с таймаутом подключения. Стандартная `SocketFactory.createSocket(host, port)` подключается
  * без таймаута: до недоступного адреса — до системного предела TCP (минуты). Чтение без таймаута, как и было:
- * управляющий канал RTSP подолгу молчит между запросами.
+ * управляющий канал RTSP подолгу молчит между запросами. Сокеты — [SdpFixingSocket]: описание потока камеры
+ * приводится к тому, что примет Media3 (звук AAC без fmtp у субпотока Reolink).
  */
 internal class ConnectTimeoutSocketFactory(private val timeoutMs: Int) : javax.net.SocketFactory() {
-    override fun createSocket(): java.net.Socket = java.net.Socket()
+    override fun createSocket(): java.net.Socket = SdpFixingSocket()
 
     override fun createSocket(host: String, port: Int): java.net.Socket =
         connect(java.net.InetSocketAddress(host, port))
 
     override fun createSocket(host: String, port: Int, localHost: java.net.InetAddress?, localPort: Int): java.net.Socket =
-        java.net.Socket().apply {
+        SdpFixingSocket().apply {
             bind(java.net.InetSocketAddress(localHost, localPort))
             connectOrClose(this, java.net.InetSocketAddress(host, port))
         }
@@ -602,12 +646,12 @@ internal class ConnectTimeoutSocketFactory(private val timeoutMs: Int) : javax.n
         connect(java.net.InetSocketAddress(host, port))
 
     override fun createSocket(address: java.net.InetAddress, port: Int, localAddress: java.net.InetAddress?, localPort: Int): java.net.Socket =
-        java.net.Socket().apply {
+        SdpFixingSocket().apply {
             bind(java.net.InetSocketAddress(localAddress, localPort))
             connectOrClose(this, java.net.InetSocketAddress(address, port))
         }
 
-    private fun connect(address: java.net.InetSocketAddress) = java.net.Socket().also { connectOrClose(it, address) }
+    private fun connect(address: java.net.InetSocketAddress) = SdpFixingSocket().also { connectOrClose(it, address) }
 
     private fun connectOrClose(socket: java.net.Socket, address: java.net.InetSocketAddress) {
         try { socket.connect(address, timeoutMs) } catch (e: java.io.IOException) { socket.close(); throw e }

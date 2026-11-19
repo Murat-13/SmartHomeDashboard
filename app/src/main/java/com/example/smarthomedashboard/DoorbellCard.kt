@@ -404,7 +404,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         video.bind(DoorbellVideoView.Source(
             rtsp = if (expanded) config.rtspMain.ifBlank { config.rtspSub } else config.rtspSub.ifBlank { config.rtspMain },
             user = config.rtspUser, camera = config.camera,
-            snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT
+            snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT,
+            // Основной поток не по силам декодеру планшета — раскрытие показывает субпоток.
+            fallbackRtsp = if (expanded) config.rtspSub else ""
         ), snapshot.picture)
         // HA точно знает, что домофона нет: видео не подключается, пока он не вернётся (без лишних попыток).
         video.deviceOffline = snapshot.haStatus == null && (offline || snapshot.online == false)
