@@ -84,6 +84,16 @@ internal object DoorbellHub {
     fun removeListener(listener: () -> Unit) { listeners -= listener }
     private fun notifyListeners() = listeners.toList().forEach { it() }
 
+    /** Журнал звонков ([RingLog]) изменился — экраны со списком звонков перечитывают его. */
+    private val ringListeners = LinkedHashSet<() -> Unit>()
+    fun addRingListener(listener: () -> Unit) { ringListeners += listener }
+    fun removeRingListener(listener: () -> Unit) { ringListeners -= listener }
+    fun notifyRings() { main.post { ringListeners.toList().forEach { it() }; notifyListeners() } }
+
+    /** Время последнего звонка, для которого ещё нужен снимок получше (окно звонка). */
+    @Volatile var lastRingAt: Pair<String, Long>? = null
+        private set
+
     fun tile(tileId: String): TileEntity? = tileList.firstOrNull { it.id == tileId }
     fun config(tileId: String): DoorbellConfig? = tile(tileId)?.let { DoorbellConfig.from(it.config) }
     fun offline(tileId: String) = monitor.offline(tileId)
@@ -164,10 +174,14 @@ internal object DoorbellHub {
 
     private fun ring(tile: TileEntity, config: DoorbellConfig) {
         val context = app ?: return
+        val now = System.currentTimeMillis()
         prefs(context).edit()
             .putInt(KEY_MISSED + tile.id, missed(tile.id) + 1)
-            .putLong(KEY_LAST + tile.id, System.currentTimeMillis())
+            .putLong(KEY_LAST + tile.id, now)
             .apply()
+        // Журнал звонков со снимком посетителя: кадр с уже идущего видео плитки, потом — получше из окна звонка.
+        lastRingAt = tile.id to now
+        RingLog.onRing(context, tile.id, now) { actions?.tileVideo(tile.id) }
         playRing(context, tile.id, config)
         wakeScreen()
         autoLight(tile.id, config)

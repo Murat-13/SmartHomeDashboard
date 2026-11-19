@@ -14,6 +14,8 @@
         <exclude domain="sharedpref" path="recording_device.xml" />
         <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
+        <exclude domain="file" path="doorbell_rings/" />
+        <exclude domain="file" path="doorbell_phrases/" />
         <exclude domain="database" path="recording_index.db" />
         <exclude domain="database" path="recording_index.db-journal" />
     </cloud-backup>
@@ -25,6 +27,8 @@
         <exclude domain="sharedpref" path="recording_device.xml" />
         <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
+        <exclude domain="file" path="doorbell_rings/" />
+        <exclude domain="file" path="doorbell_phrases/" />
         <exclude domain="database" path="recording_index.db" />
         <exclude domain="database" path="recording_index.db-journal" />
     </device-transfer>

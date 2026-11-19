@@ -173,6 +173,23 @@ class TalkTest {
         talk.dispose()
     }
 
+    /** Быстрая фраза своим голосом (19.11.2026): уходит голосом подряд, с одним маркером, канал открывается сам. */
+    @Test fun phrasePlaysThroughBackchannel() {
+        val camera = Camera(reolinkBackchannel)
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val talk = DoorbellTalk(activity) { _, result -> result(null) }
+        talk.prepare(camera.url, "")
+        val pcm = ShortArray(1_600) { ((it * 37) % 8_000 - 4_000).toShort() } // 0,2 с = 10 кадров
+        assertTrue(talk.play(pcm))
+        fun voice() = camera.packets.count { p -> p.size == 172 && p.copyOfRange(12, 172).any { it != 0xFF.toByte() } }
+        val until = System.currentTimeMillis() + 5_000
+        while (voice() < 10 && System.currentTimeMillis() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(20) }
+        assertEquals(10, voice())
+        assertEquals("маркер один — у первого кадра фразы", 1, camera.packets.count { it[1].toInt() and 0x80 != 0 })
+        assertFalse("пока звучит — вторая фраза не накладывается", talk.play(pcm) && talk.state != DoorbellTalk.State.TALKING)
+        talk.dispose()
+    }
+
     @Test fun cameraWithoutBackchannelIsExplained() {
         val camera = Camera(reolinkBackchannel.substringBefore("m=audio 0 RTP/AVP 0"))
         val error = assertThrows(TalkException::class.java) { session(camera).open() }

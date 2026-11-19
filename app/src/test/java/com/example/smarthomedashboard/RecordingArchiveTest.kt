@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.pinch
 import androidx.compose.ui.test.swipeRight
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -117,8 +118,23 @@ class RecordingArchiveTest {
         override fun selectDay(day: Long) { calls += "day" }
         override fun filter(label: String?) { calls += "filter:$label" }
         override fun play(event: RecArchive.Event) { calls += "play:${event.file.startMs}" }
-        override fun seekTimeline(fraction: Float, eventTolerance: Float) { calls += "seek" }
-        override fun scrubTimeline(fraction: Float, done: Boolean) { calls += "scrub:$done" }
+        override fun timelineTap(atMs: Long, toleranceMs: Long) { calls += "tap"; lastAt = atMs }
+        override fun timelineScrub(atMs: Long, done: Boolean) { calls += "scrub:$done"; lastAt = atMs }
+        override fun timelineSpan(spanMs: Long) { calls += "span"; lastSpan = spanMs }
+        override fun toNow() { calls += "now" }
+        override fun neighbour(forward: Boolean) { calls += "event:$forward" }
+        override fun captureFrame() { calls += "capture" }
+        override fun frameAction(save: Boolean?) { calls += "frame:$save" }
+        override fun mark(start: Boolean) { calls += "mark:$start" }
+        override fun clearMarks() { calls += "clear" }
+        override fun shareSegment() { calls += "segment" }
+        override fun tab(tab: ArchiveUi.Tab) { calls += "tab:$tab" }
+        override fun calendar(show: Boolean) { calls += "calendar:$show" }
+        override fun ringThumb(ring: RingLog.Ring) {}
+        override fun ringPhoto(ring: RingLog.Ring?) { calls += "ring:${ring?.atMs}" }
+        override fun openRing(ring: RingLog.Ring) { calls += "open:${ring.atMs}" }
+        var lastAt = 0L
+        var lastSpan = 0L
         override fun scrubClip(fraction: Float, done: Boolean) { calls += "clip:$done" }
         override fun togglePlay() { calls += "toggle" }
         override fun seekBy(deltaMs: Long) { calls += "seekBy:$deltaMs" }
@@ -139,7 +155,8 @@ class RecordingArchiveTest {
         val b = event(day + 7_200_000, setOf("person", "vehicle"), starred = true)
         val actions = Recorded()
         val ui = ArchiveUi(title = "Домофон", loading = false, days = listOf(day), day = day, events = listOf(b, a),
-            timeline = ArchiveUi.Timeline(listOf(0.1f to 0.2f), listOf(0.15f to "visitor")), current = b)
+            timeline = ArchiveUi.Timeline(listOf(day + 3_000_000 until day + 4_000_000),
+                listOf(ArchiveUi.Mark(day + 3_600_000, day + 3_630_000, "visitor"))), center = day + 3_600_000, current = b)
         compose.setContent { ArchiveScreen(ui, emptyMap<String, Bitmap?>(), actions, video = {}) }
         compose.onNodeWithText("Архив · Домофон").assertIsDisplayed()
         // Метки события — в его строке («Звонок» ещё и в фильтрах).
@@ -163,28 +180,43 @@ class RecordingArchiveTest {
     }
 
     /**
-     * Перемотка (замечание владельца 19.11.2026: «перемотка руками странно работает»): касание шкалы — переход,
-     * ведение пальцем — перемотка по ходу движения и точный переход при отпускании; у ролика события — своя полоса.
+     * Шкала как у Reolink (решение владельца 19.11.2026): риска по центру неподвижна. Касание по центру — тот же
+     * момент; ведение ленты вправо — назад во времени, по ходу движения перемотка, отпустили — точный переход;
+     * два пальца — масштаб; у ролика события — своя полоса.
      */
-    @Test fun timelineTapSeeksDragScrubsAndClipBarScrubs() {
+    @Test fun timelineTapSeeksDragScrubsPinchZoomsAndClipBarScrubs() {
         val a = event(day + 3_600_000, setOf("person"))
         val actions = Recorded()
+        val centerAt = day + 12 * 3_600_000L
         val ui = ArchiveUi(title = "Домофон", loading = false, days = listOf(day), day = day, events = listOf(a),
-            timeline = ArchiveUi.Timeline(listOf(0f to 1f), emptyList()), current = a, positionMs = 10_000, durationMs = 65_000)
+            timeline = ArchiveUi.Timeline(listOf(day until day + 86_400_000L), emptyList()), center = centerAt,
+            spanMs = 3_600_000L, current = a, positionMs = 10_000, durationMs = 65_000)
         compose.setContent { ArchiveScreen(ui, emptyMap(), actions, video = {}) }
         compose.onNodeWithTag("archive_timeline").performTouchInput { click(center) }
         compose.waitForIdle()
-        assertEquals(listOf("seek"), actions.calls)
+        assertEquals(listOf("tap"), actions.calls)
+        assertEquals("касание по риске — момент под ней", centerAt.toDouble(), actions.lastAt.toDouble(), 60_000.0)
         actions.calls.clear()
         compose.onNodeWithTag("archive_timeline").performTouchInput {
-            down(centerLeft + androidx.compose.ui.geometry.Offset(20f, 0f))
-            repeat(10) { moveBy(androidx.compose.ui.geometry.Offset(width / 15f, 0f), delayMillis = 200) }
+            down(center)
+            repeat(10) { moveBy(androidx.compose.ui.geometry.Offset(width / 40f, 0f), delayMillis = 200) }
             up()
         }
         compose.waitForIdle()
         assertTrue("по ходу движения: ${actions.calls}", actions.calls.count { it == "scrub:false" } >= 2)
         assertEquals("отпустили — точный переход, не «касание»", "scrub:true", actions.calls.last())
-        assertFalse(actions.calls.contains("seek"))
+        assertFalse(actions.calls.contains("tap"))
+        assertTrue("лента вправо — назад во времени", actions.lastAt < centerAt - 10 * 60_000L)
+        assertTrue("на четверть ширины (час на всю) — около 15 мин", actions.lastAt > centerAt - 25 * 60_000L)
+        actions.calls.clear()
+        compose.onNodeWithTag("archive_timeline").performTouchInput { pinch(center - androidx.compose.ui.geometry.Offset(20f, 0f),
+            centerLeft + androidx.compose.ui.geometry.Offset(5f, 0f), center + androidx.compose.ui.geometry.Offset(20f, 0f),
+            centerRight - androidx.compose.ui.geometry.Offset(5f, 0f)) }
+        compose.waitForIdle()
+        assertEquals(listOf("span"), actions.calls)
+        assertTrue("пальцы развели — видно меньше времени: ${actions.lastSpan}", actions.lastSpan < 3_600_000L)
+        assertTrue(actions.lastSpan >= ArchiveTimeline.MIN_SPAN)
+        actions.calls.clear()
         actions.calls.clear()
         compose.onNodeWithTag("archive_clip_slider").assertIsDisplayed().performTouchInput { swipeRight() }
         compose.waitForIdle()
@@ -244,6 +276,50 @@ class RecordingArchiveTest {
         assertEquals("● REC", rec.text.toString())
         RecordingStatus.clear()
         RecordingDevice(context).setEnabled("door_rec_test", false)
+    }
+
+    /** Новое 19.11.2026: «◀ Событие ▶», кадр, отрезок, 8×, «Сейчас», календарь, вкладка «Звонки», место. */
+    @Test fun newControlsCallsTabAndStorage() {
+        val a = event(day + 3_600_000, setOf("person"))
+        val actions = Recorded()
+        val ring = RingLog.Ring(day + 3_605_000, null, answered = false)
+        var ui by mutableStateOf(ArchiveUi(title = "Домофон", loading = false, days = listOf(day), day = day, events = listOf(a),
+            timeline = ArchiveUi.Timeline(emptyList(), emptyList()), center = day + 3_600_000, current = a, continuous = false,
+            rings = listOf(ring, RingLog.Ring(day + 100_000, null, answered = true)), storage = "Записи: 3,2 из 20 ГБ"))
+        compose.setContent { ArchiveScreen(ui, emptyMap(), actions, video = {}) }
+        listOf("archive_prev_event", "archive_next_event", "archive_capture", "archive_mark_in", "archive_mark_out",
+            "archive_speed_8", "archive_now", "archive_calendar").forEach { compose.onNodeWithTag(it).performClick() }
+        assertEquals(listOf("event:false", "event:true", "capture", "mark:true", "mark:false", "speed:8.0", "now", "calendar:true"), actions.calls)
+        compose.onNodeWithTag("archive_storage").assertIsDisplayed()
+        // Отрезок отмечен — «Поделиться отрезком» и сброс.
+        ui = ui.copy(markIn = day + 3_601_000, markOut = day + 3_620_000)
+        compose.waitForIdle()
+        actions.calls.clear()
+        compose.onNodeWithTag("archive_share_segment").performClick()
+        compose.onNodeWithTag("archive_clear_marks").performClick()
+        assertEquals(listOf("segment", "clear"), actions.calls)
+        // Звонки: пропущенный и отвеченный, касание — снимок, «Запись звонка».
+        ui = ui.copy(tab = ArchiveUi.Tab.CALLS)
+        compose.waitForIdle()
+        compose.onNodeWithText("Пропущен").assertIsDisplayed()
+        compose.onNodeWithText("Ответили").assertIsDisplayed()
+        actions.calls.clear()
+        compose.onNodeWithTag("archive_ring_${ring.atMs}").performClick()
+        assertEquals(listOf("ring:${ring.atMs}"), actions.calls)
+        ui = ui.copy(ringPhoto = ring)
+        compose.waitForIdle()
+        compose.onNodeWithText("Снимка нет: в момент звонка видео не шло").assertIsDisplayed()
+        compose.onNodeWithTag("archive_ring_open").performClick()
+        assertEquals("open:${ring.atMs}", actions.calls.last())
+    }
+
+    @Test fun storageTextAndCalendarDates() {
+        val text = RecArchive.storageText(RecArchive.Storage(3_435_973_837L, 20 * RecRetention.GB, 50 * RecRetention.GB, 5, 7))
+        assertEquals("Записи: 3,2 из 20 ГБ · места хватит примерно на 5 дн. · круглосуточная хранится 7 дн. — старое удалится раньше", text)
+        assertFalse(RecArchive.storageText(RecArchive.Storage(0, RecRetention.GB, 0, null, 7)).contains("хватит"))
+        // DatePicker: местная полночь ↔ полночь UTC того же числа.
+        assertEquals(day, utcDateToLocal(localToUtcDate(day)))
+        assertEquals(0L, localToUtcDate(day) % 86_400_000L)
     }
 
     @Test fun emptyArchiveSaysSo() {

@@ -291,10 +291,57 @@ internal class DoorbellTalk(
             return false
         }
         pressed = true
+        playing = false
         val s = session
         if (s == null || !s.alive) { if (state != State.CONNECTING) connect(); return true }
         startTalking(s)
         return true
+    }
+
+    /**
+     * Быстрая фраза своим голосом ([DoorbellPhrases]): записанный голос уходит в домофон в реальном темпе. Канал ещё
+     * подключается — фраза прозвучит, как только он откроется. false — фраза не принята (уже говорят или звучит).
+     */
+    fun play(pcm: ShortArray): Boolean {
+        if (disposed || pressed || playing || pcm.isEmpty()) return false
+        val s = session
+        if (s == null || !s.alive) {
+            pendingClip = pcm
+            if (state != State.CONNECTING) connect()
+            return true
+        }
+        startClip(s, pcm)
+        return true
+    }
+
+    @Volatile private var playing = false
+    private var pendingClip: ShortArray? = null
+
+    private fun startClip(s: TalkSession, pcm: ShortArray) {
+        playing = true
+        onDuck?.invoke(true)
+        set(State.TALKING, "Фраза звучит у калитки")
+        Log.i(TAG, "Быстрая фраза: ${pcm.size / 8} мс")
+        io.execute {
+            try {
+                s.beginTalkspurt()
+                var i = 0
+                while (i < pcm.size && playing && !disposed && s.alive) {
+                    // Очередь отправки держит ~0,5 с — подаём кадры по мере ухода, не обгоняя реальный темп.
+                    while (s.queued > 8 && playing && s.alive) Thread.sleep(10)
+                    val n = minOf(TalkSession.FRAME, pcm.size - i)
+                    s.send(pcm.copyOfRange(i, i + n), n)
+                    i += n
+                }
+                while (s.queued > 0 && playing && s.alive) Thread.sleep(10)
+            } catch (_: Exception) {}
+            main.post {
+                playing = false
+                if (disposed) return@post
+                main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, 300)
+                if (state == State.TALKING && !pressed) set(State.READY, READY_TEXT)
+            }
+        }
     }
 
     fun release() {
@@ -311,6 +358,7 @@ internal class DoorbellTalk(
         if (disposed) return
         disposed = true
         pressed = false
+        playing = false
         mic.stop()
         onDuck?.invoke(false)
         closeSession()
@@ -343,7 +391,9 @@ internal class DoorbellTalk(
                         if (disposed || target != url) { io.execute { talk.close() }; return@post }
                         session = talk
                         set(State.READY, READY_TEXT)
-                        if (pressed) startTalking(talk)
+                        val clip = pendingClip
+                        pendingClip = null
+                        if (pressed) startTalking(talk) else if (clip != null) startClip(talk, clip)
                     }
                 } catch (e: Exception) {
                     talk.close()
@@ -356,6 +406,8 @@ internal class DoorbellTalk(
 
     private fun failed(text: String) {
         failedAt = System.currentTimeMillis()
+        pendingClip = null
+        playing = false
         mic.stop()
         if (pressed) onDuck?.invoke(false)
         pressed = false

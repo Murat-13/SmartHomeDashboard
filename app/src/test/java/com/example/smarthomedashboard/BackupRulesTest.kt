@@ -34,7 +34,9 @@ class BackupRulesTest {
             (0 until nodes.length).map { nodes.item(it) as Element }.map { it.getAttribute("domain") to it.getAttribute("path") }
         }
         assertTrue("files/backups/ исключена: $excludes", ("file" to "backups/") in excludes)
-        assertTrue("других файлов приложения исключение не касается", excludes.none { it.first == "file" && it.second != "backups/" })
+        // Кроме копий — только снимки посетителей и фразы голосом владельца (домофон): остальные файлы — в backup.
+        val allowed = setOf("backups/", "doorbell_rings/", "doorbell_phrases/")
+        assertTrue("других файлов приложения исключение не касается", excludes.none { it.first == "file" && it.second !in allowed })
     }
     @Test fun legacyBackupExcludesOnlySensitivePrefsAndKeepsTiles() {
         assertPrefsRules(xml("res/xml/backup_rules.xml"))
@@ -64,6 +66,8 @@ class BackupRulesTest {
             }
             assertTrue(("external" to "records/") in excludes)
             assertTrue("Индекс роликов — про файлы этого планшета", ("database" to "recording_index.db") in excludes)
+            assertTrue("Снимки посетителей — не в облако", ("file" to "doorbell_rings/") in excludes)
+            assertTrue("Голос владельца — не в облако", ("file" to "doorbell_phrases/") in excludes)
         }
     }
 

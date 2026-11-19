@@ -12,6 +12,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -280,6 +281,25 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         setOnClickListener { onArchive?.invoke() }
     }
 
+    /** «Звонки» — журнал звонков со снимками посетителя ([RingLog]); у раскрытой карточки, не в окне звонка. */
+    private val calls = text(20f, Color.WHITE, bold = true).apply {
+        text = "Звонки"
+        tag = "door_calls"
+        gravity = Gravity.CENTER
+        background = GradientDrawable().apply { setColor(Color.argb(150, 20, 34, 44)); cornerRadius = 999f; setStroke(2, Color.argb(140, 95, 168, 211)) }
+        visibility = GONE
+        contentDescription = "Звонки со снимками"
+        setOnClickListener { onCalls?.invoke() }
+    }
+    var onCalls: (() -> Unit)? = null
+        set(value) { field = value; calls.visibility = if (value != null && expanded && !ringMode) VISIBLE else GONE }
+    /** Свернуть карточку (одиночное касание по неувеличенному видео). */
+    var onCollapse: (() -> Unit)? = null
+
+    /** Быстрые фразы своим голосом ([DoorbellPhrases]) — у раскрытой карточки; в окне звонка — в «Ответить». */
+    private val phraseRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; tag = "door_phrases"; visibility = GONE }
+    private var shownPhrases: List<DoorbellPhrases.Phrase> = emptyList()
+
     /** Плитка этой карточки — для состояния записи. */
     var tileId: String? = null
         set(value) { field = value; renderRecording() }
@@ -306,7 +326,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private val offlineIcon = ImageView(context).apply { setImageResource(R.drawable.ic_door_offline); setColorFilter(OFFLINE) }
     private val offlineText = text(if (expanded) 30f else 20f, OFFLINE, bold = true).apply { text = "Нет сигнала"; gravity = Gravity.CENTER }
     private val connecting = text(if (expanded) 22f else 15f, SECONDARY).apply { gravity = Gravity.CENTER; visibility = GONE; tag = "door_connecting" }
-    private val sound = text(22f, SECONDARY).apply { text = "🔊 Звук включён · касание — свернуть"; visibility = if (expanded) VISIBLE else GONE }
+    private val sound = text(22f, SECONDARY).apply { text = SOUND_HINT; visibility = if (expanded) VISIBLE else GONE }
     private var lastBound: DoorbellModel.Snapshot? = null
 
     /** Разговор (docs/talk-tz.md) — у раскрытой карточки; в окне звонка кнопка своя, у окна. */
@@ -323,8 +343,16 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         set(value) {
             field = value
             sound.visibility = if (expanded && !value) VISIBLE else GONE
-            if (value) talkButton?.visibility = GONE
+            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; zoom?.reset() }
         }
+
+    /** Увеличение пальцами — только у раскрытой карточки на панели (решение владельца: не в окне звонка). */
+    private val zoom: ZoomGestures? = if (expanded) ZoomGestures(context, video, onTap = { onCollapse?.invoke() }) { z ->
+        if (!ringMode) set(sound, if (z.zoomed) "🔍 ${z.title} · двойное касание — обычный вид" else SOUND_HINT)
+        onActivity?.invoke()
+    } else null
+    private val zoomEnabled get() = zoom != null && !ringMode
+    private var gestureOnButton = false
 
     init {
         tag = if (expanded) "door_expanded" else "door_compact"
@@ -344,6 +372,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         header.addView(icons)
         header.addView(rec, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(calls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(archive, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(missedBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         content.addView(header, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP))
@@ -351,7 +380,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         val footer = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val left = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         left.addView(last)
-        if (expanded) left.addView(sound)
+        if (expanded) { left.addView(phraseRow); left.addView(sound) }
         footer.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         talkButton?.let { footer.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
         content.addView(footer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
@@ -384,6 +413,10 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         rec.setPadding((10 * next).toInt(), 0, (6 * next).toInt(), 0)
         archive.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
         archive.minHeight = (48 * next).toInt()
+        calls.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
+        calls.minHeight = (48 * next).toInt()
+        (calls.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
+        for (i in 0 until phraseRow.childCount) styleChip(phraseRow.getChildAt(i) as TextView, next)
         talkButton?.let { b ->
             b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 24 * next)
             b.minHeight = (56 * next).toInt(); b.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
@@ -405,6 +438,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private var boundSnapshot: DoorbellModel.Snapshot? = null
     private var boundOffline = false
     private var boundAnimate = true
+
+    /** Фразы своим голосом, записанные для этой плитки (задаёт владелец карточки). */
+    var phrases: List<DoorbellPhrases.Phrase> = emptyList()
 
     fun bind(tileTitle: String, config: DoorbellConfig, haSnapshot: DoorbellModel.Snapshot, offline: Boolean, missed: Int,
              lastRing: Long?, now: Long, animate: Boolean = true) {
@@ -438,6 +474,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
             val show = !ringMode && config.canTalk
             button.visibility = if (show) VISIBLE else GONE
             if (show) talk?.prepare(config.talkRtsp, config.rtspUser)
+            fillPhrases(if (show) phrases else emptyList())
         }
         refresh()
     }
@@ -466,6 +503,39 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         offlineVeil.visibility = if (veil) VISIBLE else GONE
         if (veil) set(offlineText, video.lastFrameAt?.let { "Нет сигнала с " + clock(it) } ?: "Нет сигнала")
         renderVideoStatus()
+    }
+
+    private fun fillPhrases(list: List<DoorbellPhrases.Phrase>) {
+        if (list == shownPhrases) return
+        shownPhrases = list
+        phraseRow.removeAllViews()
+        list.forEach { phrase ->
+            val chip = TextView(context).apply {
+                setTextColor(Color.WHITE)
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                text = phrase.title
+                tag = "door_phrase_${phrase.id}"
+                gravity = Gravity.CENTER
+                contentDescription = "Фраза своим голосом: ${phrase.title}"
+                setOnClickListener {
+                    onActivity?.invoke()
+                    val id = tileId ?: return@setOnClickListener
+                    val pcm = DoorbellPhrases.load(context, id, phrase.id)
+                    if (pcm == null || talk?.play(pcm) != true) set(sound, "Фраза не отправлена")
+                }
+            }
+            phraseRow.addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            styleChip(chip, scale)
+        }
+        phraseRow.visibility = if (list.isEmpty()) GONE else VISIBLE
+    }
+
+    private fun styleChip(chip: TextView, k: Float) {
+        chip.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 19 * k)
+        chip.minHeight = (48 * k).toInt()
+        chip.setPadding((16 * k).toInt(), (8 * k).toInt(), (16 * k).toInt(), (8 * k).toInt())
+        chip.background = GradientDrawable().apply { setColor(Color.argb(150, 20, 34, 44)); cornerRadius = 999f; setStroke(2, Color.argb(140, 52, 232, 158)) }
+        (chip.layoutParams as? LinearLayout.LayoutParams)?.let { it.rightMargin = (8 * k).toInt(); it.bottomMargin = (8 * k).toInt() }
     }
 
     /** Плавно 0,25 с; полупрозрачная белая надпись. */
@@ -535,14 +605,46 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
      * Раскрытая карточка ловит касание как «свернуть» ([SensorWindowTouchHandler]); кнопки «Архив» и «Говорить»
      * объявлены своей областью — касание доходит до них.
      */
-    override fun interactiveAt(windowX: Float, windowY: Float): Boolean = listOfNotNull(archive, talkButton).any { v ->
-        if (!v.isShown) return@any false
+    override fun interactiveAt(windowX: Float, windowY: Float): Boolean {
+        // С увеличением карточка сама разбирает жесты по всей площади: два пальца, сдвиг, двойное касание,
+        // одиночное касание — свернуть ([onCollapse]).
+        if (zoomEnabled && hit(this, windowX, windowY)) return true
+        return buttons().any { hit(it, windowX, windowY) }
+    }
+
+    private fun hitOnScreen(v: View, rawX: Float, rawY: Float): Boolean {
+        if (!v.isShown) return false
+        v.getLocationOnScreen(hitLocation)
+        return rawX >= hitLocation[0] && rawX < hitLocation[0] + v.width * scaleX &&
+            rawY >= hitLocation[1] && rawY < hitLocation[1] + v.height * scaleY
+    }
+
+    private fun buttons(): List<View> = listOfNotNull(archive, calls, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
+
+    private fun hit(v: View, windowX: Float, windowY: Float): Boolean {
+        if (!v.isShown) return false
         v.getLocationInWindow(hitLocation)
         // Раскрытие движет карточку масштабом: размер на экране — с учётом scale карточки (как у PowerModernCard).
-        windowX >= hitLocation[0] && windowX < hitLocation[0] + v.width * scaleX &&
+        return windowX >= hitLocation[0] && windowX < hitLocation[0] + v.width * scaleX &&
             windowY >= hitLocation[1] && windowY < hitLocation[1] + v.height * scaleY
     }
     private val hitLocation = IntArray(2)
+
+    /** Жест на кнопке — кнопке; остальное на раскрытой карточке — увеличению видео. */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val z = zoom
+        if (z == null || !zoomEnabled) return super.dispatchTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            gestureOnButton = buttons().any { hitOnScreen(it, event.rawX, event.rawY) }
+        }
+        if (gestureOnButton) return super.dispatchTouchEvent(event)
+        // Координаты — в системе видео без увеличения (видео лежит внутри content с отступом под ореол).
+        val local = MotionEvent.obtain(event)
+        local.offsetLocation(-(content.left + video.left).toFloat(), -(content.top + video.top).toFloat())
+        z.onTouch(local)
+        local.recycle()
+        return true
+    }
 
     override fun dispose() {
         releaseAnimations()
@@ -551,6 +653,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     }
 
     companion object {
+        const val SOUND_HINT = "🔊 Звук включён · два пальца — увеличить · касание — свернуть"
         const val HD_ALPHA = 0.55f
         const val HD_FADE_MS = 250L
 

@@ -519,6 +519,34 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Показывается чужой поток (надпись «Подключение…» не нужна). */
     val hasGuest get() = guest != null
 
+    /** Высота кадра, который сейчас на экране (0 — живого видео нет). */
+    val shownHeight: Int get() {
+        val own = player?.takeIf { status == Status.PLAYING && loanedTo == null }
+        return (own ?: guest)?.videoSize?.height ?: 0
+    }
+
+    /**
+     * Живой кадр с экрана в разрешении потока (не больше [maxWidth]) — снимок посетителя при звонке. null — видео
+     * сейчас не идёт. Главный поток.
+     */
+    fun currentFrame(maxWidth: Int = 1280): android.graphics.Bitmap? {
+        val own = player?.takeIf { status == Status.PLAYING && loanedTo == null }
+        val (view, exo, aspect) = when {
+            own != null -> Triple(texture, own, videoAspect)
+            guest != null -> Triple(guestTexture, guest!!, guestAspect)
+            else -> return null
+        }
+        if (!view.isAvailable) return null
+        val w = exo.videoSize.width.takeIf { it > 0 }?.coerceAtMost(maxWidth) ?: return null
+        val h = (w / aspect).toInt().coerceAtLeast(1)
+        // Кадр TextureView идёт с обрезкой «по плитке» (setTransform) — для снимка трансформация снимается на миг.
+        val saved = view.getTransform(null)
+        return try {
+            view.setTransform(null)
+            view.getBitmap(w, h)
+        } catch (_: Exception) { null } finally { view.setTransform(saved) }
+    }
+
     /**
      * Закрываемся: если у [partner] картинки ещё нет, а у нас поток идёт — отдать плеер ему насовсем
      * (он освободит его на своём первом кадре). Иначе — обычное освобождение.

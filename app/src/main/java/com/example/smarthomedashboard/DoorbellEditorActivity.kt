@@ -255,6 +255,129 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             TalkCheck.chime(this, config.talkRtsp, config.rtspUser) { if (!isDestroyed) result.text = it }
         })
         side.addView(result)
+        buildPhrases(side)
+    }
+
+    // ---- Быстрые фразы своим голосом ----
+
+    private lateinit var phraseBox: LinearLayout
+    private var recorder: MicCapture? = null
+    private var recorded: ShortArray? = null
+    private var recordedCount = 0
+    private var player: android.media.AudioTrack? = null
+
+    private fun buildPhrases(side: LinearLayout) {
+        side.addView(header("Быстрые фразы своим голосом"))
+        side.addView(kit.label("Запишите короткие фразы («Оставьте у калитки», «Сейчас выйду»). В раскрытом домофоне и в окне " +
+            "звонка («Ответить») фраза звучит в динамике домофона одним касанием. Фразы хранятся только на этом планшете " +
+            "и в резервную копию не попадают. До ${DoorbellPhrases.MAX} фраз по ${DoorbellPhrases.MAX_SECONDS} секунд.", 13f))
+        phraseBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "door_phrases_editor" }
+        side.addView(phraseBox)
+        side.addView(kit.button("+ Добавить фразу", "door_phrase_add") { addPhrase() })
+        renderPhrases()
+    }
+
+    private fun renderPhrases() {
+        phraseBox.removeAllViews()
+        DoorbellPhrases.list(this, original.id).forEach { phrase ->
+            val has = DoorbellPhrases.has(this, original.id, phrase.id)
+            phraseBox.addView(kit.label(phrase.title + if (has) "" else " — голос не записан", 15f, bold = true))
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(recordButton(phrase), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f))
+            row.addView(kit.button("▶ Прослушать", "door_phrase_play_${phrase.id}") { listen(phrase) }.apply { isEnabled = has },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(kit.button("✕", "door_phrase_delete_${phrase.id}") { deletePhrase(phrase) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            phraseBox.addView(row)
+        }
+    }
+
+    private fun addPhrase() {
+        val list = DoorbellPhrases.list(this, original.id)
+        if (list.size >= DoorbellPhrases.MAX) { Toast.makeText(this, "Не больше ${DoorbellPhrases.MAX} фраз", Toast.LENGTH_SHORT).show(); return }
+        val input = android.widget.EditText(this).apply { hint = "Например: Оставьте у калитки"; setSingleLine(); tag = "door_phrase_title" }
+        AlertDialog.Builder(this).setTitle("Новая фраза").setView(input)
+            .setPositiveButton("Добавить") { _, _ ->
+                val title = input.text.toString().trim().take(40).ifBlank { "Фраза ${list.size + 1}" }
+                DoorbellPhrases.setList(this, original.id, list + DoorbellPhrases.Phrase(DoorbellPhrases.newId(), title))
+                renderPhrases()
+                Toast.makeText(this, "Удерживайте «🎙 Записать» и говорите", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    private fun deletePhrase(phrase: DoorbellPhrases.Phrase) {
+        AlertDialog.Builder(this).setTitle("Удалить фразу «${phrase.title}»?")
+            .setPositiveButton("Удалить") { _, _ ->
+                DoorbellPhrases.delete(this, original.id, phrase.id)
+                DoorbellPhrases.setList(this, original.id, DoorbellPhrases.list(this, original.id).filter { it.id != phrase.id })
+                renderPhrases()
+            }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    /** «🎙 Записать»: удержание — запись с микрофона планшета, отпустили — сохранить (тишина по краям срезается). */
+    @android.annotation.SuppressLint("ClickableViewAccessibility") // удержание, а не нажатие; подпись — contentDescription
+    private fun recordButton(phrase: DoorbellPhrases.Phrase): View = kit.button("🎙 Записать (удерживайте)", "door_phrase_record_${phrase.id}") {}.apply {
+        contentDescription = "Записать фразу: удерживайте и говорите"
+        setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    startRecording(v as TextView)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> stopRecording(phrase, v as TextView)
+            }
+            true
+        }
+    }
+
+    private fun startRecording(button: TextView) {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            androidx.core.app.ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.RECORD_AUDIO), DoorbellTalk.REQUEST_MIC)
+            Toast.makeText(this, "Разрешите микрофон и нажмите ещё раз", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val buffer = ShortArray(8_000 * DoorbellPhrases.MAX_SECONDS)
+        recorded = buffer
+        recordedCount = 0
+        val mic = MicCapture({ pcm, n ->
+            synchronized(buffer) {
+                val take = minOf(n, buffer.size - recordedCount)
+                if (take > 0) { System.arraycopy(pcm, 0, buffer, recordedCount, take); recordedCount += take }
+            }
+        }, {})
+        if (!mic.start(this)) { Toast.makeText(this, "Микрофон недоступен", Toast.LENGTH_SHORT).show(); return }
+        recorder = mic
+        button.text = "● Говорите…"
+    }
+
+    private fun stopRecording(phrase: DoorbellPhrases.Phrase, button: TextView) {
+        val mic = recorder ?: return
+        recorder = null
+        mic.stop()
+        button.text = "🎙 Записать (удерживайте)"
+        val buffer = recorded ?: return
+        val pcm = synchronized(buffer) { DoorbellPhrases.trimAndNormalize(buffer, recordedCount) }
+        recorded = null
+        if (pcm.size < 8_000 / 4) { Toast.makeText(this, "Голоса не слышно — удерживайте кнопку, пока говорите", Toast.LENGTH_SHORT).show(); return }
+        val ok = DoorbellPhrases.save(this, original.id, phrase.id, pcm, pcm.size)
+        Toast.makeText(this, if (ok) "Записано: ${"%.1f".format(pcm.size / 8_000f)} с" else "Не удалось сохранить", Toast.LENGTH_SHORT).show()
+        renderPhrases()
+    }
+
+    /** Прослушать на планшете (в домофон не уходит). */
+    private fun listen(phrase: DoorbellPhrases.Phrase) {
+        val pcm = DoorbellPhrases.load(this, original.id, phrase.id) ?: return
+        player?.release()
+        player = try {
+            @Suppress("DEPRECATION")
+            android.media.AudioTrack(android.media.AudioManager.STREAM_MUSIC, 8_000, android.media.AudioFormat.CHANNEL_OUT_MONO,
+                android.media.AudioFormat.ENCODING_PCM_16BIT, pcm.size * 2, android.media.AudioTrack.MODE_STATIC).apply {
+                write(pcm, 0, pcm.size)
+                play()
+            }
+        } catch (_: Exception) { null }
     }
 
     // ---- Прямые события с камеры ----
@@ -602,6 +725,10 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         DirectEvents.removeListener(directListener)
         kit.dispose()
         if (::preview.isInitialized) preview.dispose()
+        recorder?.stop()
+        recorder = null
+        player?.release()
+        player = null
         super.onDestroy()
     }
 

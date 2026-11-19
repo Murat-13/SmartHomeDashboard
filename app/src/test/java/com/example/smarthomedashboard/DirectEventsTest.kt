@@ -320,7 +320,12 @@ class DirectEventsTest {
         assertTrue("«Архив» — своя область", card.interactiveAt(ax, ay))
         val (tx, ty) = center("door_talk")
         assertTrue("«Говорить» — своя область", card.interactiveAt(tx, ty))
-        assertFalse("видео — касание сворачивает", card.interactiveAt(600f, 450f))
+        // С 0.9.22 видео можно увеличивать пальцами: карточка сама разбирает жесты по всей площади, одиночное касание
+        // по неувеличенному видео сворачивает её (ArchiveExtrasTest). В окне звонка — как раньше.
+        assertTrue("видео — жесты увеличения", card.interactiveAt(600f, 450f))
+        card.ringMode = true
+        assertFalse("окно звонка: касание по видео — как раньше", card.interactiveAt(600f, 450f))
+        card.ringMode = false
         val (_, iconY) = center("door_icon_person")
         assertTrue("значок вверху (y=$iconY)", iconY < 450)
         card.dispose()

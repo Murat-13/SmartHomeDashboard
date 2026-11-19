@@ -286,6 +286,8 @@ internal object Mp4Finalize {
 
     private const val MAX_SAMPLE = 64 shl 20
 
+    internal fun formatOf(f: android.media.MediaFormat): Format? = toFormat(f)
+
     private fun toFormat(f: android.media.MediaFormat): Format? {
         val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: return null
         fun csd(key: String): ByteArray? = if (f.containsKey(key)) f.getByteBuffer(key)?.let { b ->
@@ -302,4 +304,100 @@ internal object Mp4Finalize {
             else -> null
         }
     }
+}
+
+/**
+ * «Поделиться отрезком» (архив): кусок записи [fromMs]–[toMs] (время на стене) из одного или нескольких подряд
+ * идущих файлов — в один обычный MP4, без перекодирования. Начало — с ключевого кадра не позже [fromMs]. Файл с
+ * другими параметрами потока (камера сменила разрешение) обрывает отрезок на нём. Возвращает длительность, мс
+ * (0 — ничего не записано). Блокирующее.
+ */
+@OptIn(UnstableApi::class)
+internal object Mp4Cut {
+    fun cut(sources: List<RecFile>, fromMs: Long, toMs: Long, out: File): Long {
+        val files = sources.filter { it.endMs > fromMs && it.startMs < toMs }.sortedBy { it.startMs }
+        if (files.isEmpty() || toMs <= fromMs) return 0
+        val output = FileOutputStream(out)
+        var muxer: Mp4Muxer? = null
+        var origin = -1L // мкс на стене первого ключевого кадра
+        var lastWall = 0L
+        val muxTracks = HashMap<String, Int>()
+        val formats = HashMap<String, Format>()
+        val last = HashMap<Int, Long>()
+        try {
+            for ((n, file) in files.withIndex()) {
+                val extractor = android.media.MediaExtractor()
+                try {
+                    synchronized(Mp4Finalize.LOCK) { extractor.setDataSource(file.path.path) }
+                    val map = HashMap<Int, Int>()
+                    var compatible = true
+                    for (i in 0 until extractor.trackCount) {
+                        val f = extractor.getTrackFormat(i)
+                        val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                        val kind = if (mime.startsWith("video/")) "video" else if (mime.startsWith("audio/")) "audio" else continue
+                        val format = Mp4Finalize.formatOf(f) ?: continue
+                        val known = formats[kind]
+                        if (known == null && n == 0) {
+                            if (muxer == null) muxer = Mp4Muxer.Builder(output).setLastSampleDurationBehavior(
+                                Mp4Muxer.LAST_SAMPLE_DURATION_BEHAVIOR_SET_FROM_END_OF_STREAM_BUFFER_OR_DUPLICATE_PREVIOUS).build()
+                            formats[kind] = format
+                            muxTracks[kind] = muxer!!.addTrack(format)
+                        } else if (known == null || !same(known, format)) {
+                            if (kind == "video") compatible = false
+                            continue
+                        }
+                        map[i] = muxTracks[kind]!!
+                        extractor.selectTrack(i)
+                    }
+                    if (!compatible || map.isEmpty()) break
+                    val video = map.entries.firstOrNull { formats["video"] != null && muxTracks["video"] == it.value }?.key
+                    val startUs = ((fromMs - file.startMs) * 1000).coerceAtLeast(0)
+                    if (n == 0) extractor.seekTo(startUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                    var buffer = ByteBuffer.allocateDirect(1 shl 20)
+                    while (true) {
+                        buffer.clear()
+                        var size = try { extractor.readSampleData(buffer, 0) } catch (_: IllegalArgumentException) { -2 }
+                        while (size == -2 && buffer.capacity() < (64 shl 20)) {
+                            buffer = ByteBuffer.allocateDirect(buffer.capacity() * 2)
+                            size = try { extractor.readSampleData(buffer, 0) } catch (_: IllegalArgumentException) { -2 }
+                        }
+                        if (size < 0) break
+                        val track = extractor.sampleTrackIndex
+                        val wallUs = file.startMs * 1000 + extractor.sampleTime
+                        if (wallUs > toMs * 1000) break
+                        val key = extractor.sampleFlags and android.media.MediaExtractor.SAMPLE_FLAG_SYNC != 0
+                        if (origin < 0) {
+                            // Отрезок начинается с ключевого кадра видео (иначе первые секунды — серая каша).
+                            if (track == video && key) origin = wallUs
+                            else if (video == null) origin = wallUs
+                        }
+                        val mux = map[track]
+                        if (origin >= 0 && mux != null && wallUs >= origin) {
+                            val pts = wallUs - origin
+                            if (pts > (last[mux] ?: -1L)) {
+                                buffer.position(0); buffer.limit(size)
+                                muxer!!.writeSampleData(mux, buffer, BufferInfo(pts, size, if (key) C.BUFFER_FLAG_KEY_FRAME else 0))
+                                last[mux] = pts
+                                lastWall = maxOf(lastWall, wallUs)
+                            }
+                        }
+                        extractor.advance()
+                    }
+                } finally {
+                    extractor.release()
+                }
+            }
+            muxer?.close()
+            muxer = null
+        } finally {
+            try { muxer?.close() } catch (_: Exception) {}
+            try { output.close() } catch (_: Exception) {}
+        }
+        return if (origin < 0) 0 else (lastWall - origin) / 1000
+    }
+
+    private fun same(a: Format, b: Format) = a.sampleMimeType == b.sampleMimeType && a.width == b.width && a.height == b.height &&
+        a.sampleRate == b.sampleRate && a.channelCount == b.channelCount &&
+        a.initializationData.size == b.initializationData.size &&
+        a.initializationData.indices.all { a.initializationData[it].contentEquals(b.initializationData[it]) }
 }

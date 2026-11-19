@@ -1486,6 +1486,10 @@ internal class DashboardPanelController(
             expanded.onArchive = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id) }
             // Разговор (docs/talk-tz.md): пока держат «Говорить», карточка не сворачивается по таймеру.
             expanded.onActivity = { modernExpansion.touch() }
+            // Видео можно увеличивать пальцами: касание по неувеличенному видео сворачивает карточку само.
+            expanded.onCollapse = { modernExpansion.collapse() }
+            expanded.onCalls = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id, calls = true) }
+            expanded.phrases = DoorbellPhrases.ready(activity, tile.id)
             modernExpansion.expand(tile.id, source, expanded, target,
                 if (config.autoCollapse) config.collapseSeconds * 1000L else null)
             renderModern(tile, null, animate = false)

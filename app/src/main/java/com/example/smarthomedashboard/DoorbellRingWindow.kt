@@ -216,6 +216,7 @@ internal class DoorbellRingWindow private constructor(
         })
         applyNightBrightness()
         main.post(keepAwake)
+        main.postDelayed(betterPhoto, PHOTO_CHECK_MS)
         main.postDelayed(autoClose, RING_MS)
         main.postDelayed(unmute, 600)
     }
@@ -327,8 +328,9 @@ internal class DoorbellRingWindow private constructor(
         val lightOn = snapshot.lightOn == true
         lightButton.text = if (lightOn) "Свет у входа · вкл" else "Свет у входа"
         style(lightButton, if (lightOn) DoorbellFrame.PERSON else null)
-        replyButton.visibility = if (snapshot.quickReplies.isNotEmpty()) VISIBLE else GONE
-        if (replies.visibility == VISIBLE) fillReplies(config, snapshot.quickReplies)
+        val phrases = if (config.canTalk) DoorbellPhrases.ready(host, tileId) else emptyList()
+        replyButton.visibility = if (snapshot.quickReplies.isNotEmpty() || phrases.isNotEmpty()) VISIBLE else GONE
+        if (replies.visibility == VISIBLE) fillReplies(config, snapshot.quickReplies, phrases)
         sub.text = when (gate) {
             Gate.SENDING -> "Отправляю команду…"
             Gate.WAITING -> "Открываю калитку…"
@@ -347,7 +349,11 @@ internal class DoorbellRingWindow private constructor(
     }
 
     private fun touched() {
-        if (!interacted) { interacted = true; DoorbellHub.acknowledge(tileId) }
+        if (!interacted) {
+            interacted = true
+            DoorbellHub.acknowledge(tileId)
+            DoorbellHub.lastRingAt?.takeIf { it.first == tileId }?.let { RingLog.markAnswered(host, tileId, it.second) }
+        }
         // Человек смотрит: мелодию и голос можно прервать, окно не закрывается раньше, чем через минуту после касания.
         PanelAlerts.cancel(DoorbellHub.ringTag(tileId))
         main.removeCallbacks(autoClose)
@@ -389,6 +395,7 @@ internal class DoorbellRingWindow private constructor(
         gateDeadline?.let(main::removeCallbacks)
         gate = Gate.OPENED
         DoorbellHub.acknowledge(tileId)
+        DoorbellHub.lastRingAt?.takeIf { it.first == tileId }?.let { RingLog.markAnswered(host, tileId, it.second) }
         PanelAlerts.cancel(DoorbellHub.ringTag(tileId))
         render()
         card.applyAccent(DoorbellFrame.RING, pulse = false, animate = true)
@@ -397,6 +404,23 @@ internal class DoorbellRingWindow private constructor(
     }
 
     private val closeAfterOpened = Runnable { close() }
+
+    /**
+     * Снимок посетителя получше ([RingLog]): когда в окне пошёл основной поток (HD), его кадр заменяет снимок с
+     * плитки. Проверка раз в секунду первые [PHOTO_TRIES] секунд.
+     */
+    private var photoTries = 0
+    private val betterPhoto = object : Runnable {
+        override fun run() {
+            if (!isShowing || closing) return
+            val (ringTile, at) = DoorbellHub.lastRingAt ?: return
+            if (ringTile != tileId || System.currentTimeMillis() - at > RING_MS) return
+            if (card.video.shownHeight >= DoorbellVideoView.HD_HEIGHT) {
+                card.video.currentFrame()?.let { RingLog.improve(host, tileId, at, it); return }
+            }
+            if (++photoTries < PHOTO_TRIES) main.postDelayed(this, PHOTO_CHECK_MS)
+        }
+    }
 
     private fun toggleLight() {
         val config = DoorbellHub.config(tileId) ?: return
@@ -412,15 +436,31 @@ internal class DoorbellRingWindow private constructor(
         val readings = DoorbellHub.readings ?: return
         replies.visibility = if (show) VISIBLE else GONE
         replyButton.text = if (show) "Скрыть фразы" else "Ответить"
-        if (show) fillReplies(config, DoorbellModel.snapshot(config, readings).quickReplies)
+        val phrases = if (config.canTalk) DoorbellPhrases.ready(host, tileId) else emptyList()
+        if (show) fillReplies(config, DoorbellModel.snapshot(config, readings).quickReplies, phrases)
     }
 
     private var shownReplies: List<String> = emptyList()
+    private var shownPhrases: List<DoorbellPhrases.Phrase> = emptyList()
 
-    private fun fillReplies(config: DoorbellConfig, options: List<String>) {
-        if (options == shownReplies && replies.childCount > 0) return
+    private fun fillReplies(config: DoorbellConfig, options: List<String>, phrases: List<DoorbellPhrases.Phrase>) {
+        if (options == shownReplies && phrases == shownPhrases && replies.childCount > 0) return
         shownReplies = options
+        shownPhrases = phrases
         replies.removeAllViews()
+        // Свои фразы (голос владельца) — первыми: звучат сразу через динамик домофона, без HA.
+        phrases.forEach { phrase ->
+            replies.addView(pill("🎙 " + phrase.title, null).apply {
+                tag = "door_phrase_${phrase.id}"
+                setOnClickListener {
+                    touched()
+                    val pcm = DoorbellPhrases.load(host, tileId, phrase.id)
+                    sub.text = if (pcm != null && talk.play(pcm)) "Фраза: ${phrase.title}" else "Фраза не отправлена"
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (8 * density).toInt()
+            })
+        }
         options.filter { it != "off" }.forEach { option ->
             replies.addView(pill(option, null).apply {
                 setOnClickListener {
@@ -522,6 +562,8 @@ internal class DoorbellRingWindow private constructor(
         const val OPENED_SHOW_MS = 2_500L
         const val GATE_TIMEOUT_MS = 15_000L
         private const val KEEP_AWAKE_MS = 20_000L
+        private const val PHOTO_CHECK_MS = 1_000L
+        private const val PHOTO_TRIES = 12
 
         fun show(activity: Activity, tileId: String, origin: RectF?, onClosed: (DoorbellRingWindow) -> Unit): DoorbellRingWindow {
             val window = DoorbellRingWindow(activity, tileId, origin, onClosed)
