@@ -402,6 +402,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         retryPending = false
         val exo = player ?: return
         player = null
+        logPlaybackStats(exo)
         // Одолженный плеер освобождается: у того, кто его показывал, картинка гаснет до своего потока.
         loanedTo?.let { borrower -> loanedTo = null; borrower.guestReleased(exo) }
         keepLastFrame()
@@ -411,6 +412,18 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         // отпускает поверхность. Главный поток ждёт плеер только внутри release() (не дольше 0,5 с).
         exo.release()
         updateQuality()
+    }
+
+    /** Итог показа в журнал: декодер, разрешение, кадры в секунду и пропуски — для проверки на планшете. */
+    private fun logPlaybackStats(exo: ExoPlayer) {
+        val counters = exo.videoDecoderCounters ?: return
+        val seconds = (SystemClock.elapsedRealtime() - startedAt) / 1000f
+        if (seconds < 1f) return
+        counters.ensureUpdated()
+        val size = exo.videoSize
+        Log.i(TAG, "Видео: ${decoderInUse ?: "?"} ${size.width}×${size.height}, показано ${counters.renderedOutputBufferCount} " +
+            "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
+                counters.renderedOutputBufferCount / seconds, seconds))
     }
 
     // ---- Бесшовная смена потока (решение владельца): плитка ↔ раскрытие/окно звонка ----
