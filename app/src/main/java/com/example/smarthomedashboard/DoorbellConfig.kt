@@ -48,7 +48,11 @@ internal data class DoorbellConfig(
     /** Разговор через домофон по ONVIF-обратному каналу (docs/talk-tz.md); нужен прямой поток RTSP. */
     val talk: Boolean = true,
     /** Пропорция картинки (ширина/высота). По умолчанию 4:3; уточняется по реальному видео. */
-    val aspect: Float = DEFAULT_ASPECT
+    val aspect: Float = DEFAULT_ASPECT,
+    /** Плитка «Камера» (docs/camera-tz.md): адрес камеры и порт ONVIF (0 — найти самому), модель — для подписи. */
+    val host: String = "",
+    val onvifPort: Int = 0,
+    val model: String = ""
 ) {
     enum class VideoMode(val key: String, val title: String) {
         LIVE("live", "Живое видео"), SNAPSHOT("snapshot", "Снимок раз в минуту");
@@ -94,6 +98,10 @@ internal data class DoorbellConfig(
         put("quiet_start", quietStartMin); put("quiet_end", quietEndMin); put("quiet_percent", quietPercent)
         put("night_brightness", nightBrightness); put("auto_light", autoLight); put("light_off_minutes", lightOffMinutes)
         put("offline_sound", offlineSound); put("aspect", aspect.toDouble()); put("talk", talk)
+        // Только у камер: у домофона прежний набор ключей.
+        if (host.isNotBlank()) put("host", host)
+        if (onvifPort > 0) put("onvif_port", onvifPort)
+        if (model.isNotBlank()) put("model", model)
     }
 
     fun writeTo(config: String): String {
@@ -103,6 +111,11 @@ internal data class DoorbellConfig(
 
     companion object {
         const val TYPE = "doorbell_modern"
+        /** Плитка «Камера» (docs/camera-tz.md): те же настройки видео и записи, без звонка. */
+        const val CAMERA_TYPE = "camera_modern"
+        const val CAMERA_TITLE = "Камера"
+        /** Домофон или камера — плитки с видео. */
+        fun isVideo(type: String) = type == TYPE || type == CAMERA_TYPE
         const val KEY = "doorbell_modern"
         const val VERSION = 1
         const val DEFAULT_TITLE = "Домофон"
@@ -137,7 +150,8 @@ internal data class DoorbellConfig(
                 offlineSound = j.optBoolean("offline_sound", d.offlineSound),
                 talk = j.optBoolean("talk", d.talk),
                 aspect = j.optDouble("aspect", DEFAULT_ASPECT.toDouble()).toFloat().takeIf { it.isFinite() && it in 0.3f..4f }
-                    ?: DEFAULT_ASPECT
+                    ?: DEFAULT_ASPECT,
+                host = str("host").take(253), onvifPort = int("onvif_port", 0, 0..65535), model = str("model").take(80)
             )
         }
 

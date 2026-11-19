@@ -34,7 +34,7 @@ internal object PanelEntityIds {
         ids += SensorConfigResolver.getExpandedSensorIds(tile)
         if (tile.type == "weather") ids += WeatherEntityResolver.resolve(tile.config)
         // Свет у входа после заката: положение солнца в config не хранится.
-        if (tile.type == DoorbellConfig.TYPE) ids += DoorbellConfig.from(tile.config).entityIds
+        if (DoorbellConfig.isVideo(tile.type)) ids += DoorbellConfig.from(tile.config).entityIds
         return Dependencies(ids, malformed)
     }
 

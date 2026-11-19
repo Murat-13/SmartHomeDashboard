@@ -16,6 +16,7 @@
         <exclude domain="external" path="records/" />
         <exclude domain="file" path="doorbell_rings/" />
         <exclude domain="sharedpref" path="doorbell_away.xml" />
+        <exclude domain="sharedpref" path="camera_secrets.xml" />
         <exclude domain="file" path="doorbell_phrases/" />
         <exclude domain="database" path="recording_index.db" />
         <exclude domain="database" path="recording_index.db-journal" />
@@ -30,6 +31,7 @@
         <exclude domain="external" path="records/" />
         <exclude domain="file" path="doorbell_rings/" />
         <exclude domain="sharedpref" path="doorbell_away.xml" />
+        <exclude domain="sharedpref" path="camera_secrets.xml" />
         <exclude domain="file" path="doorbell_phrases/" />
         <exclude domain="database" path="recording_index.db" />
         <exclude domain="database" path="recording_index.db-journal" />

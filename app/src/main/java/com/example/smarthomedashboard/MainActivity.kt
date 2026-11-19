@@ -743,7 +743,7 @@ class MainActivity : AppCompatActivity() {
                 BatteryModernConfig.TYPE -> BatteryModernEditorActivity::class.java
                 PowerModernConfig.TYPE -> PowerModernEditorActivity::class.java
                 InverterModernConfig.TYPE -> InverterModernEditorActivity::class.java
-                DoorbellConfig.TYPE -> DoorbellEditorActivity::class.java
+                DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE -> DoorbellEditorActivity::class.java
                 HomeClimateConfig.TYPE -> HomeClimateEditorActivity::class.java
                 else -> TileSettingsActivity::class.java
             }

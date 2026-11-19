@@ -61,7 +61,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val user: String,
         val camera: String,
         val snapshotOnly: Boolean,
-        val fallbackRtsp: String = ""
+        val fallbackRtsp: String = "",
+        /** Ключ пароля камеры ([CameraPasswords]): номер плитки «Камера»; пусто — пароль домофона. */
+        val secretKey: String = ""
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -251,8 +253,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     private fun startRtsp(src: Source) {
         val generation = ++attempt
-        DoorbellHub.cameraPassword(context) { password ->
-            if (generation != attempt || !visible || player != null) return@cameraPassword
+        CameraPasswords.read(context, src.secretKey) { password ->
+            if (generation != attempt || !visible || player != null) return@read
             // Этап 4 (docs/recording.md): этот поток уже идёт ради записи — смотрим через планшет, соединение с камерой одно.
             val rtsp = rtspFor(src)
             playingRtsp = rtsp

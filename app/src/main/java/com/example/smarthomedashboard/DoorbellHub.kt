@@ -123,12 +123,14 @@ internal object DoorbellHub {
     fun onState(tiles: List<TileEntity>, current: BatteryReadings) {
         tileList = tiles.filter { it.type == DoorbellConfig.TYPE }
         DirectEvents.onTiles(tiles, SystemClock.uptimeMillis())
-        attributeIds = tileList.flatMapTo(LinkedHashSet()) { tile ->
+        // Плитки «Камера» (docs/camera-tz.md): запись событий в HD по датчикам HA и снимки камеры HA — как у домофона.
+        val videoTiles = tiles.filter { DoorbellConfig.isVideo(it.type) }
+        attributeIds = videoTiles.flatMapTo(LinkedHashSet()) { tile ->
             DoorbellConfig.from(tile.config).let { listOf(it.camera, it.quickReply) }.filter { it.isNotBlank() }
         }
         readings = current
         // Запись событий в HD (docs/recording.md): какие датчики сработали — для потоков записи.
-        RecordingEvents.update(tileList, current)
+        RecordingEvents.update(videoTiles, current)
         val now = SystemClock.uptimeMillis()
         val events = monitor.evaluate(tileList, current, now)
         main.removeCallbacks(recheck)

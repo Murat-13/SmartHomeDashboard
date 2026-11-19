@@ -19,6 +19,8 @@
     <exclude domain="file" path="doorbell_rings/" />
     <!-- Уведомление на телефон и автоответ — с одного выбранного планшета: не переносим на другой. -->
     <exclude domain="sharedpref" path="doorbell_away.xml" />
+    <!-- Пароли камер (зашифрованы ключом Keystore этого планшета — на другом всё равно не расшифруются). -->
+    <exclude domain="sharedpref" path="camera_secrets.xml" />
     <exclude domain="file" path="doorbell_phrases/" />
     <exclude domain="database" path="recording_index.db" />
     <exclude domain="database" path="recording_index.db-journal" />

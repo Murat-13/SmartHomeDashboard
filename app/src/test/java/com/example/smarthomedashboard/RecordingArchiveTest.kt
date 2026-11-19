@@ -135,6 +135,7 @@ class RecordingArchiveTest {
         override fun openRing(ring: RingLog.Ring) { calls += "open:${ring.atMs}" }
         override fun preview(atMs: Long) { previews++ }
         override fun selectWeek() { calls += "week" }
+        override fun camera(tileId: String) { calls += "camera:$tileId" }
         var previews = 0
         var lastAt = 0L
         var lastSpan = 0L
@@ -368,6 +369,24 @@ class RecordingArchiveTest {
         // DatePicker: местная полночь ↔ полночь UTC того же числа.
         assertEquals(day, utcDateToLocal(localToUtcDate(day)))
         assertEquals(0L, localToUtcDate(day) % 86_400_000L)
+    }
+
+    /** Несколько камер (docs/camera-tz.md): переключение; у камеры нет вкладки «Звонки». */
+    @Test fun cameraSwitchAndNoCallsTabForCamera() {
+        val actions = Recorded()
+        var ui by mutableStateOf(ArchiveUi(title = "Улица", loading = false, cameras = listOf("door" to "Домофон", "cam" to "Улица"),
+            camera = "cam", doorbell = false))
+        compose.setContent { ArchiveScreen(ui, emptyMap(), actions, video = {}) }
+        compose.onNodeWithTag("archive_camera_door").performClick()
+        assertEquals(listOf("camera:door"), actions.calls)
+        compose.onNodeWithTag("archive_tab_calls").assertDoesNotExist()
+        ui = ui.copy(doorbell = true, camera = "door")
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_tab_calls").assertIsDisplayed()
+        // Одна камера — переключателя нет.
+        ui = ui.copy(cameras = listOf("door" to "Домофон"))
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_camera_door").assertDoesNotExist()
     }
 
     @Test fun emptyArchiveSaysSo() {

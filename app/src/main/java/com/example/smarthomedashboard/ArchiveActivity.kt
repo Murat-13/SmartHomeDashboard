@@ -133,15 +133,37 @@ class ArchiveActivity : AppCompatActivity() {
     private var snapshot = RecArchive.Snapshot(emptyList(), emptyList())
     private var texture: TextureView? = null
     private val ringListener: () -> Unit = { loadRings() }
+    private var cameras: List<Pair<String, String>> = emptyList()
+    private var doorbellIds: Set<String> = emptySet()
+
+    private fun titleOf(tile: com.example.smarthomedashboard.data.TileEntity?): String = tile?.title?.ifBlank { null }
+        ?: if (tile?.type == DoorbellConfig.CAMERA_TYPE) DoorbellConfig.CAMERA_TITLE else DoorbellConfig.DEFAULT_TITLE
+
+    /** Другая камера: тот же экран, её записи (плеер останавливается, шкала и списки — заново). */
+    private fun switchCamera(id: String) {
+        if (id == tileId) return
+        tileId = id
+        title = cameras.firstOrNull { it.first == id }?.second ?: title
+        player?.stop()
+        loadedDay = null
+        thumbs.clear()
+        previewCache.clear()
+        ui.value = ArchiveUi(title = title, cameras = cameras, camera = id, doorbell = id in doorbellIds, spanMs = ui.value.spanMs)
+        reload(keepDay = null)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tileId = intent.getStringExtra(EXTRA_TILE).orEmpty()
-        val tile = TileManager(this).loadTiles().firstOrNull { it.id == tileId }
-        title = tile?.title?.ifBlank { null } ?: DoorbellConfig.DEFAULT_TITLE
+        val tiles = TileManager(this).loadTiles()
+        val tile = tiles.firstOrNull { it.id == tileId }
+        title = titleOf(tile)
+        // Камеры этого планшета для переключения (docs/camera-tz.md): домофон и плитки «Камера».
+        cameras = tiles.filter { it.type in CameraSource.TYPES }.map { it.id to titleOf(it) }
+        doorbellIds = tiles.filter { it.type == DoorbellConfig.TYPE }.map { it.id }.toSet()
         index = try { RecIndex(this) } catch (_: Exception) { null }
         archive = RecArchive(this, index = { index })
-        ui.value = ui.value.copy(title = title, tab = if (intent.getBooleanExtra(EXTRA_CALLS, false)) ArchiveUi.Tab.CALLS else ArchiveUi.Tab.RECORDS)
+        ui.value = ui.value.copy(title = title, cameras = cameras, camera = tileId, doorbell = tileId in doorbellIds, tab = if (intent.getBooleanExtra(EXTRA_CALLS, false)) ArchiveUi.Tab.CALLS else ArchiveUi.Tab.RECORDS)
         // HD-ролики событий (Reolink 2560×1920) аппаратный декодер Samsung SM-X216B не принимает — следующий декодер
         // (программный) берётся сам, как у живого видео домофона.
         player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true)).build().also { p ->
@@ -206,7 +228,8 @@ class ArchiveActivity : AppCompatActivity() {
 
     private fun loadStorage() {
         lifecycleScope.launch {
-            val keep = DoorbellHub.storedTile(tileId)?.let { RecordingConfig.from(it.config).keepContinuousDays } ?: RecordingConfig().keepContinuousDays
+            val keep = TileManager(this@ArchiveActivity).loadTiles().firstOrNull { it.id == tileId }
+                ?.let { RecordingConfig.from(it.config).keepContinuousDays } ?: RecordingConfig().keepContinuousDays
             val limit = RecordingDevice(this@ArchiveActivity).limitGb
             val text = withContext(Dispatchers.IO) { try { RecArchive.storageText(archive.storage(limit, keep)) } catch (_: Exception) { null } }
             val copy = withContext(Dispatchers.IO) { ArchiveCopy.statusText(this@ArchiveActivity) }
@@ -627,6 +650,7 @@ class ArchiveActivity : AppCompatActivity() {
             if (ring != null) lifecycleScope.launch { thumbs[ringKey(ring) + "_big"] = withContext(Dispatchers.IO) { RingLog.photo(ring.photo, 1280) } }
         }
         override fun preview(atMs: Long) = this@ArchiveActivity.preview(atMs)
+        override fun camera(tileId: String) = switchCamera(tileId)
         override fun selectWeek() {
             ui.value = ui.value.copy(week = true, events = filtered(ui.value.day, ui.value.filter, week = true))
         }
@@ -704,7 +728,12 @@ internal data class ArchiveUi(
     /** Кадр-превью над риской, пока ведут ленту: время на стене (округлённое) и кадр. */
     val preview: Pair<Long, Bitmap>? = null,
     /** Как копируются ролики со ★ (ночью в папку копий). */
-    val copyStatus: String? = null
+    val copyStatus: String? = null,
+    /** Камеры для переключения (номер плитки → название) и текущая. */
+    val cameras: List<Pair<String, String>> = emptyList(),
+    val camera: String? = null,
+    /** Текущая камера — домофон (есть вкладка «Звонки»). */
+    val doorbell: Boolean = true
 ) {
     enum class Tab { RECORDS, CALLS }
     /** Участки круглосуточной записи и ролики событий — время на стене, все дни. */
@@ -752,6 +781,8 @@ internal interface ArchiveActions {
     fun preview(atMs: Long)
     /** «Неделя» — события за 7 дней. */
     fun selectWeek()
+    /** Другая камера (плитка). */
+    fun camera(tileId: String) {}
 }
 
 // ---- Оформление: палитра Modern (res/values/modern_colors.xml) ----
@@ -1213,18 +1244,29 @@ private fun spanTitle(span: Long): String = when {
 
 @Composable
 private fun androidx.compose.foundation.layout.ColumnScope.ListPane(ui: ArchiveUi, thumbs: Map<String, Bitmap?>, actions: ArchiveActions) {
+    // Несколько камер (docs/camera-tz.md) — переключение одним касанием.
+    if (ui.cameras.size > 1) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp)) {
+            items(ui.cameras) { (id, name) ->
+                FilterChip(selected = ui.camera == id, onClick = { actions.camera(id) },
+                    label = { Text(name, fontSize = 16.sp) }, modifier = Modifier.heightIn(min = 48.dp).testTag("archive_camera_$id"),
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ArchiveColors.accentSoft))
+            }
+        }
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilterChip(selected = ui.tab == ArchiveUi.Tab.RECORDS, onClick = { actions.tab(ArchiveUi.Tab.RECORDS) },
             label = { Text("Записи", fontSize = 18.sp) }, modifier = Modifier.heightIn(min = 48.dp).testTag("archive_tab_records"))
         val missed = ui.rings.count { !it.answered }
-        FilterChip(selected = ui.tab == ArchiveUi.Tab.CALLS, onClick = { actions.tab(ArchiveUi.Tab.CALLS) },
+        // У камеры нет звонка — нет и вкладки «Звонки».
+        if (ui.doorbell) FilterChip(selected = ui.tab == ArchiveUi.Tab.CALLS, onClick = { actions.tab(ArchiveUi.Tab.CALLS) },
             label = { Text("Звонки" + if (ui.rings.isNotEmpty()) " (${ui.rings.size})" else "", fontSize = 18.sp) },
             modifier = Modifier.heightIn(min = 48.dp).testTag("archive_tab_calls").semantics {
                 contentDescription = "Звонки, пропущенных $missed"
             })
     }
     Spacer(Modifier.height(4.dp))
-    if (ui.tab == ArchiveUi.Tab.CALLS) { CallsList(ui, thumbs, actions); return }
+    if (ui.tab == ArchiveUi.Tab.CALLS && ui.doorbell) { CallsList(ui, thumbs, actions); return }
     Row(verticalAlignment = Alignment.CenterVertically) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
             item {

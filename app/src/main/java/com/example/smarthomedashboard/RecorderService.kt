@@ -81,8 +81,9 @@ class RecorderService : Service() {
         val tiles = TileManager(this).loadTiles().filter { it.type in CameraSource.TYPES }
         // Ключ записи: id плитки — круглосуточная (субпоток), id + [HD] — события (основной поток).
         val wanted = HashMap<String, Pair<Key, RecordingConfig>>()
-        var password: String? = null
-        var passwordRead = false
+        // Пароль — свой у каждой камеры (docs/camera-tz.md); у домофона — прежний слот.
+        val passwords = HashMap<String, String?>()
+        val passwordFor = HashMap<String, String?>()
         for (tile in tiles) {
             if (!device.enabled(tile.id)) continue
             val rec = RecordingConfig.from(tile.config)
@@ -93,7 +94,8 @@ class RecorderService : Service() {
             // Камера не в подсети планшета (VPN, интернет) — свой режим, по умолчанию выключен (трафик).
             val mode = rec.effectiveMode(RecLocality.isLocal(sub) ?: true)
             if (!mode.continuous && !mode.events) continue
-            if (!passwordRead) { password = readPassword(); passwordRead = true }
+            val password = passwords.getOrPut(source.secretKey) { readPassword(source.secretKey) }
+            passwordFor[tile.id] = password
             val hash = password?.hashCode() ?: 0
             if (mode.continuous) wanted[tile.id] = Key(sub, source.rtspUser, hash, rec.audioContinuous) to rec
             if (mode.events) wanted[tile.id + HD] = Key(hd, source.rtspUser, hash, rec.audioEvents,
@@ -126,13 +128,13 @@ class RecorderService : Service() {
             val camera = RecLayout.cameraKey(tileId)
             val (key, config) = want
             val r: CameraRecorder = if (id.endsWith(HD)) EventRecorder(
-                camera = camera, url = key.url, user = key.user, password = password, audio = key.audio,
+                camera = camera, url = key.url, user = key.user, password = passwordFor[tileId], audio = key.audio,
                 root = { storageRoot() }, canWrite = { canWrite() },
                 events = { RecordingEvents.of(tileId) }, settings = { config },
                 onClip = { file, labels -> control.execute { safe { clipClosed(file, labels) } } },
                 onStatus = { _, status -> statusChanged(id, status) }
             ) else ContinuousRecorder(
-                camera = camera, url = key.url, user = key.user, password = password,
+                camera = camera, url = key.url, user = key.user, password = passwordFor[tileId],
                 audio = key.audio, root = { storageRoot() }, canWrite = { canWrite() },
                 onSegment = { file -> control.execute { safe { segmentClosed(file) } } },
                 onStatus = { _, status -> statusChanged(id, status) }
@@ -153,9 +155,8 @@ class RecorderService : Service() {
         recorders.clear()
     }
 
-    private fun readPassword(): String? = try {
-        AndroidSecretStore.create(applicationContext).read(SecretStore.Slot.CAMERA_PASSWORD)
-            .takeIf { it.status == SecretStore.Status.SUCCESS }?.value
+    private fun readPassword(secretKey: String): String? = try {
+        CameraPasswords.blocking(applicationContext, secretKey)
     } catch (e: Exception) {
         Log.w(TAG, "Запись: пароль камеры недоступен: ${e.javaClass.simpleName}")
         null

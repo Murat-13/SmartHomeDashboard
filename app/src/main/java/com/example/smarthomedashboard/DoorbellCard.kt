@@ -245,12 +245,13 @@ internal open class DoorbellFrame(context: Context, private val large: Boolean) 
  * ярко-зелёная с пульсом (звонок), красная «Нет сигнала». Раскрытая (касание): крупное видео со звуком —
  * только слушать; касание сворачивает. Только отображение: события и команды — [DoorbellHub].
  */
-internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellFrame(context, expanded), ModernOverlayCard,
+internal class DoorbellCard(context: Context, val expanded: Boolean, val camera: Boolean = false) : DoorbellFrame(context, expanded), ModernOverlayCard,
     ModernInteractiveArea {
     val video = DoorbellVideoView(context).apply { muted = !expanded }
     private val topScrim = View(context)
     private val bottomScrim = View(context)
-    private val bell = ImageView(context).apply { setImageResource(R.drawable.ic_doorbell) }
+    /** Значок: колокольчик у домофона, камера у плитки «Камера» (docs/camera-tz.md). */
+    private val bell = ImageView(context).apply { setImageResource(if (camera) R.drawable.ic_camera else R.drawable.ic_doorbell) }
     private val title = text(if (expanded) 34f else 22f, Color.WHITE, bold = true).apply { tag = "door_title" }
     private val status = text(if (expanded) 24f else 16f, SECONDARY).apply { tag = "door_status" }
     private val last = text(if (expanded) 22f else 15f, SECONDARY).apply { tag = "door_last" }
@@ -380,7 +381,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private var lastBound: DoorbellModel.Snapshot? = null
 
     /** Разговор (docs/talk-tz.md) — у раскрытой карточки; в окне звонка кнопка своя, у окна. */
-    private val talk: DoorbellTalk? = if (expanded) DoorbellTalk(context) else null
+    private val talk: DoorbellTalk? = if (expanded && !camera) DoorbellTalk(context) else null
     private val talkButton: TalkButton? = talk?.let { t ->
         t.onDuck = { video.ducked = it }
         TalkButton(context, t).apply { visibility = GONE; onActivity = { this@DoorbellCard.onActivity?.invoke() } }
@@ -512,9 +513,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         boundSnapshot = snapshot
         boundOffline = offline
         boundAnimate = animate
-        set(title, tileTitle.ifBlank { DoorbellConfig.DEFAULT_TITLE })
-        set(last, lastRing?.let { "Звонок: " + DoorbellModel.ago(it, now) } ?: "Звонков не было")
-        missedBadge.visibility = if (missed > 0 && !ringMode) VISIBLE else GONE
+        set(title, tileTitle.ifBlank { if (camera) DoorbellConfig.CAMERA_TITLE else DoorbellConfig.DEFAULT_TITLE })
+        // У камеры нет звонка: ни «Звонок: …», ни пропущенных.
+        if (camera) last.visibility = GONE
+        else set(last, lastRing?.let { "Звонок: " + DoorbellModel.ago(it, now) } ?: "Звонков не было")
+        missedBadge.visibility = if (missed > 0 && !ringMode && !camera) VISIBLE else GONE
         if (missed > 0) set(missedBadge, if (missed > 99) "99+" else missed.toString())
         iconViews.forEach { (d, v) ->
             val on = d in snapshot.detections
@@ -526,7 +529,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
             user = config.rtspUser, camera = config.camera,
             snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT,
             // Основной поток не по силам декодеру планшета — раскрытие показывает субпоток.
-            fallbackRtsp = if (expanded) config.rtspSub else ""
+            fallbackRtsp = if (expanded) config.rtspSub else "",
+            secretKey = if (camera) tileId.orEmpty() else ""
         ), snapshot.picture)
         // HA точно знает, что домофона нет: видео не подключается, пока он не вернётся (без лишних попыток).
         video.deviceOffline = snapshot.haStatus == null && (offline || snapshot.online == false)
@@ -550,7 +554,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         val noSignal = boundOffline || snapshot.online == false || (!haKnows && video.unreachable)
         val (color, text) = when {
             snapshot.haStatus != null && haKnows -> NEUTRAL to snapshot.haStatus
-            !config.hasVideo && config.visitor.isBlank() -> NEUTRAL to "Не настроен — откройте редактор"
+            !config.hasVideo && (camera || config.visitor.isBlank()) -> NEUTRAL to "Не настроен — откройте редактор"
             noSignal -> OFFLINE to "Нет сигнала"
             snapshot.ringing -> RING to "Звонят в калитку"
             snapshot.person -> PERSON to "Человек у калитки"
@@ -725,7 +729,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         }
 
         /** Плитка панели: как у остальных Modern (тег, размер, ручка resize). */
-        fun createTile(context: Context, tileId: String, width: Int, height: Int, isEditMode: Boolean): Pair<FrameLayout, ImageView> {
+        fun createTile(context: Context, tileId: String, width: Int, height: Int, isEditMode: Boolean,
+                       camera: Boolean = false): Pair<FrameLayout, ImageView> {
             val tile = FrameLayout(context).apply {
                 layoutParams = LayoutParams(width, height)
                 tag = tileId
@@ -739,7 +744,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
                     }
                 }
             }
-            tile.addView(DoorbellCard(context, expanded = false).apply { this.tileId = tileId },
+            tile.addView(DoorbellCard(context, expanded = false, camera = camera).apply { this.tileId = tileId },
                 LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             val handle = ImageView(context).apply {
                 setImageResource(R.drawable.ic_resize)

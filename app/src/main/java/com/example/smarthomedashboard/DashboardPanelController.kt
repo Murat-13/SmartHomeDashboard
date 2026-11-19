@@ -1069,11 +1069,11 @@ internal class DashboardPanelController(
     /** Modern-плитки (АКБ, Электропитание, Часы · Погода · Климат): общие раскрытие, resize, перемещение и редактирование. */
     private fun isModern(type: String) =
         type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE || type == HomeClimateConfig.TYPE ||
-            type == InverterModernConfig.TYPE || type == DoorbellConfig.TYPE
+            type == InverterModernConfig.TYPE || DoorbellConfig.isVideo(type)
 
     private fun createModernBatteryView(tile: TileEntity, savedWidth: Int, savedHeight: Int): View {
         // «Часы · Погода · Климат» — всегда 2:1 внутри сохранённого прямоугольника; config не переписывается.
-        val doorbellAspect = if (tile.type == DoorbellConfig.TYPE) DoorbellConfig.from(tile.config).aspect else null
+        val doorbellAspect = if (DoorbellConfig.isVideo(tile.type)) DoorbellConfig.from(tile.config).aspect else null
         val (width, height) = when {
             tile.type == HomeClimateConfig.TYPE -> HomeClimateConfig.fit(savedWidth, savedHeight)
             // «Домофон» — всегда в пропорции видео (4:3), меняется только размер.
@@ -1085,6 +1085,7 @@ internal class DashboardPanelController(
             HomeClimateConfig.TYPE -> HomeClimateCompactView.createTile(activity, tile.id, width, height, isEditMode)
             InverterModernConfig.TYPE -> InverterModernCard.createTile(activity, tile.id, width, height, isEditMode)
             DoorbellConfig.TYPE -> DoorbellCard.createTile(activity, tile.id, width, height, isEditMode)
+            DoorbellConfig.CAMERA_TYPE -> DoorbellCard.createTile(activity, tile.id, width, height, isEditMode, camera = true)
             else -> BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
         }
         // Новая View сразу получает уже подтверждённое оформление (без повторной анимации).
@@ -1118,7 +1119,7 @@ internal class DashboardPanelController(
             renderInverter(tile, view, readings, animate)
             return
         }
-        if (tile.type == DoorbellConfig.TYPE) {
+        if (DoorbellConfig.isVideo(tile.type)) {
             renderDoorbell(tile, view, readings, animate)
             return
         }
@@ -1182,7 +1183,9 @@ internal class DashboardPanelController(
         val missed = DoorbellHub.missed(tile.id)
         val last = DoorbellHub.lastRing(tile.id)
         // Охрана (docs/guard-tz.md): null — на этом планшете не включена в редакторе.
-        val guard = DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
+        // Охрана у камер — часть 2 (docs/camera-tz.md): пока только у домофона.
+        val guard = if (tile.type != DoorbellConfig.TYPE) null
+            else DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
         view?.findViewWithTag<DoorbellCard>("door_compact")?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
             (modernExpansion.card as? DoorbellCard)?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
@@ -1196,7 +1199,7 @@ internal class DashboardPanelController(
     /** Звонок, пропущенные, окно звонка открылось/закрылось: перерисовать плитки домофона текущей страницы. */
     fun renderDoorbells() {
         if (!host.hasPanel) return
-        tileManager.getAllTiles().filter { it.type == DoorbellConfig.TYPE }.forEach { tile ->
+        tileManager.getAllTiles().filter { DoorbellConfig.isVideo(it.type) }.forEach { tile ->
             renderModern(tile, viewForTile(tile.id) as? FrameLayout, animate = true)
         }
     }
@@ -1474,15 +1477,17 @@ internal class DashboardPanelController(
             if (ready?.bound != true) traced("SHD card bind") { renderModern(tile, null, animate = false) }
             return
         }
-        if (tile.type == DoorbellConfig.TYPE) {
+        if (DoorbellConfig.isVideo(tile.type)) {
             // Видео крупно со звуком (только слушать). Касание сворачивает; автосворачивание — по настройке плитки.
+            // Плитка «Камера» (docs/camera-tz.md) — то же без звонка: ни «Звонки», ни фраз, ни автоответа.
+            val camera = tile.type == DoorbellConfig.CAMERA_TYPE
             val config = DoorbellConfig.from(tile.config)
             var height = (screenH * 0.9f).toInt()
             var width = (height * config.aspect).toInt()
             if (width > screenW * 0.94f) { width = (screenW * 0.94f).toInt(); height = (width / config.aspect).toInt() }
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
-            DoorbellHub.acknowledge(tile.id)
-            val expanded = DoorbellCard(activity, expanded = true)
+            if (!camera) DoorbellHub.acknowledge(tile.id)
+            val expanded = DoorbellCard(activity, expanded = true, camera = camera)
             expanded.tileId = tile.id
             // Архив записей (docs/recording.md): карточка сворачивается, поверх панели — экран архива.
             expanded.onArchive = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id) }
@@ -1490,11 +1495,13 @@ internal class DashboardPanelController(
             expanded.onActivity = { modernExpansion.touch() }
             // Видео можно увеличивать пальцами: касание по неувеличенному видео сворачивает карточку само.
             expanded.onCollapse = { modernExpansion.collapse() }
-            expanded.onCalls = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id, calls = true) }
-            expanded.phrases = DoorbellPhrases.ready(activity, tile.id)
-            expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
+            if (!camera) {
+                expanded.onCalls = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id, calls = true) }
+                expanded.phrases = DoorbellPhrases.ready(activity, tile.id)
+                expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
+            }
             // Автоответ (docs/ring-away-tz.md): кнопка — если на этом планшете выбрана фраза; без PIN.
-            if (DoorbellAway.autoReplyConfigured(activity, tile.id)) {
+            if (!camera && DoorbellAway.autoReplyConfigured(activity, tile.id)) {
                 expanded.autoReply(DoorbellAway.settings(activity, tile.id).autoReply)
                 expanded.onAutoReply = { on ->
                     DoorbellAway.save(activity, tile.id, DoorbellAway.settings(activity, tile.id).copy(autoReply = on))

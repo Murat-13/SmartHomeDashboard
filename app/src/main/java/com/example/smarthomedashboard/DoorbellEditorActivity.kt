@@ -87,7 +87,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         super.onCreate(savedInstanceState)
         tileManager = TileManager(this)
         val tile = intent.getStringExtra("tile_id")?.let { id -> tileManager.loadTiles().find { it.id == id } }
-        if (tile == null || tile.type != DoorbellConfig.TYPE) {
+        if (tile == null || !DoorbellConfig.isVideo(tile.type)) {
             Toast.makeText(this, "Плитка не найдена", Toast.LENGTH_SHORT).show()
             finish()
             return
@@ -127,7 +127,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             override fun handleOnBackPressed() = leave()
         })
         kit.loadCachedEntities()
-        DoorbellHub.cameraPassword(this) { savedPassword = !it.isNullOrEmpty(); refreshPassword() }
+        CameraPasswords.read(this, secretKey) { savedPassword = !it.isNullOrEmpty(); refreshPassword() }
     }
 
     private fun buildUi() {
@@ -136,14 +136,16 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             setBackgroundColor(Color.rgb(9, 14, 20))
             setPadding(kit.dp(16), kit.dp(12), kit.dp(16), kit.dp(12))
         }
-        root.addView(kit.label("Домофон — настройка", 22f, bold = true))
-        root.addView(kit.hintBar(UserHints.Hint.DOORBELL_EDITOR,
+        root.addView(kit.label(if (camera) "Камера — настройка" else "Домофон — настройка", 22f, bold = true))
+        if (camera) root.addView(kit.label("Введите адрес камеры, логин и пароль и нажмите «Найти потоки» — ссылки на видео " +
+            "приложение найдёт само (ONVIF). Изменения применяются кнопкой «Сохранить».", 13f))
+        else root.addView(kit.hintBar(UserHints.Hint.DOORBELL_EDITOR,
             "Reolink: основной поток rtsp://IP:554/h264Preview_01_main, субпоток — …_sub. Прямой поток работает в " +
                 "домашней сети; вне дома видео идёт через Home Assistant (камера HA). Звук и тихие часы — только этого " +
                 "планшета. Изменения применяются кнопкой «Сохранить»."))
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        preview = DoorbellCard(this, expanded = false)
+        preview = DoorbellCard(this, expanded = false, camera = camera).apply { tileId = original.id }
         val previewBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
         val frame = FrameLayout(this).apply { tag = "door_editor_preview" }
         frame.addView(preview, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -151,7 +153,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             topMargin = kit.dp(12)
         })
         previewBox.addView(kit.label("Предпросмотр — данные панели и видео, как на плитке.", 13f))
-        previewBox.addView(kit.button("Проверить звук звонка", "door_test_ring") { testRing() })
+        if (!camera) previewBox.addView(kit.button("Проверить звук звонка", "door_test_ring") { testRing() })
         body.addView(previewBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
 
         val side = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(kit.dp(16), 0, 0, 0) }
@@ -162,6 +164,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         })
 
         side.addView(header("Видео"))
+        if (camera) buildOnvif(side)
         side.addView(entityRow("camera", "Камера Home Assistant", "снимки и видео вне дома") { config.camera })
         side.addView(text("rtsp_main", "Прямой поток (основной)", config.rtspMain, "rtsp://192.168.1.50:554/h264Preview_01_main") {
             update(config.copy(rtspMain = it)) })
@@ -186,13 +189,33 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             update(config.copy(aspect = aspect))
         })
 
-        side.addView(header("Датчики домофона"))
-        side.addView(entityRow("visitor", "Кнопка звонка", "binary_sensor … visitor") { config.visitor })
+        side.addView(header(if (camera) "Датчики событий (Home Assistant, по желанию)" else "Датчики домофона"))
+        if (!camera) side.addView(entityRow("visitor", "Кнопка звонка", "binary_sensor … visitor") { config.visitor })
         side.addView(entityRow("person", "Человек", "значок и янтарная рамка") { config.person })
         side.addView(entityRow("animal", "Животное", "значок") { config.animal })
         side.addView(entityRow("vehicle", "Машина", "значок") { config.vehicle })
         side.addView(entityRow("motion", "Движение", "значок") { config.motion })
 
+        if (!camera) buildDoorbellOnly(side)
+        side.addView(header("Раскрытие по касанию"))
+        side.addView(switch("door_auto_collapse", "Сворачивать автоматически", config.autoCollapse) { update(config.copy(autoCollapse = it)) })
+        side.addView(number("door_collapse_seconds", "Через, секунд", config.collapseSeconds, 5..3600) { update(config.copy(collapseSeconds = it)) })
+
+        if (!camera) {
+            buildTalk(side)
+            buildDirect(side)
+        }
+        buildRecording(side)
+
+        side.addView(kit.button("Тип, размер, удаление плитки…", "door_tile_settings") { openTileSettings() })
+        body.addView(ScrollView(this).apply { addView(side) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.25f))
+        root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(kit.footer("door", { leave() }, { save() }))
+        setContentView(root)
+    }
+
+    /** Только у домофона: калитка, свет, готовые ответы, звук звонка. */
+    private fun buildDoorbellOnly(side: LinearLayout) {
         side.addView(header("Калитка, свет, ответы"))
         side.addView(entityRow("lock", "Замок калитки", "кнопки «Открыть» нет, пока не выбран") { config.lock })
         side.addView(entityRow("light", "Свет у входа", "light или switch") { config.light })
@@ -224,20 +247,57 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(slider("door_night_brightness", config.nightBrightness, 100, { "Яркость окна звонка ночью: ${it.coerceAtLeast(5)}%" }) {
             update(config.copy(nightBrightness = it.coerceAtLeast(5))) })
         side.addView(switch("door_offline_sound", "Сигнал, если домофон пропал из сети", config.offlineSound) { update(config.copy(offlineSound = it)) })
+    }
 
-        side.addView(header("Раскрытие по касанию"))
-        side.addView(switch("door_auto_collapse", "Сворачивать автоматически", config.autoCollapse) { update(config.copy(autoCollapse = it)) })
-        side.addView(number("door_collapse_seconds", "Через, секунд", config.collapseSeconds, 5..3600) { update(config.copy(collapseSeconds = it)) })
+    // ---- Камера: адрес, ONVIF (docs/camera-tz.md) ----
 
-        buildTalk(side)
-        buildDirect(side)
-        buildRecording(side)
+    /** Плитка «Камера» (пароль — свой у плитки) или домофон (прежний слот пароля). */
+    private val camera get() = original.type == DoorbellConfig.CAMERA_TYPE
+    private val secretKey get() = if (camera) original.id else ""
 
-        side.addView(kit.button("Тип, размер, удаление плитки…", "door_tile_settings") { openTileSettings() })
-        body.addView(ScrollView(this).apply { addView(side) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.25f))
-        root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(kit.footer("door", { leave() }, { save() }))
-        setContentView(root)
+    private fun buildOnvif(side: LinearLayout) {
+        side.addView(text("host", "Адрес камеры (IP в домашней сети)", config.host, "192.168.1.60") { update(config.copy(host = it)) })
+        side.addView(number("door_onvif_port", "Порт ONVIF (0 — найти самому)", config.onvifPort, 0..65535) { update(config.copy(onvifPort = it)) })
+        val result = kit.label(if (config.model.isNotBlank()) "Камера: ${config.model}" else "", 13f).apply { tag = "door_onvif_result" }
+        side.addView(kit.button("Найти потоки (ONVIF)", "door_onvif_find") { findStreams(result) })
+        side.addView(result)
+        side.addView(kit.label("Логин и пароль — ниже, в полях «Логин камеры» и «Пароль камеры». Ссылки на потоки после " +
+            "поиска можно поправить вручную.", 13f))
+    }
+
+    /** ONVIF: модель и потоки камеры по адресу, логину и паролю (новому из поля или сохранённому). */
+    private fun findStreams(result: TextView) {
+        val host = config.host.trim()
+        if (host.isBlank()) { result.text = "Сначала введите адрес камеры"; return }
+        result.text = "Ищу камеру…"
+        val user = config.rtspUser.ifBlank { "admin" }
+        val typed = password
+        val start = { pass: String ->
+            Thread({
+                val text = try {
+                    val info = Onvif.probe(host, config.onvifPort, user, pass)
+                    runOnUiThread { applyOnvif(info) }
+                    "Найдено: ${info.title}" + (info.main?.let { " · основной ${it.width}×${it.height}" } ?: "") +
+                        (info.sub?.takeIf { it != info.main }?.let { " · субпоток ${it.width}×${it.height}" } ?: "")
+                } catch (e: Onvif.OnvifException) { e.message.orEmpty() } catch (e: Exception) {
+                    "Не удалось: ${e.javaClass.simpleName}"
+                }
+                runOnUiThread { if (!isDestroyed) result.text = text }
+            }, "onvif-probe").apply { isDaemon = true; start() }
+        }
+        if (!typed.isNullOrEmpty()) start(typed)
+        else CameraPasswords.read(this, secretKey) { saved -> start(saved.orEmpty()) }
+    }
+
+    private fun applyOnvif(info: Onvif.Info) {
+        if (isDestroyed) return
+        val main = info.main?.uri.orEmpty()
+        val sub = info.sub?.uri.orEmpty()
+        update(config.copy(rtspMain = main, rtspSub = sub, onvifPort = info.port, model = info.title,
+            rtspUser = config.rtspUser.ifBlank { "admin" }))
+        (window.decorView.findViewWithTag<android.widget.EditText>("door_rtsp_main"))?.setText(main)
+        (window.decorView.findViewWithTag<android.widget.EditText>("door_rtsp_sub"))?.setText(sub)
+        (window.decorView.findViewWithTag<android.widget.EditText>("door_onvif_port"))?.setText(info.port.toString())
     }
 
     // ---- Разговор через домофон ----
@@ -866,18 +926,22 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             JSONObject(latest.config).optInt("widget_height", (DoorbellConfig.DEFAULT_WIDTH / DoorbellConfig.DEFAULT_ASPECT).toInt()),
             config.aspect)
         val json = JSONObject(recording.writeTo(config.writeTo(latest.config))).put("button_size", w).put("widget_height", h)
-        tileManager.updateTile(latest.copy(title = title.ifBlank { DoorbellConfig.DEFAULT_TITLE }, config = json.toString()))
+        tileManager.updateTile(latest.copy(title = title.ifBlank { if (camera) DoorbellConfig.CAMERA_TITLE else DoorbellConfig.DEFAULT_TITLE },
+            config = json.toString()))
         device.setEnabled(original.id, recordHere)
         device.limitGb = limitGb; device.reserveGb = reserveGb; device.useSdCard = useSd; device.archivePin = archivePin
         val secret = password
         val saved = config
         // Прямые события: порт и флаг — после пароля (включение входит в камеру с ним). Выключение убирает вебхук.
         val applyDirect = {
-            DirectEvents.setPort(this, directPort)
-            DirectEvents.setEnabled(this, original.id, saved, directHere)
+            // Прямые события камер — часть 2 (docs/camera-tz.md); пока только домофон.
+            if (!camera) {
+                DirectEvents.setPort(this, directPort)
+                DirectEvents.setEnabled(this, original.id, saved, directHere)
+            }
         }
         if (secret == null) { RecorderService.sync(this); applyDirect(); finishSaved(); return true }
-        DoorbellHub.savePassword(this, secret) { ok ->
+        CameraPasswords.save(this, secretKey, secret) { ok ->
             if (!ok) Toast.makeText(this, "Настройки сохранены, но пароль камеры записать не удалось", Toast.LENGTH_LONG).show()
             // Новый пароль — запись переподключится с ним.
             RecorderService.sync(this)

@@ -33,7 +33,7 @@ internal data class PanelSubscriptionPlan(
                     }
                     return@forEach
                 }
-                if (tile.type == DoorbellConfig.TYPE) {
+                if (DoorbellConfig.isVideo(tile.type)) {
                     // Только сущности HA: адреса RTSP и прочие строки config не подписки.
                     ids.addAll(DoorbellConfig.from(tile.config).entityIds)
                     return@forEach

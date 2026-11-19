@@ -13,7 +13,9 @@ internal data class CameraSource(
     val rtspSub: String,
     val rtspUser: String,
     /** Ключ события ([RecordingConfig.TRIGGERS]) → сущность HA (пусто — не задано). */
-    val events: Map<String, String>
+    val events: Map<String, String>,
+    /** Ключ пароля в [CameraSecrets] (номер плитки «Камера»); пусто — пароль домофона. */
+    val secretKey: String = ""
 ) {
     /** Круглосуточная запись и плитка: субпоток, если задан. */
     val subUrl get() = rtspSub.ifBlank { rtspMain }
@@ -22,10 +24,12 @@ internal data class CameraSource(
 
     companion object {
         /** Типы плиток с камерой. */
-        val TYPES = setOf(DoorbellConfig.TYPE)
+        val TYPES = setOf(DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE)
 
         fun of(tile: TileEntity): CameraSource? = when (tile.type) {
             DoorbellConfig.TYPE -> DoorbellConfig.from(tile.config).source
+            // Плитка «Камера» (docs/camera-tz.md): пароль — свой у плитки (CameraSecrets).
+            DoorbellConfig.CAMERA_TYPE -> DoorbellConfig.from(tile.config).source.copy(secretKey = tile.id)
             else -> null
         }
     }

@@ -108,7 +108,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 // Источники «АКБ Modern» выбираются по каждому показателю в её редакторе.
                 val isModern = typeAt(position) == BatteryModernConfig.TYPE || typeAt(position) == PowerModernConfig.TYPE ||
                     typeAt(position) == HomeClimateConfig.TYPE || typeAt(position) == InverterModernConfig.TYPE ||
-                    typeAt(position) == DoorbellConfig.TYPE
+                    DoorbellConfig.isVideo(typeAt(position))
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 btnSelectSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
@@ -126,6 +126,9 @@ class TileSettingsActivity : PinProtectedActivity() {
                 }
                 if (tileId == null && typeAt(position) == DoorbellConfig.TYPE && etTitle.text.isBlank()) {
                     etTitle.setText(DoorbellConfig.DEFAULT_TITLE)
+                }
+                if (tileId == null && typeAt(position) == DoorbellConfig.CAMERA_TYPE && etTitle.text.isBlank()) {
+                    etTitle.setText(DoorbellConfig.CAMERA_TITLE)
                 }
                 // Показываем размер кнопки только для кнопок и групп
                 val showSize = position == 1 || position == 2
@@ -258,6 +261,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             HomeClimateConfig.TYPE -> 9
             InverterModernConfig.TYPE -> 10
             DoorbellConfig.TYPE -> 11
+            DoorbellConfig.CAMERA_TYPE -> 12
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -315,7 +319,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         val container = when (type) {
             "button", "group" -> "bottom_panel"
             "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE, HomeClimateConfig.TYPE,
-            InverterModernConfig.TYPE, DoorbellConfig.TYPE -> "grid"
+            InverterModernConfig.TYPE, DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE -> "grid"
             else -> "grid"
         }
 
@@ -395,7 +399,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             // «Инвертор»: квадрат и пустой шаблон; сохранённые настройки не сбрасываются.
             InverterModernConfig.TYPE -> InverterModernConfig.newTileConfig(existingConfig.toString())
             // «Домофон»: 4:3 и пустой шаблон; сохранённые настройки не сбрасываются.
-            DoorbellConfig.TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString())
+            DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString())
             else -> existingConfig.toString()
         }
 
@@ -426,6 +430,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         9 -> HomeClimateConfig.TYPE
         10 -> InverterModernConfig.TYPE
         11 -> DoorbellConfig.TYPE
+        12 -> DoorbellConfig.CAMERA_TYPE
         else -> "sensor"
     }
 
@@ -480,6 +485,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             isGroup -> "Устройств в группе: ${selectedSensors.size}"
             typeAt(spinnerType.selectedItemPosition) == DoorbellConfig.TYPE ->
                 "Камера, звонок, калитка и звук настраиваются в редакторе плитки: в режиме редактирования нажмите на плитку."
+            typeAt(spinnerType.selectedItemPosition) == DoorbellConfig.CAMERA_TYPE ->
+                "Адрес, логин и пароль камеры — в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == InverterModernConfig.TYPE ->
                 "Датчики инвертора выбираются в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == HomeClimateConfig.TYPE ->
@@ -582,6 +589,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             else if (original.type == HomeClimateConfig.TYPE) 9
             else if (original.type == InverterModernConfig.TYPE) 10
             else if (original.type == DoorbellConfig.TYPE) 11
+            else if (original.type == DoorbellConfig.CAMERA_TYPE) 12
             else listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
         val draft = try {
             saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)
