@@ -119,6 +119,12 @@ internal object DoorbellHub {
         if (events.isNotEmpty()) notifyListeners()
     }
 
+    /** Перерисовать плитки и окно звонка (события камеры появились или погасли). */
+    fun refreshCards() {
+        RingUi.render()
+        notifyListeners()
+    }
+
     /** Плитка домофона: из последнего состояния панели или (HA ещё не отвечал) из хранилища. */
     fun storedTile(tileId: String): TileEntity? = tile(tileId) ?: app?.let { context ->
         com.example.smarthomedashboard.data.TileManager(context).loadTiles().firstOrNull { it.id == tileId && it.type == DoorbellConfig.TYPE }

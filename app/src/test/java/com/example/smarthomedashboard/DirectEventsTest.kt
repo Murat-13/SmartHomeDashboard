@@ -218,6 +218,7 @@ class DirectEventsTest {
         // Этап 2: события камеры — в запись (звонок тоже событие записи).
         assertEquals(200, post(url, """{"alarm":{"type":"PEOPLE","name":"Person Detected"}}"""))
         waitFor("событие «человек» для записи") { recordingEvents.any { it.second == listOf("person") } }
+        assertEquals("значок «человек» на плитке", setOf(DoorbellConfig.Detection.PERSON), DirectEvents.activeDetections("door"))
         assertTrue(recordingEvents.contains("door" to listOf("visitor")))
         assertEquals("человек — не звонок", 1, rings.size)
 
@@ -288,6 +289,34 @@ class DirectEventsTest {
         assertEquals(setOf("vehicle", "visitor"), RecordingEvents.of("door"))
         now += RecordingEvents.DIRECT_HOLD_MS
         assertEquals("событие камеры закончилось, HA остаётся", setOf("vehicle"), RecordingEvents.of("door"))
+    }
+
+    /**
+     * Раскрытая карточка ловит касания как «свернуть»; «Архив» и «Говорить» объявлены своей областью (найдено на
+     * планшете 19.11.2026: «Архив» в раскрытой плитке не открывался). Значки событий — в шапке.
+     */
+    @Test fun expandedCardButtonsAreInteractiveAndIconsAreOnTop() {
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).setup().get()
+        val card = DoorbellCard(activity, expanded = true).apply { tileId = "door"; onArchive = {} }
+        activity.findViewById<android.view.ViewGroup>(android.R.id.content).addView(card, android.view.ViewGroup.LayoutParams(1200, 900))
+        val config = DoorbellConfig(rtspSub = "rtsp://192.0.2.10/sub", rtspUser = "admin", person = "binary_sensor.door_person")
+        val readings = BatteryReadings(HaSession(true, true), mapOf("binary_sensor.door_person" to "on")::get, { false }, { null })
+        card.bind("Домофон", config, DoorbellModel.snapshot(config, readings), false, 0, null, System.currentTimeMillis(), false)
+        shadowOf(Looper.getMainLooper()).idle()
+        fun center(tag: String): Pair<Float, Float> {
+            val v = card.findViewWithTag<android.view.View>(tag)
+            assertTrue("$tag видна", v.isShown)
+            val loc = IntArray(2).also { v.getLocationInWindow(it) }
+            return loc[0] + v.width / 2f to loc[1] + v.height / 2f
+        }
+        val (ax, ay) = center("door_archive")
+        assertTrue("«Архив» — своя область", card.interactiveAt(ax, ay))
+        val (tx, ty) = center("door_talk")
+        assertTrue("«Говорить» — своя область", card.interactiveAt(tx, ty))
+        assertFalse("видео — касание сворачивает", card.interactiveAt(600f, 450f))
+        val (_, iconY) = center("door_icon_person")
+        assertTrue("значок вверху (y=$iconY)", iconY < 450)
+        card.dispose()
     }
 
     @Test fun missingAddressOrLoginIsExplained() {

@@ -244,7 +244,8 @@ internal open class DoorbellFrame(context: Context, private val large: Boolean) 
  * ярко-зелёная с пульсом (звонок), красная «Нет сигнала». Раскрытая (касание): крупное видео со звуком —
  * только слушать; касание сворачивает. Только отображение: события и команды — [DoorbellHub].
  */
-internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellFrame(context, expanded), ModernOverlayCard {
+internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellFrame(context, expanded), ModernOverlayCard,
+    ModernInteractiveArea {
     val video = DoorbellVideoView(context).apply { muted = !expanded }
     private val topScrim = View(context)
     private val bottomScrim = View(context)
@@ -338,6 +339,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         names.addView(title); names.addView(status)
         header.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // События (человек, машина…) — сверху, рядом с названием: из HA и напрямую с камеры.
+        iconViews.values.forEach { icons.addView(it, LinearLayout.LayoutParams(1, 1)) }
+        header.addView(icons)
         header.addView(rec, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(archive, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -350,8 +354,6 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         if (expanded) left.addView(sound)
         footer.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         talkButton?.let { footer.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
-        iconViews.values.forEach { icons.addView(it, LinearLayout.LayoutParams(1, 1)) }
-        footer.addView(icons)
         content.addView(footer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
         content.addView(connecting, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
@@ -404,8 +406,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     private var boundOffline = false
     private var boundAnimate = true
 
-    fun bind(tileTitle: String, config: DoorbellConfig, snapshot: DoorbellModel.Snapshot, offline: Boolean, missed: Int,
+    fun bind(tileTitle: String, config: DoorbellConfig, haSnapshot: DoorbellModel.Snapshot, offline: Boolean, missed: Int,
              lastRing: Long?, now: Long, animate: Boolean = true) {
+        // События с камеры напрямую (docs/direct-events-tz.md) — значками наравне с датчиками HA.
+        val direct = DirectEvents.activeDetections(tileId)
+        val snapshot = if (direct.isEmpty()) haSnapshot else haSnapshot.copy(detections = haSnapshot.detections + direct)
         lastBound = snapshot
         boundConfig = config
         boundSnapshot = snapshot
@@ -525,6 +530,19 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         rec.setTextColor(if (recording) OFFLINE else PERSON)
         rec.contentDescription = if (recording) "Идёт запись" else "Запись включена, но не идёт"
     }
+
+    /**
+     * Раскрытая карточка ловит касание как «свернуть» ([SensorWindowTouchHandler]); кнопки «Архив» и «Говорить»
+     * объявлены своей областью — касание доходит до них.
+     */
+    override fun interactiveAt(windowX: Float, windowY: Float): Boolean = listOfNotNull(archive, talkButton).any { v ->
+        if (!v.isShown) return@any false
+        v.getLocationInWindow(hitLocation)
+        // Раскрытие движет карточку масштабом: размер на экране — с учётом scale карточки (как у PowerModernCard).
+        windowX >= hitLocation[0] && windowX < hitLocation[0] + v.width * scaleX &&
+            windowY >= hitLocation[1] && windowY < hitLocation[1] + v.height * scaleY
+    }
+    private val hitLocation = IntArray(2)
 
     override fun dispose() {
         releaseAnimations()

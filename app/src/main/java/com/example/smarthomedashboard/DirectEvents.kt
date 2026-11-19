@@ -87,6 +87,7 @@ internal object DirectEvents {
         stopServer()
         routes.clear()
         statuses.clear()
+        detected.clear()
         missingSince.clear()
         app = null
     }
@@ -170,9 +171,33 @@ internal object DirectEvents {
         return true
     }
 
+    /** События с камеры для значков на плитке: тип → до какого времени (мс, стена) показывать. */
+    private val detected = ConcurrentHashMap<String, ConcurrentHashMap<CameraEventType, Long>>()
+    /** Камера сообщает только начало события — значок горит столько же, сколько событие считается для записи. */
+    private const val SHOW_MS = RecordingEvents.DIRECT_HOLD_MS
+    private val DETECTIONS = mapOf(
+        CameraEventType.PERSON to DoorbellConfig.Detection.PERSON, CameraEventType.VEHICLE to DoorbellConfig.Detection.VEHICLE,
+        CameraEventType.ANIMAL to DoorbellConfig.Detection.ANIMAL, CameraEventType.MOTION to DoorbellConfig.Detection.MOTION
+    )
+
+    /** Что камера сообщила за последние [SHOW_MS] (значки плитки и окна звонка). */
+    fun activeDetections(tileId: String?): Set<DoorbellConfig.Detection> {
+        val map = tileId?.let { detected[it] } ?: return emptySet()
+        val now = System.currentTimeMillis()
+        return map.filterValues { it > now }.keys.mapNotNullTo(LinkedHashSet()) { DETECTIONS[it] }
+    }
+
     private fun onEvents(tileId: String, events: List<CameraEventType>, source: String) {
         val context = app ?: return
         if (events.isEmpty()) return
+        val shown = events.filter { it in DETECTIONS }
+        if (shown.isNotEmpty()) {
+            val until = System.currentTimeMillis() + SHOW_MS
+            val map = detected.getOrPut(tileId) { ConcurrentHashMap() }
+            shown.forEach { map[it] = until }
+            DoorbellHub.refreshCards()
+            main.postDelayed({ DoorbellHub.refreshCards() }, SHOW_MS + 100)
+        }
         val type = events.first()
         prefs(context).edit().putLong("$tileId.last_at", System.currentTimeMillis()).putString("$tileId.last_type", type.name).apply()
         // Вебхук дошёл — путь здоров: запасной опрос не нужен.
