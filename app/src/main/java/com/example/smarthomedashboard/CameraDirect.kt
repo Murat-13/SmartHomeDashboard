@@ -100,6 +100,18 @@ internal class ReolinkDriver(
     override fun ringActive(): Boolean =
         call("GetEvents", JSONObject().put("channel", 0)).optJSONObject("visitor")?.optInt("alarm_state") == 1
 
+    /**
+     * Прожектор камеры (docs/camera-tz.md, часть 3): включён ли; null — у модели прожектора нет (камера отказала
+     * в GetWhiteLed).
+     */
+    fun floodlight(): Boolean? = try {
+        call("GetWhiteLed", JSONObject().put("channel", 0)).optJSONObject("WhiteLed")?.let { it.optInt("state", 0) == 1 }
+    } catch (e: CameraException) { if (e.auth) throw e; null }
+
+    fun setFloodlight(on: Boolean) {
+        call("SetWhiteLed", JSONObject().put("WhiteLed", JSONObject().put("channel", 0).put("state", if (on) 1 else 0)))
+    }
+
     override fun close() {
         if (token == null) return
         try { call("Logout", JSONObject(), retry = false) } catch (_: Exception) {}

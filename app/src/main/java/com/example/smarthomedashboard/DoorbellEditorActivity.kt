@@ -164,7 +164,10 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         })
 
         side.addView(header("Видео"))
-        if (camera) buildOnvif(side)
+        if (camera) {
+            buildOnvif(side)
+            side.addView(entityRow("light", "Прожектор (Home Assistant)", "у Reolink не нужно — находится сам") { config.light })
+        }
         side.addView(entityRow("camera", "Камера Home Assistant", "снимки и видео вне дома") { config.camera })
         side.addView(text("rtsp_main", "Прямой поток (основной)", config.rtspMain, "rtsp://192.168.1.50:554/h264Preview_01_main") {
             update(config.copy(rtspMain = it)) })

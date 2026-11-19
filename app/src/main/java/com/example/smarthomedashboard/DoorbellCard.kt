@@ -317,6 +317,28 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
     }
     var onGuard: (() -> Unit)? = null
 
+    /** «Прожектор: вкл/выкл» камеры (docs/camera-tz.md, часть 3); null — прожектора нет. */
+    private val lightButton = text(20f, Color.WHITE, bold = true).apply {
+        tag = "door_floodlight"
+        gravity = Gravity.CENTER
+        visibility = GONE
+        setOnClickListener { onFloodlight?.invoke(floodlightOn != true) }
+    }
+    private var floodlightOn: Boolean? = null
+    var onFloodlight: ((Boolean) -> Unit)? = null
+
+    fun floodlight(on: Boolean?) {
+        floodlightOn = on
+        if (on == null || !expanded || !camera) { lightButton.visibility = GONE; return }
+        lightButton.visibility = VISIBLE
+        set(lightButton, if (on) "💡 Прожектор: вкл" else "Прожектор: выкл")
+        lightButton.contentDescription = if (on) "Прожектор включён — коснитесь, чтобы выключить" else "Прожектор выключен — коснитесь, чтобы включить"
+        lightButton.background = GradientDrawable().apply {
+            setColor(if (on) Color.argb(170, 110, 95, 20) else Color.argb(150, 20, 34, 44)); cornerRadius = 999f
+            setStroke(2, if (on) Color.argb(220, 255, 214, 90) else Color.argb(140, 95, 168, 211))
+        }
+    }
+
     /** Пометка 🛡 (охрана включена) и кнопка у раскрытой карточки. [armed] null — охраны на этом планшете нет. */
     fun guard(armed: Boolean?) {
         set(guardMark, "🛡")
@@ -435,6 +457,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         header.addView(icons)
         header.addView(rec, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(lightButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(guardMark, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(guardButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(autoReplyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -485,6 +508,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         autoReplyButton.minHeight = (48 * next).toInt()
         guardButton.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
         guardButton.minHeight = (48 * next).toInt()
+        lightButton.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
+        lightButton.minHeight = (48 * next).toInt()
+        (lightButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (guardButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         guardMark.setPadding((8 * next).toInt(), 0, (4 * next).toInt(), 0)
         (autoReplyButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
@@ -696,7 +722,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             rawY >= hitLocation[1] && rawY < hitLocation[1] + v.height * scaleY
     }
 
-    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, guardButton, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
+    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, guardButton, lightButton, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
 
     private fun hit(v: View, windowX: Float, windowY: Float): Boolean {
         if (!v.isShown) return false

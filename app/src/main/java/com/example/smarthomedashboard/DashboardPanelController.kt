@@ -1186,7 +1186,10 @@ internal class DashboardPanelController(
         val guard = DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
         view?.findViewWithTag<DoorbellCard>("door_compact")?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
-            (modernExpansion.card as? DoorbellCard)?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
+            (modernExpansion.card as? DoorbellCard)?.let {
+                it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard)
+                if (tile.type == DoorbellConfig.CAMERA_TYPE && config.light.isNotBlank()) it.floodlight(CameraLight.haState(config))
+            }
         }
         handler.removeCallbacks(doorbellTick)
         handler.postDelayed(doorbellTick, 60_000L)
@@ -1499,6 +1502,17 @@ internal class DashboardPanelController(
             }
             // Охрана — и у камер (docs/camera-tz.md, часть 2).
             expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
+            // Прожектор камеры (часть 3): состояние с камеры или из HA; кнопка — только если прожектор есть.
+            if (camera) {
+                CameraLight.query(activity, tile.id, config) { state -> expanded.floodlight(state) }
+                expanded.onFloodlight = { on ->
+                    expanded.onActivity?.invoke()
+                    CameraLight.set(activity, tile.id, config, on) { state ->
+                        if (state == null) Toast.makeText(activity, "Прожектор не ответил", Toast.LENGTH_SHORT).show()
+                        else expanded.floodlight(state)
+                    }
+                }
+            }
             // Автоответ (docs/ring-away-tz.md): кнопка — если на этом планшете выбрана фраза; без PIN.
             if (!camera && DoorbellAway.autoReplyConfigured(activity, tile.id)) {
                 expanded.autoReply(DoorbellAway.settings(activity, tile.id).autoReply)

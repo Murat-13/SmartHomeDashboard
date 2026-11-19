@@ -134,6 +134,64 @@ class CameraTileTest {
         assertEquals("", CameraSource.of(door)!!.secretKey)
     }
 
+    // ---- Прожектор (часть 3) ----
+
+    private class Floodlight(val supported: Boolean) : okhttp3.mockwebserver.Dispatcher() {
+        var state = 0
+        val commands = mutableListOf<String>()
+        override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): okhttp3.mockwebserver.MockResponse {
+            val cmd = request.requestUrl?.queryParameter("cmd").orEmpty()
+            commands += cmd
+            val param = org.json.JSONArray(request.body.readUtf8()).getJSONObject(0).optJSONObject("param") ?: org.json.JSONObject()
+            fun ok(value: org.json.JSONObject) = okhttp3.mockwebserver.MockResponse().setBody(
+                org.json.JSONArray().put(org.json.JSONObject().put("cmd", cmd).put("code", 0).put("value", value)).toString())
+            fun fail() = okhttp3.mockwebserver.MockResponse().setBody(org.json.JSONArray().put(org.json.JSONObject().put("cmd", cmd)
+                .put("code", 1).put("error", org.json.JSONObject().put("rspCode", -9).put("detail", "not support"))).toString())
+            return when (cmd) {
+                "Login" -> ok(org.json.JSONObject().put("Token", org.json.JSONObject().put("name", "t1")))
+                "GetWhiteLed" -> if (supported) ok(org.json.JSONObject().put("WhiteLed", org.json.JSONObject().put("state", state))) else fail()
+                "SetWhiteLed" -> if (supported) { state = param.getJSONObject("WhiteLed").getInt("state"); ok(org.json.JSONObject()) } else fail()
+                "Logout" -> ok(org.json.JSONObject())
+                else -> fail()
+            }
+        }
+    }
+
+    @Test fun reolinkFloodlightOnOffAndModelWithoutIt() {
+        val camera = Floodlight(supported = true)
+        val server = okhttp3.mockwebserver.MockWebServer().apply { dispatcher = camera; start() }
+        val driver = ReolinkDriver(server.url("/").toString().trimEnd('/'), "admin", "pw", okhttp3.OkHttpClient())
+        assertEquals(false, driver.floodlight())
+        driver.setFloodlight(true)
+        assertEquals(1, camera.state)
+        assertEquals(true, driver.floodlight())
+        driver.close()
+        server.shutdown()
+        val plain = Floodlight(supported = false)
+        val server2 = okhttp3.mockwebserver.MockWebServer().apply { dispatcher = plain; start() }
+        val d2 = ReolinkDriver(server2.url("/").toString().trimEnd('/'), "admin", "pw", okhttp3.OkHttpClient())
+        assertNull("у модели нет прожектора — кнопки нет", d2.floodlight())
+        d2.close(); server2.shutdown()
+        assertTrue(CameraLight.looksReolink(DoorbellConfig(model = "Reolink RLC-811A")))
+        assertTrue(CameraLight.looksReolink(DoorbellConfig(rtspSub = "rtsp://x/h264Preview_01_sub")))
+        assertFalse(CameraLight.looksReolink(DoorbellConfig(rtspSub = "rtsp://x/Streaming/Channels/102", model = "Hikvision DS-2CD")))
+        // Кнопка: только у раскрытой камеры, состояние — подписью.
+        val card = DoorbellCard(context, expanded = true, camera = true)
+        val button = card.findViewWithTag<android.widget.TextView>("door_floodlight")
+        var asked: Boolean? = null
+        card.onFloodlight = { asked = it }
+        card.floodlight(null)
+        assertEquals(View.GONE, button.visibility)
+        card.floodlight(false)
+        assertEquals("Прожектор: выкл", button.text.toString())
+        button.performClick()
+        assertEquals(true, asked)
+        val door = DoorbellCard(context, expanded = true)
+        door.floodlight(true)
+        assertEquals("у домофона кнопки прожектора нет", View.GONE, door.findViewWithTag<View>("door_floodlight").visibility)
+        card.dispose(); door.dispose()
+    }
+
     // ---- Плитка ----
 
     @Test fun cameraCardHasNoDoorbellParts() {
