@@ -193,7 +193,7 @@ internal object Mp4Finalize {
     fun enqueue(file: File) {
         if (!pending.add(file.path)) return
         queue.execute {
-            try { finalize(file) } catch (e: Exception) { android.util.Log.w("Recording", "Оглавление MP4 не записано: ${e.javaClass.simpleName}") }
+            try { remux(file) } catch (e: Exception) { android.util.Log.w("Recording", "Оглавление MP4 не записано: ${e.javaClass.simpleName}") }
             finally { pending.remove(file.path) }
         }
     }
@@ -228,7 +228,7 @@ internal object Mp4Finalize {
     }
 
     /** true — файл заменён обычным MP4. Кадры, метки и флаги ключевых кадров — без изменений. */
-    fun finalize(file: File): Boolean {
+    fun remux(file: File): Boolean {
         if (!isFragmented(file)) return false
         val originalLength = file.length()
         val tmp = File(file.parentFile, file.name + ".remux")

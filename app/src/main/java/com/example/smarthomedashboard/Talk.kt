@@ -418,13 +418,15 @@ internal object TalkCheck {
                     Thread.sleep(1_500) // камера доигрывает свой буфер — TEARDOWN раньше обрезал бы звук
                     Log.i("Talk", "Проверка звука: отправлено ${talk.sentPackets} пакетов, из них звука ${talk.sentVoice}")
                     "Сигнал отправлен ($codec) — его должно быть слышно у домофона"
+                } catch (e: TalkException) {
+                    Log.w("Talk", "Проверка звука не удалась: ${e.message}")
+                    e.message.orEmpty()
+                } catch (e: RtspException) {
+                    Log.w("Talk", "Проверка звука не удалась: RTSP ${e.status}")
+                    if (e.status == 401) "Камера не приняла логин или пароль" else "Домофон не отвечает (RTSP ${e.status})"
                 } catch (e: Exception) {
                     Log.w("Talk", "Проверка звука не удалась: ${e.javaClass.simpleName} ${e.message}")
-                    when {
-                        e is TalkException -> e.message.orEmpty()
-                        e is RtspException && e.status == 401 -> "Камера не приняла логин или пароль"
-                        else -> "Домофон не отвечает (${e.javaClass.simpleName})"
-                    }
+                    "Домофон не отвечает (${e.javaClass.simpleName})"
                 } finally {
                     talk.close()
                 }

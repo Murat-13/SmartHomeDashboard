@@ -242,15 +242,15 @@ internal object DirectEvents {
             routes[secret] = Route(tileId, addresses, driver)
             stopPoll(tileId)
             main.post { okStatus(context, tileId) }
+        } catch (e: CameraException) {
+            val reason = reason(e)
+            Log.w(TAG, "Проверка не прошла: $reason")
+            if (e.auth) post(tileId, Status(Level.ERROR, "$reason. Проверьте логин и пароль камеры"))
+            else fallBack(context, tileId, password, reason)
         } catch (e: Exception) {
             val reason = reason(e)
             Log.w(TAG, "Проверка не прошла: $reason")
-            if (e is CameraException && e.auth) {
-                post(tileId, Status(Level.ERROR, "$reason. Проверьте логин и пароль камеры"))
-                return
-            }
-            post(tileId, Status(Level.WARN, "$reason — звонок идёт через Home Assistant и опрос камеры"))
-            startPoll(context, tileId, password)
+            fallBack(context, tileId, password, reason)
         } finally {
             driver.close()
         }
@@ -287,6 +287,12 @@ internal object DirectEvents {
 
     // ---- Запасной опрос ----
 
+    /** Вебхук не настроен: звонок идёт через HA и запасной опрос камеры. */
+    private fun fallBack(context: Context, tileId: String, password: String, reason: String) {
+        post(tileId, Status(Level.WARN, "$reason — звонок идёт через Home Assistant и опрос камеры"))
+        startPoll(context, tileId, password)
+    }
+
     private fun startPoll(context: Context, tileId: String, password: String) {
         if (polls.containsKey(tileId)) return
         val p = prefs(context)
@@ -297,10 +303,10 @@ internal object DirectEvents {
             var active: Boolean? = null
             try {
                 while (polls[tileId] === Thread.currentThread()) {
-                    val now = try { driver.ringActive() } catch (e: Exception) {
-                        if (e is CameraException && e.auth) break
+                    val now = try { driver.ringActive() } catch (e: CameraException) {
+                        if (e.auth) break
                         null
-                    }
+                    } catch (_: Exception) { null }
                     if (now == true && active == false) main.post { onEvents(tileId, listOf(CameraEventType.RING), "опрос") }
                     if (now != null) active = now
                     Thread.sleep(if (now == null) POLL_MS * 5 else POLL_MS)
