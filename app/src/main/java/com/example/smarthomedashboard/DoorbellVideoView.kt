@@ -247,7 +247,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 .setTimeoutMs(RTSP_TIMEOUT_MS)
                 // Media3 открывает RTSP-сокет без таймаута: недоступный адрес держал бы поток плеера минутами,
                 // а освобождение плеера ждёт этот поток в главном — отсюда «жуткие лаги» при выключенной камере.
-                .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS))
+                .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS) {
+                    H264Params.forStream(rtsp, src.user, password)
+                })
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
             play { it.setMediaSource(media) }
         }
@@ -352,6 +354,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             main.postDelayed(retry, RETRY_BASE_MS / 4)
             return
         }
+        // Камера могла сменить разрешение: SPS/PPS субпотока возьмём заново при следующем подключении.
+        if (playingRtsp.isNotBlank()) H264Params.forget(playingRtsp)
         releasePlayer()
         failures++
         val src = source ?: return
@@ -628,16 +632,20 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
  * Фабрика сокетов RTSP с таймаутом подключения. Стандартная `SocketFactory.createSocket(host, port)` подключается
  * без таймаута: до недоступного адреса — до системного предела TCP (минуты). Чтение без таймаута, как и было:
  * управляющий канал RTSP подолгу молчит между запросами. Сокеты — [SdpFixingSocket]: описание потока камеры
- * приводится к тому, что примет Media3 (звук AAC без fmtp у субпотока Reolink).
+ * приводится к тому, что примет Media3 (видео H.264 без SPS/PPS в описании у субпотока Reolink).
  */
-internal class ConnectTimeoutSocketFactory(private val timeoutMs: Int) : javax.net.SocketFactory() {
-    override fun createSocket(): java.net.Socket = SdpFixingSocket()
+internal class ConnectTimeoutSocketFactory(
+    private val timeoutMs: Int,
+    /** Параметры видео H.264, если камера не дала их в описании ([H264Params]). */
+    private val h264: (() -> String?)? = null
+) : javax.net.SocketFactory() {
+    override fun createSocket(): java.net.Socket = SdpFixingSocket(h264)
 
     override fun createSocket(host: String, port: Int): java.net.Socket =
         connect(java.net.InetSocketAddress(host, port))
 
     override fun createSocket(host: String, port: Int, localHost: java.net.InetAddress?, localPort: Int): java.net.Socket =
-        SdpFixingSocket().apply {
+        SdpFixingSocket(h264).apply {
             bind(java.net.InetSocketAddress(localHost, localPort))
             connectOrClose(this, java.net.InetSocketAddress(host, port))
         }
@@ -646,12 +654,12 @@ internal class ConnectTimeoutSocketFactory(private val timeoutMs: Int) : javax.n
         connect(java.net.InetSocketAddress(host, port))
 
     override fun createSocket(address: java.net.InetAddress, port: Int, localAddress: java.net.InetAddress?, localPort: Int): java.net.Socket =
-        SdpFixingSocket().apply {
+        SdpFixingSocket(h264).apply {
             bind(java.net.InetSocketAddress(localAddress, localPort))
             connectOrClose(this, java.net.InetSocketAddress(address, port))
         }
 
-    private fun connect(address: java.net.InetSocketAddress) = SdpFixingSocket().also { connectOrClose(it, address) }
+    private fun connect(address: java.net.InetSocketAddress) = SdpFixingSocket(h264).also { connectOrClose(it, address) }
 
     private fun connectOrClose(socket: java.net.Socket, address: java.net.InetSocketAddress) {
         try { socket.connect(address, timeoutMs) } catch (e: java.io.IOException) { socket.close(); throw e }

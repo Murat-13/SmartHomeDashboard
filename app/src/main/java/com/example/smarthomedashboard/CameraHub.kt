@@ -179,13 +179,26 @@ internal class SharedStream(
                     for (a in consumers) synchronized(a) { end(a); begin(a, info) }
                 }
                 relayChannels = setups.withIndex().associate { (i, setup) -> setup.rtpChannel to i }
-                relaySdp = RtspRelay.sdpFor(s.sdp, setups)
+                relaySdp = Media3Sdp.compatible(RtspRelay.sdpFor(s.sdp, setups)) { H264Params.cached(key.url) }
+                // Камера не дала SPS/PPS в описании (субпоток Reolink): берём их из потока и дописываем для плеера.
+                val sniffer = H264Params.Collector().takeIf {
+                    relaySdp?.let { sdp -> SdpParser.parse(sdp).any(Media3Sdp::lacksH264Params) } == true
+                }
+                var sniffing = sniffer != null
                 val enc = encoder
                 s.read(object : RtspSession.Sink {
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
                         relay(setup.rtpChannel, rtcp = false, packet, length)
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
+                            if (sniffing && sniffer != null) {
+                                sniffer.push(rtp.payload, rtp.offset, rtp.length)
+                                sniffer.params?.let { params ->
+                                    sniffing = false
+                                    H264Params.remember(key.url, params)
+                                    relaySdp = relaySdp?.let { sdp -> Media3Sdp.compatible(sdp) { params } }
+                                }
+                            }
                             for (frame in depacketizer.push(rtp)) each { _, sink -> sink.video(frame, depacketizer) }
                         } else if (setup === audioSetup && aac != null) {
                             for (frame in aac.push(rtp)) each { a, sink -> if (a.recorder.wantsAudio) sink.audio(frame, aac.sampleRate) }

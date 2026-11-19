@@ -13,8 +13,9 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 /**
- * Reolink на московском планшете (19.11.2026): субпоток без fmtp у звука AAC — Media3 отвергал всё описание
- * («missing attribute fmtp»), основной поток 2560×1920 — больше предела декодера Samsung (1920×1088).
+ * Reolink на московском планшете (19.11.2026): у видео субпотока нет fmtp (SPS/PPS) — Media3 отвергал всё описание
+ * («missing attribute fmtp»); основной поток 2560×1920 — больше предела декодера Samsung (1920×1088).
+ * Звук AAC без config — защита на будущее (у этой камеры он с config).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
@@ -96,6 +97,115 @@ class RtspCompatTest {
         val parsed = SdpParser.parse(out)
         assertEquals(listOf("H264"), parsed.map { it.encoding })
         assertEquals(listOf("track0"), parsed.map { it.control })
+    }
+
+    // ---- Настоящий субпоток Reolink: видео H.264 без fmtp (описание снято с камеры владельца 19.11.2026) ----
+
+    private val reolinkHead = "v=0\r\no=- 1795093375741656 1 IN IP4 192.0.2.10\r\ns=Session streamed by \"preview\"\r\n" +
+        "i=reolink rtsp stream\r\nt=0 0\r\na=tool:Reolink Streaming Media 2024.12.11\r\na=type:broadcast\r\n" +
+        "a=control:*\r\na=range:npt=now-\r\na=x-qt-text-nam:Session streamed by \"preview\"\r\n"
+    private val reolinkAudio = "m=audio 0 RTP/AVP 97\r\nc=IN IP4 0.0.0.0\r\nb=AS:8192\r\na=rtpmap:97 MPEG4-GENERIC/16000\r\n" +
+        "a=fmtp:97 streamtype=5;profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=1408\r\n" +
+        "a=recvonly\r\na=control:track2\r\n"
+    private val reolinkSub = reolinkHead +
+        "m=video 0 RTP/AVP 96\r\nc=IN IP4 0.0.0.0\r\nb=AS:8192\r\na=rtpmap:96 H264/90000\r\na=control:track1\r\n" + reolinkAudio
+    private val sps = RecBase64.decode("Z2QAM6wVFKAoAPGQ")!!
+    private val pps = RecBase64.decode("aO48sA==")!!
+    private val params = "packetization-mode=1;profile-level-id=640033;sprop-parameter-sets=Z2QAM6wVFKAoAPGQ,aO48sA=="
+
+    @Test fun reolinkSubstreamGetsSpsPpsFromStream() {
+        assertSame("без параметров из потока — как есть", reolinkSub, Media3Sdp.compatible(reolinkSub))
+        assertTrue(Media3Sdp.lacksH264Params(SdpParser.parse(reolinkSub)[0]))
+        var asked = 0
+        val out = Media3Sdp.compatible(reolinkSub) { asked++; params }
+        val tracks = SdpParser.parse(out)
+        assertEquals(listOf("H264", "MPEG4-GENERIC"), tracks.map { it.encoding })
+        assertEquals("Z2QAM6wVFKAoAPGQ,aO48sA==", tracks[0].fmtp["sprop-parameter-sets"])
+        assertEquals("1", tracks[0].fmtp["packetization-mode"])
+        assertEquals("track1", tracks[0].control)
+        assertEquals("звук не тронут", "1408", tracks[1].fmtp["config"])
+        assertTrue("fmtp сразу после rtpmap", out.contains("a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;"))
+        assertEquals(1, asked)
+        assertSame("SPS/PPS уже есть — поток не спрашиваем", out, Media3Sdp.compatible(out) { fail("лишний запрос"); null })
+    }
+
+    @Test fun collectorFindsSpsPpsInSingleAndAggregatedPackets() {
+        val single = H264Params.Collector()
+        single.push(byteArrayOf(0x41, 1, 2), 0, 3)
+        assertNull(single.params)
+        single.push(sps, 0, sps.size)
+        assertNull("ещё нет PPS", single.params)
+        single.push(byteArrayOf(9, 9) + pps, 2, pps.size)
+        assertEquals(params, single.params)
+
+        val stapA = byteArrayOf(24) + byteArrayOf(0, sps.size.toByte()) + sps + byteArrayOf(0, pps.size.toByte()) + pps
+        val aggregated = H264Params.Collector()
+        aggregated.push(stapA, 0, stapA.size)
+        assertEquals(params, aggregated.params)
+    }
+
+    /** Отдельная короткая сессия к камере: ждёт SPS/PPS в потоке, закрывается сама (TEARDOWN). */
+    @Test fun probeReadsSpsPpsFromCameraStreamAndHangsUp() {
+        java.net.ServerSocket(0).use { server ->
+            val teardown = java.util.concurrent.CountDownLatch(1)
+            kotlin.concurrent.thread(isDaemon = true) {
+                server.accept().use { s ->
+                    val reader = s.getInputStream().bufferedReader()
+                    val out = s.getOutputStream()
+                    val base = "rtsp://127.0.0.1:${server.localPort}/h264Preview_01_sub"
+                    fun reply(cseq: String, headers: String = "", body: String = "") {
+                        val b = body.toByteArray()
+                        out.write(("RTSP/1.0 200 OK\r\nCSeq: $cseq\r\n$headers" +
+                            (if (b.isNotEmpty()) "Content-Length: ${b.size}\r\n" else "") + "\r\n").toByteArray() + b)
+                        out.flush()
+                    }
+                    fun packet(seq: Int, payload: ByteArray) {
+                        val p = RecordingTestSupport.rtp(96, true, seq, seq * 3000L, payload)
+                        out.write(byteArrayOf('$'.code.toByte(), 0, (p.size shr 8).toByte(), p.size.toByte()) + p)
+                        out.flush()
+                    }
+                    try {
+                        while (true) {
+                            val first = reader.readLine() ?: break
+                            if (first.isEmpty()) continue
+                            val headers = mutableMapOf<String, String>()
+                            while (true) { val l = reader.readLine() ?: return@use; if (l.isEmpty()) break; headers[l.substringBefore(':').lowercase()] = l.substringAfter(':').trim() }
+                            val cseq = headers["cseq"].orEmpty()
+                            when (first.substringBefore(' ')) {
+                                "DESCRIBE" -> reply(cseq, "Content-Type: application/sdp\r\nContent-Base: $base/\r\n", reolinkSub)
+                                "SETUP" -> reply(cseq, "Session: 7;timeout=60\r\nTransport: ${headers["transport"]}\r\n")
+                                "PLAY" -> {
+                                    reply(cseq, "Session: 7\r\n")
+                                    packet(1, byteArrayOf(0x41, 1, 2, 3))
+                                    packet(2, sps)
+                                    packet(3, pps)
+                                    packet(4, byteArrayOf(0x65, 1, 2, 3))
+                                }
+                                "TEARDOWN" -> { teardown.countDown(); reply(cseq); break }
+                                else -> reply(cseq, "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n")
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            val url = "rtsp://127.0.0.1:${server.localPort}/h264Preview_01_sub"
+            assertEquals(params, H264Params.probe(url, "", null, timeoutMs = 5_000))
+            assertTrue("сессия закрыта камерой TEARDOWN", teardown.await(3, java.util.concurrent.TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun relayAddsRememberedSpsPps() {
+        val tracks = SdpParser.parse(reolinkSub)
+        val relay = RtspRelay.sdpFor(reolinkSub, listOf(RtspSession.Setup(tracks[0], 0), RtspSession.Setup(tracks[1], 2)))
+        val url = "rtsp://192.0.2.10:554/h264Preview_01_sub"
+        H264Params.remember(url, params)
+        try {
+            val out = Media3Sdp.compatible(relay) { H264Params.cached(url) }
+            assertEquals("Z2QAM6wVFKAoAPGQ,aO48sA==", SdpParser.parse(out)[0].fmtp["sprop-parameter-sets"])
+            assertEquals(listOf("track0", "track1"), SdpParser.parse(out).map { it.control })
+        } finally {
+            H264Params.forget(url)
+        }
     }
 
     // ---- Основной поток не по силам декодеру ----
