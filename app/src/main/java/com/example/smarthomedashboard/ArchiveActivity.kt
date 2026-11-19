@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -173,6 +174,7 @@ class ArchiveActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         DoorbellHub.removeRingListener(ringListener)
+        previewThread.shutdownNow()
         player?.release()
         player = null
         index?.close()
@@ -207,7 +209,8 @@ class ArchiveActivity : AppCompatActivity() {
             val keep = DoorbellHub.storedTile(tileId)?.let { RecordingConfig.from(it.config).keepContinuousDays } ?: RecordingConfig().keepContinuousDays
             val limit = RecordingDevice(this@ArchiveActivity).limitGb
             val text = withContext(Dispatchers.IO) { try { RecArchive.storageText(archive.storage(limit, keep)) } catch (_: Exception) { null } }
-            ui.value = ui.value.copy(storage = text)
+            val copy = withContext(Dispatchers.IO) { ArchiveCopy.statusText(this@ArchiveActivity) }
+            ui.value = ui.value.copy(storage = text, copyStatus = copy)
         }
     }
 
@@ -226,12 +229,17 @@ class ArchiveActivity : AppCompatActivity() {
             ArchiveTimeline.latest(snapshot.continuous.filter { it.startMs in selected until end },
                 snapshot.events.filter { it.file.startMs in selected until end })?.minus(60_000) ?: (selected + 12 * 3_600_000L)
         } else ui.value.center
-        ui.value = ui.value.copy(loading = false, days = days, day = selected, events = filtered(selected, ui.value.filter), center = center)
+        ui.value = ui.value.copy(loading = false, days = days, day = selected, week = false,
+            events = filtered(selected, ui.value.filter, week = false), center = center)
     }
 
-    private fun filtered(dayStart: Long?, filter: String?) = snapshot.events.filter { e ->
-        (dayStart == null || RecArchive.dayStart(e.file.startMs) == dayStart) && (filter == null || filter in e.labels)
+    private fun filtered(dayStart: Long?, filter: String?, week: Boolean = ui.value.week) = snapshot.events.filter { e ->
+        val inRange = if (week) e.file.startMs >= weekStart() else (dayStart == null || RecArchive.dayStart(e.file.startMs) == dayStart)
+        inRange && (filter == null || filter in e.labels)
     }
+
+    /** Начало недели для «Неделя»: полночь шесть дней назад (сегодня и 6 дней до него). */
+    private fun weekStart(): Long = RecArchive.dayStart(System.currentTimeMillis() - 6 * 86_400_000L)
 
     /** Шкала целиком (все дни): участки 24/7 и ролики событий с их длительностью. */
     private fun timelineOf(filter: String?): ArchiveUi.Timeline {
@@ -388,6 +396,11 @@ class ArchiveActivity : AppCompatActivity() {
             val updated = withContext(Dispatchers.IO) { archive.setStarred(event.file, !event.starred) }
             if (updated == null) { toast("Не удалось изменить отметку"); return@launch }
             replace(event, RecArchive.Event(updated, event.labels))
+            // Сохранённый ролик — сразу и в папку копий (не ждать ночи: планшет может пропасть раньше).
+            if (updated.starred) launch(Dispatchers.IO) {
+                try { ArchiveCopy.run(applicationContext) } catch (_: Exception) {}
+                withContext(Dispatchers.Main) { loadStorage() }
+            }
         }
     }
 
@@ -521,13 +534,41 @@ class ArchiveActivity : AppCompatActivity() {
         }
     }
 
+    // ---- Превью над риской ----
+
+    private val previewCache = object : LinkedHashMap<Long, Bitmap>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Bitmap>?) = size > PREVIEW_CACHE
+    }
+    private val previewThread = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "archive-preview").apply { isDaemon = true } }
+    @Volatile private var previewWanted = 0L
+
+    /**
+     * Кадр для момента [atMs]: ролик 24/7, иначе ролик события; шаг [PREVIEW_STEP_MS] (соседние моменты — тот же кадр).
+     * Считается в своём потоке; пока считался, палец ушёл дальше — старый запрос пропускается.
+     */
+    private fun preview(atMs: Long) {
+        val key = atMs / PREVIEW_STEP_MS * PREVIEW_STEP_MS
+        previewCache[key]?.let { ui.value = ui.value.copy(preview = key to it); return }
+        previewWanted = key
+        val segment = snapshot.continuous.firstOrNull { key >= it.startMs && key < it.endMs }
+            ?: snapshot.events.firstOrNull { key >= it.file.startMs && key < it.file.endMs }?.file ?: return
+        previewThread.execute {
+            if (previewWanted != key) return@execute
+            val frame = try { archive.frameAt(segment, key - segment.startMs) } catch (_: Exception) { null } ?: return@execute
+            runOnUiThread {
+                previewCache[key] = frame
+                if (previewWanted == key) ui.value = ui.value.copy(preview = key to frame)
+            }
+        }
+    }
+
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
     private val actions = object : ArchiveActions {
         override fun back() = finish()
         override fun selectDay(day: Long) = this@ArchiveActivity.selectDay(day, recenter = true)
         override fun filter(label: String?) {
-            ui.value = ui.value.copy(filter = label, events = filtered(ui.value.day, label), timeline = timelineOf(label))
+            ui.value = ui.value.copy(filter = label, events = filtered(ui.value.day, label, ui.value.week), timeline = timelineOf(label))
         }
         override fun play(event: RecArchive.Event) = this@ArchiveActivity.play(event)
         override fun timelineTap(atMs: Long, toleranceMs: Long) {
@@ -581,6 +622,10 @@ class ArchiveActivity : AppCompatActivity() {
             ui.value = ui.value.copy(ringPhoto = ring)
             if (ring != null) lifecycleScope.launch { thumbs[ringKey(ring) + "_big"] = withContext(Dispatchers.IO) { RingLog.photo(ring.photo, 1280) } }
         }
+        override fun preview(atMs: Long) = this@ArchiveActivity.preview(atMs)
+        override fun selectWeek() {
+            ui.value = ui.value.copy(week = true, events = filtered(ui.value.day, ui.value.filter, week = true))
+        }
         override fun openRing(ring: RingLog.Ring) {
             ui.value = ui.value.copy(ringPhoto = null, tab = ArchiveUi.Tab.RECORDS)
             openMoment(ring.atMs)
@@ -602,6 +647,8 @@ class ArchiveActivity : AppCompatActivity() {
         const val EXTRA_AT = "at"
         private const val FRAME_MS = 40L
         private const val MAX_SEGMENT_MS = 15 * 60_000L
+        private const val PREVIEW_STEP_MS = 5_000L
+        private const val PREVIEW_CACHE = 120
 
         internal fun ringKey(ring: RingLog.Ring) = "ring_${ring.atMs}_${ring.photo?.lastModified() ?: 0}"
 
@@ -647,7 +694,13 @@ internal data class ArchiveUi(
     val rings: List<RingLog.Ring> = emptyList(),
     val ringPhoto: RingLog.Ring? = null,
     val storage: String? = null,
-    val calendar: Boolean = false
+    val calendar: Boolean = false,
+    /** События сразу за 7 дней (кнопка «Неделя») вместо одного дня. */
+    val week: Boolean = false,
+    /** Кадр-превью над риской, пока ведут ленту: время на стене (округлённое) и кадр. */
+    val preview: Pair<Long, Bitmap>? = null,
+    /** Как копируются ролики со ★ (ночью в папку копий). */
+    val copyStatus: String? = null
 ) {
     enum class Tab { RECORDS, CALLS }
     /** Участки круглосуточной записи и ролики событий — время на стене, все дни. */
@@ -691,6 +744,10 @@ internal interface ArchiveActions {
     fun ringThumb(ring: RingLog.Ring)
     fun ringPhoto(ring: RingLog.Ring?)
     fun openRing(ring: RingLog.Ring)
+    /** Кадр-превью для момента [atMs] (пока ведут ленту). */
+    fun preview(atMs: Long)
+    /** «Неделя» — события за 7 дней. */
+    fun selectWeek()
 }
 
 // ---- Оформление: палитра Modern (res/values/modern_colors.xml) ----
@@ -1021,6 +1078,9 @@ private fun Timeline(ui: ArchiveUi, actions: ArchiveActions) {
     val currentCenter by rememberUpdatedState(center)
     val currentSpan by rememberUpdatedState(span)
     val measurer = rememberTextMeasurer()
+    // Кадр-превью над риской, пока ведут ленту (как у Reolink): рисуется поверх видео, место под шкалой не меняется.
+    val preview = ui.preview?.takeIf { p -> dragCenter?.let { kotlin.math.abs(it - p.first) <= 10_000L } == true }
+    Box {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text((if (dragCenter != null) "→ " else "") + "${dayFormat.format(Date(center))}, ${timeFormat.format(Date(center))}",
@@ -1063,7 +1123,11 @@ private fun Timeline(ui: ArchiveUi, actions: ArchiveActions) {
                         if (mode == 1) {
                             val c = originCenter - ((change.position.x - originX) / w * startSpan).toLong()
                             dragCenter = c
-                            if (change.uptimeMillis - lastSeek > SCRUB_EVERY_MS) { lastSeek = change.uptimeMillis; actions.timelineScrub(c, false) }
+                            if (change.uptimeMillis - lastSeek > SCRUB_EVERY_MS) {
+                                lastSeek = change.uptimeMillis
+                                actions.timelineScrub(c, false)
+                                actions.preview(c)
+                            }
                             change.consume()
                         }
                     }
@@ -1126,6 +1190,14 @@ private fun Timeline(ui: ArchiveUi, actions: ArchiveActions) {
         if (timeline != null && timeline.coverage.isEmpty())
             Text("Круглосуточной записи нет — на шкале только события", color = ArchiveColors.hint, fontSize = 14.sp)
     }
+    preview?.let { (at, frame) ->
+        Column(Modifier.align(Alignment.TopCenter).offset(y = (-128).dp).testTag("archive_preview"),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            Image(frame.asImageBitmap(), contentDescription = "Кадр в ${timeFormat.format(Date(at))}", contentScale = ContentScale.Crop,
+                modifier = Modifier.width(176.dp).height(112.dp).clip(RoundedCornerShape(8.dp)).border(2.dp, Color.White, RoundedCornerShape(8.dp)))
+        }
+    }
+    }
 }
 
 private fun spanTitle(span: Long): String = when {
@@ -1149,8 +1221,13 @@ private fun androidx.compose.foundation.layout.ColumnScope.ListPane(ui: ArchiveU
     if (ui.tab == ArchiveUi.Tab.CALLS) { CallsList(ui, thumbs, actions); return }
     Row(verticalAlignment = Alignment.CenterVertically) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+            item {
+                FilterChip(selected = ui.week, onClick = { actions.selectWeek() }, enabled = ui.days.isNotEmpty(),
+                    label = { Text("Неделя", fontSize = 16.sp) }, modifier = Modifier.testTag("archive_week"),
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ArchiveColors.accentSoft))
+            }
             items(ui.days) { d ->
-                FilterChip(selected = ui.day == d, onClick = { actions.selectDay(d) },
+                FilterChip(selected = !ui.week && ui.day == d, onClick = { actions.selectDay(d) },
                     label = { Text(dayTitle(d), fontSize = 16.sp) }, modifier = Modifier.testTag("archive_day_$d"),
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ArchiveColors.accentSoft))
             }
@@ -1171,14 +1248,29 @@ private fun androidx.compose.foundation.layout.ColumnScope.ListPane(ui: ArchiveU
     }
     Spacer(Modifier.height(8.dp))
     if (ui.events.isEmpty() && !ui.loading) {
-        Text(if (ui.days.isEmpty()) "Записей пока нет" else "Событий за этот день нет", color = ArchiveColors.hint, fontSize = 18.sp,
+        Text(if (ui.days.isEmpty()) "Записей пока нет" else if (ui.week) "Событий за неделю нет" else "Событий за этот день нет",
+            color = ArchiveColors.hint, fontSize = 18.sp,
             modifier = Modifier.padding(top = 24.dp).testTag("archive_empty"))
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f).testTag("archive_list")) {
-        items(ui.events, key = { it.file.startMs }) { event -> EventRow(event, ui.current?.file?.startMs == event.file.startMs, thumbs, actions) }
+        if (ui.week) {
+            // За неделю — с заголовком каждого дня (новые первыми).
+            ui.events.groupBy { RecArchive.dayStart(it.file.startMs) }.forEach { (day, events) ->
+                item(key = "day_$day") {
+                    Text("${dayTitle(day)} · ${events.size}", color = ArchiveColors.secondary, fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 6.dp).testTag("archive_week_day_$day"))
+                }
+                items(events, key = { it.file.startMs }) { event -> EventRow(event, ui.current?.file?.startMs == event.file.startMs, thumbs, actions) }
+            }
+        } else {
+            items(ui.events, key = { it.file.startMs }) { event -> EventRow(event, ui.current?.file?.startMs == event.file.startMs, thumbs, actions) }
+        }
     }
     ui.storage?.let {
         Text(it, color = ArchiveColors.hint, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp).testTag("archive_storage"))
+    }
+    ui.copyStatus?.let {
+        Text(it, color = ArchiveColors.hint, fontSize = 14.sp, modifier = Modifier.testTag("archive_copy_status"))
     }
 }
 

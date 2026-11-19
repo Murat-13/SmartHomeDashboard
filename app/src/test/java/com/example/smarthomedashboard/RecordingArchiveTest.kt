@@ -133,6 +133,9 @@ class RecordingArchiveTest {
         override fun ringThumb(ring: RingLog.Ring) {}
         override fun ringPhoto(ring: RingLog.Ring?) { calls += "ring:${ring?.atMs}" }
         override fun openRing(ring: RingLog.Ring) { calls += "open:${ring.atMs}" }
+        override fun preview(atMs: Long) { previews++ }
+        override fun selectWeek() { calls += "week" }
+        var previews = 0
         var lastAt = 0L
         var lastSpan = 0L
         override fun scrubClip(fraction: Float, done: Boolean) { calls += "clip:$done" }
@@ -204,6 +207,7 @@ class RecordingArchiveTest {
         }
         compose.waitForIdle()
         assertTrue("по ходу движения: ${actions.calls}", actions.calls.count { it == "scrub:false" } >= 2)
+        assertTrue("превью над риской запрашиваются по ходу", actions.previews >= 2)
         assertEquals("отпустили — точный переход, не «касание»", "scrub:true", actions.calls.last())
         assertFalse(actions.calls.contains("tap"))
         assertTrue("лента вправо — назад во времени", actions.lastAt < centerAt - 10 * 60_000L)
@@ -311,6 +315,50 @@ class RecordingArchiveTest {
         compose.onNodeWithText("Снимка нет: в момент звонка видео не шло").assertIsDisplayed()
         compose.onNodeWithTag("archive_ring_open").performClick()
         assertEquals("open:${ring.atMs}", actions.calls.last())
+    }
+
+    /** «Неделя»: события за 7 дней с заголовками дней; статус копии ★. */
+    @Test fun weekListHasDayHeadersAndCopyStatus() {
+        val yesterday = day - 86_400_000L
+        val a = event(day + 3_600_000, setOf("person"))
+        val b = event(yesterday + 7_200_000, setOf("visitor"))
+        val actions = Recorded()
+        var ui by mutableStateOf(ArchiveUi(title = "Домофон", loading = false, days = listOf(day, yesterday), day = day,
+            events = listOf(a), copyStatus = "★ ролики копируются ночью в папку копий"))
+        compose.setContent { ArchiveScreen(ui, emptyMap(), actions, video = {}) }
+        compose.onNodeWithTag("archive_week").performClick()
+        assertEquals(listOf("week"), actions.calls)
+        compose.onNodeWithTag("archive_copy_status").assertIsDisplayed()
+        ui = ui.copy(week = true, events = listOf(a, b))
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_week_day_$day").assertIsDisplayed()
+        compose.onNodeWithTag("archive_week_day_$yesterday").assertIsDisplayed()
+        compose.onNodeWithText("Сегодня · 1").assertIsDisplayed()
+        compose.onNodeWithText("Вчера · 1").assertIsDisplayed()
+    }
+
+    /** Ночная копия ★ (ArchiveCopy): копирует, пропускает уже скопированные, заменяет недописанные, чистит за ошибкой. */
+    @Test fun starredCopySkipsCopiedAndReplacesPartial() {
+        val root = tmp.newFolder("root")
+        val f1 = RecLayout.parse(file(root, "door", RecFile.Kind.EVENT, day + 1_000, 20_000, starred = true), "door")!!
+        val f2 = RecLayout.parse(file(root, "door", RecFile.Kind.EVENT, day + 61_000, 20_000, starred = true), "door")!!
+        val stored = linkedMapOf<String, java.io.ByteArrayOutputStream>()
+        val folder = object : ArchiveCopy.Folder {
+            override fun sizes() = stored.mapValues { it.value.size().toLong() }
+            override fun create(name: String) = java.io.ByteArrayOutputStream().also { stored[name] = it }
+            override fun delete(name: String) { stored.remove(name) }
+        }
+        val name1 = ArchiveCopy.nameFor("Калитка: двор", f1)
+        assertTrue(name1, name1.startsWith("Калитка  двор ") && name1.endsWith(".mp4"))
+        stored[ArchiveCopy.nameFor("Домофон", f2)] = java.io.ByteArrayOutputStream().apply { write(ByteArray(10)) } // недописанная
+        val first = ArchiveCopy.copy(listOf("Домофон" to f1, "Домофон" to f2), folder)
+        assertEquals(2, first.copied)
+        assertEquals(listOf(100, 100), stored.values.map { it.size() })
+        val second = ArchiveCopy.copy(listOf("Домофон" to f1, "Домофон" to f2), folder)
+        assertEquals("уже скопированные — пропуск", ArchiveCopy.Result(0, 2, 0, 0), second)
+        val broken = ArchiveCopy.copy(listOf("Домофон" to f1.copy(startMs = day + 999_000)), folder) { null }
+        assertEquals(1, broken.failed)
+        assertEquals("за неудачей не остаётся пустого файла", 2, stored.size)
     }
 
     @Test fun storageTextAndCalendarDates() {

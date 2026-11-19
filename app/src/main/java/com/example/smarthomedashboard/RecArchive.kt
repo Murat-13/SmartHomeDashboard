@@ -72,6 +72,16 @@ internal class RecArchive(private val context: Context, private val roots: () ->
         return scaled
     }
 
+    /**
+     * Кадр из момента [offsetMs] ролика для превью над риской шкалы (ключевой кадр не позже, уменьшенный до [width]).
+     * Без кэша на диске: превью живут, пока ведут ленту.
+     */
+    fun frameAt(file: RecFile, offsetMs: Long, width: Int = 240): Bitmap? {
+        val atUs = offsetMs.coerceIn(0, file.durationMs.coerceAtLeast(1)) * 1000
+        val frame = systemFrame(file, atUs) ?: SoftFrame.grab(file.path.path, atUs, width) ?: return null
+        return if (frame.width > width) Bitmap.createScaledBitmap(frame, width, frame.height * width / frame.width, true) else frame
+    }
+
     private fun systemFrame(file: RecFile, atUs: Long): Bitmap? {
         val retriever = MediaMetadataRetriever()
         return try {
