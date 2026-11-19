@@ -294,8 +294,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     private fun buildRecording(side: LinearLayout) {
         side.addView(header("Запись с домофона"))
         side.addView(kit.label("Запись идёт прямо на планшет: круглосуточно — субпоток, события — основной поток в HD. " +
-            "Нужен прямой поток (RTSP). События берутся из датчиков этой плитки (звонок, человек, машина…) " +
-            "и пишутся, пока панель на связи с Home Assistant.", 13f))
+            "Нужен прямой поток (RTSP). События берутся из датчиков этой плитки в Home Assistant (звонок, человек, машина…), " +
+            "а при включённых «Прямых событиях с камеры» — ещё и сразу с камеры, в том числе без Home Assistant.", 13f))
         side.addView(switch("rec_here", "Записывать на этом планшете", recordHere) { recordHere = it })
         side.addView(choice("rec_mode", "Что записывать", RecordingConfig.Mode.entries.map { it.title },
             RecordingConfig.Mode.entries.indexOf(recording.mode)) { recording = recording.copy(mode = RecordingConfig.Mode.entries[it]) })

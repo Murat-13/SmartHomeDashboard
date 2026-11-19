@@ -58,6 +58,15 @@ internal object DirectEvents {
     internal var passwordSource: (Context, (String?) -> Unit) -> Unit = { context, result -> DoorbellHub.cameraPassword(context, result) }
     /** Куда уходит звонок (в тестах — запись). */
     internal var onRing: (tileId: String, source: String) -> Unit = { tileId, source -> DoorbellHub.directRing(tileId, source) }
+    /** События для записи (в тестах — запись вызовов). */
+    internal var onRecordingEvents: (tileId: String, keys: List<String>) -> Unit = { tileId, keys ->
+        DoorbellHub.storedTile(tileId)?.let { tile -> RecordingEvents.direct(tileId, keys, RecordingConfig.from(tile.config).eventTriggers) }
+    }
+    /** Ключи событий записи ([RecordingConfig.TRIGGERS]). */
+    private val RECORDING_KEYS = mapOf(
+        CameraEventType.RING to "visitor", CameraEventType.PERSON to "person", CameraEventType.VEHICLE to "vehicle",
+        CameraEventType.ANIMAL to "animal", CameraEventType.MOTION to "motion"
+    )
     /** Адрес планшета, с которого видна камера (в тестах — задан). */
     internal var localAddress: (cameraHost: String) -> String? = ::localAddressFor
 
@@ -170,6 +179,8 @@ internal object DirectEvents {
         if (source == "вебхук") { stopPoll(tileId); okStatus(context, tileId) }
         else if (statuses[tileId]?.level == Level.OK) okStatus(context, tileId)
         if (CameraEventType.RING in events) onRing(tileId, source)
+        // Этап 2: события камеры — в запуск HD-записи наравне с датчиками HA.
+        onRecordingEvents(tileId, events.map { RECORDING_KEYS.getValue(it) })
     }
 
     // ---- Работа с камерой (фоновый поток) ----

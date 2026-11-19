@@ -17,16 +17,39 @@ import java.util.concurrent.ConcurrentHashMap
  */
 
 /**
- * Какие события сейчас идут — по каждой плитке домофона. Пишет панель (главный поток, из [DoorbellHub.onState]),
- * читают потоки записи. Нет панели или связи с HA — «неизвестно»: новое событие не начинается, идущее
- * дописывается и закрывается по дозаписи.
+ * Какие события сейчас идут — по каждой плитке домофона. Два источника, срабатывает любой:
+ * - датчики HA (пишет панель, главный поток, из [DoorbellHub.onState]);
+ * - события напрямую с камеры (вебхук, docs/direct-events-tz.md, этап 2) — [direct]: камера сообщает только начало
+ *   события, поэтому оно считается идущим [DIRECT_HOLD_MS], дальше — обычная дозапись.
+ * Читают потоки записи. Нет ни HA, ни свежего события с камеры — «неизвестно»: новое событие не начинается,
+ * идущее дописывается и закрывается по дозаписи.
  */
 internal object RecordingEvents {
     /** [labels] — ключи сработавших датчиков ([RecordingConfig.TRIGGERS]); null — состояние HA неизвестно. */
     private val active = ConcurrentHashMap<String, Set<String>>()
     private val known = ConcurrentHashMap.newKeySet<String>()
+    /** Плитка → ключ события → до какого времени (стена, мс) оно считается идущим. */
+    private val directUntil = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    const val DIRECT_HOLD_MS = 10_000L
+    internal var clock: () -> Long = { System.currentTimeMillis() }
 
-    fun of(tileId: String): Set<String>? = if (tileId in known) active[tileId].orEmpty() else null
+    fun of(tileId: String): Set<String>? {
+        val now = clock()
+        val direct = directUntil[tileId]?.filterValues { it > now }?.keys.orEmpty()
+        if (tileId !in known) return direct.takeIf { it.isNotEmpty() }
+        val ha = active[tileId].orEmpty()
+        return if (direct.isEmpty()) ha else ha + direct
+    }
+
+    /**
+     * Событие напрямую с камеры. [triggers] — какие события этой плитки запускают HD-запись (настройка записи);
+     * остальные не учитываются.
+     */
+    fun direct(tileId: String, keys: Collection<String>, triggers: Set<String>) {
+        val until = clock() + DIRECT_HOLD_MS
+        val map = directUntil.getOrPut(tileId) { ConcurrentHashMap() }
+        keys.filter { it in triggers }.forEach { map[it] = until }
+    }
 
     fun update(tiles: List<TileEntity>, readings: BatteryReadings) {
         val ids = HashSet<String>()
@@ -40,7 +63,7 @@ internal object RecordingEvents {
         active.keys.retainAll(ids)
     }
 
-    fun clear() { known.clear(); active.clear() }
+    fun clear() { known.clear(); active.clear(); directUntil.clear() }
 
     /** Сработавшие датчики, запускающие HD-запись; null — связи с HA нет или идёт синхронизация. */
     fun labels(source: CameraSource, rec: RecordingConfig, readings: BatteryReadings): Set<String>? {

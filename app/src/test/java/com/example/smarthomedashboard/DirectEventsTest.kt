@@ -82,6 +82,7 @@ class DirectEventsTest {
     private val api = MockWebServer().apply { dispatcher = camera; start() }
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val rings = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+    private val recordingEvents = java.util.Collections.synchronizedList(mutableListOf<Pair<String, List<String>>>())
     private val base get() = api.url("/").toString().trimEnd('/')
     private val http = OkHttpClient()
 
@@ -93,6 +94,7 @@ class DirectEventsTest {
         DirectEvents.driverFactory = { _, user, password, _, _ -> ReolinkDriver(base, user, password, http) }
         DirectEvents.passwordSource = { _, result -> result(camera.password) }
         DirectEvents.onRing = { id, source -> rings += id to source }
+        DirectEvents.onRecordingEvents = { id, keys -> recordingEvents += id to keys }
         DirectEvents.localAddress = { "127.0.0.1" }
     }
 
@@ -101,6 +103,8 @@ class DirectEventsTest {
         DirectEvents.drain()
         shadowOf(Looper.getMainLooper()).idle()
         api.shutdown()
+        RecordingEvents.clear()
+        RecordingEvents.clock = { System.currentTimeMillis() }
     }
 
     private fun waitFor(what: String, timeoutMs: Long = 8_000, cond: () -> Boolean) {
@@ -211,6 +215,11 @@ class DirectEventsTest {
         assertEquals("door" to "вебхук", rings.single())
         waitFor("последнее событие в статусе") { DirectEvents.status(context, "door").text.contains("звонок") }
         assertEquals("неверный секрет", 404, post(url.dropLast(4) + "0000", visitorHook))
+        // Этап 2: события камеры — в запись (звонок тоже событие записи).
+        assertEquals(200, post(url, """{"alarm":{"type":"PEOPLE","name":"Person Detected"}}"""))
+        waitFor("событие «человек» для записи") { recordingEvents.any { it.second == listOf("person") } }
+        assertTrue(recordingEvents.contains("door" to listOf("visitor")))
+        assertEquals("человек — не звонок", 1, rings.size)
 
         // Повторная проверка: адрес на месте — слот тот же, второй не занимается.
         DirectEvents.check("door")
@@ -253,6 +262,32 @@ class DirectEventsTest {
         DirectEvents.setEnabled(context, "door", config, true)
         waitFor("ошибка входа") { DirectEvents.status(context, "door").level == DirectEvents.Level.ERROR }
         assertTrue(DirectEvents.status(context, "door").text.contains("логин или пароль"))
+    }
+
+    /** Этап 2: событие с камеры запускает HD-запись и без HA; держится [RecordingEvents.DIRECT_HOLD_MS]. */
+    @Test fun directCameraEventsDriveRecordingWithAndWithoutHa() {
+        var now = 1_000_000L
+        RecordingEvents.clock = { now }
+        val triggers = RecordingConfig.DEFAULT_TRIGGERS // без «движения»
+        assertNull("ни HA, ни событий — неизвестно", RecordingEvents.of("door"))
+        RecordingEvents.direct("door", listOf("person", "motion"), triggers)
+        assertEquals("без HA — по камере; движение не в настройке записи", setOf("person"), RecordingEvents.of("door"))
+        now += RecordingEvents.DIRECT_HOLD_MS - 1
+        assertEquals(setOf("person"), RecordingEvents.of("door"))
+        now += 2
+        assertNull("время события вышло, HA нет — снова неизвестно", RecordingEvents.of("door"))
+
+        // С HA: объединение. Датчик «машина» в HA включён, камера сообщает звонок.
+        val config = DoorbellConfig(rtspMain = "rtsp://192.0.2.10/main", rtspUser = "admin", vehicle = "binary_sensor.door_vehicle")
+        val tile = com.example.smarthomedashboard.data.TileEntity(id = "door", type = DoorbellConfig.TYPE, container = "main",
+            title = "Домофон", x = 0, y = 0, width = 400, height = 300, config = config.writeTo("{}"))
+        val values = mapOf("binary_sensor.door_vehicle" to "on")
+        RecordingEvents.update(listOf(tile), BatteryReadings(HaSession(true, true), values::get, { false }, { null }))
+        assertEquals(setOf("vehicle"), RecordingEvents.of("door"))
+        RecordingEvents.direct("door", listOf("visitor"), triggers)
+        assertEquals(setOf("vehicle", "visitor"), RecordingEvents.of("door"))
+        now += RecordingEvents.DIRECT_HOLD_MS
+        assertEquals("событие камеры закончилось, HA остаётся", setOf("vehicle"), RecordingEvents.of("door"))
     }
 
     @Test fun missingAddressOrLoginIsExplained() {

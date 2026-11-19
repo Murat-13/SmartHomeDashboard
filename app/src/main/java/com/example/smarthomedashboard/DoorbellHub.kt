@@ -119,13 +119,17 @@ internal object DoorbellHub {
         if (events.isNotEmpty()) notifyListeners()
     }
 
+    /** Плитка домофона: из последнего состояния панели или (HA ещё не отвечал) из хранилища. */
+    fun storedTile(tileId: String): TileEntity? = tile(tileId) ?: app?.let { context ->
+        com.example.smarthomedashboard.data.TileManager(context).loadTiles().firstOrNull { it.id == tileId && it.type == DoorbellConfig.TYPE }
+    }
+
     /** Звонок напрямую с камеры ([DirectEvents]); тот же звонок из HA сливается в [DoorbellMonitor]. */
     fun directRing(tileId: String, source: String) {
-        val context = app ?: return
+        if (app == null) return
         // HA может быть недоступен с самого запуска панели — тогда плитки берутся из хранилища.
         if (tile(tileId) == null) {
-            val stored = com.example.smarthomedashboard.data.TileManager(context).loadTiles()
-                .firstOrNull { it.id == tileId && it.type == DoorbellConfig.TYPE } ?: return
+            val stored = storedTile(tileId) ?: return
             tileList = tileList + stored
         }
         val event = monitor.direct(tileId, source, SystemClock.uptimeMillis()) ?: return
