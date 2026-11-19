@@ -60,7 +60,8 @@ internal class DoorbellRingWindow private constructor(
         visibility = GONE
     }
     private val lightButton = pill("Свет у входа", R.drawable.ic_door_light).apply { tag = "door_light" }
-    private val replyButton = pill("Ответить", R.drawable.ic_door_reply).apply { tag = "door_reply" }
+    /** Фразы (свои и готовые HA). «Ответить» — теперь кнопка разговора (этап 2). */
+    private val replyButton = pill("Фразы", R.drawable.ic_door_reply).apply { tag = "door_reply" }
     private val closeButton = pill("Закрыть", R.drawable.ic_close).apply { tag = "door_close" }
     private val replies = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL; visibility = GONE; tag = "door_replies" }
     private var animator: ValueAnimator? = null
@@ -115,6 +116,8 @@ internal class DoorbellRingWindow private constructor(
         lightButton.setOnClickListener { touched(); toggleLight() }
         talkButton.onActivity = { touched() }
         talk.onDuck = { card.video.ducked = it }
+        // Разговор как по телефону: звук с улицы — разговорным потоком; окно не закрывается, пока говорят.
+        talk.onCall = { on -> card.video.callAudio = on; if (on) inCallKeep.run() else main.removeCallbacks(inCallKeep) }
         replyButton.setOnClickListener { touched(); showReplies(replies.visibility != VISIBLE) }
         closeButton.setOnClickListener { touched(); close() }
         card.setOnClickListener { touched() }
@@ -324,6 +327,7 @@ internal class DoorbellRingWindow private constructor(
         openButton.visibility = if (config.lock.isNotBlank() && DoorbellModel.openCommand(config.lock) != null) VISIBLE else GONE
         lightButton.visibility = if (config.light.isNotBlank()) VISIBLE else GONE
         talkButton.visibility = if (config.canTalk) VISIBLE else GONE
+        talkButton.callMode = config.talkCall
         if (config.canTalk) talk.prepare(config.talkRtsp, config.rtspUser)
         val lightOn = snapshot.lightOn == true
         lightButton.text = if (lightOn) "Свет у входа · вкл" else "Свет у входа"
@@ -405,6 +409,14 @@ internal class DoorbellRingWindow private constructor(
 
     private val closeAfterOpened = Runnable { close() }
 
+    private val inCallKeep = object : Runnable {
+        override fun run() {
+            if (!talk.inCall || !isShowing) return
+            touched()
+            main.postDelayed(this, 10_000)
+        }
+    }
+
     /**
      * Снимок посетителя получше ([RingLog]): когда в окне пошёл основной поток (HD), его кадр заменяет снимок с
      * плитки. Проверка раз в секунду первые [PHOTO_TRIES] секунд.
@@ -435,7 +447,7 @@ internal class DoorbellRingWindow private constructor(
         val config = DoorbellHub.config(tileId) ?: return
         val readings = DoorbellHub.readings ?: return
         replies.visibility = if (show) VISIBLE else GONE
-        replyButton.text = if (show) "Скрыть фразы" else "Ответить"
+        replyButton.text = if (show) "Скрыть фразы" else "Фразы"
         val phrases = if (config.canTalk) DoorbellPhrases.ready(host, tileId) else emptyList()
         if (show) fillReplies(config, DoorbellModel.snapshot(config, readings).quickReplies, phrases)
     }

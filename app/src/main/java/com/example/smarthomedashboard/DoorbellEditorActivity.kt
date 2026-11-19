@@ -205,6 +205,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             buildTalk(side)
             buildDirect(side)
         } else {
+            buildTalk(side)
             buildCameraEvents(side)
             buildDirect(side)
             buildGuard(side)
@@ -320,19 +321,22 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     // ---- Разговор через домофон ----
 
     private fun buildTalk(side: LinearLayout) {
-        side.addView(header("Разговор через домофон"))
-        side.addView(kit.label("В окне звонка и в раскрытом домофоне — кнопка «Говорить»: удерживайте и говорите, голос " +
-            "идёт в динамик домофона прямо по домашней сети. Нужен прямой поток (RTSP) и включённый ONVIF в настройках " +
-            "камеры. При первом нажатии планшет спросит разрешение на микрофон.", 13f))
-        side.addView(switch("door_talk", "Разговор через домофон", config.talk) { update(config.copy(talk = it)) })
+        side.addView(header(if (camera) "Разговор через динамик камеры" else "Разговор через домофон"))
+        side.addView(kit.label((if (camera) "Если у камеры есть динамик: в раскрытой плитке" else "В окне звонка и в раскрытом домофоне") +
+            " — кнопка «Ответить»: разговор как по телефону, говорите оба сразу; «Завершить» — конец (сам — через 2 минуты " +
+            "тишины). Эхо гасит планшет. Нужен прямой поток (RTSP) и включённый ONVIF в настройках камеры. При первом " +
+            "нажатии планшет спросит разрешение на микрофон.", 13f))
+        side.addView(switch("door_talk", if (camera) "Разговор через камеру" else "Разговор через домофон", config.talk) { update(config.copy(talk = it)) })
+        side.addView(switch("door_talk_hold", "Вместо этого — «удерживайте и говорите» (как рация)", !config.talkCall) {
+            update(config.copy(talkCall = !it)) })
         val result = kit.label("", 13f).apply { tag = "door_talk_result" }
         side.addView(kit.button("Проверить звук в домофоне", "door_talk_check") {
             if (config.talkRtsp.isBlank()) { result.text = "Сначала укажите прямой поток (RTSP)"; return@button }
             result.text = "Отправляю «динь-дон» в домофон…"
-            TalkCheck.chime(this, config.talkRtsp, config.rtspUser) { if (!isDestroyed) result.text = it }
+            TalkCheck.chime(this, config.talkRtsp, config.rtspUser, secretKey) { if (!isDestroyed) result.text = it }
         })
         side.addView(result)
-        buildPhrases(side)
+        if (!camera) buildPhrases(side)
     }
 
     // ---- Быстрые фразы своим голосом ----

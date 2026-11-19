@@ -381,10 +381,22 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
     private var lastBound: DoorbellModel.Snapshot? = null
 
     /** Разговор (docs/talk-tz.md) — у раскрытой карточки; в окне звонка кнопка своя, у окна. */
-    private val talk: DoorbellTalk? = if (expanded && !camera) DoorbellTalk(context) else null
+    // У камеры — свой пароль плитки (docs/camera-tz.md); разговор — если у камеры есть динамик (включается в редакторе).
+    private val talk: DoorbellTalk? = if (expanded) DoorbellTalk(context) { c, r ->
+        if (camera) CameraPasswords.read(c, tileId.orEmpty(), r) else DoorbellHub.cameraPassword(c, r)
+    } else null
     private val talkButton: TalkButton? = talk?.let { t ->
         t.onDuck = { video.ducked = it }
+        // Разговор как по телефону: звук с улицы — разговорным потоком; пока говорят, карточка не сворачивается.
+        t.onCall = { on -> video.callAudio = on; if (on) keepOpen.run() else removeCallbacks(keepOpen) }
         TalkButton(context, t).apply { visibility = GONE; onActivity = { this@DoorbellCard.onActivity?.invoke() } }
+    }
+    private val keepOpen = object : Runnable {
+        override fun run() {
+            if (talk?.inCall != true) return
+            onActivity?.invoke()
+            postDelayed(this, 10_000)
+        }
     }
     /** Касание кнопок карточки — для таймера автосворачивания владельца. */
     var onActivity: (() -> Unit)? = null
@@ -537,6 +549,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         talkButton?.let { button ->
             val show = !ringMode && config.canTalk
             button.visibility = if (show) VISIBLE else GONE
+            button.callMode = config.talkCall
             if (show) talk?.prepare(config.talkRtsp, config.rtspUser)
             fillPhrases(if (show) phrases else emptyList())
         }

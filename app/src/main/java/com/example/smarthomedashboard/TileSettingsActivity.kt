@@ -399,7 +399,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             // «Инвертор»: квадрат и пустой шаблон; сохранённые настройки не сбрасываются.
             InverterModernConfig.TYPE -> InverterModernConfig.newTileConfig(existingConfig.toString())
             // «Домофон»: 4:3 и пустой шаблон; сохранённые настройки не сбрасываются.
-            DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString())
+            DoorbellConfig.TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString())
+            DoorbellConfig.CAMERA_TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString(), camera = true)
             else -> existingConfig.toString()
         }
 

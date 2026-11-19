@@ -175,6 +175,9 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
 /** Микрофон 8 кГц моно (источник для разговора); если 8 кГц не поддержан — 16 кГц с прореживанием. */
 internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, private val onLevel: (Float) -> Unit) {
     @Volatile private var running = false
+    /** У этого планшета есть аппаратное/системное подавление эха (для подсказки в разговоре). */
+    @Volatile var echoCancel = false
+        private set
     private var thread: Thread? = null
 
     @SuppressLint("MissingPermission") // разрешение проверяется в start() перед созданием AudioRecord
@@ -183,6 +186,14 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         if (running) return true
         val record = open(8_000) ?: open(16_000) ?: return false
         Log.i(TAG, "Микрофон: ${record.sampleRate} Гц")
+        // Разговор как по телефону (этап 2): подавление эха и шума Android — звук с улицы из динамика планшета
+        // не уходит обратно в домофон. Есть не на всех планшетах; нет — работает без него.
+        val effects = listOfNotNull(
+            runCatching { android.media.audiofx.AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull(),
+            runCatching { android.media.audiofx.NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
+        )
+        echoCancel = effects.any { it is android.media.audiofx.AcousticEchoCanceler }
+        Log.i(TAG, "Подавление эха: " + if (echoCancel) "есть" else "нет на этом планшете")
         running = true
         thread = Thread({
             val decimate = record.sampleRate / 8_000
@@ -209,6 +220,7 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
                 Log.w(TAG, "Микрофон: ${e.javaClass.simpleName}")
             } finally {
                 try { record.stop() } catch (_: Exception) {}
+                effects.forEach { runCatching { it.release() } }
                 record.release()
             }
         }, "talk-mic").apply { isDaemon = true; start() }
@@ -243,7 +255,86 @@ internal class DoorbellTalk(
     private val context: Context,
     private val password: (Context, (String?) -> Unit) -> Unit = { c, result -> DoorbellHub.cameraPassword(c, result) }
 ) {
+    /** Камера с паролем плитки ([CameraPasswords]); пусто — домофон. */
+    constructor(context: Context, secretKey: String) : this(context, { c, r -> CameraPasswords.read(c, secretKey, r) })
+
     enum class State { IDLE, CONNECTING, READY, TALKING, ERROR }
+
+    /**
+     * Разговор как по телефону (этап 2, решение владельца 20.11.2026): «Ответить» — микрофон открыт, звук с улицы не
+     * приглушается (эхо гасит система), «Завершить» — конец. Сам завершается после [CALL_SILENCE_MS] тишины в
+     * микрофоне и в любом случае через [CALL_MAX_MS].
+     */
+    var inCall = false
+        private set
+    /** Разговор начался/кончился — владелец карточки держит окно открытым и переключает звук плеера в «разговорный». */
+    var onCall: ((Boolean) -> Unit)? = null
+    private var callStarted = 0L
+    @Volatile private var lastVoiceAt = 0L
+    internal var clock: () -> Long = { android.os.SystemClock.uptimeMillis() }
+
+    private val callWatch = object : Runnable {
+        override fun run() {
+            if (!inCall) return
+            val now = clock()
+            when {
+                now - lastVoiceAt > CALL_SILENCE_MS -> { Log.i(TAG, "Разговор завершён: 2 мин тишины"); endCall() }
+                now - callStarted > CALL_MAX_MS -> { Log.i(TAG, "Разговор завершён: 10 мин"); endCall() }
+                else -> main.postDelayed(this, 1_000)
+            }
+        }
+    }
+
+    /** «Ответить». false — нужно разрешение на микрофон (запрошено). */
+    fun startCall(): Boolean {
+        if (disposed || inCall) return true
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            (context as? Activity)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
+            set(State.ERROR, "Разрешите микрофон и нажмите «Ответить» ещё раз")
+            return false
+        }
+        inCall = true
+        playing = false
+        callStarted = clock()
+        lastVoiceAt = callStarted
+        Log.i(TAG, "Разговор начат")
+        communication(true)
+        onCall?.invoke(true)
+        main.postDelayed(callWatch, 1_000)
+        val s = session
+        if (s == null || !s.alive) { if (state != State.CONNECTING) connect() } else startCallAudio(s)
+        return true
+    }
+
+    /** «Завершить» (и закрытие окна/карточки). */
+    fun endCall() {
+        if (!inCall) return
+        inCall = false
+        main.removeCallbacks(callWatch)
+        mic.stop()
+        communication(false)
+        onLevel?.invoke(0f)
+        onCall?.invoke(false)
+        session?.let { Log.i(TAG, "Разговор: голосовых пакетов ${it.sentVoice}") }
+        if (state == State.TALKING) set(State.READY, READY_TEXT)
+    }
+
+    private var savedMode: Int? = null
+
+    /** Режим «разговор» звука Android на время разговора (подавление эха работает в нём лучше); потом — как было. */
+    private fun communication(on: Boolean) {
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
+        try {
+            if (on) { if (savedMode == null) savedMode = audio.mode; audio.mode = android.media.AudioManager.MODE_IN_COMMUNICATION }
+            else savedMode?.let { audio.mode = it; savedMode = null }
+        } catch (_: Exception) {}
+    }
+
+    private fun startCallAudio(s: TalkSession) {
+        s.beginTalkspurt()
+        if (!mic.start(context)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
+        set(State.TALKING, if (mic.echoCancel) "Идёт разговор — говорите" else "Идёт разговор — держитесь подальше от динамика планшета")
+    }
 
     var onState: ((State, String) -> Unit)? = null
     var onLevel: ((Float) -> Unit)? = null
@@ -262,7 +353,10 @@ internal class DoorbellTalk(
     private val mic = MicCapture({ pcm, n ->
         val s = session ?: return@MicCapture
         try { s.send(pcm, n) } catch (e: Exception) { main.post { failed(reason(e)) } }
-    }, { level -> main.post { if (pressed) onLevel?.invoke(level) } })
+    }, { level ->
+        if (level > VOICE_LEVEL) lastVoiceAt = clock()
+        main.post { if (pressed || inCall) onLevel?.invoke(level) }
+    })
 
     /**
      * Адрес RTSP и логин; открыть сессию заранее. Вызывается при каждом обновлении карточки (раз в секунду и чаще):
@@ -283,7 +377,7 @@ internal class DoorbellTalk(
 
     /** Нажатие «Говорить». false — нужно разрешение на микрофон (запрошено). */
     fun press(): Boolean {
-        if (disposed) return true
+        if (disposed || inCall) return true
         Log.i(TAG, "Нажато «Говорить» (состояние $state)")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             (context as? Activity)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
@@ -303,7 +397,7 @@ internal class DoorbellTalk(
      * подключается — фраза прозвучит, как только он откроется. false — фраза не принята (уже говорят или звучит).
      */
     fun play(pcm: ShortArray): Boolean {
-        if (disposed || pressed || playing || pcm.isEmpty()) return false
+        if (disposed || pressed || playing || inCall || pcm.isEmpty()) return false
         val s = session
         if (s == null || !s.alive) {
             pendingClip = pcm
@@ -356,6 +450,7 @@ internal class DoorbellTalk(
 
     fun dispose() {
         if (disposed) return
+        if (inCall) { inCall = false; communication(false); onCall?.invoke(false) }
         disposed = true
         pressed = false
         playing = false
@@ -393,7 +488,7 @@ internal class DoorbellTalk(
                         set(State.READY, READY_TEXT)
                         val clip = pendingClip
                         pendingClip = null
-                        if (pressed) startTalking(talk) else if (clip != null) startClip(talk, clip)
+                        if (inCall) startCallAudio(talk) else if (pressed) startTalking(talk) else if (clip != null) startClip(talk, clip)
                     }
                 } catch (e: Exception) {
                     talk.close()
@@ -408,6 +503,7 @@ internal class DoorbellTalk(
         failedAt = System.currentTimeMillis()
         pendingClip = null
         playing = false
+        if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
         mic.stop()
         if (pressed) onDuck?.invoke(false)
         pressed = false
@@ -437,6 +533,10 @@ internal class DoorbellTalk(
 
     companion object {
         const val REQUEST_MIC = 4711
+        const val CALL_SILENCE_MS = 120_000L
+        const val CALL_MAX_MS = 10 * 60_000L
+        /** Уровень микрофона (0–1), выше которого считается, что говорят (не тишина). */
+        private const val VOICE_LEVEL = 0.04f
         private const val RETRY_MS = 15_000L
         private const val TAG = "Talk"
         private const val READY_TEXT = "Удерживайте и говорите"
@@ -445,9 +545,9 @@ internal class DoorbellTalk(
 
 /** «Проверить звук в домофоне» (редактор): короткий «динь-дон» в обратный канал. Результат — на главном потоке. */
 internal object TalkCheck {
-    fun chime(context: Context, rtsp: String, user: String, done: (String) -> Unit) {
+    fun chime(context: Context, rtsp: String, user: String, secretKey: String = "", done: (String) -> Unit) {
         val main = Handler(Looper.getMainLooper())
-        DoorbellHub.cameraPassword(context) { password ->
+        CameraPasswords.read(context, secretKey) { password ->
             Thread({
                 val talk = TalkSession(RtspSession(rtsp, user, password, connectTimeoutMs = 4_000, readTimeoutMs = 10_000,
                     require = TalkSession.BACKCHANNEL))
@@ -504,6 +604,24 @@ internal object TalkCheck {
 /** Кнопка «Говорить»: удержание — голос в домофон. Уровень микрофона — подсветкой фона. */
 internal class TalkButton(context: Context, private val talk: DoorbellTalk, private val scale: () -> Float = { 1f }) :
     androidx.appcompat.widget.AppCompatTextView(context) {
+    /**
+     * Режим кнопки: разговор как по телефону («Ответить» / «Завершить», по умолчанию) или «удерживайте и говорите»
+     * (запасной, выбирается в редакторе).
+     */
+    var callMode = true
+        set(value) { field = value; label(talk.state) }
+
+    private fun label(state: DoorbellTalk.State) {
+        text = when {
+            callMode && talk.inCall -> "Завершить"
+            callMode && state == DoorbellTalk.State.CONNECTING -> "Подключение…"
+            callMode -> "Ответить"
+            state == DoorbellTalk.State.TALKING -> "● Говорите…"
+            state == DoorbellTalk.State.CONNECTING -> "Говорить…"
+            else -> "Говорить"
+        }
+        contentDescription = if (callMode) (if (talk.inCall) "Завершить разговор" else "Ответить: разговор с калиткой") else "Говорить: удерживайте"
+    }
     /** Касание кнопки — для таймеров автозакрытия владельца. */
     var onActivity: (() -> Unit)? = null
     private val density = resources.displayMetrics.density
@@ -521,11 +639,11 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
         setPadding((18 * density).toInt(), (10 * density).toInt(), (18 * density).toInt(), (10 * density).toInt())
         paint(TalkState(DoorbellTalk.State.IDLE, 0f))
         talk.onState = { state, text ->
-            this.text = when (state) { DoorbellTalk.State.TALKING -> "● Говорите…"; DoorbellTalk.State.CONNECTING -> "Говорить…"; else -> "Говорить" }
-            contentDescription = text
+            label(state)
             paint(TalkState(state, 0f))
             onStatus?.invoke(text)
         }
+        label(DoorbellTalk.State.IDLE)
         talk.onLevel = { level -> paint(TalkState(talk.state, level)) }
     }
 
@@ -534,6 +652,18 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
 
     @SuppressLint("ClickableViewAccessibility") // удержание, а не нажатие; доступность — через contentDescription
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (callMode) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { onActivity?.invoke(); parent?.requestDisallowInterceptTouchEvent(true) }
+                MotionEvent.ACTION_UP -> {
+                    onActivity?.invoke()
+                    if (talk.inCall) talk.endCall() else talk.startCall()
+                    label(talk.state)
+                    paint(TalkState(talk.state, 0f))
+                }
+            }
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> { onActivity?.invoke(); parent?.requestDisallowInterceptTouchEvent(true); talk.press() }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { onActivity?.invoke(); talk.release() }
@@ -545,10 +675,14 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
 
     private fun paint(s: TalkState) {
         val talking = s.state == DoorbellTalk.State.TALKING
-        val accent = when (s.state) {
+        val accent = when {
+            // «Завершить» — красная, как отбой у телефона; уровень голоса — подсветкой.
+            callMode && talk.inCall -> Color.rgb(230, 80, 70)
+            else -> when (s.state) {
             DoorbellTalk.State.TALKING -> Color.rgb(80, 210, 120)
             DoorbellTalk.State.ERROR -> Color.rgb(255, 120, 110)
             else -> Color.rgb(95, 168, 211)
+            }
         }
         val alpha = if (talking) (90 + 140 * s.level).toInt().coerceIn(90, 230) else 60
         background = GradientDrawable().apply {

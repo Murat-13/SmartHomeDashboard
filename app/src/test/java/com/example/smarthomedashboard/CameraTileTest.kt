@@ -139,13 +139,16 @@ class CameraTileTest {
     @Test fun cameraCardHasNoDoorbellParts() {
         val card = DoorbellCard(context, expanded = true, camera = true).apply { tileId = "cam1" }
         card.onArchive = {}
-        val config = DoorbellConfig(rtspSub = "rtsp://192.0.2.10/sub", host = "192.0.2.10", model = "Reolink RLC-811A")
+        val config = DoorbellConfig(rtspSub = "rtsp://192.0.2.10/sub", host = "192.0.2.10", model = "Reolink RLC-811A", talk = false)
         val readings = BatteryReadings(HaSession(true, true), { null }, { false }, { null })
         card.bind("", config, DoorbellModel.snapshot(config, readings), false, 3, 1L, System.currentTimeMillis(), false)
         assertEquals(DoorbellConfig.CAMERA_TITLE, card.findViewWithTag<android.widget.TextView>("door_title").text.toString())
         assertEquals("нет «Звонок: …»", View.GONE, card.findViewWithTag<View>("door_last").visibility)
         assertEquals("нет пропущенных", View.GONE, card.findViewWithTag<View>("door_missed").visibility)
-        assertNull("нет «Говорить»", card.findViewWithTag<View>("door_talk"))
+        assertEquals("разговор у камеры выключен — кнопки нет", View.GONE, card.findViewWithTag<View>("door_talk").visibility)
+        assertFalse("у новой камеры разговор выключен",
+            DoorbellConfig.from(DoorbellConfig.newTileConfig(camera = true)).talk)
+        assertTrue(DoorbellConfig.from(DoorbellConfig.newTileConfig()).talk)
         assertEquals(View.VISIBLE, card.findViewWithTag<View>("door_archive").visibility)
         assertEquals("В сети", card.findViewWithTag<android.widget.TextView>("door_status").text.toString())
         assertTrue(DoorbellConfig.isVideo(DoorbellConfig.CAMERA_TYPE))

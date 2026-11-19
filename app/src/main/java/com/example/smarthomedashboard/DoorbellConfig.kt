@@ -47,6 +47,8 @@ internal data class DoorbellConfig(
     val offlineSound: Boolean = true,
     /** Разговор через домофон по ONVIF-обратному каналу (docs/talk-tz.md); нужен прямой поток RTSP. */
     val talk: Boolean = true,
+    /** Разговор как по телефону («Ответить» / «Завершить», этап 2) или «удерживайте и говорите» (запасной). */
+    val talkCall: Boolean = true,
     /** Пропорция картинки (ширина/высота). По умолчанию 4:3; уточняется по реальному видео. */
     val aspect: Float = DEFAULT_ASPECT,
     /** Плитка «Камера» (docs/camera-tz.md): адрес камеры и порт ONVIF (0 — найти самому), модель — для подписи. */
@@ -98,6 +100,7 @@ internal data class DoorbellConfig(
         put("quiet_start", quietStartMin); put("quiet_end", quietEndMin); put("quiet_percent", quietPercent)
         put("night_brightness", nightBrightness); put("auto_light", autoLight); put("light_off_minutes", lightOffMinutes)
         put("offline_sound", offlineSound); put("aspect", aspect.toDouble()); put("talk", talk)
+        put("talk_call", talkCall)
         // Только у камер: у домофона прежний набор ключей.
         if (host.isNotBlank()) put("host", host)
         if (onvifPort > 0) put("onvif_port", onvifPort)
@@ -149,6 +152,7 @@ internal data class DoorbellConfig(
                 lightOffMinutes = int("light_off_minutes", d.lightOffMinutes, 0..120),
                 offlineSound = j.optBoolean("offline_sound", d.offlineSound),
                 talk = j.optBoolean("talk", d.talk),
+                talkCall = j.optBoolean("talk_call", d.talkCall),
                 aspect = j.optDouble("aspect", DEFAULT_ASPECT.toDouble()).toFloat().takeIf { it.isFinite() && it in 0.3f..4f }
                     ?: DEFAULT_ASPECT,
                 host = str("host").take(253), onvifPort = int("onvif_port", 0, 0..65535), model = str("model").take(80)
@@ -156,11 +160,12 @@ internal data class DoorbellConfig(
         }
 
         /** Новая плитка: 4:3, шаблон без источников; уже заданный размер и посторонние ключи сохраняются. */
-        fun newTileConfig(existing: String = "{}"): String {
+        fun newTileConfig(existing: String = "{}", camera: Boolean = false): String {
             val json = try { JSONObject(existing) } catch (_: Exception) { JSONObject() }
             if (!json.has("button_size")) json.put("button_size", DEFAULT_WIDTH)
             if (!json.has("widget_height")) json.put("widget_height", (DEFAULT_WIDTH / DEFAULT_ASPECT).toInt())
-            if (!json.has(KEY)) json.put(KEY, DoorbellConfig().toJson())
+            // У новой камеры разговор выключен: динамик есть не у всех (docs/camera-tz.md, часть 3).
+            if (!json.has(KEY)) json.put(KEY, DoorbellConfig(talk = !camera).toJson())
             return json.toString()
         }
 

@@ -190,6 +190,49 @@ class TalkTest {
         talk.dispose()
     }
 
+    /** Разговор как по телефону (этап 2): «Ответить» — голос идёт, «Завершить» — конец; сам — через 2 мин тишины. */
+    @Test fun callStartsEndsAndStopsAfterSilence() {
+        val camera = Camera(reolinkBackchannel)
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val talk = DoorbellTalk(activity) { _, result -> result(null) }
+        var now = 0L
+        talk.clock = { now }
+        val calls = mutableListOf<Boolean>()
+        talk.onCall = { calls += it }
+        val button = TalkButton(activity, talk)
+        assertEquals("Ответить", button.text.toString())
+        talk.prepare(camera.url, "")
+        val until = System.currentTimeMillis() + 5_000
+        while (talk.state != DoorbellTalk.State.READY) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (System.currentTimeMillis() > until) fail("Не подключились: ${talk.state}")
+            Thread.sleep(20)
+        }
+        button.dispatchTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 1f, 1f, 0))
+        button.dispatchTouchEvent(MotionEvent.obtain(0, 50, MotionEvent.ACTION_UP, 1f, 1f, 0))
+        assertTrue(talk.inCall)
+        assertEquals(listOf(true), calls)
+        assertEquals("Завершить", button.text.toString())
+        assertFalse("во время разговора фраза не накладывается", talk.play(ShortArray(1600)))
+        // Тишина 2 минуты — разговор завершается сам.
+        now += DoorbellTalk.CALL_SILENCE_MS + 1_000
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(2))
+        assertFalse(talk.inCall)
+        assertEquals(listOf(true, false), calls)
+        assertEquals("Ответить", button.text.toString())
+        // Снова — и «Завершить» кнопкой.
+        talk.startCall()
+        assertTrue(talk.inCall)
+        talk.endCall()
+        assertFalse(talk.inCall)
+        assertEquals(listOf(true, false, true, false), calls)
+        // Закрытие окна посреди разговора — тоже конец.
+        talk.startCall()
+        talk.dispose()
+        assertEquals(false, calls.last())
+    }
+
     @Test fun cameraWithoutBackchannelIsExplained() {
         val camera = Camera(reolinkBackchannel.substringBefore("m=audio 0 RTP/AVP 0"))
         val error = assertThrows(TalkException::class.java) { session(camera).open() }
@@ -209,7 +252,7 @@ class TalkTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         shadowOf(activity.application).denyPermissions(Manifest.permission.RECORD_AUDIO)
         val talk = DoorbellTalk(activity)
-        val button = TalkButton(activity, talk)
+        val button = TalkButton(activity, talk).apply { callMode = false }
         var status = ""
         button.onStatus = { status = it }
         button.dispatchTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 1f, 1f, 0))

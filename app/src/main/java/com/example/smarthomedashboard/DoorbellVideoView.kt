@@ -109,6 +109,24 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     private val volume get() = if (muted || ducked) 0f else 1f
 
+    /**
+     * Идёт разговор как по телефону (docs/talk-tz.md, этап 2): звук с улицы — как голос собеседника (разговорный
+     * поток Android), тогда системное подавление эха знает, что вычесть из микрофона.
+     */
+    var callAudio = false
+        set(value) {
+            if (field == value) return
+            field = value
+            player?.let(::applyAudio)
+            guest?.let(::applyAudio)
+        }
+
+    private fun applyAudio(exo: ExoPlayer) {
+        val usage = if (callAudio) androidx.media3.common.C.USAGE_VOICE_COMMUNICATION else androidx.media3.common.C.USAGE_MEDIA
+        val content = if (callAudio) androidx.media3.common.C.AUDIO_CONTENT_TYPE_SPEECH else androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE
+        exo.setAudioAttributes(androidx.media3.common.AudioAttributes.Builder().setUsage(usage).setContentType(content).build(), false)
+    }
+
     private fun applyVolume() {
         if (loanedTo == null) player?.volume = volume
         guest?.volume = volume
@@ -332,6 +350,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         main.removeCallbacks(firstFrameWatchdog)
         main.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
         exo.volume = volume
+        if (callAudio) applyAudio(exo)
         exo.setVideoTextureView(texture)
         exo.addAnalyticsListener(object : AnalyticsListener {
             override fun onVideoDecoderInitialized(
