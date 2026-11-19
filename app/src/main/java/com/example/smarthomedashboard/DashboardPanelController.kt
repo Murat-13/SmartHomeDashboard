@@ -1490,6 +1490,13 @@ internal class DashboardPanelController(
             expanded.onCollapse = { modernExpansion.collapse() }
             expanded.onCalls = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id, calls = true) }
             expanded.phrases = DoorbellPhrases.ready(activity, tile.id)
+            // Автоответ (docs/ring-away-tz.md): кнопка — если на этом планшете выбрана фраза; без PIN.
+            if (DoorbellAway.autoReplyConfigured(activity, tile.id)) {
+                expanded.autoReply(DoorbellAway.settings(activity, tile.id).autoReply)
+                expanded.onAutoReply = { on ->
+                    DoorbellAway.save(activity, tile.id, DoorbellAway.settings(activity, tile.id).copy(autoReply = on))
+                }
+            }
             modernExpansion.expand(tile.id, source, expanded, target,
                 if (config.autoCollapse) config.collapseSeconds * 1000L else null)
             renderModern(tile, null, animate = false)

@@ -275,6 +275,79 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(phraseBox)
         side.addView(kit.button("+ Добавить фразу", "door_phrase_add") { addPhrase() })
         renderPhrases()
+        buildAway(side)
+    }
+
+    // ---- Когда никто не подошёл: уведомление на телефон и автоответ (docs/ring-away-tz.md) ----
+
+    private lateinit var awayBox: LinearLayout
+
+    private fun buildAway(side: LinearLayout) {
+        side.addView(header("Когда никто не подошёл"))
+        side.addView(kit.label("Настройки только этого планшета — включайте на одном, иначе уведомление и фраза придут " +
+            "с каждого. Уведомление идёт через Home Assistant в приложение HA на телефоне; снимок в нём — с камеры в HA " +
+            "(поле «Камера» выше), без неё — только текст. Автоответ: если к звонку не подошли, домофон сам скажет " +
+            "выбранную фразу своим голосом; переключается и кнопкой «Автоответ» в раскрытом домофоне.", 13f))
+        awayBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "door_away" }
+        side.addView(awayBox)
+        renderAway()
+    }
+
+    private fun renderAway() {
+        awayBox.removeAllViews()
+        val s = DoorbellAway.settings(this, original.id)
+        val phone = s.notifyService.ifEmpty { "не отправлять" }
+        awayBox.addView(kit.button("Уведомление на телефон: $phone", "door_notify_pick") { pickPhone() })
+        val result = kit.label("", 13f).apply { tag = "door_notify_result" }
+        if (s.notifyService.isNotEmpty()) awayBox.addView(kit.button("Отправить проверочное уведомление", "door_notify_test") {
+            result.text = "Отправляю…"
+            DoorbellAway.sender(s.notifyService.substringBefore('.'), s.notifyService.substringAfter('.'),
+                DoorbellAway.notification(title, config.camera, System.currentTimeMillis(), original.id) +
+                    ("message" to "Проверка: так будет выглядеть уведомление о звонке")) { ok ->
+                if (!isDestroyed) result.text = if (ok) "Home Assistant принял уведомление — проверьте телефон" else
+                    "Не отправлено: нет связи с Home Assistant или служба не найдена"
+            }
+        })
+        awayBox.addView(result)
+        val phrases = DoorbellPhrases.ready(this, original.id)
+        if (phrases.isEmpty()) {
+            awayBox.addView(kit.label("Для автоответа запишите фразу выше.", 13f))
+            return
+        }
+        awayBox.addView(switch("door_autoreply_switch", "Автоответ своей фразой", s.autoReply) {
+            DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(autoReply = it))
+        })
+        val chosen = phrases.firstOrNull { it.id == s.phraseId }
+        awayBox.addView(kit.button("Фраза: ${chosen?.title ?: "выберите"}", "door_autoreply_phrase") {
+            AlertDialog.Builder(this).setTitle("Фраза для автоответа").setItems(phrases.map { it.title }.toTypedArray()) { _, i ->
+                DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(phraseId = phrases[i].id))
+                renderAway()
+            }.setNegativeButton("Отмена", null).show()
+        })
+        awayBox.addView(number("door_autoreply_delay", "Через сколько секунд без ответа (${DoorbellAway.DELAY_RANGE.first}–" +
+            "${DoorbellAway.DELAY_RANGE.last})", s.delaySeconds, DoorbellAway.DELAY_RANGE) {
+            DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(delaySeconds = it))
+        })
+    }
+
+    /** Список телефонов — службы `notify.mobile_app_…` из Home Assistant. */
+    private fun pickPhone() {
+        val ws = DoorbellHub.connection?.invoke()
+        if (ws == null) { Toast.makeText(this, "Нет связи с Home Assistant", Toast.LENGTH_SHORT).show(); return }
+        ws.read("get_services", timeoutMs = 15_000L) { services ->
+            if (isDestroyed) return@read
+            val phones = DoorbellAway.phoneServices(services)
+            if (services == null) { Toast.makeText(this, "Home Assistant не ответил", Toast.LENGTH_SHORT).show(); return@read }
+            if (phones.isEmpty()) {
+                Toast.makeText(this, "В Home Assistant нет телефонов: установите приложение Home Assistant и войдите", Toast.LENGTH_LONG).show()
+                return@read
+            }
+            val items = listOf("Не отправлять") + phones
+            AlertDialog.Builder(this).setTitle("Уведомление о звонке — на какой телефон").setItems(items.toTypedArray()) { _, i ->
+                DoorbellAway.save(this, original.id, DoorbellAway.settings(this, original.id).copy(notifyService = if (i == 0) "" else items[i]))
+                renderAway()
+            }.setNegativeButton("Отмена", null).show()
+        }
     }
 
     private fun renderPhrases() {
@@ -312,6 +385,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
                 DoorbellPhrases.delete(this, original.id, phrase.id)
                 DoorbellPhrases.setList(this, original.id, DoorbellPhrases.list(this, original.id).filter { it.id != phrase.id })
                 renderPhrases()
+                renderAway()
             }
             .setNegativeButton("Отмена", null).show()
     }
@@ -364,6 +438,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         val ok = DoorbellPhrases.save(this, original.id, phrase.id, pcm, pcm.size)
         Toast.makeText(this, if (ok) "Записано: ${"%.1f".format(pcm.size / 8_000f)} с" else "Не удалось сохранить", Toast.LENGTH_SHORT).show()
         renderPhrases()
+        renderAway()
     }
 
     /** Прослушать на планшете (в домофон не уходит). */

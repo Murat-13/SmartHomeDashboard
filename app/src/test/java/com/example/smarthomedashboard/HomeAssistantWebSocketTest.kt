@@ -385,6 +385,25 @@ class HomeAssistantWebSocketTest {
         assertEquals(1, peer.received.count { it.optString("type") == "call_service" })
     }
 
+    /** Уведомление на телефон (docs/ring-away-tz.md): у `notify` нет сущности — `entity_id` не отправляется. */
+    @Test fun serviceWithoutEntityHasNoEntityIdAndServicesListIsReadOnly() {
+        val peer = Peer()
+        var connected = false
+        val client = client(server(peer).url("/").toString(), connected = { connected = true })
+        client.connect()
+        await { connected }
+        var result: ServiceCommandResult? = null
+        assertTrue(client.callService("notify", "mobile_app_phone", "", mapOf("message" to "Звонят в калитку")) { result = it })
+        await { peer.received.any { it.optString("type") == "call_service" } }
+        val request = peer.received.single { it.optString("type") == "call_service" }
+        val data = request.getJSONObject("service_data")
+        assertFalse("у notify нет entity_id", data.has("entity_id"))
+        assertEquals("Звонят в калитку", data.getString("message"))
+        peer.socket!!.send(JSONObject().put("type", "result").put("id", request.getInt("id")).put("success", true).toString())
+        await { result != null }
+        assertEquals(ServiceCommandResult.ACKNOWLEDGED, result)
+    }
+
     @Test fun largeSnapshotAndFastMotionTransitionsStayOrderedOnMainThread() {
         val peer = Peer()
         val batches = mutableListOf<List<HaEntityState>>()

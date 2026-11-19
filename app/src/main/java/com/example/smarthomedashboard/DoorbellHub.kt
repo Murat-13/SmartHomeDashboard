@@ -64,6 +64,7 @@ internal object DoorbellHub {
 
     fun detach() {
         DirectEvents.detach()
+        DoorbellAway.reset()
         main.removeCallbacks(recheck)
         lightOffs.values.forEach(main::removeCallbacks)
         lightOffs.clear()
@@ -182,6 +183,8 @@ internal object DoorbellHub {
         // Журнал звонков со снимком посетителя: кадр с уже идущего видео плитки, потом — получше из окна звонка.
         lastRingAt = tile.id to now
         RingLog.onRing(context, tile.id, now) { actions?.tileVideo(tile.id) }
+        // Звонок без хозяина (docs/ring-away-tz.md): уведомление на телефон и автоответ — с этого планшета, если он выбран.
+        DoorbellAway.onRing(context, tile.id, tile.title, config, now)
         playRing(context, tile.id, config)
         wakeScreen()
         autoLight(tile.id, config)
@@ -215,6 +218,8 @@ internal object DoorbellHub {
 
     /** Звонок увиден (касание окна, плитки, баннера «Открыть»): счётчик пропущенных обнуляется. */
     fun acknowledge(tileId: String) {
+        // К звонку подошли — автоответ не нужен.
+        DoorbellAway.answered(tileId)
         val context = app ?: return
         if (missed(tileId) == 0) return
         prefs(context).edit().putInt(KEY_MISSED + tileId, 0).apply()

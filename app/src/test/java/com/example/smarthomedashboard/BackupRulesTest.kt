@@ -68,6 +68,7 @@ class BackupRulesTest {
             assertTrue("Индекс роликов — про файлы этого планшета", ("database" to "recording_index.db") in excludes)
             assertTrue("Снимки посетителей — не в облако", ("file" to "doorbell_rings/") in excludes)
             assertTrue("Голос владельца — не в облако", ("file" to "doorbell_phrases/") in excludes)
+            assertFalse("Уведомление и автоответ — только этого планшета", rulesPermit(root, "doorbell_away.xml"))
         }
     }
 

@@ -17,6 +17,8 @@
     <exclude domain="external" path="records/" />
     <!-- Снимки посетителей при звонке и фразы голосом владельца — только этого планшета, не в облако. -->
     <exclude domain="file" path="doorbell_rings/" />
+    <!-- Уведомление на телефон и автоответ — с одного выбранного планшета: не переносим на другой. -->
+    <exclude domain="sharedpref" path="doorbell_away.xml" />
     <exclude domain="file" path="doorbell_phrases/" />
     <exclude domain="database" path="recording_index.db" />
     <exclude domain="database" path="recording_index.db-journal" />

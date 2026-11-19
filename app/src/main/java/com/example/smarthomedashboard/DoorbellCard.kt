@@ -293,6 +293,32 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     }
     var onCalls: (() -> Unit)? = null
         set(value) { field = value; calls.visibility = if (value != null && expanded && !ringMode) VISIBLE else GONE }
+
+    /**
+     * «Автоответ: вкл/выкл» (docs/ring-away-tz.md) — без PIN, чтобы включить перед уходом. null — на этом планшете
+     * фраза для автоответа не выбрана, кнопки нет. [onAutoReply] получает новое состояние.
+     */
+    private val autoReplyButton = text(20f, Color.WHITE, bold = true).apply {
+        tag = "door_autoreply"
+        gravity = Gravity.CENTER
+        visibility = GONE
+        setOnClickListener { val next = !autoReplyOn; onAutoReply?.invoke(next); autoReply(next) }
+    }
+    private var autoReplyOn = false
+    var onAutoReply: ((Boolean) -> Unit)? = null
+
+    /** Показать кнопку автоответа с состоянием [on]; null — скрыть. */
+    fun autoReply(on: Boolean?) {
+        if (on == null || !expanded || ringMode) { autoReplyButton.visibility = GONE; return }
+        autoReplyOn = on
+        autoReplyButton.visibility = VISIBLE
+        set(autoReplyButton, if (on) "Автоответ: вкл" else "Автоответ: выкл")
+        autoReplyButton.contentDescription = if (on) "Автоответ включён — коснитесь, чтобы выключить" else "Автоответ выключен — коснитесь, чтобы включить"
+        autoReplyButton.background = GradientDrawable().apply {
+            setColor(if (on) Color.argb(170, 20, 90, 60) else Color.argb(150, 20, 34, 44)); cornerRadius = 999f
+            setStroke(2, if (on) Color.argb(220, 52, 232, 158) else Color.argb(140, 95, 168, 211))
+        }
+    }
     /** Свернуть карточку (одиночное касание по неувеличенному видео). */
     var onCollapse: (() -> Unit)? = null
 
@@ -343,7 +369,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         set(value) {
             field = value
             sound.visibility = if (expanded && !value) VISIBLE else GONE
-            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; zoom?.reset() }
+            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; autoReplyButton.visibility = GONE; zoom?.reset() }
         }
 
     /** Увеличение пальцами — только у раскрытой карточки на панели (решение владельца: не в окне звонка). */
@@ -372,6 +398,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         header.addView(icons)
         header.addView(rec, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(autoReplyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(calls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(archive, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(missedBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -415,6 +442,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         archive.minHeight = (48 * next).toInt()
         calls.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
         calls.minHeight = (48 * next).toInt()
+        autoReplyButton.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
+        autoReplyButton.minHeight = (48 * next).toInt()
+        (autoReplyButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (calls.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         for (i in 0 until phraseRow.childCount) styleChip(phraseRow.getChildAt(i) as TextView, next)
         talkButton?.let { b ->
@@ -619,7 +649,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
             rawY >= hitLocation[1] && rawY < hitLocation[1] + v.height * scaleY
     }
 
-    private fun buttons(): List<View> = listOfNotNull(archive, calls, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
+    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
 
     private fun hit(v: View, windowX: Float, windowY: Float): Boolean {
         if (!v.isShown) return false

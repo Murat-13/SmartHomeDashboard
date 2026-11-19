@@ -88,9 +88,10 @@ class HomeAssistantWebSocket(
         const val HOURLY = "hourly"
         /**
          * Единственные команды [read]: только чтение — конфигурация, история и адрес потока камеры
-         * (`camera/stream` выдаёт временную ссылку HLS, ничего не меняя в HA).
+         * (`camera/stream` выдаёт временную ссылку HLS, ничего не меняя в HA), список служб (`get_services` —
+         * для выбора телефона в «Домофоне»).
          */
-        val READ_ONLY = setOf("get_config", "history/history_during_period", "camera/stream")
+        val READ_ONLY = setOf("get_config", "history/history_during_period", "camera/stream", "get_services")
     }
     private val forecastEntities = linkedSetOf<String>()
     private val hourlyForecastEntities = linkedSetOf<String>()
@@ -664,7 +665,8 @@ class HomeAssistantWebSocket(
         }
         val serviceData = JSONObject()
         data.forEach { (key, value) -> serviceData.put(key, value) }
-        serviceData.put("entity_id", entityId)
+        // Службы без сущности (`notify.mobile_app_…`) поле `entity_id` не принимают — HA отклонил бы вызов.
+        if (entityId.isNotBlank()) serviceData.put("entity_id", entityId)
         val message = command("call_service").put("domain", domain).put("service", service)
             .put("service_data", serviceData)
         val id = message.getInt("id")
@@ -685,7 +687,7 @@ class HomeAssistantWebSocket(
         }
         // Однократный предел ожидания ответа; без опроса и повторной отправки действия.
         if (id in serviceRequests) handler.postDelayed(timeout, 15_000L)
-        stateRequest?.changed?.add(entityId)
+        if (entityId.isNotBlank()) stateRequest?.changed?.add(entityId)
         return true
     }
 
