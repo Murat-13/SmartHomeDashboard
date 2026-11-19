@@ -12,6 +12,7 @@
         <exclude domain="database" path="power_history.db" />
         <exclude domain="database" path="power_history.db-journal" />
         <exclude domain="sharedpref" path="recording_device.xml" />
+        <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
         <exclude domain="database" path="recording_index.db" />
         <exclude domain="database" path="recording_index.db-journal" />
@@ -22,6 +23,7 @@
         <exclude domain="database" path="power_history.db" />
         <exclude domain="database" path="power_history.db-journal" />
         <exclude domain="sharedpref" path="recording_device.xml" />
+        <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
         <exclude domain="database" path="recording_index.db" />
         <exclude domain="database" path="recording_index.db-journal" />

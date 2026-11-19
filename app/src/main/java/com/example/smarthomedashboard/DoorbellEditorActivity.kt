@@ -68,6 +68,11 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         private set
     private lateinit var recordingStatus: TextView
     private val statusListener: () -> Unit = { refreshRecordingStatus() }
+    /** Прямые события с камеры — флаг и порт этого планшета (docs/direct-events-tz.md). */
+    internal var directHere = false
+    internal var directPort = CameraHookServer.DEFAULT_PORT
+    private lateinit var directStatus: TextView
+    private val directListener: () -> Unit = { refreshDirectStatus() }
 
     private val pickTone = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@registerForActivityResult
@@ -97,6 +102,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         reserveGb = device.reserveGb
         useSd = device.useSdCard
         archivePin = device.archivePin
+        directHere = DirectEvents.enabled(this, tile.id)
+        directPort = DirectEvents.port(this)
         savedInstanceState?.getString(STATE_DRAFT)?.let { text ->
             try {
                 val json = JSONObject(text)
@@ -107,6 +114,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
                 limitGb = json.optInt("limit_gb", limitGb); reserveGb = json.optInt("reserve_gb", reserveGb)
                 useSd = json.optBoolean("use_sd", useSd)
                 archivePin = RecordingDevice.ArchivePin.of(json.optString("archive_pin", archivePin.key))
+                if (json.has("direct_here")) directHere = json.optBoolean("direct_here")
+                directPort = json.optInt("direct_port", directPort)
                 // Пароль в состоянии экрана не сохраняется: после пересоздания его нужно ввести снова.
             } catch (_: Exception) {}
         }
@@ -220,6 +229,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(switch("door_auto_collapse", "Сворачивать автоматически", config.autoCollapse) { update(config.copy(autoCollapse = it)) })
         side.addView(number("door_collapse_seconds", "Через, секунд", config.collapseSeconds, 5..3600) { update(config.copy(collapseSeconds = it)) })
 
+        buildDirect(side)
         buildRecording(side)
 
         side.addView(kit.button("Тип, размер, удаление плитки…", "door_tile_settings") { openTileSettings() })
@@ -227,6 +237,38 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(kit.footer("door", { leave() }, { save() }))
         setContentView(root)
+    }
+
+    // ---- Прямые события с камеры ----
+
+    private fun buildDirect(side: LinearLayout) {
+        side.addView(header("Прямые события с камеры"))
+        side.addView(kit.label("Звонок приходит прямо с камеры по домашней сети — без Home Assistant и интернета, быстрее. " +
+            "Приложение само пропишет в камере вебхук на этот планшет (нужны адрес RTSP, логин и пароль камеры). " +
+            "Звонок через Home Assistant тоже остаётся: звонит тот, кто сообщил первым. Сейчас — камеры Reolink. " +
+            "Совет: закрепите за планшетом постоянный адрес в настройках роутера.", 13f))
+        side.addView(switch("direct_here", "Получать звонок напрямую с камеры", directHere) { directHere = it })
+        side.addView(number("direct_port", "Порт приёмника на планшете", directPort, 1024..65535) { directPort = it })
+        directStatus = kit.label("", 13f).apply { tag = "direct_status" }
+        side.addView(directStatus)
+        side.addView(kit.button("Проверить сейчас", "direct_check") {
+            if (DirectEvents.enabled(this, original.id)) DirectEvents.check(original.id)
+            else Toast.makeText(this, "Сначала включите и сохраните", Toast.LENGTH_SHORT).show()
+        })
+        DirectEvents.addListener(directListener)
+        refreshDirectStatus()
+    }
+
+    private fun refreshDirectStatus() {
+        if (!::directStatus.isInitialized) return
+        val status = DirectEvents.status(this, original.id)
+        directStatus.text = status.text
+        directStatus.setTextColor(when (status.level) {
+            DirectEvents.Level.OK -> Color.rgb(110, 220, 140)
+            DirectEvents.Level.WARN -> Color.rgb(255, 200, 90)
+            DirectEvents.Level.ERROR -> Color.rgb(255, 120, 110)
+            else -> Color.rgb(170, 180, 190)
+        })
     }
 
     // ---- Запись с камеры ----
@@ -503,7 +545,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     }
 
     internal val isDirty get() = title != original.title || config != DoorbellConfig.from(original.config) || password != null ||
-        recording != RecordingConfig.from(original.config) || recordingDeviceDirty
+        recording != RecordingConfig.from(original.config) || recordingDeviceDirty ||
+        directHere != DirectEvents.enabled(this, original.id) || directPort != DirectEvents.port(this)
 
     private val recordingDeviceDirty get() = ::device.isInitialized && (recordHere != device.enabled(original.id) ||
         limitGb != device.limitGb || reserveGb != device.reserveGb || useSd != device.useSdCard || archivePin != device.archivePin)
@@ -538,6 +581,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     override fun onDestroy() {
         RecordingStatus.unlisten(statusListener)
+        DirectEvents.removeListener(directListener)
         kit.dispose()
         if (::preview.isInitialized) preview.dispose()
         super.onDestroy()
@@ -546,7 +590,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         if (::original.isInitialized) outState.putString(STATE_DRAFT, JSONObject().put("config", config.toJson()).put("title", title)
             .put("recording", recording.toJson()).put("record_here", recordHere).put("limit_gb", limitGb)
-            .put("reserve_gb", reserveGb).put("use_sd", useSd).put("archive_pin", archivePin.key).toString())
+            .put("reserve_gb", reserveGb).put("use_sd", useSd).put("archive_pin", archivePin.key)
+            .put("direct_here", directHere).put("direct_port", directPort).toString())
         super.onSaveInstanceState(outState)
     }
 
@@ -575,11 +620,18 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         device.setEnabled(original.id, recordHere)
         device.limitGb = limitGb; device.reserveGb = reserveGb; device.useSdCard = useSd; device.archivePin = archivePin
         val secret = password
-        if (secret == null) { RecorderService.sync(this); finishSaved(); return true }
+        val saved = config
+        // Прямые события: порт и флаг — после пароля (включение входит в камеру с ним). Выключение убирает вебхук.
+        val applyDirect = {
+            DirectEvents.setPort(this, directPort)
+            DirectEvents.setEnabled(this, original.id, saved, directHere)
+        }
+        if (secret == null) { RecorderService.sync(this); applyDirect(); finishSaved(); return true }
         DoorbellHub.savePassword(this, secret) { ok ->
             if (!ok) Toast.makeText(this, "Настройки сохранены, но пароль камеры записать не удалось", Toast.LENGTH_LONG).show()
             // Новый пароль — запись переподключится с ним.
             RecorderService.sync(this)
+            applyDirect()
             finishSaved()
         }
         return true

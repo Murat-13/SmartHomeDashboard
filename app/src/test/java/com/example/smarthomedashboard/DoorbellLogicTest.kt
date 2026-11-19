@@ -141,6 +141,30 @@ class DoorbellLogicTest {
         assertTrue(m.evaluate(tiles, readings(normal + ("binary_sensor.door_visitor" to "on")), 30_000).isEmpty())
     }
 
+    /** Прямые события (docs/direct-events-tz.md): одно нажатие из вебхука и из HA — один звонок, первый источник. */
+    @Test fun directAndHaRingsMergeFirstSourceWins() {
+        val m = DoorbellMonitor()
+        val tiles = listOf(tile())
+        val on = readings(normal + ("binary_sensor.door_visitor" to "on"))
+        m.evaluate(tiles, readings(normal), 0)
+        assertEquals(DoorbellMonitor.Event.Ring("door", "вебхук"), m.direct("door", "вебхук", 10_000))
+        assertTrue("HA через 0,8 с — то же нажатие", m.evaluate(tiles, on, 10_800).isEmpty())
+        assertNull("Опрос того же нажатия", m.direct("door", "опрос", 11_000))
+        m.evaluate(tiles, readings(normal), 25_000)
+        assertEquals("Новое нажатие вебхуком при всё ещё «вкл» в HA", DoorbellMonitor.Event.Ring("door", "вебхук"),
+            m.direct("door", "вебхук", 26_000))
+        assertNull("Дребезг вебхука", m.direct("door", "вебхук", 27_000))
+        assertNotNull("Повтор вебхуком через 3 с", m.direct("door", "вебхук", 29_500))
+        // HA первым: вебхук того же нажатия молчит, через 5 с — новый звонок.
+        m.evaluate(tiles, readings(normal), 40_000)
+        assertEquals(listOf(DoorbellMonitor.Event.Ring("door")), m.evaluate(tiles, on, 50_000))
+        assertNull(m.direct("door", "вебхук", 50_400))
+        assertNotNull(m.direct("door", "вебхук", 55_100))
+        // Без вебхука HA звонит как раньше.
+        m.evaluate(tiles, readings(normal), 70_000)
+        assertEquals(1, m.evaluate(tiles, on, 80_000).size)
+    }
+
     @Test fun offlineAfterConfirmationOnceAndOnlineAgain() {
         val m = DoorbellMonitor()
         val tiles = listOf(tile())

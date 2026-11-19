@@ -122,10 +122,13 @@ internal object DoorbellModel {
  * События домофонов по всем плиткам: звонок (кнопка выкл → вкл), потеря связи (подтверждённая [OFFLINE_CONFIRM_MS]),
  * открытие калитки (факт HA). Первое увиденное состояние только запоминается: перезапуск панели во время звонка
  * или после него не звонит повторно. Без связи с HA событий нет. Время — монотонное, задаётся вызывающим.
+ *
+ * Звонок может прийти и напрямую с камеры ([direct], docs/direct-events-tz.md): срабатывает первый источник, то же
+ * нажатие из другого источника в пределах [MERGE_MS] не звонит повторно.
  */
 internal class DoorbellMonitor {
     sealed class Event(open val tileId: String) {
-        data class Ring(override val tileId: String) : Event(tileId)
+        data class Ring(override val tileId: String, val source: String = SOURCE_HA) : Event(tileId)
         data class Offline(override val tileId: String) : Event(tileId)
         data class Online(override val tileId: String) : Event(tileId)
         data class GateOpened(override val tileId: String) : Event(tileId)
@@ -134,6 +137,7 @@ internal class DoorbellMonitor {
     private class State {
         var visitor: Boolean? = null
         var lastRingAt = Long.MIN_VALUE / 2
+        var lastRingSource: String? = null
         var online: Boolean? = null
         var offlineSince: Long? = null
         var reportedOffline = false
@@ -165,11 +169,27 @@ internal class DoorbellMonitor {
         val on = (reading as? BatteryReading.Value)?.raw == "on"
         val before = s.visitor
         s.visitor = on
-        // Дребезг кнопки и повторная публикация состояния не дают второго звонка в течение [RING_DEBOUNCE_MS].
-        if (before == false && on && now - s.lastRingAt >= RING_DEBOUNCE_MS) {
+        // Дребезг кнопки и повторная публикация состояния не дают второго звонка в течение [RING_DEBOUNCE_MS];
+        // то же нажатие, уже пришедшее с камеры напрямую, — в течение [MERGE_MS].
+        if (before == false && on && now - s.lastRingAt >= window(s, SOURCE_HA)) {
             s.lastRingAt = now
+            s.lastRingSource = SOURCE_HA
             out += Event.Ring(id)
         }
+    }
+
+    /** Звонок напрямую с камеры (вебхук, опрос). null — то же нажатие уже прозвенело. */
+    fun direct(tileId: String, source: String, now: Long): Event.Ring? {
+        val s = states.getOrPut(tileId) { State() }
+        if (now - s.lastRingAt < window(s, source)) return null
+        s.lastRingAt = now
+        s.lastRingSource = source
+        return Event.Ring(tileId, source)
+    }
+
+    private fun window(s: State, source: String): Long {
+        val crossed = s.lastRingSource != null && (s.lastRingSource == SOURCE_HA) != (source == SOURCE_HA)
+        return if (crossed) MERGE_MS else RING_DEBOUNCE_MS
     }
 
     private fun online(id: String, config: DoorbellConfig, readings: BatteryReadings, s: State, now: Long, out: MutableList<Event>): Long? {
@@ -224,6 +244,9 @@ internal class DoorbellMonitor {
 
     companion object {
         const val RING_DEBOUNCE_MS = 3_000L
+        /** Одно нажатие из HA и напрямую с камеры: HA обычно отстаёт на 0,5–1 с, с запасом. */
+        const val MERGE_MS = 5_000L
+        const val SOURCE_HA = "HA"
         const val OFFLINE_CONFIRM_MS = 15_000L
     }
 }

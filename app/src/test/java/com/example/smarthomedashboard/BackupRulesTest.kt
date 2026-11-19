@@ -57,6 +57,7 @@ class BackupRulesTest {
             rules.getElementsByTagName("device-transfer").item(0) as Element)
         for (root in roots) {
             assertFalse(rulesPermit(root, "recording_device.xml"))
+            assertFalse("Секрет вебхука и флаг прямых событий — только этого планшета", rulesPermit(root, "camera_events.xml"))
             assertTrue("Плитки (и настройки записи камеры в них) остаются в backup", rulesPermit(root, "tiles_prefs.xml"))
             val excludes = root.getElementsByTagName("exclude").let { nodes ->
                 (0 until nodes.length).map { nodes.item(it) as Element }.map { it.getAttribute("domain") to it.getAttribute("path") }

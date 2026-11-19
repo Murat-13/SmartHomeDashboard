@@ -59,9 +59,11 @@ internal object DoorbellHub {
         val application = context.applicationContext
         app = application
         (application as? Application)?.registerActivityLifecycleCallbacks(activityTracker)
+        DirectEvents.attach(application)
     }
 
     fun detach() {
+        DirectEvents.detach()
         main.removeCallbacks(recheck)
         lightOffs.values.forEach(main::removeCallbacks)
         lightOffs.clear()
@@ -98,6 +100,7 @@ internal object DoorbellHub {
 
     fun onState(tiles: List<TileEntity>, current: BatteryReadings) {
         tileList = tiles.filter { it.type == DoorbellConfig.TYPE }
+        DirectEvents.onTiles(tiles, SystemClock.uptimeMillis())
         attributeIds = tileList.flatMapTo(LinkedHashSet()) { tile ->
             DoorbellConfig.from(tile.config).let { listOf(it.camera, it.quickReply) }.filter { it.isNotBlank() }
         }
@@ -116,11 +119,29 @@ internal object DoorbellHub {
         if (events.isNotEmpty()) notifyListeners()
     }
 
+    /** Звонок напрямую с камеры ([DirectEvents]); тот же звонок из HA сливается в [DoorbellMonitor]. */
+    fun directRing(tileId: String, source: String) {
+        val context = app ?: return
+        // HA может быть недоступен с самого запуска панели — тогда плитки берутся из хранилища.
+        if (tile(tileId) == null) {
+            val stored = com.example.smarthomedashboard.data.TileManager(context).loadTiles()
+                .firstOrNull { it.id == tileId && it.type == DoorbellConfig.TYPE } ?: return
+            tileList = tileList + stored
+        }
+        val event = monitor.direct(tileId, source, SystemClock.uptimeMillis()) ?: return
+        handle(event)
+        RingUi.render()
+        notifyListeners()
+    }
+
     private fun handle(event: DoorbellMonitor.Event) {
         val tile = tile(event.tileId) ?: return
         val config = DoorbellConfig.from(tile.config)
         when (event) {
-            is DoorbellMonitor.Event.Ring -> ring(tile, config)
+            is DoorbellMonitor.Event.Ring -> {
+                Log.i(TAG, "Звонок: источник — ${event.source}")
+                ring(tile, config)
+            }
             is DoorbellMonitor.Event.Offline -> if (config.offlineSound) {
                 PanelAlerts.external(Alert(AlertEvent.DOORBELL_OFFLINE, "Домофон не в сети"))
             }
