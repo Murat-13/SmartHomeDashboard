@@ -541,6 +541,7 @@ class ArchiveActivity : AppCompatActivity() {
     }
     private val previewThread = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "archive-preview").apply { isDaemon = true } }
     @Volatile private var previewWanted = 0L
+    private var previewLogged = 0
 
     /**
      * Кадр для момента [atMs]: ролик 24/7, иначе ролик события; шаг [PREVIEW_STEP_MS] (соседние моменты — тот же кадр).
@@ -554,7 +555,10 @@ class ArchiveActivity : AppCompatActivity() {
             ?: snapshot.events.firstOrNull { key >= it.file.startMs && key < it.file.endMs }?.file ?: return
         previewThread.execute {
             if (previewWanted != key) return@execute
-            val frame = try { archive.frameAt(segment, key - segment.startMs) } catch (_: Exception) { null } ?: return@execute
+            val started = android.os.SystemClock.uptimeMillis()
+            val frame = try { archive.frameAt(segment, key - segment.startMs) } catch (_: Exception) { null }
+            if (frame == null) { android.util.Log.w("Archive", "Превью: кадр не получен"); return@execute }
+            if (previewLogged++ < 3) android.util.Log.i("Archive", "Превью: ${frame.width}×${frame.height} за ${android.os.SystemClock.uptimeMillis() - started} мс")
             runOnUiThread {
                 previewCache[key] = frame
                 if (previewWanted == key) ui.value = ui.value.copy(preview = key to frame)
@@ -1079,7 +1083,9 @@ private fun Timeline(ui: ArchiveUi, actions: ArchiveActions) {
     val currentSpan by rememberUpdatedState(span)
     val measurer = rememberTextMeasurer()
     // Кадр-превью над риской, пока ведут ленту (как у Reolink): рисуется поверх видео, место под шкалой не меняется.
-    val preview = ui.preview?.takeIf { p -> dragCenter?.let { kotlin.math.abs(it - p.first) <= 10_000L } == true }
+    // Кадр готов с опозданием (декодер), а палец уходит дальше: показывается последний кадр, если он не дальше 1/15
+    // видимого отрезка (найдено на планшете 19.11.2026: с допуском 10 с при быстром ведении превью не появлялось).
+    val preview = ui.preview?.takeIf { p -> dragCenter?.let { kotlin.math.abs(it - p.first) <= maxOf(10_000L, span / 15) } == true }
     Box {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -1252,7 +1258,11 @@ private fun androidx.compose.foundation.layout.ColumnScope.ListPane(ui: ArchiveU
             color = ArchiveColors.hint, fontSize = 18.sp,
             modifier = Modifier.padding(top = 24.dp).testTag("archive_empty"))
     }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f).testTag("archive_list")) {
+    // Сменили день или «Неделя» — список с начала (иначе он держится за прежний первый ролик, и заголовок дня уходит
+    // за верхний край — найдено на планшете 19.11.2026).
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(ui.week, ui.day, ui.filter) { listState.scrollToItem(0) }
+    LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f).testTag("archive_list")) {
         if (ui.week) {
             // За неделю — с заголовком каждого дня (новые первыми).
             ui.events.groupBy { RecArchive.dayStart(it.file.startMs) }.forEach { (day, events) ->
