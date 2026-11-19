@@ -2,6 +2,8 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
+    // Compose — только для архива записей (docs/recording.md, этап 3); остальные экраны на Views.
+    alias(libs.plugins.kotlin.compose)
 }
 
 // Версия «мажор.минор.патч» (0.9.x до полной регрессии, затем 1.0.0). versionCode выводится из неё:
@@ -76,6 +78,9 @@ android {
             if (releaseSigning != null) signingConfig = signingConfigs.getByName("release")
         }
     }
+    buildFeatures {
+        compose = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -125,10 +130,21 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
     // Запись с камер (docs/recording.md): фрагментированный MP4 без перекодирования, решение владельца 18.11.2026.
     implementation("androidx.media3:media3-muxer:1.11.1")
+    // Архив записей (этап 3, решение владельца 19.11.2026): первый экран на Compose, Material 3.
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.activity.compose)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
 
     // Только тестовый APK, в приложение не попадает: сквозные тесты на эмуляторе с фальшивым HA (0.9.13).
     androidTestImplementation("androidx.test:runner:1.6.2")

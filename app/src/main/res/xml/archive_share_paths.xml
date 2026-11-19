@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- «Поделиться» роликом архива (ArchiveActivity): наружу отдаётся только копия в cache/archive_share,
+     не сами записи, настройки или другие файлы приложения. -->
+<paths>
+    <cache-path name="archive_share" path="archive_share/" />
+</paths>

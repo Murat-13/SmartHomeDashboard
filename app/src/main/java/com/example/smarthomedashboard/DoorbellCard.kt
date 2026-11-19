@@ -266,6 +266,26 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         visibility = GONE
         contentDescription = "Основной поток"
     }
+    /** Запись на этом планшете (ТЗ записи): красная «● REC» — идёт, янтарная точка — включена, но не идёт. */
+    private val rec = text(if (expanded) 18f else 13f, OFFLINE, bold = true).apply { tag = "door_rec"; visibility = GONE }
+    /** «Архив» — только у раскрытой карточки и в окне звонка ([onArchive]). */
+    private val archive = text(20f, Color.WHITE, bold = true).apply {
+        text = "Архив"
+        tag = "door_archive"
+        gravity = Gravity.CENTER
+        background = GradientDrawable().apply { setColor(Color.argb(150, 20, 34, 44)); cornerRadius = 999f; setStroke(2, Color.argb(140, 95, 168, 211)) }
+        visibility = GONE
+        contentDescription = "Архив записей"
+        setOnClickListener { onArchive?.invoke() }
+    }
+
+    /** Плитка этой карточки — для состояния записи. */
+    var tileId: String? = null
+        set(value) { field = value; renderRecording() }
+    var onArchive: (() -> Unit)? = null
+        set(value) { field = value; archive.visibility = if (value != null && expanded) VISIBLE else GONE }
+    private val recordingListener: () -> Unit = { renderRecording() }
+
     private val icons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; tag = "door_icons" }
     private val iconViews = DoorbellConfig.Detection.entries.associateWith { d ->
         ImageView(context).apply {
@@ -305,7 +325,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         names.addView(title); names.addView(status)
         header.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(rec, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(archive, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(missedBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         content.addView(header, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
@@ -343,6 +365,10 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
         val off = ((if (expanded) 72 else 40) * next).toInt().coerceAtLeast(1)
         offlineIcon.layoutParams = (offlineIcon.layoutParams as LinearLayout.LayoutParams).apply { width = off; height = off; bottomMargin = (8 * next).toInt() }
         hd.setPadding((10 * next).toInt(), 0, (10 * next).toInt(), 0)
+        rec.setPadding((10 * next).toInt(), 0, (6 * next).toInt(), 0)
+        archive.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
+        archive.minHeight = (48 * next).toInt()
+        (archive.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         missedBadge.minWidth = (30 * next).toInt()
         missedBadge.setPadding((10 * next).toInt(), (3 * next).toInt(), (10 * next).toInt(), (3 * next).toInt())
         topScrim.layoutParams = (topScrim.layoutParams as LayoutParams).apply { height = (height(0.36f)) }
@@ -450,6 +476,30 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
     // Под раскрытием и окном звонка видео плитки не останавливается (docs/doorbell.md): скрытие источника
     // влияет только на анимации рамки.
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        RecordingStatus.listen(recordingListener)
+        renderRecording()
+    }
+
+    override fun onDetachedFromWindow() {
+        RecordingStatus.unlisten(recordingListener)
+        super.onDetachedFromWindow()
+    }
+
+    private fun renderRecording() {
+        val id = tileId
+        if (id == null) { rec.visibility = GONE; return }
+        val states = listOfNotNull(RecordingStatus.of(id), RecordingStatus.of(id + RecorderService.HD)).map { it.state }
+        val recording = CameraRecorder.State.RECORDING in states
+        val enabled = recording || RecordingDevice(context).enabled(id)
+        rec.visibility = if (enabled) VISIBLE else GONE
+        if (!enabled) return
+        set(rec, if (recording) "● REC" else "●")
+        rec.setTextColor(if (recording) OFFLINE else PERSON)
+        rec.contentDescription = if (recording) "Идёт запись" else "Запись включена, но не идёт"
+    }
+
     override fun dispose() {
         releaseAnimations()
         video.dispose()
@@ -481,7 +531,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean) : DoorbellF
                     }
                 }
             }
-            tile.addView(DoorbellCard(context, expanded = false), LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            tile.addView(DoorbellCard(context, expanded = false).apply { this.tileId = tileId },
+                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             val handle = ImageView(context).apply {
                 setImageResource(R.drawable.ic_resize)
                 layoutParams = LayoutParams(40, 40).apply { gravity = Gravity.BOTTOM or Gravity.END }

@@ -109,6 +109,9 @@ internal class DoorbellRingWindow private constructor(
         replyButton.setOnClickListener { touched(); showReplies(replies.visibility != VISIBLE) }
         closeButton.setOnClickListener { touched(); close() }
         card.setOnClickListener { touched() }
+        // Архив (docs/recording.md): сразу последний законченный ролик; идущий сейчас появится после дозаписи.
+        card.tileId = tileId
+        card.onArchive = { touched(); close(); ArchiveActivity.open(host, tileId, latest = true) }
     }
 
     // ---- Размеры: видео по пропорции домофона, кнопки справа (альбом) или снизу (портрет) ----

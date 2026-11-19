@@ -96,6 +96,21 @@
         <activity android:name=".HomeClimateEditorActivity" android:exported="false" />
         <activity android:name=".InverterModernEditorActivity" android:exported="false" />
         <activity android:name=".DoorbellEditorActivity" android:exported="false" />
+        <!-- Архив записей (docs/recording.md, этап 3): Compose, тема Modern. -->
+        <activity
+            android:name=".ArchiveActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <!-- «Поделиться» роликом архива: только копия в cache/archive_share, доступ по разовому разрешению. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/archive_share_paths" />
+        </provider>
 
         <!-- Результат сессии установки обновления (PendingIntent от PackageInstaller). -->
         <receiver

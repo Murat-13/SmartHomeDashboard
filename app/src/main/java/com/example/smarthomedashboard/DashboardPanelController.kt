@@ -1481,6 +1481,9 @@ internal class DashboardPanelController(
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             DoorbellHub.acknowledge(tile.id)
             val expanded = DoorbellCard(activity, expanded = true)
+            expanded.tileId = tile.id
+            // Архив записей (docs/recording.md): карточка сворачивается, поверх панели — экран архива.
+            expanded.onArchive = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id) }
             modernExpansion.expand(tile.id, source, expanded, target,
                 if (config.autoCollapse) config.collapseSeconds * 1000L else null)
             renderModern(tile, null, animate = false)

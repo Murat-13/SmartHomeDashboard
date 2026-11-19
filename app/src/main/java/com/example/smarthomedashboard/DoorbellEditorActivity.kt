@@ -64,6 +64,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         private set
     internal var useSd = false
         private set
+    internal var archivePin = RecordingDevice.ArchivePin.OFF
+        private set
     private lateinit var recordingStatus: TextView
     private val statusListener: () -> Unit = { refreshRecordingStatus() }
 
@@ -94,6 +96,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         limitGb = device.limitGb
         reserveGb = device.reserveGb
         useSd = device.useSdCard
+        archivePin = device.archivePin
         savedInstanceState?.getString(STATE_DRAFT)?.let { text ->
             try {
                 val json = JSONObject(text)
@@ -103,6 +106,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
                 if (json.has("record_here")) recordHere = json.optBoolean("record_here")
                 limitGb = json.optInt("limit_gb", limitGb); reserveGb = json.optInt("reserve_gb", reserveGb)
                 useSd = json.optBoolean("use_sd", useSd)
+                archivePin = RecordingDevice.ArchivePin.of(json.optString("archive_pin", archivePin.key))
                 // Пароль в состоянии экрана не сохраняется: после пересоздания его нужно ввести снова.
             } catch (_: Exception) {}
         }
@@ -266,8 +270,12 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(number("rec_reserve", "Всегда оставлять свободными, ГБ (1–10)", reserveGb, 1..10) { reserveGb = it })
         val hasSd = try { getExternalFilesDirs(null).size > 1 && getExternalFilesDirs(null)[1] != null } catch (_: Exception) { false }
         side.addView(switch("rec_sd", if (hasSd) "Писать на SD-карту" else "Писать на SD-карту (карта не найдена)", useSd) { useSd = it })
+        side.addView(choice("rec_archive_pin", "PIN для архива записей (тот же, что у настроек)",
+            RecordingDevice.ArchivePin.entries.map { it.title }, RecordingDevice.ArchivePin.entries.indexOf(archivePin)) {
+            archivePin = RecordingDevice.ArchivePin.entries[it] })
         recordingStatus = kit.label("", 13f).apply { tag = "rec_status" }
         side.addView(recordingStatus)
+        side.addView(kit.button("Открыть архив записей", "rec_open_archive") { ArchiveActivity.open(this, original.id) })
         refreshRecordingStatus()
         RecordingStatus.listen(statusListener)
         // Занятое место, средний объём записи и где камера — на фоновом потоке (обход папок, разрешение имени).
@@ -498,7 +506,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         recording != RecordingConfig.from(original.config) || recordingDeviceDirty
 
     private val recordingDeviceDirty get() = ::device.isInitialized && (recordHere != device.enabled(original.id) ||
-        limitGb != device.limitGb || reserveGb != device.reserveGb || useSd != device.useSdCard)
+        limitGb != device.limitGb || reserveGb != device.reserveGb || useSd != device.useSdCard || archivePin != device.archivePin)
 
     internal fun render() {
         if (!::preview.isInitialized) return
@@ -538,7 +546,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         if (::original.isInitialized) outState.putString(STATE_DRAFT, JSONObject().put("config", config.toJson()).put("title", title)
             .put("recording", recording.toJson()).put("record_here", recordHere).put("limit_gb", limitGb)
-            .put("reserve_gb", reserveGb).put("use_sd", useSd).toString())
+            .put("reserve_gb", reserveGb).put("use_sd", useSd).put("archive_pin", archivePin.key).toString())
         super.onSaveInstanceState(outState)
     }
 
@@ -565,7 +573,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         val json = JSONObject(recording.writeTo(config.writeTo(latest.config))).put("button_size", w).put("widget_height", h)
         tileManager.updateTile(latest.copy(title = title.ifBlank { DoorbellConfig.DEFAULT_TITLE }, config = json.toString()))
         device.setEnabled(original.id, recordHere)
-        device.limitGb = limitGb; device.reserveGb = reserveGb; device.useSdCard = useSd
+        device.limitGb = limitGb; device.reserveGb = reserveGb; device.useSdCard = useSd; device.archivePin = archivePin
         val secret = password
         if (secret == null) { RecorderService.sync(this); finishSaved(); return true }
         DoorbellHub.savePassword(this, secret) { ok ->

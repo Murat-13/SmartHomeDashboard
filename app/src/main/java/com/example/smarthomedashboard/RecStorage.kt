@@ -120,12 +120,23 @@ internal class RecordingDevice(context: Context) {
         get() = prefs.getBoolean(KEY_SD, false)
         set(v) { prefs.edit().putBoolean(KEY_SD, v).apply() }
 
+    /** PIN архива (ТЗ): тот же PIN, что у настроек. По умолчанию выключен. */
+    var archivePin: ArchivePin
+        get() = ArchivePin.of(prefs.getString(KEY_ARCHIVE_PIN, null))
+        set(v) { prefs.edit().putString(KEY_ARCHIVE_PIN, v.key).apply() }
+
+    enum class ArchivePin(val key: String, val title: String) {
+        OFF("off", "Выключен"), DELETE("delete", "Только удаление"), ALL("all", "Весь архив");
+        companion object { fun of(key: String?) = entries.firstOrNull { it.key == key } ?: OFF }
+    }
+
     companion object {
         const val PREFS = "recording_device"
         private const val KEY_ENABLED = "enabled_tiles"
         private const val KEY_LIMIT = "limit_gb"
         private const val KEY_RESERVE = "reserve_gb"
         private const val KEY_SD = "use_sd"
+        private const val KEY_ARCHIVE_PIN = "archive_pin"
     }
 }
 
