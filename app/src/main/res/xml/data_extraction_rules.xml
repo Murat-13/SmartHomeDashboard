@@ -13,6 +13,8 @@
         <exclude domain="database" path="power_history.db-journal" />
         <exclude domain="sharedpref" path="recording_device.xml" />
         <exclude domain="external" path="records/" />
+        <exclude domain="database" path="recording_index.db" />
+        <exclude domain="database" path="recording_index.db-journal" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="dashboard_prefs.xml" />
@@ -21,5 +23,7 @@
         <exclude domain="database" path="power_history.db-journal" />
         <exclude domain="sharedpref" path="recording_device.xml" />
         <exclude domain="external" path="records/" />
+        <exclude domain="database" path="recording_index.db" />
+        <exclude domain="database" path="recording_index.db-journal" />
     </device-transfer>
 </data-extraction-rules>

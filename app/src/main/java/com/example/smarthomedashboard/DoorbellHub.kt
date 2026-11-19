@@ -71,6 +71,8 @@ internal object DoorbellHub {
         (app as? Application)?.unregisterActivityLifecycleCallbacks(activityTracker)
         app = null
         readings = null
+        // Панели нет — о событиях ничего не известно: новый ролик не начнётся, идущий закроется по дозаписи.
+        RecordingEvents.clear()
         // Новая панель начинает с чистого листа: первое состояние снова только запоминается.
         monitor = DoorbellMonitor()
         tileList = emptyList()
@@ -100,6 +102,8 @@ internal object DoorbellHub {
             DoorbellConfig.from(tile.config).let { listOf(it.camera, it.quickReply) }.filter { it.isNotBlank() }
         }
         readings = current
+        // Запись событий в HD (docs/recording.md): какие датчики сработали — для потоков записи.
+        RecordingEvents.update(tileList, current)
         val now = SystemClock.uptimeMillis()
         val events = monitor.evaluate(tileList, current, now)
         main.removeCallbacks(recheck)

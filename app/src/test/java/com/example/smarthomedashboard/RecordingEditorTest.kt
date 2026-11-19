@@ -55,6 +55,12 @@ class RecordingEditorTest {
         root.findViewWithTag<SwitchCompat>("rec_audio_continuous").isChecked = false
         root.findViewWithTag<EditText>("rec_keep_continuous").setText("3")
         root.findViewWithTag<EditText>("rec_limit").setText("40")
+        // События в HD (этап 2): движение включено, животное выключено, предзапись/дозапись/длина ролика.
+        root.findViewWithTag<SwitchCompat>("rec_trigger_motion").isChecked = true
+        root.findViewWithTag<SwitchCompat>("rec_trigger_animal").isChecked = false
+        root.findViewWithTag<EditText>("rec_pre").setText("5")
+        root.findViewWithTag<EditText>("rec_post").setText("30")
+        root.findViewWithTag<EditText>("rec_max_clip").setText("2")
         idle()
         assertTrue(activity.isDirty)
         // До «Сохранить» ничего не записано.
@@ -69,6 +75,8 @@ class RecordingEditorTest {
         assertEquals(RecordingConfig.Mode.EVENTS, rec.remoteMode)
         assertFalse(rec.audioContinuous)
         assertEquals(3, rec.keepContinuousDays)
+        assertEquals(setOf("visitor", "person", "vehicle", "motion"), rec.eventTriggers)
+        assertEquals(listOf(5, 30, 2), listOf(rec.preSeconds, rec.postSeconds, rec.maxClipMinutes))
         assertEquals("Настройки домофона не потерялись", "rtsp://10.0.0.5/sub", DoorbellConfig.from(savedTile.config).rtspSub)
         val device = RecordingDevice(context)
         assertTrue(device.enabled("door"))

@@ -230,7 +230,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     private fun buildRecording(side: LinearLayout) {
         side.addView(header("Запись с домофона"))
         side.addView(kit.label("Запись идёт прямо на планшет: круглосуточно — субпоток, события — основной поток в HD. " +
-            "Нужен прямой поток (RTSP). В этой версии пишется круглосуточная дорожка; события в HD и архив — следующие этапы.", 13f))
+            "Нужен прямой поток (RTSP). События берутся из датчиков этой плитки (звонок, человек, машина…) " +
+            "и пишутся, пока панель на связи с Home Assistant.", 13f))
         side.addView(switch("rec_here", "Записывать на этом планшете", recordHere) { recordHere = it })
         side.addView(choice("rec_mode", "Что записывать", RecordingConfig.Mode.entries.map { it.title },
             RecordingConfig.Mode.entries.indexOf(recording.mode)) { recording = recording.copy(mode = RecordingConfig.Mode.entries[it]) })
@@ -242,6 +243,17 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(switch("rec_audio_continuous", "Звук в круглосуточной записи", recording.audioContinuous) {
             recording = recording.copy(audioContinuous = it) })
         side.addView(switch("rec_audio_events", "Звук в записи событий", recording.audioEvents) { recording = recording.copy(audioEvents = it) })
+        side.addView(kit.label("События, которые пишутся в HD", 15f, bold = true))
+        for ((key, title) in RecordingConfig.TRIGGERS) {
+            side.addView(switch("rec_trigger_$key", title, key in recording.eventTriggers) { on ->
+                recording = recording.copy(eventTriggers = if (on) recording.eventTriggers + key else recording.eventTriggers - key) })
+        }
+        side.addView(number("rec_pre", "Запись до события, секунд (0–30)", recording.preSeconds, 0..30) {
+            recording = recording.copy(preSeconds = it) })
+        side.addView(number("rec_post", "Дописывать после события, секунд (5–120)", recording.postSeconds, 5..120) {
+            recording = recording.copy(postSeconds = it) })
+        side.addView(number("rec_max_clip", "Ролик не длиннее, минут (1–30)", recording.maxClipMinutes, 1..30) {
+            recording = recording.copy(maxClipMinutes = it) })
         side.addView(number("rec_keep_continuous", "Хранить круглосуточную запись, дней (1–90)", recording.keepContinuousDays, 1..90) {
             recording = recording.copy(keepContinuousDays = it) })
         side.addView(number("rec_keep_events", "Хранить события, дней (1–365)", recording.keepEventDays, 1..365) {
@@ -304,14 +316,24 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         if (!::recordingStatus.isInitialized) return
         val status = RecordingStatus.of(original.id)
         val state = when (status?.state) {
-            ContinuousRecorder.State.RECORDING -> "Идёт запись"
-            ContinuousRecorder.State.CONNECTING -> "Подключение к камере…"
-            ContinuousRecorder.State.RETRYING -> "Нет связи с камерой: ${status.detail}. Повтор…"
-            ContinuousRecorder.State.NO_SPACE, ContinuousRecorder.State.NO_STORAGE -> status.detail
-            ContinuousRecorder.State.STOPPED, null -> if (device.enabled(original.id)) "Запись не идёт" else "Запись на этом планшете выключена"
+            CameraRecorder.State.RECORDING -> "Идёт запись"
+            CameraRecorder.State.CONNECTING -> "Подключение к камере…"
+            CameraRecorder.State.RETRYING -> "Нет связи с камерой: ${status.detail}. Повтор…"
+            CameraRecorder.State.NO_SPACE, CameraRecorder.State.NO_STORAGE -> status.detail
+            CameraRecorder.State.STOPPED, null -> if (RecordingStatus.of(original.id + RecorderService.HD) != null) ""
+                else if (device.enabled(original.id)) "Запись не идёт" else "Запись на этом планшете выключена"
         }
+        val hd = RecordingStatus.of(original.id + RecorderService.HD)?.let { s ->
+            when (s.state) {
+                CameraRecorder.State.RECORDING -> "События в HD: ${s.detail}"
+                CameraRecorder.State.CONNECTING -> "События в HD: подключение к основному потоку…"
+                CameraRecorder.State.RETRYING -> "События в HD: нет связи с камерой (${s.detail}). Повтор…"
+                CameraRecorder.State.NO_SPACE, CameraRecorder.State.NO_STORAGE -> "События в HD: ${s.detail}"
+                CameraRecorder.State.STOPPED -> ""
+            }
+        }.orEmpty()
         val sd = if (RecordingStatus.sdMissing(original.id)) "SD-карта не найдена — запись идёт в память планшета" else ""
-        recordingStatus.text = listOf(state, sd, estimateText()).filter { it.isNotBlank() }.joinToString("\n")
+        recordingStatus.text = listOf(state, hd, sd, estimateText()).filter { it.isNotBlank() }.joinToString("\n")
         if (::localityLabel.isInitialized) {
             val where = when (cameraLocal) {
                 true -> "Сейчас камера в сети этого планшета — действует «Что записывать»."

@@ -13,4 +13,6 @@
     <!-- Запись с камер: «записывать на этом планшете» и лимиты — только этого планшета; видео — не в облако. -->
     <exclude domain="sharedpref" path="recording_device.xml" />
     <exclude domain="external" path="records/" />
+    <exclude domain="database" path="recording_index.db" />
+    <exclude domain="database" path="recording_index.db-journal" />
 </full-backup-content>

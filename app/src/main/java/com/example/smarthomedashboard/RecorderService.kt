@@ -43,8 +43,9 @@ class RecorderService : Service() {
     /** Пишем в память планшета, хотя выбрана SD-карта (карту вынули или она сломалась). */
     private var sdMissing = false
 
-    private data class Key(val url: String, val user: String, val passwordHash: Int, val audio: Boolean)
-    private class Running(val key: Key, val recorder: ContinuousRecorder, val config: RecordingConfig)
+    /** Изменилось что-то из ключа — запись перезапускается. Для HD сюда же предзапись, дозапись и предел ролика. */
+    private data class Key(val url: String, val user: String, val passwordHash: Int, val audio: Boolean, val clip: List<Int> = emptyList())
+    private class Running(val key: Key, val recorder: CameraRecorder, val config: RecordingConfig)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -63,10 +64,10 @@ class RecorderService : Service() {
     }
 
     override fun onDestroy() {
-        control.execute { safe { stopAll() } }
+        // Остановка камер (закрытие отрезков, до 3 с на камеру) — на потоке управления: главный поток не ждёт.
+        // После shutdown() поток дорабатывает уже поставленные задачи и завершается сам.
+        control.execute { safe { stopAll() }; RecordingStatus.clear() }
         control.shutdown()
-        try { control.awaitTermination(4, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
-        RecordingStatus.clear()
         super.onDestroy()
     }
 
@@ -78,6 +79,7 @@ class RecorderService : Service() {
     private fun sync() {
         val device = RecordingDevice(this)
         val tiles = TileManager(this).loadTiles().filter { it.type == DoorbellConfig.TYPE }
+        // Ключ записи: id плитки — круглосуточная (субпоток), id + [HD] — события (основной поток).
         val wanted = HashMap<String, Pair<Key, RecordingConfig>>()
         var password: String? = null
         var passwordRead = false
@@ -85,13 +87,17 @@ class RecorderService : Service() {
             if (!device.enabled(tile.id)) continue
             val rec = RecordingConfig.from(tile.config)
             val door = DoorbellConfig.from(tile.config)
-            val url = door.rtspSub.ifBlank { door.rtspMain }
-            if (url.isBlank()) continue
+            val sub = door.rtspSub.ifBlank { door.rtspMain }
+            val hd = door.rtspMain.ifBlank { door.rtspSub }
+            if (sub.isBlank()) continue
             // Камера не в подсети планшета (VPN, интернет) — свой режим, по умолчанию выключен (трафик).
-            val local = RecLocality.isLocal(url) ?: true
-            if (!rec.effectiveMode(local).continuous) continue
+            val mode = rec.effectiveMode(RecLocality.isLocal(sub) ?: true)
+            if (!mode.continuous && !mode.events) continue
             if (!passwordRead) { password = readPassword(); passwordRead = true }
-            wanted[tile.id] = Key(url, door.rtspUser, password?.hashCode() ?: 0, rec.audioContinuous) to rec
+            val hash = password?.hashCode() ?: 0
+            if (mode.continuous) wanted[tile.id] = Key(sub, door.rtspUser, hash, rec.audioContinuous) to rec
+            if (mode.events) wanted[tile.id + HD] = Key(hd, door.rtspUser, hash, rec.audioEvents,
+                listOf(rec.preSeconds, rec.postSeconds, rec.maxClipMinutes)) to rec
         }
         // Остановить лишние и изменившиеся.
         for (id in recorders.keys.toList()) {
@@ -116,14 +122,22 @@ class RecorderService : Service() {
         }
         for ((id, want) in wanted) {
             if (recorders.containsKey(id)) continue
-            val camera = RecLayout.cameraKey(id)
-            val r = ContinuousRecorder(
-                camera = camera, url = want.first.url, user = want.first.user, password = password,
-                audio = want.first.audio, root = { storageRoot() }, canWrite = { canWrite() },
+            val tileId = id.removeSuffix(HD)
+            val camera = RecLayout.cameraKey(tileId)
+            val (key, config) = want
+            val r: CameraRecorder = if (id.endsWith(HD)) EventRecorder(
+                camera = camera, url = key.url, user = key.user, password = password, audio = key.audio,
+                root = { storageRoot() }, canWrite = { canWrite() },
+                events = { RecordingEvents.of(tileId) }, settings = { config },
+                onClip = { file, labels -> control.execute { safe { clipClosed(file, labels) } } },
+                onStatus = { _, status -> statusChanged(id, status) }
+            ) else ContinuousRecorder(
+                camera = camera, url = key.url, user = key.user, password = password,
+                audio = key.audio, root = { storageRoot() }, canWrite = { canWrite() },
                 onSegment = { file -> control.execute { safe { segmentClosed(file) } } },
                 onStatus = { _, status -> statusChanged(id, status) }
             )
-            recorders[id] = Running(want.first, r, want.second)
+            recorders[id] = Running(key, r, config)
             r.start()
         }
         // Останавливаемся, только если запись не включена ни для одной плитки: камера, ставшая доступной лишь
@@ -197,6 +211,14 @@ class RecorderService : Service() {
         retention(forceScan = false)
     }
 
+    private val index by lazy { RecIndex(this) }
+
+    private fun clipClosed(file: RecFile, labels: Set<String>) {
+        try { index.add(file, labels) } catch (e: Exception) { Log.w(TAG, "Запись: индекс событий недоступен: ${e.javaClass.simpleName}") }
+        Log.i(TAG, "Запись: событие ${labels.joinToString(",")} — ${file.durationMs / 1000} с")
+        segmentClosed(file)
+    }
+
     /** Очистка по сроку, лимиту и остатку (поток управления). */
     private fun retention(forceScan: Boolean) {
         checkSdCard()
@@ -206,20 +228,21 @@ class RecorderService : Service() {
             files.clear()
             files += RecLayout.scan(root)
             lastScan = now
+            // Файлы — источник правды: строки удалённых роликов убираются из индекса.
+            try { index.reconcile(files) } catch (e: Exception) { Log.w(TAG, "Запись: сверка индекса: ${e.javaClass.simpleName}") }
         }
         val device = RecordingDevice(this)
         val free = freeBytes(root)
         val used = files.sumOf { it.bytes }
         var limit = RecRetention.limit(device.limitGb, free, used)
         if (onFallback()) limit /= 2
-        val configs = recorders.mapKeys { RecLayout.cameraKey(it.key) }.mapValues { it.value.config }
+        val configs = recorders.mapKeys { RecLayout.cameraKey(it.key.removeSuffix(HD)) }.mapValues { it.value.config }
         val plan = RecRetention.plan(files, { camera ->
             val c = configs[camera] ?: RecordingConfig()
             RecRetention.Rules(c.keepContinuousDays * 86_400_000L, c.keepEventDays * 86_400_000L)
         }, now, free, limit, device.reserveGb * RecRetention.GB)
-        for (f in plan.delete) {
-            if (f.path.delete() || !f.path.exists()) files.remove(f)
-        }
+        val deleted = plan.delete.filter { f -> (f.path.delete() || !f.path.exists()).also { if (it) files.remove(f) } }
+        try { index.remove(deleted) } catch (e: Exception) { Log.w(TAG, "Запись: индекс событий: ${e.javaClass.simpleName}") }
         if (plan.delete.isNotEmpty()) {
             Log.i(TAG, "Запись: удалено отрезков ${plan.delete.size}")
             freeCacheAt = 0
@@ -229,11 +252,12 @@ class RecorderService : Service() {
         paused = plan.pause
     }
 
-    private fun statusChanged(tileId: String, status: ContinuousRecorder.Status) {
-        if (status.state == ContinuousRecorder.State.STOPPED) { RecordingStatus.remove(tileId); return }
-        RecordingStatus.set(tileId, status)
-        if (status.state == ContinuousRecorder.State.NO_SPACE || status.state == ContinuousRecorder.State.NO_STORAGE) {
-            val voice = recorders[tileId]?.config?.voiceProblems ?: true
+    /** [key] — ключ записи: id плитки (круглосуточная) или id + [HD] (события). */
+    private fun statusChanged(key: String, status: CameraRecorder.Status) {
+        if (status.state == CameraRecorder.State.STOPPED) { RecordingStatus.remove(key); return }
+        RecordingStatus.set(key, status)
+        if (status.state == CameraRecorder.State.NO_SPACE || status.state == CameraRecorder.State.NO_STORAGE) {
+            val voice = recorders[key]?.config?.voiceProblems ?: true
             if (voice) main.post { PanelAlerts.external(Alert(AlertEvent.RECORDING_STOPPED, status.detail.ifBlank { "Запись остановлена" })) }
         }
     }
@@ -257,6 +281,8 @@ class RecorderService : Service() {
         private const val CHANNEL = "recording"
         private const val NOTIFICATION_ID = 4107
         const val SD_MISSING_PHRASE = "Карта памяти не найдена, запись идёт в память планшета"
+        /** Суффикс ключа записи событий в HD (и её состояния в [RecordingStatus]). */
+        const val HD = "#hd"
 
         /**
          * Привести запись в соответствие с настройками. Безопасно вызывать часто: сервис запускается, только
@@ -280,7 +306,7 @@ class RecorderService : Service() {
 
 /** Состояние записи по плиткам — для редактора и плитки. Слушатели вызываются на главном потоке. */
 internal object RecordingStatus {
-    private val map = java.util.concurrent.ConcurrentHashMap<String, ContinuousRecorder.Status>()
+    private val map = java.util.concurrent.ConcurrentHashMap<String, CameraRecorder.Status>()
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())
 
@@ -290,8 +316,8 @@ internal object RecordingStatus {
     /** Выбрана SD-карта, но её нет — пишем в память планшета. */
     fun sdMissing(tileId: String) = tileId in sd
     fun setSdMissing(tileId: String, missing: Boolean) { if (if (missing) sd.add(tileId) else sd.remove(tileId)) notifyListeners() }
-    fun of(tileId: String): ContinuousRecorder.Status? = map[tileId]
-    fun set(tileId: String, status: ContinuousRecorder.Status) { map[tileId] = status; notifyListeners() }
+    fun of(tileId: String): CameraRecorder.Status? = map[tileId]
+    fun set(tileId: String, status: CameraRecorder.Status) { map[tileId] = status; notifyListeners() }
     fun remove(tileId: String) { if (map.remove(tileId) != null) notifyListeners() }
     fun clear() { sd.clear(); if (map.isNotEmpty()) { map.clear(); notifyListeners() } }
     fun listen(listener: () -> Unit) = listeners.add(listener)

@@ -4,27 +4,34 @@ import android.util.Log
 import java.io.File
 
 /**
- * Запись с камер: непрерывная дорожка (24/7) одной камеры на своём потоке (docs/recording.md).
- * Сессия RTSP → кадры → отрезки fMP4 по [segmentMs] (режется на ключевом кадре). Обрыв — переподключение 2→30 с,
- * текущий отрезок закрывается, на шкале будет пропуск. Новый отрезок открывается, только если [canWrite]
- * (есть место сверх неприкосновенного остатка).
+ * Запись с камер: одна RTSP-дорожка камеры на своём потоке (docs/recording.md). Общий цикл для круглосуточной
+ * записи ([ContinuousRecorder]) и записи событий ([EventRecorder]): подключение, разбор RTP в кадры, звук
+ * (AAC как есть, G.711 → AAC), переподключение 2→30 с. Что делать с кадрами — решает [Sink] наследника.
  */
-internal class ContinuousRecorder(
+internal abstract class CameraRecorder(
     val camera: String,
     private val url: String,
     private val user: String,
     private val password: String?,
     private val audio: Boolean,
-    private val root: () -> File?,
-    private val canWrite: () -> Boolean,
-    private val onSegment: (RecFile) -> Unit,
-    private val onStatus: (ContinuousRecorder, Status) -> Unit,
-    private val segmentMs: Long = SEGMENT_MS,
-    private val sessionFactory: (String, String, String?) -> RtspSession = { u, l, p -> RtspSession(u, l, p) },
-    private val encoderFactory: () -> AacEncoder = { AacEncoder() }
+    private val onStatus: (CameraRecorder, Status) -> Unit,
+    private val sessionFactory: (String, String, String?) -> RtspSession,
+    private val encoderFactory: () -> AacEncoder,
+    private val threadName: String
 ) {
     enum class State { CONNECTING, RECORDING, RETRYING, NO_SPACE, NO_STORAGE, STOPPED }
     data class Status(val state: State, val detail: String = "", val sinceMs: Long = System.currentTimeMillis())
+
+    /** Приёмник кадров одной RTSP-сессии; метки времени — отсчёты RTP своей дорожки. */
+    internal interface Sink {
+        var audioParams: AudioParams?
+        var videoClock: Int
+        fun video(frame: VideoFrame, d: VideoDepacketizer)
+        /** Отсчёты G.711 пришли с меткой [ts] (до кодера AAC с его задержкой). */
+        fun audioArrival(ts: Long)
+        fun audio(frame: AudioFrame, rate: Int)
+        fun close()
+    }
 
     @Volatile private var running = false
     private var encoder: AacEncoder? = null
@@ -33,13 +40,15 @@ internal class ContinuousRecorder(
     @Volatile var status = Status(State.STOPPED)
         private set
 
+    protected abstract fun newSink(): Sink
+
     fun start() {
         if (running) return
         running = true
-        thread = Thread({ loop() }, "rec-$camera").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1; start() }
+        thread = Thread({ loop() }, threadName).apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1; start() }
     }
 
-    /** Остановить и дождаться закрытия текущего отрезка (не дольше [waitMs]). */
+    /** Остановить и дождаться закрытия текущего файла (не дольше [waitMs]). */
     fun stop(waitMs: Long = 3_000) {
         running = false
         session?.close()
@@ -48,7 +57,7 @@ internal class ContinuousRecorder(
         thread = null
     }
 
-    private fun report(state: State, detail: String = "") {
+    protected fun report(state: State, detail: String = "") {
         if (status.state == state && status.detail == detail) return
         status = Status(state, detail)
         onStatus(this, status)
@@ -59,7 +68,7 @@ internal class ContinuousRecorder(
         while (running) {
             val started = System.nanoTime()
             report(State.CONNECTING)
-            val writer = SegmentRotation()
+            val writer = newSink()
             try {
                 val s = sessionFactory(url, user, password)
                 session = s
@@ -106,7 +115,7 @@ internal class ContinuousRecorder(
                     report(State.RETRYING, e.message ?: e.javaClass.simpleName)
                 }
             } finally {
-                try { writer.close() } catch (e: Exception) { Log.w(TAG, "$camera: отрезок не закрыт: ${e.message}") }
+                try { writer.close() } catch (e: Exception) { Log.w(TAG, "$camera: файл не закрыт: ${e.message}") }
                 session?.close()
                 session = null
                 encoder?.release()
@@ -121,28 +130,92 @@ internal class ContinuousRecorder(
         report(State.STOPPED)
     }
 
-    /** Нарезка потока на отрезки; живёт одну RTSP-сессию. Метки сессии — от первого кадра видео. */
-    private inner class SegmentRotation {
-        var audioParams: AudioParams? = null
+    /**
+     * Общая шкала одной сессии: микросекунды от первого кадра видео. Звук и видео идут с разными отсчётами RTP:
+     * звук привязывается ко времени прихода своего первого кадра (ошибка — десятки мс).
+     */
+    protected class Timeline {
         var videoClock = 90_000
         private var anchorNanos = 0L
-        private var anchorWallMs = 0L
+        var anchorWallMs = 0L
+            private set
         private var videoAnchorTs = Long.MIN_VALUE
         private var audioAnchorTs = Long.MIN_VALUE
         private var audioAnchorUs = 0L
+
+        val started get() = videoAnchorTs != Long.MIN_VALUE
+
+        fun videoUs(frame: VideoFrame): Long {
+            if (videoAnchorTs == Long.MIN_VALUE) {
+                videoAnchorTs = frame.timestamp
+                anchorNanos = System.nanoTime()
+                anchorWallMs = System.currentTimeMillis()
+            }
+            return (frame.timestamp - videoAnchorTs) * 1_000_000L / videoClock
+        }
+
+        fun audioArrival(ts: Long) {
+            if (!started || audioAnchorTs != Long.MIN_VALUE) return
+            audioAnchorTs = ts
+            audioAnchorUs = (System.nanoTime() - anchorNanos) / 1_000
+        }
+
+        /** null — видео ещё не началось (звук до первого кадра видео не пишется). */
+        fun audioUs(frame: AudioFrame, rate: Int): Long? {
+            if (!started) return null
+            if (audioAnchorTs == Long.MIN_VALUE) {
+                audioAnchorTs = frame.timestamp
+                audioAnchorUs = (System.nanoTime() - anchorNanos) / 1_000
+            }
+            return audioAnchorUs + (frame.timestamp - audioAnchorTs) * 1_000_000L / rate
+        }
+
+        /** Время на стене для момента [us] шкалы. */
+        fun wallMs(us: Long) = anchorWallMs + us / 1_000
+    }
+
+    companion object {
+        const val TAG = "Recording"
+    }
+}
+
+/**
+ * Непрерывная дорожка (24/7) одной камеры: отрезки fMP4 по [segmentMs] (режется на ключевом кадре). Обрыв —
+ * текущий отрезок закрывается, на шкале будет пропуск. Новый отрезок открывается, только если [canWrite]
+ * (есть место сверх неприкосновенного остатка).
+ */
+internal class ContinuousRecorder(
+    camera: String,
+    url: String,
+    user: String,
+    password: String?,
+    audio: Boolean,
+    private val root: () -> File?,
+    private val canWrite: () -> Boolean,
+    private val onSegment: (RecFile) -> Unit,
+    onStatus: (CameraRecorder, Status) -> Unit,
+    private val segmentMs: Long = SEGMENT_MS,
+    sessionFactory: (String, String, String?) -> RtspSession = { u, l, p -> RtspSession(u, l, p) },
+    encoderFactory: () -> AacEncoder = { AacEncoder() }
+) : CameraRecorder(camera, url, user, password, audio, onStatus, sessionFactory, encoderFactory, "rec-$camera") {
+
+    override fun newSink(): Sink = SegmentRotation()
+
+    /** Нарезка потока на отрезки; живёт одну RTSP-сессию. */
+    private inner class SegmentRotation : Sink {
+        override var audioParams: AudioParams? = null
+        private val timeline = Timeline()
+        override var videoClock: Int
+            get() = timeline.videoClock
+            set(v) { timeline.videoClock = v }
         private var current: Mp4SegmentWriter? = null
         private var file: File? = null
         private var segStartUs = 0L
         private var segStartWall = 0L
         private var lastUs = 0L
 
-        fun video(frame: VideoFrame, d: VideoDepacketizer) {
-            if (videoAnchorTs == Long.MIN_VALUE) {
-                videoAnchorTs = frame.timestamp
-                anchorNanos = System.nanoTime()
-                anchorWallMs = System.currentTimeMillis()
-            }
-            val us = (frame.timestamp - videoAnchorTs) * 1_000_000L / videoClock
+        override fun video(frame: VideoFrame, d: VideoDepacketizer) {
+            val us = timeline.videoUs(frame)
             val w = current
             if (frame.key) {
                 val params = VideoParams(d.codec, d.vps, d.sps ?: return, d.pps ?: return)
@@ -156,21 +229,10 @@ internal class ContinuousRecorder(
             lastUs = us
         }
 
-        /** Отсчёты звука пришли с меткой [ts]: первая такая метка привязывает звук ко времени видео. */
-        fun audioArrival(ts: Long) {
-            if (videoAnchorTs == Long.MIN_VALUE || audioAnchorTs != Long.MIN_VALUE) return
-            audioAnchorTs = ts
-            audioAnchorUs = (System.nanoTime() - anchorNanos) / 1_000
-        }
+        override fun audioArrival(ts: Long) = timeline.audioArrival(ts)
 
-        fun audio(frame: AudioFrame, rate: Int) {
-            if (videoAnchorTs == Long.MIN_VALUE) return
-            if (audioAnchorTs == Long.MIN_VALUE) {
-                // Звук и видео идут с разными отсчётами RTP: звук привязывается ко времени прихода первого кадра.
-                audioAnchorTs = frame.timestamp
-                audioAnchorUs = (System.nanoTime() - anchorNanos) / 1_000
-            }
-            val us = audioAnchorUs + (frame.timestamp - audioAnchorTs) * 1_000_000L / rate
+        override fun audio(frame: AudioFrame, rate: Int) {
+            val us = timeline.audioUs(frame, rate) ?: return
             val target = current ?: return
             target.writeAudio(frame, us - segStartUs)
         }
@@ -179,7 +241,7 @@ internal class ContinuousRecorder(
             val base = root()
             if (base == null) { report(State.NO_STORAGE, "Нет места для записи"); return }
             if (!canWrite()) { report(State.NO_SPACE, "Запись остановлена: нет места"); return }
-            val start = anchorWallMs + us / 1_000
+            val start = timeline.wallMs(us)
             val dir = RecLayout.dayDir(base, camera, start)
             if (!dir.isDirectory && !dir.mkdirs()) { report(State.NO_STORAGE, "Папка записи недоступна"); return }
             val f = File(dir, RecLayout.openName(RecFile.Kind.CONTINUOUS, start))
@@ -190,29 +252,16 @@ internal class ContinuousRecorder(
             report(State.RECORDING)
         }
 
-        fun close() {
+        override fun close() {
             val w = current ?: return
             val f = file
             current = null
             file = null
-            try { w.close() } finally {
-                // Отрезок без единого фрагмента (обрыв сразу после ключевого кадра) — не хранить пустышку.
-                if (f != null && (try { Mp4Repair.truncateToLastFragment(f) } catch (_: Exception) { -1L }) <= 0) {
-                    f.delete()
-                } else if (f != null) {
-                    // Последний кадр длится примерно столько же, сколько предыдущие: добавляем 1/25 с.
-                    val duration = (lastUs - segStartUs) / 1_000 + 40
-                    val done = File(f.parentFile, RecLayout.closedName(RecFile.Kind.CONTINUOUS, segStartWall, duration))
-                    if (f.renameTo(done)) {
-                        onSegment(RecFile(done, camera, RecFile.Kind.CONTINUOUS, segStartWall, duration, done.length()))
-                    }
-                }
-            }
+            RecLayout.finish(w, f, camera, RecFile.Kind.CONTINUOUS, segStartWall, (lastUs - segStartUs) / 1_000)?.let(onSegment)
         }
     }
 
     companion object {
         const val SEGMENT_MS = 60_000L
-        private const val TAG = "Recording"
     }
 }

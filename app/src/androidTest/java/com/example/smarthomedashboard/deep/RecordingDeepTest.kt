@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.smarthomedashboard.AacEncoder
+import com.example.smarthomedashboard.CameraRecorder
 import com.example.smarthomedashboard.ContinuousRecorder
 import com.example.smarthomedashboard.G711Depacketizer
 import com.example.smarthomedashboard.RecFile
@@ -75,10 +76,10 @@ class RecordingDeepTest {
         assertTrue("громкость синуса после кодера: $rms", rms > 1_000)
     }
 
-    private fun record(url: String, seconds: Long): Pair<List<RecFile>, List<ContinuousRecorder.State>> {
+    private fun record(url: String, seconds: Long): Pair<List<RecFile>, List<CameraRecorder.State>> {
         val root = File(context.cacheDir, "rec-deep-${System.nanoTime()}").apply { mkdirs() }
         val segments = mutableListOf<RecFile>()
-        val states = mutableListOf<ContinuousRecorder.State>()
+        val states = mutableListOf<CameraRecorder.State>()
         val r = ContinuousRecorder("deep", url, "", null, audio = true, root = { root }, canWrite = { true },
             onSegment = { synchronized(segments) { segments += it } },
             onStatus = { _, s -> synchronized(states) { states += s.state } }, segmentMs = 5_000)
@@ -109,12 +110,43 @@ class RecordingDeepTest {
         segments.forEach { it.path.delete() }
     }
 
+    /** Этап 2: событие на основном потоке 1080p — ролик с предзаписью и дозаписью, читается системным разборщиком. */
+    @Test fun eventOnStandMainStreamMakesClipWithPreAndPostRoll() {
+        val host = argument("rtspHost")
+        assumeTrue("Нужен аргумент rtspHost (RTSP-стенд CI)", host != null)
+        val root = File(context.cacheDir, "rec-deep-ev-${System.nanoTime()}").apply { mkdirs() }
+        val clips = mutableListOf<Pair<RecFile, Set<String>>>()
+        val active = java.util.concurrent.atomic.AtomicReference<Set<String>>(emptySet())
+        val r = com.example.smarthomedashboard.EventRecorder("deep", "rtsp://$host:8554/main1080", "", null, audio = true,
+            root = { root }, canWrite = { true }, events = { active.get() },
+            settings = { com.example.smarthomedashboard.RecordingConfig(preSeconds = 4, postSeconds = 5) },
+            onClip = { f, l -> synchronized(clips) { clips += f to l } }, onStatus = { _, _ -> })
+        r.start()
+        Thread.sleep(10_000) // буфер предзаписи наполнился
+        active.set(setOf("person"))
+        Thread.sleep(3_000)
+        active.set(emptySet())
+        Thread.sleep(8_000) // дозапись 5 с и закрытие
+        r.stop()
+        val (clip, labels) = synchronized(clips) { clips.single() }
+        assertEquals(setOf("person"), labels)
+        // 4 с до (± группа кадров 2 с) + 3 с события + 5 с после.
+        assertTrue("длительность ${clip.durationMs}", clip.durationMs in 9_500..15_000)
+        val extractor = MediaExtractor()
+        extractor.setDataSource(clip.path.path)
+        val video = (0 until extractor.trackCount).map { extractor.getTrackFormat(it) }
+            .first { it.getString(MediaFormat.KEY_MIME)!!.startsWith("video/") }
+        assertEquals(1920, video.getInteger(MediaFormat.KEY_WIDTH))
+        extractor.release()
+        root.deleteRecursively()
+    }
+
     @Test fun silentCameraIsRetriedWithoutSegments() {
         val host = argument("rtspHost")
         assumeTrue("Нужен аргумент rtspHost (RTSP-стенд CI)", host != null)
         // Порт 8556 стенда принимает соединение и молчит (как зависшая камера).
         val (segments, states) = record("rtsp://$host:8556/silent", 26)
         assertTrue(segments.isEmpty())
-        assertTrue("состояния: $states", ContinuousRecorder.State.RETRYING in states)
+        assertTrue("состояния: $states", CameraRecorder.State.RETRYING in states)
     }
 }

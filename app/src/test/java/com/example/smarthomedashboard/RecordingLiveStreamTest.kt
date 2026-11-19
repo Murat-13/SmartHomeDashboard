@@ -22,7 +22,7 @@ class RecordingLiveStreamTest {
         val out = File(System.getenv("REC_LIVE_OUT") ?: "build/rec-live").apply { mkdirs() }
         val seconds = System.getenv("REC_LIVE_SECONDS")?.toLongOrNull() ?: 25
         val segments = mutableListOf<RecFile>()
-        val states = mutableListOf<ContinuousRecorder.State>()
+        val states = mutableListOf<CameraRecorder.State>()
         val recorder = ContinuousRecorder(
             camera = "live", url = url!!, user = System.getenv("REC_LIVE_USER").orEmpty(),
             password = System.getenv("REC_LIVE_PASSWORD"), audio = true, root = { out }, canWrite = { true },

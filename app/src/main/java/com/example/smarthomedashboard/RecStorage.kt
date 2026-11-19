@@ -168,6 +168,22 @@ internal object RecLayout {
         return RecFile(file, camera, kind, start, duration, file.length(), m.groupValues[4].isNotEmpty(), open)
     }
 
+    /**
+     * Закрыть идущий файл: дописать, обрезать по последнему целому фрагменту и переименовать в закрытое имя.
+     * [contentMs] — от первого до последнего кадра; последний кадр длится примерно 1/25 с. Файл без единого фрагмента
+     * (обрыв сразу после ключевого кадра) удаляется — null.
+     */
+    fun finish(writer: Mp4SegmentWriter, file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long): RecFile? {
+        // Ошибка дописывания не теряет файл: ниже он обрезается по последнему целому фрагменту.
+        try { writer.close() } catch (e: Exception) { android.util.Log.w("Recording", "Файл записи не дописан: ${e.message}") }
+        if (file == null) return null
+        val ok = try { Mp4Repair.truncateToLastFragment(file) > 0 } catch (_: Exception) { false }
+        if (!ok) { file.delete(); return null }
+        val duration = contentMs.coerceAtLeast(0) + 40
+        val done = File(file.parentFile, closedName(kind, startMs, duration))
+        return if (file.renameTo(done)) RecFile(done, camera, kind, startMs, duration, done.length()) else null
+    }
+
     /** Все файлы записей под [root] (по всем камерам и дням). */
     fun scan(root: File): List<RecFile> {
         val base = File(root, ROOT)

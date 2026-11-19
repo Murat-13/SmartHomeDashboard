@@ -62,6 +62,7 @@ class BackupRulesTest {
                 (0 until nodes.length).map { nodes.item(it) as Element }.map { it.getAttribute("domain") to it.getAttribute("path") }
             }
             assertTrue(("external" to "records/") in excludes)
+            assertTrue("Индекс роликов — про файлы этого планшета", ("database" to "recording_index.db") in excludes)
         }
     }
 
