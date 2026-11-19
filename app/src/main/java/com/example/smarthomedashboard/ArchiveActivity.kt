@@ -14,8 +14,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -41,6 +41,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -72,7 +74,9 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -108,7 +112,9 @@ class ArchiveActivity : AppCompatActivity() {
         index = try { RecIndex(this) } catch (_: Exception) { null }
         archive = RecArchive(this, index = { index })
         ui.value = ui.value.copy(title = title)
-        player = ExoPlayer.Builder(this).build().also { p ->
+        // HD-ролики событий (Reolink 2560×1920) аппаратный декодер Samsung SM-X216B не принимает — следующий декодер
+        // (программный) берётся сам, как у живого видео домофона.
+        player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true)).build().also { p ->
             p.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) { ui.value = ui.value.copy(playing = isPlaying) }
             })
@@ -169,22 +175,48 @@ class ArchiveActivity : AppCompatActivity() {
 
     private fun play(event: RecArchive.Event) {
         val p = player ?: return
+        p.setSeekParameters(SeekParameters.EXACT)
         p.setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(event.file.path)))
         p.prepare()
         p.play()
+        loadedDay = null
         ui.value = ui.value.copy(current = event, continuous = false)
         tick()
     }
 
-    private fun playContinuous(wallMs: Long) {
+    /** День, чей плейлист 24/7 сейчас загружен в плеер: переход по шкале внутри него — простой seek, без пересборки. */
+    private var loadedDay: ArchiveDay? = null
+
+    private fun playContinuous(wallMs: Long, play: Boolean = true) {
         val d = day ?: return
         val p = player ?: return
         val (segment, offset) = d.locate(wallMs) ?: run { toast("За этот день круглосуточной записи нет"); return }
-        p.setMediaItems(d.segments.map { MediaItem.fromUri(android.net.Uri.fromFile(it.path)) }, segment, offset)
-        p.prepare()
-        p.play()
+        if (ui.value.continuous && loadedDay === d) {
+            p.seekTo(segment, offset)
+        } else {
+            p.setMediaItems(d.segments.map { MediaItem.fromUri(android.net.Uri.fromFile(it.path)) }, segment, offset)
+            p.prepare()
+            loadedDay = d
+            if (play) p.play()
+        }
         ui.value = ui.value.copy(current = null, continuous = true)
         tick()
+    }
+
+    /** Перемотка пальцем: пока ведут — быстрые переходы к ключевым кадрам, отпустили — точно в выбранный момент. */
+    private fun scrubContinuous(fraction: Float, done: Boolean) {
+        val d = day ?: return
+        val p = player ?: return
+        p.setSeekParameters(if (done) SeekParameters.EXACT else SeekParameters.CLOSEST_SYNC)
+        playContinuous(d.timeAt(fraction), play = done)
+        if (done) p.play()
+    }
+
+    private fun scrubClip(fraction: Float, done: Boolean) {
+        val p = player ?: return
+        val duration = p.duration.takeIf { it > 0 } ?: return
+        p.setSeekParameters(if (done) SeekParameters.EXACT else SeekParameters.CLOSEST_SYNC)
+        p.seekTo((duration * fraction.coerceIn(0f, 1f)).toLong())
     }
 
     /** Текущее время на стене: для курсора шкалы и подписи. */
@@ -202,7 +234,9 @@ class ArchiveActivity : AppCompatActivity() {
             while (player != null) {
                 val wall = wallNow()
                 val d = day
-                ui.value = ui.value.copy(positionWall = wall, cursor = if (wall != null && d != null) d.fraction(wall) else null)
+                val p = player
+                ui.value = ui.value.copy(positionWall = wall, cursor = if (wall != null && d != null) d.fraction(wall) else null,
+                    positionMs = p?.currentPosition ?: 0L, durationMs = p?.duration?.takeIf { it > 0 } ?: 0L)
                 delay(250)
             }
         }
@@ -278,14 +312,17 @@ class ArchiveActivity : AppCompatActivity() {
             ui.value = ui.value.copy(filter = label, events = filtered(ui.value.day, label))
         }
         override fun play(event: RecArchive.Event) = this@ArchiveActivity.play(event)
-        override fun seekTimeline(fraction: Float) {
+        override fun seekTimeline(fraction: Float, eventTolerance: Float) {
             val d = day ?: return
             val wall = d.timeAt(fraction)
-            // Касание засечки события — ролик в HD; иначе — тот же момент круглосуточной записи.
+            // Касание прямо по засечке события (в пределах пальца) — ролик в HD; иначе — тот же момент 24/7.
             val near = d.events.minByOrNull { kotlin.math.abs(d.fraction(it.file.startMs) - fraction) }
-                ?.takeIf { kotlin.math.abs(d.fraction(it.file.startMs) - fraction) < EVENT_HIT }
+                ?.takeIf { kotlin.math.abs(d.fraction(it.file.startMs) - fraction) <= eventTolerance }
+            player?.setSeekParameters(SeekParameters.EXACT)
             if (near != null) play(near) else playContinuous(wall)
         }
+        override fun scrubTimeline(fraction: Float, done: Boolean) = scrubContinuous(fraction, done)
+        override fun scrubClip(fraction: Float, done: Boolean) = this@ArchiveActivity.scrubClip(fraction, done)
         override fun togglePlay() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
         override fun seekBy(deltaMs: Long) = this@ArchiveActivity.seekBy(deltaMs)
         override fun frameStep() = this@ArchiveActivity.frameStep()
@@ -308,8 +345,6 @@ class ArchiveActivity : AppCompatActivity() {
         const val EXTRA_TILE = "tile_id"
         const val EXTRA_LATEST = "latest"
         private const val FRAME_MS = 40L
-        /** Касание шкалы ближе 0,4 % суток (~6 мин) к засечке — это событие. */
-        private const val EVENT_HIT = 0.004f
 
         fun open(context: Context, tileId: String, latest: Boolean = false) {
             context.startActivity(Intent(context, ArchiveActivity::class.java)
@@ -334,6 +369,9 @@ internal data class ArchiveUi(
     val speed: Float = 1f,
     val positionWall: Long? = null,
     val cursor: Float? = null,
+    /** Позиция и длительность текущего ролика (для полосы перемотки события). */
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
     val confirmDelete: RecArchive.Event? = null
 ) {
     /** Участки записи и засечки событий в долях суток. */
@@ -345,7 +383,12 @@ internal interface ArchiveActions {
     fun selectDay(day: Long)
     fun filter(label: String?)
     fun play(event: RecArchive.Event)
-    fun seekTimeline(fraction: Float)
+    /** Касание шкалы; засечка события ближе [eventTolerance] (доля ширины ≈ палец) — ролик события. */
+    fun seekTimeline(fraction: Float, eventTolerance: Float)
+    /** Перемотка пальцем по шкале (только 24/7); [done] — палец отпущен. */
+    fun scrubTimeline(fraction: Float, done: Boolean)
+    /** Перемотка внутри ролика события. */
+    fun scrubClip(fraction: Float, done: Boolean)
     fun togglePlay()
     fun seekBy(deltaMs: Long)
     fun frameStep()
@@ -457,11 +500,45 @@ private fun PlayerPane(ui: ArchiveUi, actions: ArchiveActions, video: @Composabl
         else Text(if (ui.loading) "Загрузка…" else "Выберите событие или место на шкале", color = ArchiveColors.hint,
             fontSize = 18.sp, modifier = Modifier.align(Alignment.Center))
     }
+    if (ui.current != null) ClipBar(ui, actions)
     Spacer(Modifier.height(8.dp))
     Controls(ui, actions)
     Spacer(Modifier.height(8.dp))
     Timeline(ui, actions)
 }
+
+/** Полоса ролика события: позиция, перетаскивание с переходом по ходу движения, длительность. */
+@Composable
+private fun ClipBar(ui: ArchiveUi, actions: ArchiveActions) {
+    var drag by remember { mutableStateOf<Float?>(null) }
+    var lastSeek by remember { mutableStateOf(0L) }
+    val duration = ui.durationMs
+    val position = drag?.let { (it * duration).toLong() } ?: ui.positionMs
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Text(clock(position), color = ArchiveColors.secondary, fontSize = 15.sp, modifier = Modifier.width(56.dp))
+        Slider(
+            value = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+            onValueChange = { f ->
+                drag = f
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastSeek > SCRUB_EVERY_MS) { lastSeek = now; actions.scrubClip(f, false) }
+            },
+            onValueChangeFinished = { drag?.let { actions.scrubClip(it, true) }; drag = null },
+            enabled = duration > 0,
+            colors = SliderDefaults.colors(thumbColor = ArchiveColors.text, activeTrackColor = ArchiveColors.accentSoft),
+            modifier = Modifier.weight(1f).testTag("archive_clip_slider")
+        )
+        Text(clock(duration), color = ArchiveColors.secondary, fontSize = 15.sp, modifier = Modifier.width(56.dp).padding(start = 8.dp))
+    }
+}
+
+private fun clock(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+/** Переход плеера при перетаскивании — не чаще (декодер HD не успевает за каждым движением пальца). */
+private const val SCRUB_EVERY_MS = 150L
 
 @Composable
 private fun Controls(ui: ArchiveUi, actions: ArchiveActions) {
@@ -502,15 +579,37 @@ private fun Timeline(ui: ArchiveUi, actions: ArchiveActions) {
     val timeline = ui.timeline
     var drag by remember { mutableStateOf<Float?>(null) }
     Column {
+        // Время под пальцем, пока ведут по шкале.
+        val day = ui.day
+        Text(drag?.let { f -> day?.let { "→ " + timeFormat.format(Date(it + (f * 86_400_000L).toLong())) } } ?: " ",
+            color = ArchiveColors.text, fontSize = 16.sp, modifier = Modifier.testTag("archive_scrub_time"))
         Canvas(Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(10.dp)).background(ArchiveColors.surface)
             .testTag("archive_timeline")
             .semantics { contentDescription = "Шкала суток" }
-            .pointerInput(timeline) { detectTapGestures { actions.seekTimeline(it.x / size.width) } }
             .pointerInput(timeline) {
-                detectHorizontalDragGestures(
-                    onDragEnd = { drag?.let(actions::seekTimeline); drag = null },
-                    onDragCancel = { drag = null }
-                ) { change, _ -> drag = (change.position.x / size.width).coerceIn(0f, 1f) }
+                // Касание — переход (по засечке — ролик события); ведение пальцем — перемотка 24/7 по ходу движения.
+                val tolerance = 16.dp.toPx() / size.width
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val startX = down.position.x
+                    var dragging = false
+                    var lastSeek = 0L
+                    while (true) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        if (!dragging && kotlin.math.abs(change.position.x - startX) > viewConfiguration.touchSlop) dragging = true
+                        if (dragging) {
+                            val f = (change.position.x / size.width).coerceIn(0f, 1f)
+                            drag = f
+                            if (change.uptimeMillis - lastSeek > SCRUB_EVERY_MS) { lastSeek = change.uptimeMillis; actions.scrubTimeline(f, false) }
+                            change.consume()
+                        }
+                    }
+                    val end = drag
+                    drag = null
+                    if (dragging && end != null) actions.scrubTimeline(end, true)
+                    else actions.seekTimeline((startX / size.width).coerceIn(0f, 1f), tolerance)
+                }
             }) {
             val w = size.width
             val h = size.height

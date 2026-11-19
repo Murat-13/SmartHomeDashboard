@@ -11,6 +11,9 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeRight
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -114,7 +117,9 @@ class RecordingArchiveTest {
         override fun selectDay(day: Long) { calls += "day" }
         override fun filter(label: String?) { calls += "filter:$label" }
         override fun play(event: RecArchive.Event) { calls += "play:${event.file.startMs}" }
-        override fun seekTimeline(fraction: Float) { calls += "seek" }
+        override fun seekTimeline(fraction: Float, eventTolerance: Float) { calls += "seek" }
+        override fun scrubTimeline(fraction: Float, done: Boolean) { calls += "scrub:$done" }
+        override fun scrubClip(fraction: Float, done: Boolean) { calls += "clip:$done" }
         override fun togglePlay() { calls += "toggle" }
         override fun seekBy(deltaMs: Long) { calls += "seekBy:$deltaMs" }
         override fun frameStep() { calls += "frame" }
@@ -155,6 +160,50 @@ class RecordingArchiveTest {
             "share:${b.file.startMs}", "delete:${b.file.startMs}"), actions.calls)
         // Сохранённый ролик — «★ Сохранён» у текущего.
         compose.onNodeWithText("★ Сохранён").assertIsDisplayed()
+    }
+
+    /**
+     * Перемотка (замечание владельца 19.11.2026: «перемотка руками странно работает»): касание шкалы — переход,
+     * ведение пальцем — перемотка по ходу движения и точный переход при отпускании; у ролика события — своя полоса.
+     */
+    @Test fun timelineTapSeeksDragScrubsAndClipBarScrubs() {
+        val a = event(day + 3_600_000, setOf("person"))
+        val actions = Recorded()
+        val ui = ArchiveUi(title = "Домофон", loading = false, days = listOf(day), day = day, events = listOf(a),
+            timeline = ArchiveUi.Timeline(listOf(0f to 1f), emptyList()), current = a, positionMs = 10_000, durationMs = 65_000)
+        compose.setContent { ArchiveScreen(ui, emptyMap(), actions, video = {}) }
+        compose.onNodeWithTag("archive_timeline").performTouchInput { click(center) }
+        compose.waitForIdle()
+        assertEquals(listOf("seek"), actions.calls)
+        actions.calls.clear()
+        compose.onNodeWithTag("archive_timeline").performTouchInput {
+            down(centerLeft + androidx.compose.ui.geometry.Offset(20f, 0f))
+            repeat(10) { moveBy(androidx.compose.ui.geometry.Offset(width / 15f, 0f), delayMillis = 200) }
+            up()
+        }
+        compose.waitForIdle()
+        assertTrue("по ходу движения: ${actions.calls}", actions.calls.count { it == "scrub:false" } >= 2)
+        assertEquals("отпустили — точный переход, не «касание»", "scrub:true", actions.calls.last())
+        assertFalse(actions.calls.contains("seek"))
+        actions.calls.clear()
+        compose.onNodeWithTag("archive_clip_slider").assertIsDisplayed().performTouchInput { swipeRight() }
+        compose.waitForIdle()
+        assertEquals("clip:true", actions.calls.last())
+    }
+
+    @Test fun yuvToArgbScalesAndConverts() {
+        // 4×2 кадр: серый (Y=126, U=V=128) → около (128,128,128); уменьшение до 2 по ширине.
+        val y = IntArray(8) { 126 }
+        val uv = IntArray(4) { 128 }
+        val r = Yuv.toArgb(4, 2, 0, 0, 2, { y[it] }, 4, 1, { uv[it] }, { uv[it] }, 2, 1)!!
+        assertEquals(2, r.width); assertEquals(1, r.height)
+        val px = r.pixels[0]
+        assertEquals(128.0, ((px shr 16) and 0xFF).toDouble(), 2.0)
+        assertEquals(128.0, (px and 0xFF).toDouble(), 2.0)
+        // Красный: высокий V (Cr).
+        val red = Yuv.toArgb(2, 2, 0, 0, 2, { 82 }, 2, 1, { 90 }, { 240 }, 1, 1)!!.pixels[0]
+        assertTrue("красный канал ${(red shr 16) and 0xFF}", ((red shr 16) and 0xFF) > 200)
+        assertTrue(((red shr 8) and 0xFF) < 80)
     }
 
     @Test fun deleteNeedsConfirmationAndLockedArchiveShowsNothing() {

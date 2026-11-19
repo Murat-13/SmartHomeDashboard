@@ -53,19 +53,29 @@ internal class RecArchive(private val context: Context, private val roots: () ->
         return ok
     }
 
-    /** Кадр из начала ролика (≈1 с), уменьшенный; кэш в cacheDir. null — файл не читается. */
+    /**
+     * Кадр из начала ролика (≈1 с), уменьшенный; кэш в cacheDir. null — файл не читается.
+     * Системный `MediaMetadataRetriever` берёт аппаратный декодер, а он у Samsung SM-X216B не принимает HD-ролики
+     * Reolink 2560×1920 («Not supported spec», 19.11.2026) — тогда кадр декодирует программный декодер ([SoftFrame]).
+     */
     fun thumbnail(file: RecFile, width: Int = 320): Bitmap? {
         val cached = thumbFile(file)
         if (cached.isFile) android.graphics.BitmapFactory.decodeFile(cached.path)?.let { return it }
+        val atUs = minOf(1_000_000L, file.durationMs * 500L)
+        val frame = systemFrame(file, atUs) ?: SoftFrame.grab(file.path.path, atUs, width) ?: return null
+        val scaled = if (frame.width > width) Bitmap.createScaledBitmap(frame, width, frame.height * width / frame.width, true) else frame
+        try {
+            cached.parentFile?.mkdirs()
+            cached.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+        } catch (_: Exception) {}
+        return scaled
+    }
+
+    private fun systemFrame(file: RecFile, atUs: Long): Bitmap? {
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(file.path.path)
-            val frame = retriever.getFrameAtTime(minOf(1_000_000L, file.durationMs * 500L), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ?: return null
-            val scaled = if (frame.width > width) Bitmap.createScaledBitmap(frame, width, frame.height * width / frame.width, true) else frame
-            cached.parentFile?.mkdirs()
-            cached.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
-            scaled
+            retriever.getFrameAtTime(atUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
         } catch (_: Exception) {
             null
         } finally {
@@ -146,5 +156,115 @@ internal class ArchiveDay(val dayStartMs: Long, segments: List<RecFile>, events:
     companion object {
         /** Отрезки режутся на ключевом кадре — между ними бывают доли секунды; это не пропуск. */
         const val GAP_MS = 3_000L
+    }
+}
+
+/**
+ * Один кадр видео программным декодером Android (`c2.android.*` / `OMX.google.*`) — для превью роликов, которые
+ * аппаратный декодер не принимает. Ключевой кадр не позже [atUs]; выход YUV 4:2:0 уменьшается до [width] прямо
+ * при переводе в RGB (без полного кадра 2560×1920 в памяти).
+ */
+internal object SoftFrame {
+    fun grab(path: String, atUs: Long, width: Int): Bitmap? {
+        val extractor = android.media.MediaExtractor()
+        var codec: android.media.MediaCodec? = null
+        try {
+            extractor.setDataSource(path)
+            val track = (0 until extractor.trackCount).firstOrNull {
+                extractor.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            } ?: return null
+            extractor.selectTrack(track)
+            val format = extractor.getTrackFormat(track)
+            val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: return null
+            val name = softwareDecoder(mime) ?: return null
+            format.setInteger(android.media.MediaFormat.KEY_COLOR_FORMAT,
+                android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            extractor.seekTo(atUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            val c = android.media.MediaCodec.createByCodecName(name).also { codec = it }
+            c.configure(format, null, null, 0)
+            c.start()
+            val info = android.media.MediaCodec.BufferInfo()
+            var inputDone = false
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (System.nanoTime() < deadline) {
+                if (!inputDone) {
+                    val inIndex = c.dequeueInputBuffer(10_000)
+                    if (inIndex >= 0) {
+                        val buffer = c.getInputBuffer(inIndex) ?: return null
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) { c.queueInputBuffer(inIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true }
+                        else { c.queueInputBuffer(inIndex, 0, size, extractor.sampleTime, 0); extractor.advance() }
+                    }
+                }
+                val outIndex = c.dequeueOutputBuffer(info, 10_000)
+                if (outIndex >= 0) {
+                    if (info.size > 0) {
+                        val image = c.getOutputImage(outIndex)
+                        val bitmap = image?.let { toBitmap(it, width) }
+                        image?.close()
+                        c.releaseOutputBuffer(outIndex, false)
+                        if (bitmap != null) return bitmap
+                    } else c.releaseOutputBuffer(outIndex, false)
+                    if (info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return null
+                }
+            }
+            return null
+        } catch (_: Exception) {
+            return null
+        } finally {
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            extractor.release()
+        }
+    }
+
+    private fun softwareDecoder(mime: String): String? =
+        android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos.firstOrNull { info ->
+            !info.isEncoder && (info.name.startsWith("c2.android.") || info.name.startsWith("OMX.google.")) &&
+                info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+        }?.name
+
+    private fun toBitmap(image: android.media.Image, width: Int): Bitmap? {
+        if (image.format != android.graphics.ImageFormat.YUV_420_888 || image.planes.size < 3) return null
+        val crop = image.cropRect
+        val y = image.planes[0]; val u = image.planes[1]; val v = image.planes[2]
+        val out = Yuv.toArgb(
+            crop.width(), crop.height(), crop.left, crop.top, width,
+            { i -> y.buffer.get(i).toInt() and 0xFF }, y.rowStride, y.pixelStride,
+            { i -> u.buffer.get(i).toInt() and 0xFF }, { i -> v.buffer.get(i).toInt() and 0xFF }, u.rowStride, u.pixelStride
+        ) ?: return null
+        return Bitmap.createBitmap(out.pixels, out.width, out.height, Bitmap.Config.ARGB_8888)
+    }
+}
+
+/** YUV 4:2:0 → ARGB с уменьшением до [targetWidth] (ближайший пиксель; для превью достаточно). Чистая функция. */
+internal object Yuv {
+    class Result(val pixels: IntArray, val width: Int, val height: Int)
+
+    fun toArgb(
+        srcWidth: Int, srcHeight: Int, left: Int, top: Int, targetWidth: Int,
+        y: (Int) -> Int, yRow: Int, yPixel: Int,
+        u: (Int) -> Int, v: (Int) -> Int, uvRow: Int, uvPixel: Int
+    ): Result? {
+        if (srcWidth <= 0 || srcHeight <= 0) return null
+        val w = minOf(targetWidth, srcWidth)
+        val h = (srcHeight.toLong() * w / srcWidth).toInt().coerceAtLeast(1)
+        val out = IntArray(w * h)
+        for (ty in 0 until h) {
+            val sy = top + (ty.toLong() * srcHeight / h).toInt()
+            for (tx in 0 until w) {
+                val sx = left + (tx.toLong() * srcWidth / w).toInt()
+                val luma = y(sy * yRow + sx * yPixel) - 16
+                val uvIndex = (sy / 2) * uvRow + (sx / 2) * uvPixel
+                val cb = u(uvIndex) - 128
+                val cr = v(uvIndex) - 128
+                val c = 1.164f * luma
+                val r = (c + 1.596f * cr).toInt().coerceIn(0, 255)
+                val g = (c - 0.392f * cb - 0.813f * cr).toInt().coerceIn(0, 255)
+                val b = (c + 2.017f * cb).toInt().coerceIn(0, 255)
+                out[ty * w + tx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        return Result(out, w, h)
     }
 }
