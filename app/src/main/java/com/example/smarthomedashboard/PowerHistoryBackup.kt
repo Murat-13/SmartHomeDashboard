@@ -2,19 +2,14 @@ package com.example.smarthomedashboard
 
 import android.content.Context
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import androidx.core.content.edit
@@ -45,6 +40,7 @@ internal object PowerHistoryBackup {
     const val PREF_LAST_RESULT = "power_backup_last_result"
     const val PREF_LAST_FP = "power_backup_last_fingerprint"
     private const val WORK = "daily_power_history_backup"
+    private const val NIGHT_WORK = "night_power_history_backup"
 
     enum class Outcome { CREATED, UNCHANGED, EMPTY, FAILED }
 
@@ -199,25 +195,13 @@ internal object PowerHistoryBackup {
     }
 
     /** Раз в сутки около 04:00 — отдельно от копии настроек (03:00) и ночной установки (03:30). */
-    fun schedule(context: Context) {
-        val now = Calendar.getInstance()
-        val next = (now.clone() as Calendar).apply {
-            set(Calendar.HOUR_OF_DAY, 4); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
-            if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
-        }
-        val request = PeriodicWorkRequestBuilder<Worker>(24, TimeUnit.HOURS)
-            .setInitialDelay(next.timeInMillis - now.timeInMillis, TimeUnit.MILLISECONDS)
-            .build()
-        try {
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK, ExistingPeriodicWorkPolicy.KEEP, request)
-        } catch (_: IllegalStateException) {
-            // WorkManager не инициализирован (тесты без манифеста): копии не планируются.
-        }
-    }
+    fun schedule(context: Context, fromWorker: Boolean = false) =
+        NightlyWork.schedule(context, NIGHT_WORK, WORK, Worker::class.java, 4, 0, fromWorker)
 
     class Worker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
             run(applicationContext)
+            schedule(applicationContext, fromWorker = true)
             return Result.success()
         }
     }

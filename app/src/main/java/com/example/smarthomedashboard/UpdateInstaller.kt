@@ -7,15 +7,10 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Calendar
-import java.util.concurrent.TimeUnit
 import androidx.core.content.edit
 
 /**
@@ -33,6 +28,7 @@ internal object UpdateInstaller {
     const val EXTRA_NIGHT = "night"
     const val EXTRA_VERSION = "version"
     private const val WORK = "update_night_install"
+    private const val NIGHT_WORK = "night_update_install"
 
     enum class InstallState { NONE, INSTALLING, NEEDS_CONFIRMATION, FAILED }
 
@@ -221,21 +217,8 @@ internal object UpdateInstaller {
     }
 
     /** Ежедневно около 3:30 (после автокопии в 3:00); сама задача ничего не делает, если флажок выключен. */
-    fun schedule(context: Context) {
-        val now = Calendar.getInstance()
-        val next = (now.clone() as Calendar).apply {
-            set(Calendar.HOUR_OF_DAY, 3); set(Calendar.MINUTE, 30); set(Calendar.SECOND, 0)
-            if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
-        }
-        val request = PeriodicWorkRequestBuilder<NightWorker>(24, TimeUnit.HOURS)
-            .setInitialDelay(next.timeInMillis - now.timeInMillis, TimeUnit.MILLISECONDS)
-            .build()
-        try {
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK, ExistingPeriodicWorkPolicy.KEEP, request)
-        } catch (_: IllegalStateException) {
-            // WorkManager не инициализирован (тестовое окружение без манифеста).
-        }
-    }
+    fun schedule(context: Context, fromWorker: Boolean = false) =
+        NightlyWork.schedule(context, NIGHT_WORK, WORK, NightWorker::class.java, 3, 30, fromWorker)
 
     /** Ночная попытка: свежая проверка, затем тихая установка готового обновления. */
     internal fun nightRun(context: Context, deps: AppUpdater.Deps = AppUpdater.deps(context)): Outcome? {
@@ -247,6 +230,7 @@ internal object UpdateInstaller {
     class NightWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
             withContext(Dispatchers.IO) { runCatching { nightRun(applicationContext) } }
+            schedule(applicationContext, fromWorker = true)
             return Result.success()
         }
     }

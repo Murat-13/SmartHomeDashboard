@@ -1,0 +1,44 @@
+package com.example.smarthomedashboard
+
+import android.content.Context
+import androidx.work.ExistingWorkPolicy
+import androidx.work.ListenableWorker
+import androidx.work.OneTimeWorkRequest
+import androidx.work.WorkManager
+import java.util.Calendar
+import java.util.concurrent.TimeUnit
+
+/**
+ * Ночные задачи строго ночью (копия настроек 03:00, ночная установка 03:30, копия истории мощности 04:00).
+ * Периодическая задача WorkManager ставит следующий запуск через 24 ч от прошлого и со временем уезжает в день
+ * (найдено 19.11.2026: на московском планшете задачи шли около 15:10 — копирование роликов и сжатие истории днём
+ * нагружали бы планшет, пока им пользуются). Поэтому каждая задача — разовая: в конце работы ставит следующую на
+ * своё время следующей ночи. Прежняя периодическая задача с тем же назначением отменяется.
+ */
+internal object NightlyWork {
+    /** Сколько ждать до ближайших [hour]:[minute] (сегодня, если ещё не наступило, иначе завтра). */
+    fun delayMs(hour: Int, minute: Int, now: Calendar = Calendar.getInstance()): Long {
+        val next = (now.clone() as Calendar).apply {
+            set(Calendar.HOUR_OF_DAY, hour); set(Calendar.MINUTE, minute); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
+        }
+        return next.timeInMillis - now.timeInMillis
+    }
+
+    /**
+     * Поставить задачу [worker] на ближайшие [hour]:[minute]. [legacy] — имя прежней периодической задачи (отменяется).
+     * [fromWorker] — вызов из самой задачи в конце работы: следующая встаёт в цепочку после текущей; при запуске
+     * приложения (false) уже поставленная задача не трогается.
+     */
+    fun schedule(context: Context, name: String, legacy: String, worker: Class<out ListenableWorker>, hour: Int, minute: Int,
+                 fromWorker: Boolean = false) {
+        try {
+            val manager = WorkManager.getInstance(context)
+            manager.cancelUniqueWork(legacy)
+            val request = OneTimeWorkRequest.Builder(worker).setInitialDelay(delayMs(hour, minute), TimeUnit.MILLISECONDS).build()
+            manager.enqueueUniqueWork(name, if (fromWorker) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP, request)
+        } catch (_: IllegalStateException) {
+            // WorkManager не инициализирован (тестовое окружение без манифеста): задачи не планируются.
+        }
+    }
+}

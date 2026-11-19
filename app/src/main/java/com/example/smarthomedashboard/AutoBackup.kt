@@ -4,18 +4,13 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.smarthomedashboard.data.TileParser
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 import androidx.core.content.edit
 import androidx.core.net.toUri
 
@@ -37,6 +32,7 @@ internal object AutoBackup {
     const val PREF_LAST_RESULT = "backup_last_result"
     const val PREF_LAST_CHECK = "backup_last_check"
     private const val WORK = "daily_auto_backup"
+    private const val NIGHT_WORK = "night_auto_backup"
 
     /** DAMAGED — плитки повреждены: копия не создаётся, чтобы не вытеснить исправные. */
     enum class Outcome { CREATED, UNCHANGED, FAILED, DAMAGED }
@@ -213,22 +209,9 @@ internal object AutoBackup {
         }
     }
 
-    /** Ежедневная задача около 3:00 (Android может сдвинуть время). Повторный вызов расписание не дублирует. */
-    fun schedule(context: Context) {
-        val now = Calendar.getInstance()
-        val next = (now.clone() as Calendar).apply {
-            set(Calendar.HOUR_OF_DAY, 3); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
-            if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
-        }
-        val request = PeriodicWorkRequestBuilder<Worker>(24, TimeUnit.HOURS)
-            .setInitialDelay(next.timeInMillis - now.timeInMillis, TimeUnit.MILLISECONDS)
-            .build()
-        try {
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK, ExistingPeriodicWorkPolicy.KEEP, request)
-        } catch (_: IllegalStateException) {
-            // WorkManager не инициализирован (тестовое окружение без манифеста): копии просто не планируются.
-        }
-    }
+    /** Каждую ночь в 03:00 ([NightlyWork]; Android может немного задержать). Повторный вызов расписание не дублирует. */
+    fun schedule(context: Context, fromWorker: Boolean = false) =
+        NightlyWork.schedule(context, NIGHT_WORK, WORK, Worker::class.java, 3, 0, fromWorker)
 
     class Worker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
@@ -237,6 +220,8 @@ internal object AutoBackup {
             try { ArchiveCopy.run(applicationContext) } catch (e: Exception) {
                 android.util.Log.w("ArchiveCopy", "Копия роликов не выполнена: ${e.javaClass.simpleName}")
             }
+            // Следующая — следующей ночью в 03:00 (не через 24 ч от этого запуска).
+            schedule(applicationContext, fromWorker = true)
             // Ошибка записи видна в статусе; повторять немедленно бессмысленно — следующая попытка через сутки.
             return Result.success()
         }
