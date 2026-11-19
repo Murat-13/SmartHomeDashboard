@@ -113,28 +113,37 @@ class TalkTest {
 
     private fun session(camera: Camera) = TalkSession(RtspSession(camera.url, "", null, readTimeoutMs = 5_000, require = TalkSession.BACKCHANNEL))
 
-    @Test fun talkSessionSetsUpBackchannelAndSendsPacedG711() {
+    @Test fun talkSessionStreamsSilenceAndVoiceContinuously() {
         val camera = Camera(reolinkBackchannel)
         val talk = session(camera)
         assertEquals("PCMU", talk.open())
         assertTrue("SETUP только обратного канала", camera.requests.single { it.startsWith("SETUP") }.startsWith("SETUP ${camera.url}/track3 "))
         assertTrue(camera.requests.any { it.startsWith("PLAY") })
+        Thread.sleep(150) // сразу после PLAY идёт тишина — камера не «засыпает»
         talk.beginTalkspurt()
         val pcm = ShortArray(400) { (it * 50).toShort() }
-        talk.send(pcm, 400) // 2 полных пакета по 160, 80 отсчётов ждут следующего кадра
+        talk.send(pcm, 400) // 2 полных кадра голоса, 80 отсчётов ждут следующего
+        Thread.sleep(250)
         talk.close()
         assertTrue("TEARDOWN", camera.torn.await(3, TimeUnit.SECONDS))
-        assertEquals(2, camera.packets.size)
-        val (p1, p2) = camera.packets
-        assertEquals(12 + 160, p1.size)
-        assertEquals(0x80, p1[0].toInt() and 0xFF)
-        assertEquals("маркер начала фразы + PT 0", 0x80, p1[1].toInt() and 0xFF)
-        assertEquals("без маркера дальше", 0x00, p2[1].toInt() and 0xFF)
+        val packets = camera.packets.toList()
+        assertTrue("пакетов ${packets.size}", packets.size >= 15)
         fun seq(p: ByteArray) = ((p[2].toInt() and 0xFF) shl 8) or (p[3].toInt() and 0xFF)
         fun ts(p: ByteArray) = ((p[4].toLong() and 0xFF) shl 24) or ((p[5].toLong() and 0xFF) shl 16) or ((p[6].toLong() and 0xFF) shl 8) or (p[7].toLong() and 0xFF)
-        assertEquals((seq(p1) + 1) and 0xFFFF, seq(p2))
-        assertEquals(160L, (ts(p2) - ts(p1)) and 0xFFFFFFFFL)
-        assertArrayEquals(ByteArray(160) { G711.ulaw(pcm[it].toInt()) }, p1.copyOfRange(12, 172))
+        packets.zipWithNext().forEach { (a, b) ->
+            assertEquals(172, a.size)
+            assertEquals(0x80, a[0].toInt() and 0xFF)
+            assertEquals("номера подряд", (seq(a) + 1) and 0xFFFF, seq(b))
+            assertEquals("метки +160", 160L, (ts(b) - ts(a)) and 0xFFFFFFFFL)
+        }
+        assertTrue("до голоса — тишина μ-law", packets.first().copyOfRange(12, 172).all { it == 0xFF.toByte() })
+        val first = packets.indexOfFirst { it[1].toInt() and 0x80 != 0 }
+        assertTrue("маркер у первого кадра голоса", first > 0)
+        assertEquals("PT 0", 0, packets[first][1].toInt() and 0x7F)
+        assertArrayEquals(ByteArray(160) { G711.ulaw(pcm[it].toInt()) }, packets[first].copyOfRange(12, 172))
+        assertArrayEquals(ByteArray(160) { G711.ulaw(pcm[160 + it].toInt()) }, packets[first + 1].copyOfRange(12, 172))
+        assertEquals("маркер один", 1, packets.count { it[1].toInt() and 0x80 != 0 })
+        assertEquals(2, talk.sentVoice)
     }
 
     @Test fun cameraWithoutBackchannelIsExplained() {

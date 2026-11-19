@@ -58,21 +58,28 @@ internal class TalkException(message: String) : java.io.IOException(message)
 
 /**
  * Сессия обратного канала: RTSP с `Require: www.onvif.org/ver20/backchannel`, SETUP только дорожки `a=sendonly`
- * с G.711, PLAY; голос — RTP поверх того же TCP пакетами по 20 мс. Поток чтения держит сессию (keep-alive).
+ * с G.711, PLAY. Пока сессия открыта, поток RTP идёт **непрерывно** каждые 20 мс: тишина, а во время разговора —
+ * голос из очереди. Reolink молчащий после PLAY обратный канал не воспроизводит (проверено 19.11.2026 на планшете:
+ * голос, отправленный через секунды тишины после PLAY, не был слышен; скрипт со звуком сразу после PLAY — был).
  */
 internal class TalkSession(private val session: RtspSession) : java.io.Closeable {
     private lateinit var setup: RtspSession.Setup
     private var aLaw = false
     private val ssrc = java.util.Random().nextInt()
     private var seq = java.util.Random().nextInt(0xFFFF)
-    private val startedAt = System.nanoTime()
-    private var timestamp = 0L
-    private var talkspurt = true
+    private var timestamp = java.util.Random().nextInt().toLong() and 0xFFFFFFFFL
+    @Volatile private var talkspurt = false
     private val pending = ByteArray(FRAME)
     private var filled = 0
+    private val queue = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
+    @Volatile private var open = false
     @Volatile private var reader: Thread? = null
+    @Volatile var sentPackets = 0
+        private set
+    @Volatile var sentVoice = 0
+        private set
 
-    /** Подключиться (блокирует; фоновый поток). Кодек — «PCMU»/«PCMA». */
+    /** Подключиться (блокирует; фоновый поток) и начать непрерывный поток. Кодек — «PCMU»/«PCMA». */
     fun open(): String {
         val setups = try {
             session.open { it.isAudio && it.direction == "sendonly" && it.encoding in CODECS }
@@ -82,46 +89,74 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
         }
         setup = setups.first()
         aLaw = setup.track.encoding == "PCMA"
+        open = true
         reader = Thread({
             try { session.read(object : RtspSession.Sink { override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {} }) }
             catch (_: Exception) {}
+            open = false
         }, "talk-keepalive").apply { isDaemon = true; start() }
+        Thread(::stream, "talk-sender").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
         return setup.track.encoding
     }
 
-    /** Начало фразы: метка времени — по часам (пауза между фразами видна камере), маркер на первом пакете. */
+    /** Начало фразы: первый пакет голоса — с маркером. */
     fun beginTalkspurt() {
-        talkspurt = true
         filled = 0
-        timestamp = (System.nanoTime() - startedAt) / 125_000 // 8 кГц
+        talkspurt = true
     }
 
-    /** 16-битные отсчёты 8 кГц → G.711 → пакеты по 160 байт. */
+    /** 16-битные отсчёты 8 кГц → G.711 → кадры по 160 байт в очередь отправки (не больше ~0,5 с). */
     fun send(pcm: ShortArray, count: Int) {
         for (i in 0 until count) {
             pending[filled++] = if (aLaw) G711.alaw(pcm[i].toInt()) else G711.ulaw(pcm[i].toInt())
-            if (filled == FRAME) { flush(); filled = 0 }
+            if (filled == FRAME) {
+                queue.add(pending.copyOf())
+                while (queue.size > MAX_QUEUE) queue.poll()
+                filled = 0
+            }
         }
     }
 
-    val alive get() = reader?.isAlive == true
+    /** Отправленное ещё не ушло (для «Проверить звук»: дождаться очереди перед закрытием). */
+    val queued get() = queue.size
 
-    private fun flush() {
+    val alive get() = open && reader?.isAlive == true
+
+    /** Каждые 20 мс по часам: кадр голоса из очереди или тишина. */
+    private fun stream() {
+        val silence = ByteArray(FRAME) { if (aLaw) 0xD5.toByte() else 0xFF.toByte() }
         val packet = ByteArray(12 + FRAME)
-        packet[0] = 0x80.toByte()
-        packet[1] = ((if (talkspurt) 0x80 else 0) or setup.track.payloadType).toByte()
-        packet[2] = (seq shr 8).toByte(); packet[3] = seq.toByte()
-        val ts = timestamp.toInt()
-        packet[4] = (ts shr 24).toByte(); packet[5] = (ts shr 16).toByte(); packet[6] = (ts shr 8).toByte(); packet[7] = ts.toByte()
-        packet[8] = (ssrc shr 24).toByte(); packet[9] = (ssrc shr 16).toByte(); packet[10] = (ssrc shr 8).toByte(); packet[11] = ssrc.toByte()
-        System.arraycopy(pending, 0, packet, 12, FRAME)
-        session.sendRtp(setup.rtpChannel, packet, packet.size)
-        seq = (seq + 1) and 0xFFFF
-        timestamp += FRAME
-        talkspurt = false
+        var next = System.nanoTime()
+        try {
+            while (open) {
+                val voice = queue.poll()
+                val marker = voice != null && talkspurt
+                if (marker) talkspurt = false
+                packet[0] = 0x80.toByte()
+                packet[1] = ((if (marker) 0x80 else 0) or setup.track.payloadType).toByte()
+                packet[2] = (seq shr 8).toByte(); packet[3] = seq.toByte()
+                val ts = timestamp.toInt()
+                packet[4] = (ts shr 24).toByte(); packet[5] = (ts shr 16).toByte(); packet[6] = (ts shr 8).toByte(); packet[7] = ts.toByte()
+                packet[8] = (ssrc shr 24).toByte(); packet[9] = (ssrc shr 16).toByte(); packet[10] = (ssrc shr 8).toByte(); packet[11] = ssrc.toByte()
+                System.arraycopy(voice ?: silence, 0, packet, 12, FRAME)
+                session.sendRtp(setup.rtpChannel, packet, packet.size)
+                sentPackets++
+                if (voice != null) sentVoice++
+                seq = (seq + 1) and 0xFFFF
+                timestamp = (timestamp + FRAME) and 0xFFFFFFFFL
+                next += FRAME_NS
+                val wait = next - System.nanoTime()
+                if (wait > 0) Thread.sleep(wait / 1_000_000, (wait % 1_000_000).toInt())
+                else if (wait < -200_000_000) next = System.nanoTime() // после долгой паузы потока не догоняем рывком
+            }
+        } catch (e: Exception) {
+            if (open) Log.w(TAG, "Отправка голоса прервалась: ${e.javaClass.simpleName}")
+            open = false
+        }
     }
 
     override fun close() {
+        open = false
         reader = null
         session.close()
     }
@@ -129,6 +164,9 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
     companion object {
         const val BACKCHANNEL = "www.onvif.org/ver20/backchannel"
         const val FRAME = 160
+        private const val FRAME_NS = 20_000_000L
+        private const val MAX_QUEUE = 25
+        private const val TAG = "Talk"
         private val CODECS = setOf("PCMU", "PCMA")
         const val NO_CHANNEL = "Камера не предлагает обратный звуковой канал — включите ONVIF в настройках камеры"
     }
@@ -144,6 +182,7 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
         if (running) return true
         val record = open(8_000) ?: open(16_000) ?: return false
+        Log.i(TAG, "Микрофон: ${record.sampleRate} Гц")
         running = true
         thread = Thread({
             val decimate = record.sampleRate / 8_000
@@ -234,6 +273,7 @@ internal class DoorbellTalk(private val context: Context) {
     /** Нажатие «Говорить». false — нужно разрешение на микрофон (запрошено). */
     fun press(): Boolean {
         if (disposed) return true
+        Log.i(TAG, "Нажато «Говорить» (состояние $state)")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             (context as? Activity)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
             set(State.ERROR, "Разрешите микрофон и нажмите «Говорить» ещё раз")
@@ -250,6 +290,7 @@ internal class DoorbellTalk(private val context: Context) {
         if (!pressed) return
         pressed = false
         mic.stop()
+        session?.let { Log.i(TAG, "Отпустили: голосовых пакетов ${it.sentVoice}, всего ${it.sentPackets}") }
         onLevel?.invoke(0f)
         main.postDelayed({ if (!pressed) onDuck?.invoke(false) }, 300)
         if (state == State.TALKING) set(State.READY, READY_TEXT)
@@ -268,7 +309,8 @@ internal class DoorbellTalk(private val context: Context) {
 
     private fun startTalking(s: TalkSession) {
         s.beginTalkspurt()
-        if (!mic.start(context)) { pressed = false; set(State.ERROR, "Микрофон недоступен"); return }
+        if (!mic.start(context)) { pressed = false; Log.w(TAG, "Микрофон не открылся"); set(State.ERROR, "Микрофон недоступен"); return }
+        Log.i(TAG, "Говорим")
         onDuck?.invoke(true)
         set(State.TALKING, "Говорите — вас слышно у калитки")
     }
@@ -276,6 +318,7 @@ internal class DoorbellTalk(private val context: Context) {
     private fun connect() {
         if (url.isBlank()) { set(State.ERROR, "Нужен прямой поток (RTSP) домофона"); return }
         set(State.CONNECTING, "Подключение к домофону…")
+        Log.i(TAG, "Подключение обратного канала")
         val target = url; val login = user
         DoorbellHub.cameraPassword(context) { password ->
             if (disposed) return@cameraPassword
@@ -283,7 +326,8 @@ internal class DoorbellTalk(private val context: Context) {
                 val talk = TalkSession(RtspSession(target, login, password, connectTimeoutMs = 4_000, readTimeoutMs = 30_000,
                     require = TalkSession.BACKCHANNEL))
                 try {
-                    talk.open()
+                    val codec = talk.open()
+                    Log.i(TAG, "Обратный канал открыт ($codec)")
                     main.post {
                         if (disposed || target != url) { io.execute { talk.close() }; return@post }
                         session = talk
@@ -292,7 +336,7 @@ internal class DoorbellTalk(private val context: Context) {
                     }
                 } catch (e: Exception) {
                     talk.close()
-                    Log.w(TAG, "Обратный канал не открыт: ${e.javaClass.simpleName}")
+                    Log.w(TAG, "Обратный канал не открыт: ${e.javaClass.simpleName} ${e.message}")
                     main.post { if (!disposed) failed(reason(e)) }
                 }
             }
@@ -344,22 +388,25 @@ internal object TalkCheck {
                     require = TalkSession.BACKCHANNEL))
                 val result = try {
                     val codec = talk.open()
+                    Log.i("Talk", "Проверка звука: обратный канал открыт ($codec)")
+                    Thread.sleep(500) // немного тишины: камера начинает воспроизводить поток
                     talk.beginTalkspurt()
                     val pcm = tone()
                     val frame = ShortArray(TalkSession.FRAME)
-                    val start = System.nanoTime()
                     var i = 0
                     while (i < pcm.size) {
                         val n = minOf(TalkSession.FRAME, pcm.size - i)
                         System.arraycopy(pcm, i, frame, 0, n)
                         talk.send(frame, n)
                         i += n
-                        val wait = start + i * 125_000L - System.nanoTime()
-                        if (wait > 0) Thread.sleep(wait / 1_000_000, (wait % 1_000_000).toInt())
+                        while (talk.queued > 5) Thread.sleep(10)
                     }
-                    Thread.sleep(300)
+                    while (talk.queued > 0) Thread.sleep(10)
+                    Thread.sleep(1_500) // камера доигрывает свой буфер — TEARDOWN раньше обрезал бы звук
+                    Log.i("Talk", "Проверка звука: отправлено ${talk.sentPackets} пакетов, из них звука ${talk.sentVoice}")
                     "Сигнал отправлен ($codec) — его должно быть слышно у домофона"
                 } catch (e: Exception) {
+                    Log.w("Talk", "Проверка звука не удалась: ${e.javaClass.simpleName} ${e.message}")
                     when {
                         e is TalkException -> e.message.orEmpty()
                         e is RtspException && e.status == 401 -> "Камера не приняла логин или пароль"
