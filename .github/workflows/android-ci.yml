@@ -62,6 +62,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Снимки экранов из тестов (рендеры и карты отличий от эталонов) — снятые на Linux, как эталоны:
+      # при намеренной смене вида их можно взять отсюда в src/test/golden (на Mac эталоны не снимаются).
+      - name: Снимки визуальных тестов при падении
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: visual-renders
+          path: |
+            app/build/reports/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Отчёт lint при падении
         if: failure()
         uses: actions/upload-artifact@v5
