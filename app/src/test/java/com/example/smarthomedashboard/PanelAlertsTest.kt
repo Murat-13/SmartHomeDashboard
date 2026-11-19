@@ -122,8 +122,9 @@ class PanelAlertsTest {
         assertNull(VoiceAlertSettings.parseMinute("abc"))
         val prefs = org.robolectric.RuntimeEnvironment.getApplication()
             .getSharedPreferences("t", android.content.Context.MODE_PRIVATE)
-        assertEquals("По умолчанию включены сеть и домофон", setOf(AlertEvent.GRID_LOST, AlertEvent.GRID_RESTORED,
-            AlertEvent.DOORBELL_RING, AlertEvent.DOORBELL_OFFLINE), VoiceAlertSettings.load(prefs).enabled)
+        // Остановка записи с камер — тоже по умолчанию (решение владельца 18.11.2026, docs/recording.md).
+        assertEquals("По умолчанию включены сеть, домофон и запись", setOf(AlertEvent.GRID_LOST, AlertEvent.GRID_RESTORED,
+            AlertEvent.DOORBELL_RING, AlertEvent.DOORBELL_OFFLINE, AlertEvent.RECORDING_STOPPED), VoiceAlertSettings.load(prefs).enabled)
         val custom = VoiceAlertSettings(enabled = setOf(AlertEvent.BATTERY_LOW), volumePercent = 33, quietStartMin = 22 * 60,
             quietEndMin = 6 * 60, quietPercent = 10, batteryLowPercent = 15)
         custom.save(prefs)

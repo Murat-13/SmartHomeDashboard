@@ -211,6 +211,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        // Запись с камер (docs/recording.md): запуск/сверка сервиса, пока панель на экране (запуск из фона запрещён).
+        RecorderService.sync(this)
         uiStateJob = lifecycleScope.launch {
             launch {
                 viewModel.uiState.map { it.statusMessage }.distinctUntilChanged().collect { status ->

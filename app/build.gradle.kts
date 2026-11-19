@@ -123,6 +123,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-exoplayer-rtsp:1.11.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
+    // Запись с камер (docs/recording.md): фрагментированный MP4 без перекодирования, решение владельца 18.11.2026.
+    implementation("androidx.media3:media3-muxer:1.11.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")

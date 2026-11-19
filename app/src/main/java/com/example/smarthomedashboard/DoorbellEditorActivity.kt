@@ -52,6 +52,20 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     private val rows = mutableMapOf<String, TextView>()
     private lateinit var passwordStatus: TextView
     private lateinit var toneLabel: TextView
+    /** Запись с камеры (docs/recording.md): настройки камеры — в плитке, «записывать здесь» и место — этого планшета. */
+    internal var recording = RecordingConfig()
+        private set
+    private lateinit var device: RecordingDevice
+    internal var recordHere = false
+        private set
+    internal var limitGb = 0
+        private set
+    internal var reserveGb = 2
+        private set
+    internal var useSd = false
+        private set
+    private lateinit var recordingStatus: TextView
+    private val statusListener: () -> Unit = { refreshRecordingStatus() }
 
     private val pickTone = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@registerForActivityResult
@@ -74,11 +88,21 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         original = tile
         title = tile.title
         config = DoorbellConfig.from(tile.config)
+        recording = RecordingConfig.from(tile.config)
+        device = RecordingDevice(this)
+        recordHere = device.enabled(tile.id)
+        limitGb = device.limitGb
+        reserveGb = device.reserveGb
+        useSd = device.useSdCard
         savedInstanceState?.getString(STATE_DRAFT)?.let { text ->
             try {
                 val json = JSONObject(text)
                 config = DoorbellConfig.fromJson(json.getJSONObject("config"))
                 title = json.optString("title", title)
+                json.optJSONObject("recording")?.let { recording = RecordingConfig.from(JSONObject().put(RecordingConfig.KEY, it).toString()) }
+                if (json.has("record_here")) recordHere = json.optBoolean("record_here")
+                limitGb = json.optInt("limit_gb", limitGb); reserveGb = json.optInt("reserve_gb", reserveGb)
+                useSd = json.optBoolean("use_sd", useSd)
                 // Пароль в состоянии экрана не сохраняется: после пересоздания его нужно ввести снова.
             } catch (_: Exception) {}
         }
@@ -192,11 +216,111 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(switch("door_auto_collapse", "Сворачивать автоматически", config.autoCollapse) { update(config.copy(autoCollapse = it)) })
         side.addView(number("door_collapse_seconds", "Через, секунд", config.collapseSeconds, 5..3600) { update(config.copy(collapseSeconds = it)) })
 
+        buildRecording(side)
+
         side.addView(kit.button("Тип, размер, удаление плитки…", "door_tile_settings") { openTileSettings() })
         body.addView(ScrollView(this).apply { addView(side) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.25f))
         root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(kit.footer("door", { leave() }, { save() }))
         setContentView(root)
+    }
+
+    // ---- Запись с камеры ----
+
+    private fun buildRecording(side: LinearLayout) {
+        side.addView(header("Запись с домофона"))
+        side.addView(kit.label("Запись идёт прямо на планшет: круглосуточно — субпоток, события — основной поток в HD. " +
+            "Нужен прямой поток (RTSP). В этой версии пишется круглосуточная дорожка; события в HD и архив — следующие этапы.", 13f))
+        side.addView(switch("rec_here", "Записывать на этом планшете", recordHere) { recordHere = it })
+        side.addView(choice("rec_mode", "Что записывать", RecordingConfig.Mode.entries.map { it.title },
+            RecordingConfig.Mode.entries.indexOf(recording.mode)) { recording = recording.copy(mode = RecordingConfig.Mode.entries[it]) })
+        side.addView(choice("rec_remote_mode", "Если камера видна только издалека (VPN, интернет)", RecordingConfig.Mode.entries.map { it.title },
+            RecordingConfig.Mode.entries.indexOf(recording.remoteMode)) { recording = recording.copy(remoteMode = RecordingConfig.Mode.entries[it]) })
+        localityLabel = kit.label("Камера не в сети планшета — запись тратит трафик: круглосуточно ~3–6 ГБ в сутки на камеру.", 13f)
+            .apply { tag = "rec_locality" }
+        side.addView(localityLabel)
+        side.addView(switch("rec_audio_continuous", "Звук в круглосуточной записи", recording.audioContinuous) {
+            recording = recording.copy(audioContinuous = it) })
+        side.addView(switch("rec_audio_events", "Звук в записи событий", recording.audioEvents) { recording = recording.copy(audioEvents = it) })
+        side.addView(number("rec_keep_continuous", "Хранить круглосуточную запись, дней (1–90)", recording.keepContinuousDays, 1..90) {
+            recording = recording.copy(keepContinuousDays = it) })
+        side.addView(number("rec_keep_events", "Хранить события, дней (1–365)", recording.keepEventDays, 1..365) {
+            recording = recording.copy(keepEventDays = it) })
+        side.addView(switch("rec_voice", "Сказать голосом, если запись остановилась", recording.voiceProblems) {
+            recording = recording.copy(voiceProblems = it) })
+        side.addView(header("Место для записей — этот планшет"))
+        side.addView(number("rec_limit", "Лимит записей, ГБ (0 — авто: до 20 ГБ, не больше половины места)", limitGb, 0..4096) {
+            limitGb = it; refreshRecordingStatus() })
+        side.addView(number("rec_reserve", "Всегда оставлять свободными, ГБ (1–10)", reserveGb, 1..10) { reserveGb = it })
+        val hasSd = try { getExternalFilesDirs(null).size > 1 && getExternalFilesDirs(null)[1] != null } catch (_: Exception) { false }
+        side.addView(switch("rec_sd", if (hasSd) "Писать на SD-карту" else "Писать на SD-карту (карта не найдена)", useSd) { useSd = it })
+        recordingStatus = kit.label("", 13f).apply { tag = "rec_status" }
+        side.addView(recordingStatus)
+        refreshRecordingStatus()
+        RecordingStatus.listen(statusListener)
+        // Занятое место, средний объём записи и где камера — на фоновом потоке (обход папок, разрешение имени).
+        val root = getExternalFilesDir(null)
+        val camera = RecLayout.cameraKey(original.id)
+        val url = config.rtspSub.ifBlank { config.rtspMain }
+        Thread {
+            val files = root?.let { r -> RecLayout.scan(r) }.orEmpty()
+            val used = files.sumOf { it.bytes }
+            val free = root?.let { try { android.os.StatFs(it.path).availableBytes } catch (_: Exception) { 0L } } ?: 0L
+            val perDay = RecRetention.bytesPerDay(files, camera, System.currentTimeMillis())
+            val local = if (url.isBlank()) null else RecLocality.isLocal(url)
+            runOnUiThread {
+                usedBytes = used; freeBytes = free; bytesPerDay = perDay; cameraLocal = local
+                refreshRecordingStatus()
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    private lateinit var localityLabel: TextView
+    private var usedBytes = -1L
+    private var freeBytes = 0L
+    private var bytesPerDay: Long? = null
+    private var cameraLocal: Boolean? = null
+
+    /** «≈ N дней» круглосуточной записи в текущий лимит при среднем объёме последних суток. */
+    internal fun estimateText(): String {
+        if (usedBytes < 0) return ""
+        val limit = RecRetention.limit(limitGb, freeBytes, usedBytes)
+        val head = "Занято записями: %.1f ГБ · свободно: %.1f ГБ · лимит: %.1f ГБ".format(usedBytes / 1e9, freeBytes / 1e9, limit / 1e9)
+        val perDay = bytesPerDay ?: return "$head\nОценка дней появится после получаса записи."
+        val days = limit.toDouble() / perDay
+        return "$head\nПри текущем объёме (~%.1f ГБ в сутки) круглосуточной записи хватит примерно на %s.".format(perDay / 1e9, daysText(days))
+    }
+
+    private fun daysText(days: Double): String = when {
+        days < 1 -> "%.0f ч".format(days * 24)
+        else -> {
+            val n = kotlin.math.floor(days).toInt()
+            val word = when { n % 100 in 11..14 -> "дней"; n % 10 == 1 -> "день"; n % 10 in 2..4 -> "дня"; else -> "дней" }
+            "$n $word"
+        }
+    }
+
+    private fun refreshRecordingStatus() {
+        if (!::recordingStatus.isInitialized) return
+        val status = RecordingStatus.of(original.id)
+        val state = when (status?.state) {
+            ContinuousRecorder.State.RECORDING -> "Идёт запись"
+            ContinuousRecorder.State.CONNECTING -> "Подключение к камере…"
+            ContinuousRecorder.State.RETRYING -> "Нет связи с камерой: ${status.detail}. Повтор…"
+            ContinuousRecorder.State.NO_SPACE, ContinuousRecorder.State.NO_STORAGE -> status.detail
+            ContinuousRecorder.State.STOPPED, null -> if (device.enabled(original.id)) "Запись не идёт" else "Запись на этом планшете выключена"
+        }
+        val sd = if (RecordingStatus.sdMissing(original.id)) "SD-карта не найдена — запись идёт в память планшета" else ""
+        recordingStatus.text = listOf(state, sd, estimateText()).filter { it.isNotBlank() }.joinToString("\n")
+        if (::localityLabel.isInitialized) {
+            val where = when (cameraLocal) {
+                true -> "Сейчас камера в сети этого планшета — действует «Что записывать»."
+                false -> "Сейчас камера видна только издалека — действует режим для удалённой камеры."
+                null -> ""
+            }
+            localityLabel.text = listOf(where, "Издалека запись тратит трафик: круглосуточно ~3–6 ГБ в сутки на камеру.")
+                .filter { it.isNotBlank() }.joinToString("\n")
+        }
     }
 
     // ---- Строки редактора ----
@@ -348,7 +472,11 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         render()
     }
 
-    internal val isDirty get() = title != original.title || config != DoorbellConfig.from(original.config) || password != null
+    internal val isDirty get() = title != original.title || config != DoorbellConfig.from(original.config) || password != null ||
+        recording != RecordingConfig.from(original.config) || recordingDeviceDirty
+
+    private val recordingDeviceDirty get() = ::device.isInitialized && (recordHere != device.enabled(original.id) ||
+        limitGb != device.limitGb || reserveGb != device.reserveGb || useSd != device.useSdCard)
 
     internal fun render() {
         if (!::preview.isInitialized) return
@@ -379,13 +507,16 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     }
 
     override fun onDestroy() {
+        RecordingStatus.unlisten(statusListener)
         kit.dispose()
         if (::preview.isInitialized) preview.dispose()
         super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        if (::original.isInitialized) outState.putString(STATE_DRAFT, JSONObject().put("config", config.toJson()).put("title", title).toString())
+        if (::original.isInitialized) outState.putString(STATE_DRAFT, JSONObject().put("config", config.toJson()).put("title", title)
+            .put("recording", recording.toJson()).put("record_here", recordHere).put("limit_gb", limitGb)
+            .put("reserve_gb", reserveGb).put("use_sd", useSd).toString())
         super.onSaveInstanceState(outState)
     }
 
@@ -409,12 +540,16 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             JSONObject(latest.config).optInt("button_size", DoorbellConfig.DEFAULT_WIDTH),
             JSONObject(latest.config).optInt("widget_height", (DoorbellConfig.DEFAULT_WIDTH / DoorbellConfig.DEFAULT_ASPECT).toInt()),
             config.aspect)
-        val json = JSONObject(config.writeTo(latest.config)).put("button_size", w).put("widget_height", h)
+        val json = JSONObject(recording.writeTo(config.writeTo(latest.config))).put("button_size", w).put("widget_height", h)
         tileManager.updateTile(latest.copy(title = title.ifBlank { DoorbellConfig.DEFAULT_TITLE }, config = json.toString()))
+        device.setEnabled(original.id, recordHere)
+        device.limitGb = limitGb; device.reserveGb = reserveGb; device.useSdCard = useSd
         val secret = password
-        if (secret == null) { finishSaved(); return true }
+        if (secret == null) { RecorderService.sync(this); finishSaved(); return true }
         DoorbellHub.savePassword(this, secret) { ok ->
             if (!ok) Toast.makeText(this, "Настройки сохранены, но пароль камеры записать не удалось", Toast.LENGTH_LONG).show()
+            // Новый пароль — запись переподключится с ним.
+            RecorderService.sync(this)
             finishSaved()
         }
         return true
