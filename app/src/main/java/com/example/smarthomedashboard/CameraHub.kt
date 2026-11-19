@@ -186,11 +186,14 @@ internal class SharedStream(
                 }
                 var sniffing = sniffer != null
                 val enc = encoder
+                val probe = ArrivalDelay(video.track.clockRate.takeIf { it > 0 } ?: 90_000)
+                val audioProbe = audioSetup?.track?.clockRate?.takeIf { it > 0 }?.let { ArrivalDelay(it) }
                 s.read(object : RtspSession.Sink {
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
                         relay(setup.rtpChannel, rtcp = false, packet, length)
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
+                            if (rtp.marker) probe.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: кадр приходит через $it мс после съёмки (по часам камеры, RTCP)") }
                             if (sniffing && sniffer != null) {
                                 sniffer.push(rtp.payload, rtp.offset, rtp.length)
                                 sniffer.params?.let { params ->
@@ -201,6 +204,7 @@ internal class SharedStream(
                             }
                             for (frame in depacketizer.push(rtp)) each { _, sink -> sink.video(frame, depacketizer) }
                         } else if (setup === audioSetup && aac != null) {
+                            audioProbe?.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: звук приходит через $it мс после записи (по часам камеры, RTCP)") }
                             for (frame in aac.push(rtp)) each { a, sink -> if (a.recorder.wantsAudio) sink.audio(frame, aac.sampleRate) }
                         } else if (setup === audioSetup && g711 != null && enc != null) {
                             val pcm = g711.push(rtp)
@@ -210,8 +214,11 @@ internal class SharedStream(
                         }
                     }
 
-                    override fun onRtcp(setup: RtspSession.Setup, packet: ByteArray, length: Int) =
+                    override fun onRtcp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
+                        if (setup === video) probe.senderReport(packet, length)
+                        else if (setup === audioSetup) audioProbe?.senderReport(packet, length)
                         relay(setup.rtpChannel, rtcp = true, packet, length)
+                    }
                 })
             } catch (e: Exception) {
                 if (running) {
@@ -460,5 +467,57 @@ internal object RtspRelay {
             /** ~ несколько секунд основного потока: дольше плеер не может отставать. */
             const val QUEUE = 2_000
         }
+    }
+}
+
+/**
+ * Задержка камеры до планшета (кодирование + сеть): по отчётам отправителя RTCP камера сообщает, какому времени её
+ * часов соответствует метка RTP; кадр пришёл — разница с часами планшета. Имеет смысл, когда часы камеры и планшета
+ * сверены (NTP); итог — медиана за минуту, в журнал (для разбора задержки живого видео).
+ */
+internal class ArrivalDelay(private val clockRate: Int, private val now: () -> Long = System::currentTimeMillis) {
+    private var srWallMs = 0L
+    private var srRtp = 0L
+    private val samples = ArrayList<Long>()
+    private var since = 0L
+
+    fun senderReport(packet: ByteArray, length: Int) {
+        // Составной пакет RTCP: ищем отчёт отправителя (тип 200).
+        var off = 0
+        while (off + 20 <= length) {
+            val type = packet[off + 1].toInt() and 0xFF
+            val words = ((packet[off + 2].toInt() and 0xFF) shl 8) or (packet[off + 3].toInt() and 0xFF)
+            if (type == 200) {
+                val sec = u32(packet, off + 8)
+                val frac = u32(packet, off + 12)
+                srWallMs = (sec - NTP_TO_UNIX_S) * 1000 + (frac * 1000 shr 32)
+                srRtp = u32(packet, off + 16)
+                return
+            }
+            off += (words + 1) * 4
+        }
+    }
+
+    /** Кадр с меткой [rtpTimestamp] пришёл сейчас. Раз в минуту — медиана задержки, иначе null. */
+    fun frame(rtpTimestamp: Long): Long? {
+        if (srWallMs == 0L || clockRate <= 0) return null
+        val diff = ((rtpTimestamp - srRtp) shl 32) shr 32 // разница по модулю 2^32 со знаком
+        val shot = srWallMs + diff * 1000 / clockRate
+        val t = now()
+        samples += t - shot
+        if (since == 0L) since = t
+        if (t - since < REPORT_MS) return null
+        val median = samples.sorted()[samples.size / 2]
+        samples.clear()
+        since = t
+        return median
+    }
+
+    private fun u32(b: ByteArray, o: Int): Long =
+        ((b[o].toLong() and 0xFF) shl 24) or ((b[o + 1].toLong() and 0xFF) shl 16) or ((b[o + 2].toLong() and 0xFF) shl 8) or (b[o + 3].toLong() and 0xFF)
+
+    companion object {
+        private const val NTP_TO_UNIX_S = 2_208_988_800L
+        const val REPORT_MS = 60_000L
     }
 }

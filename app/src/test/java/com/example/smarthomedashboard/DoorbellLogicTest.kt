@@ -215,4 +215,34 @@ class DoorbellLogicTest {
         assertEquals("в 12:30", DoorbellModel.ago(now - 2 * 3_600_000, now))
         assertEquals("вчера в 21:30", DoorbellModel.ago(now - 17 * 3_600_000, now))
     }
+
+    /** Живое видео догоняет накопленное отставание и не дёргает скорость на границе (гистерезис). */
+    @Test fun liveVideoCatchesUpWithHysteresis() {
+        assertEquals("малый буфер — обычная скорость", 1f, LiveCatchUp.speedFor(200, 1f))
+        assertEquals("на границе без ускорения — не ускоряемся", 1f, LiveCatchUp.speedFor(500, 1f))
+        assertEquals(LiveCatchUp.SPEED, LiveCatchUp.speedFor(800, 1f))
+        assertEquals("большое отставание — быстрее", LiveCatchUp.FAR_SPEED, LiveCatchUp.speedFor(2_000, 1f))
+        assertEquals("догоняем, пока не опустимся ниже цели", LiveCatchUp.SPEED, LiveCatchUp.speedFor(500, LiveCatchUp.FAR_SPEED))
+        assertEquals("догнали — обычная скорость", 1f, LiveCatchUp.speedFor(250, LiveCatchUp.SPEED))
+    }
+
+    /** Задержка камеры по RTCP: отчёт отправителя связывает метку RTP с часами камеры. */
+    @Test fun arrivalDelayFromSenderReport() {
+        var now = 1_795_000_000_000L
+        val probe = ArrivalDelay(90_000) { now }
+        // Отчёт: метка RTP 4 294 000 000 (у края 2^32) = момент now − 1000 мс по часам камеры.
+        val wall = now - 1_000
+        val sec = wall / 1000 + 2_208_988_800L
+        val frac = (wall % 1000 shl 32) / 1000
+        val sr = ByteArray(28)
+        sr[0] = 0x80.toByte(); sr[1] = 200.toByte(); sr[3] = 6
+        fun put(o: Int, v: Long) { for (i in 0..3) sr[o + i] = (v shr (24 - 8 * i)).toByte() }
+        put(8, sec); put(12, frac); put(16, 4_294_000_000L)
+        probe.senderReport(sr, sr.size)
+        // Кадр снят через 500 мс после отчёта (метка перешла через 2^32), пришёл «сейчас» → задержка 500 мс.
+        assertNull(probe.frame((4_294_000_000L + 45_000) and 0xFFFFFFFFL))
+        now += ArrivalDelay.REPORT_MS
+        val delay = probe.frame((4_294_000_000L + 45_000 + 90_000L * 60) and 0xFFFFFFFFL)!!
+        assertTrue("задержка $delay", delay in 495..505)
+    }
 }

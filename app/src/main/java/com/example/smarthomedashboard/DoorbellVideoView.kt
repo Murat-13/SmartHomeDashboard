@@ -253,7 +253,28 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (player != null && !firstFrameRendered) failed("нет картинки за ${FIRST_FRAME_TIMEOUT_MS / 1000} с")
     }
     private var firstFrameRendered = false
-    private val retry = Runnable { retryPending = false; if (visible && player == null) start() }
+
+    /**
+     * Живое видео не копит отставание: RTSP-поток идёт в реальном времени, и всё, что плеер накопил сверх
+     * минимального буфера (паузы декодера, сбои сети, старт с опозданием), навсегда осталось бы задержкой. Пока
+     * в буфере больше [LiveCatchUp.START_MS] — плеер ускоряется (звук без смены тона) и догоняет живой момент.
+     */
+    private val catchUp = object : Runnable {
+        override fun run() {
+            val exo = player ?: return
+            if (playingRtsp.isNotBlank()) {
+                val buffered = exo.totalBufferedDuration
+                val speed = LiveCatchUp.speedFor(buffered, exo.playbackParameters.speed)
+                if (speed != exo.playbackParameters.speed) {
+                    if (speed > 1f && exo.playbackParameters.speed == 1f) Log.i(TAG, "Видео отстаёт на $buffered мс — догоняю живое")
+                    if (speed == 1f) Log.i(TAG, "Видео догнало живое: в запасе $buffered мс")
+                    exo.setPlaybackSpeed(speed)
+                }
+            }
+            main.postDelayed(this, LiveCatchUp.CHECK_MS)
+        }
+    }
+    private val retry =Runnable { retryPending = false; if (visible && player == null) start() }
 
     private fun start() {
         val src = source ?: return
@@ -397,6 +418,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         setSource(exo)
         exo.playWhenReady = true
         exo.prepare()
+        main.removeCallbacks(catchUp)
+        main.postDelayed(catchUp, LiveCatchUp.CHECK_MS)
     }
 
     internal fun failed(reason: String) {
@@ -433,6 +456,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         attempt++
         main.removeCallbacks(retry)
         main.removeCallbacks(firstFrameWatchdog)
+        main.removeCallbacks(catchUp)
         retryPending = false
         val exo = player ?: return
         player = null
@@ -770,5 +794,25 @@ internal class ConnectTimeoutSocketFactory(
 
     private fun connectOrClose(socket: java.net.Socket, address: java.net.InetSocketAddress) {
         try { socket.connect(address, timeoutMs) } catch (e: java.io.IOException) { socket.close(); throw e }
+    }
+}
+
+/**
+ * Догоняющий режим живого видео: скорость по запасу в буфере плеера. С запасом — гистерезис, чтобы скорость не
+ * дёргалась на границе: ускорение с [START_MS], возврат к 1× ниже [TARGET_MS]. Большое отставание — быстрее.
+ */
+internal object LiveCatchUp {
+    const val CHECK_MS = 1_000L
+    const val START_MS = 600L
+    const val TARGET_MS = 300L
+    private const val FAR_MS = 1_500L
+    const val SPEED = 1.2f
+    const val FAR_SPEED = 1.5f
+
+    fun speedFor(bufferedMs: Long, current: Float): Float = when {
+        bufferedMs > FAR_MS -> FAR_SPEED
+        bufferedMs > START_MS -> SPEED
+        current > 1f && bufferedMs > TARGET_MS -> SPEED
+        else -> 1f
     }
 }
