@@ -87,7 +87,14 @@ internal class ReolinkDriver(
 
     override fun parse(body: String): List<CameraEventType> {
         val type = try { JSONObject(body).optJSONObject("alarm")?.optString("type") } catch (_: Exception) { null } ?: return emptyList()
-        return listOfNotNull(TYPES[type.uppercase(Locale.ROOT)])
+        val key = type.uppercase(Locale.ROOT).removePrefix("AI_")
+        val event = TYPES[key]
+        when {
+            event != null -> Unit
+            key == "TEST" -> android.util.Log.i(TAG, "Тест вебхука из настроек камеры")
+            else -> android.util.Log.i(TAG, "Незнакомый тип события камеры: «${type.take(40)}» — пропущен")
+        }
+        return listOfNotNull(event)
     }
 
     override fun ringActive(): Boolean =
@@ -140,9 +147,16 @@ internal class ReolinkDriver(
     companion object {
         private val JSON = "application/json".toMediaType()
         private const val LOGIN_FIRST = -6
+        private const val TAG = "DirectEvents"
+        /**
+         * Типы `alarm.type` вебхука Reolink. Прошивка v3.0.0.6460 звонка владельца шлёт `PEOPLE`, `VISITOR`; по отзывам
+         * (форум Node-RED, 2024) другие прошивки — `AI_PEOPLE`, `AI_VEHICLE`, а также `VEHICLE`, `MD`, `TEST`. Приставка
+         * `AI_` снимается; животных в вебхуке никто не видел — понимаем возможные варианты.
+         */
         private val TYPES = mapOf(
-            "VISITOR" to CameraEventType.RING, "PEOPLE" to CameraEventType.PERSON, "VEHICLE" to CameraEventType.VEHICLE,
-            "DOG_CAT" to CameraEventType.ANIMAL, "MD" to CameraEventType.MOTION
+            "VISITOR" to CameraEventType.RING, "PEOPLE" to CameraEventType.PERSON, "PERSON" to CameraEventType.PERSON,
+            "VEHICLE" to CameraEventType.VEHICLE, "DOG_CAT" to CameraEventType.ANIMAL, "ANIMAL" to CameraEventType.ANIMAL,
+            "PET" to CameraEventType.ANIMAL, "MD" to CameraEventType.MOTION, "MOTION" to CameraEventType.MOTION
         )
 
         /**

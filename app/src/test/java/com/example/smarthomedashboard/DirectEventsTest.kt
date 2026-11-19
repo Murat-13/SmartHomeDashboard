@@ -162,6 +162,13 @@ class DirectEventsTest {
         val d = driver()
         assertEquals(listOf(CameraEventType.RING), d.parse(visitorHook))
         assertEquals(listOf(CameraEventType.PERSON), d.parse("""{"alarm":{"type":"PEOPLE"}}"""))
+        // Разные прошивки: с приставкой AI_ и без (форум Node-RED о Reolink Video Doorbell PoE).
+        assertEquals(listOf(CameraEventType.PERSON), d.parse("""{"alarm":{"type":"AI_PEOPLE"}}"""))
+        assertEquals(listOf(CameraEventType.VEHICLE), d.parse("""{"alarm":{"type":"AI_VEHICLE"}}"""))
+        assertEquals(listOf(CameraEventType.VEHICLE), d.parse("""{"alarm":{"type":"VEHICLE"}}"""))
+        assertEquals(listOf(CameraEventType.ANIMAL), d.parse("""{"alarm":{"type":"DOG_CAT"}}"""))
+        assertEquals(listOf(CameraEventType.MOTION), d.parse("""{"alarm":{"type":"MD"}}"""))
+        assertTrue("тест вебхука — не событие", d.parse("""{"alarm":{"type":"TEST"}}""").isEmpty())
         assertTrue(d.parse("""{"alarm":{"type":"SOMETHING_NEW"}}""").isEmpty())
         assertTrue(d.parse("мусор").isEmpty())
         assertFalse(d.ringActive())
