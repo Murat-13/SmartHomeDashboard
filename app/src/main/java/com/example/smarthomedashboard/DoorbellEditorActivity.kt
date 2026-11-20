@@ -326,12 +326,16 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     private fun buildTalk(side: LinearLayout) {
         side.addView(header(if (camera) "Разговор через динамик камеры" else "Разговор через домофон"))
         side.addView(kit.label((if (camera) "Если у камеры есть динамик: в раскрытой плитке" else "В окне звонка и в раскрытом домофоне") +
-            " — кнопка «Ответить»: разговор как по телефону, говорите оба сразу; «Завершить» — конец (сам — через 2 минуты " +
-            "тишины). Эхо гасит планшет. Нужен прямой поток (RTSP) и включённый ONVIF в настройках камеры. При первом " +
+            " — кнопка разговора. Нужен прямой поток (RTSP) и включённый ONVIF в настройках камеры. При первом " +
             "нажатии планшет спросит разрешение на микрофон.", 13f))
         side.addView(switch("door_talk", if (camera) "Разговор через камеру" else "Разговор через домофон", config.talk) { update(config.copy(talk = it)) })
-        side.addView(switch("door_talk_hold", "Вместо этого — «удерживайте и говорите» (как рация)", !config.talkCall) {
-            update(config.copy(talkCall = !it)) })
+        val modeHint = kit.label(talkModeHint(config.talkCall), 13f)
+        side.addView(choice("door_talk_mode", "Режим разговора", listOf("Дуплекс (как телефон)", "Симплекс (как рация)"),
+            if (config.talkCall) 0 else 1) { index ->
+            update(config.copy(talkCall = index == 0))
+            modeHint.text = talkModeHint(index == 0)
+        })
+        side.addView(modeHint)
         val result = kit.label("", 13f).apply { tag = "door_talk_result" }
         side.addView(kit.button("Проверить звук в домофоне", "door_talk_check") {
             if (config.talkRtsp.isBlank()) { result.text = "Сначала укажите прямой поток (RTSP)"; return@button }
@@ -817,6 +821,12 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         minHeight = kit.dp(48)
         setOnCheckedChangeListener { _, value -> onChange(value) }
     }
+
+    /** Пояснение к режиму разговора под выбором. */
+    private fun talkModeHint(duplex: Boolean) = if (duplex)
+        "«Ответить» — говорите оба сразу, как по телефону; «Завершить» — конец (сам — через 2 минуты тишины). Эхо гасит планшет."
+    else
+        "Удерживайте кнопку и говорите — звук с улицы на это время приглушён; отпустили — слушаете улицу. Эха нет."
 
     private fun choice(tag: String, label: String, items: List<String>, selected: Int, onPick: (Int) -> Unit): View {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

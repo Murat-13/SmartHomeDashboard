@@ -75,6 +75,20 @@ class DoorbellEditorTest {
         assertTrue(activity.isFinishing)
     }
 
+    /** Режим разговора — явный выбор: дуплекс (по умолчанию, как раньше) или симплекс; формат настроек прежний. */
+    @Test fun talkModeChoiceSavesSimplexAndDuplex() {
+        val activity = open()
+        val root = activity.findViewById<View>(android.R.id.content)
+        assertTrue("по умолчанию — дуплекс", saved().talkCall)
+        root.findViewWithTag<View>("door_talk_mode_1").performClick()
+        assertTrue(activity.save())
+        assertFalse("симплекс", saved().talkCall)
+        val again = open()
+        again.findViewById<View>(android.R.id.content).findViewWithTag<View>("door_talk_mode_0").performClick()
+        assertTrue(again.save())
+        assertTrue("снова дуплекс", saved().talkCall)
+    }
+
     @Test fun leavingDirtyEditorAsks() {
         val activity = open()
         activity.findViewById<View>(android.R.id.content).findViewWithTag<EditText>("door_rtsp_user").setText("admin")
