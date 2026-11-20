@@ -248,6 +248,8 @@ class MainActivity : AppCompatActivity() {
         if (!::tileManager.isInitialized) return
         refreshPinState()
         refreshBottomPanel()
+        // Измерение тракта разговора — только по файлу-запросу через adb (TalkProbe); обычно ничего не делает.
+        TalkProbe.maybeRun(this) { tileManager.loadTiles() }
         // Удаляем устаревшие данные подключения без доступа к сети и без блокировки UI.
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {

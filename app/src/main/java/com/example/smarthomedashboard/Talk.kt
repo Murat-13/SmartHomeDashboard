@@ -243,7 +243,11 @@ internal class TalkSession(private val session: RtspSession) : TalkChannel {
  * громкости домофона). Микрофон в режиме разговора Android с подавлением шума отдаёт тихий сигнал, а G.711 его
  * не усиливает. Усиление подстраивается по речи: громкость кадра выше [GATE] — тянем к [TARGET] (быстро вниз,
  * плавно вверх, в пределах 1–[MAX_GAIN]); тишину и фоновый шум не усиливаем сильнее, чем для последней речи.
- * Пики сверх [KNEE] мягко сжимаются — без хрипа от обрезания.
+ * Пики сверх [KNEE] мягко сжимаются до [CEILING] — без хрипа от обрезания.
+ *
+ * Уровни — по измерению стендом [TalkProbe] (20.11.2026, домофон Reolink на полной громкости): его динамик линеен
+ * до ≈ −12 дБ от пика шкалы, выше громкость почти не растёт, а искажения растут (тон −3 дБ — 38–50 %; речь с RMS
+ * −12 дБ совпадает с отправленной на 77 % против 90 % при −20 дБ). Поэтому речь — к RMS ≈ −18 дБ, пики — не выше −6 дБ.
  */
 internal class VoiceGain {
     var gain = START_GAIN
@@ -274,21 +278,24 @@ internal class VoiceGain {
     val average get() = if (frames == 0) gain else sumGain / frames
 
     companion object {
-        /** Громкость речи на выходе (RMS из 32 767): около −15 дБ от предела. */
-        const val TARGET = 5_500.0
+        /** Громкость речи на выходе (RMS из 32 767): около −18 дБ от предела. */
+        const val TARGET = 4_000.0
         /** Ниже — тишина или шум: усиление не подстраивается. */
         const val GATE = 100.0
-        const val MAX_GAIN = 10.0
-        /** Фон между словами — тише в столько раз (около −12 дБ). */
-        const val QUIET = 0.25
+        /** Микрофон без обработки пишет речь с 1–2 м тихо (RMS 150–500 после среза басов): до ×24 (+28 дБ). */
+        const val MAX_GAIN = 24.0
+        /** Фон между словами — тише в столько раз (−20 дБ): ни шум комнаты, ни улица из динамика не уходят обратно. */
+        const val QUIET = 0.1
         const val START_GAIN = 2.0
         private const val ATTACK = 0.5
         private const val RELEASE = 0.05
-        const val KNEE = 24_000.0
+        const val KNEE = 10_000.0
+        /** Потолок пиков: −6 дБ от шкалы — выше динамик домофона только искажает. */
+        const val CEILING = 16_000.0
 
         fun limit(x: Double): Short {
             val a = kotlin.math.abs(x)
-            val y = if (a <= KNEE) a else KNEE + (32_767.0 - KNEE) * kotlin.math.tanh((a - KNEE) / (32_767.0 - KNEE))
+            val y = if (a <= KNEE) a else KNEE + (CEILING - KNEE) * kotlin.math.tanh((a - KNEE) / (CEILING - KNEE))
             return (if (x < 0) -y else y).toInt().coerceIn(-32_767, 32_767).toShort()
         }
     }
@@ -300,6 +307,8 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
     /** Частота отсчётов, которые получает [onFrame]: 8 кГц, или 16 кГц при [start] с `wideband`. */
     @Volatile var rate = 8_000
         private set
+    /** Громкость того, что сейчас звучит из динамика планшета (звук с улицы); 0 — ничего. */
+    @Volatile var speaker: () -> Double = { 0.0 }
     /** В последнем кадре — речь (заметно громче шума комнаты), а не фон: она вернётся из домофона эхом. */
     @Volatile var speaking = false
         private set
@@ -355,7 +364,10 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
                     var sum = 0.0
                     for (i in 0 until count) sum += out[i] * out[i].toDouble()
                     val rms = sqrt(sum / count.coerceAtLeast(1))
-                    speaking = floor.speech(rms)
+                    // Речь — только заметно громче того, что сейчас звучит из динамика планшета: иначе уличный фон из
+                    // динамика принимался за голос, уходил в домофон и снова глушил улицу («пинг-понг» каждые 2,5 с,
+                    // запись разговора 20.11.2026).
+                    speaking = floor.speech(rms) && rms > EchoGate.OVER_SPEAKER * speaker()
                     voiceGain.apply(out, count, rms, speaking)
                     onFrame(out, count)
                     // Уровень — до усиления: по нему определяется тишина (автозавершение разговора); речь — всегда «голос».
@@ -549,6 +561,11 @@ internal class DoorbellTalk(
         }
         main.post { if (pressed || inCall) onLevel?.invoke(level) }
     })
+
+    init {
+        // Что сейчас звучит из динамика (звук с улицы в разговоре): речь в микрофоне должна быть заметно громче.
+        mic.speaker = { if (inCall && streetOn) street.playingRms else 0.0 }
+    }
 
     /**
      * Адрес RTSP и логин; открыть сессию заранее. Вызывается при каждом обновлении карточки (раз в секунду и чаще):
@@ -899,6 +916,8 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
 /** Защита от эха в дуплексе: после громкого звука с улицы микрофон молчит [HOLD_NS] (динамик + комната + запас). */
 internal object EchoGate {
     const val HOLD_NS = 350_000_000L
+    /** Речь в микрофоне должна быть громче звука из динамика в столько раз (динамик рядом: слышен ≈ 1 : 1). */
+    const val OVER_SPEAKER = 3.0
     /**
      * Через сколько наш голос возвращается эхом из микрофона домофона: до динамика ≈ 0,5 с (протокол Reolink), обратно
      * ≈ 0,05 с + запас воспроизведения 0,15 с + слова в конце фразы; с запасом — 2 с; столько улица после нашей речи молчит.
@@ -910,16 +929,19 @@ internal object EchoGate {
 }
 
 /**
- * Голос для динамика домофона: срез ниже ~250 Гц (гул и басы — маленький динамик на них хрипит, а громкость уходит
- * в то, что он не воспроизводит) и подъём +9 дБ выше ~1,8 кГц (разборчивость). Фильтры — по «кулинарной книге» RBJ.
+ * Голос для динамика домофона: срез ниже [CUT_HZ] (Баттерворт 2-го порядка). По измерению стендом [TalkProbe]
+ * (20.11.2026) динамик домофона Reolink отдаёт 300–700 Гц на 17–24 дБ слабее, чем 1–3 кГц: басы у калитки не
+ * слышны, но занимают запас громкости и уводят автоусиление. Высокие не поднимаем — динамик сам отдаёт 2–3 кГц
+ * на 9–11 дБ сильнее 1 кГц.
  */
 internal class SpeechFilter(rate: Int) {
-    private val hp = Biquad.highPass(rate, 250.0)
-    private val shelf = Biquad.highShelf(rate, 1_800.0, 9.0)
+    private val hp = Biquad.highPass(rate, CUT_HZ)
+
+    companion object { const val CUT_HZ = 350.0 }
 
     fun apply(pcm: ShortArray, count: Int) {
         for (i in 0 until count) {
-            val y = shelf.step(hp.step(pcm[i].toDouble()))
+            val y = hp.step(pcm[i].toDouble())
             pcm[i] = y.coerceIn(-32_767.0, 32_767.0).toInt().toShort()
         }
     }
@@ -939,14 +961,6 @@ internal class SpeechFilter(rate: Int) {
                 val w = 2 * Math.PI * f / rate; val c = kotlin.math.cos(w); val al = kotlin.math.sin(w) / (2 * 0.707)
                 val a0 = 1 + al
                 return Biquad((1 + c) / 2 / a0, -(1 + c) / a0, (1 + c) / 2 / a0, -2 * c / a0, (1 - al) / a0)
-            }
-
-            fun highShelf(rate: Int, f: Double, db: Double): Biquad {
-                val a = Math.pow(10.0, db / 40); val w = 2 * Math.PI * f / rate
-                val c = kotlin.math.cos(w); val al = kotlin.math.sin(w) / 2 * sqrt(2.0); val sa = 2 * sqrt(a) * al
-                val a0 = (a + 1) - (a - 1) * c + sa
-                return Biquad(a * ((a + 1) + (a - 1) * c + sa) / a0, -2 * a * ((a - 1) + (a + 1) * c) / a0,
-                    a * ((a + 1) + (a - 1) * c - sa) / a0, 2 * ((a - 1) - (a + 1) * c) / a0, ((a + 1) - (a - 1) * c - sa) / a0)
             }
         }
     }

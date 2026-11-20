@@ -22,12 +22,16 @@ internal interface StreetSource {
     fun stop()
     /** Когда из динамика последний раз звучала улица громко (`System.nanoTime`, 0 — не звучала). */
     val lastLoudAt: Long get() = 0L
+    /** Громкость звучащего сейчас звука с улицы (RMS, держится ~0,3 с после громкого); 0 — ничего не звучит. */
+    val playingRms: Double get() = 0.0
     /** Приглушить улицу до момента [until] (`System.nanoTime`): наш голос вернётся эхом из микрофона домофона. */
     fun muteUntil(until: Long) {}
 }
 
 internal class StreetAudio : StreetSource {
     @Volatile private var running = false
+    /** Только принимать (измерение [TalkProbe]): динамик планшета молчит. */
+    @Volatile var silent = false
     @Volatile private var session: RtspSession? = null
     private var thread: Thread? = null
     @Volatile var playedMs = 0L
@@ -37,6 +41,8 @@ internal class StreetAudio : StreetSource {
     @Volatile override var lastLoudAt = 0L
         private set
     @Volatile private var mutedUntil = 0L
+    @Volatile override var playingRms = 0.0
+        private set
 
     override fun muteUntil(until: Long) { if (until > mutedUntil) mutedUntil = until }
     @Volatile private var receivedSamples = 0L
@@ -76,6 +82,7 @@ internal class StreetAudio : StreetSource {
             val fifo = ShortFifo(rate)
             val t = newTrack(rate)
             track = t
+            if (silent) t.setVolume(0f)
             t.play()
             player = Thread({ playout(t, fifo, rate) }, "street-audio-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
             val dec = aac?.let { decoder(it) }
@@ -92,6 +99,7 @@ internal class StreetAudio : StreetSource {
                     if (g711 != null) {
                         val pcm = g711.push(rtp).samples
                         receivedSamples += pcm.size
+                        TalkDebug.write("street_rx", pcm, pcm.size, rate)
                         fifo.push(pcm, pcm.size, limit)
                     } else if (dec != null && aac != null) {
                         for (frame in aac.push(rtp)) {
@@ -145,6 +153,7 @@ internal class StreetAudio : StreetSource {
                 val all = ShortArray(info.size / 2).also { shorts.get(it) }
                 val mono = if (channels <= 1) all else ShortArray(all.size / channels) { all[it * channels] }
                 receivedSamples += mono.size
+                TalkDebug.write("street_rx", mono, mono.size, rateUsed)
                 fifo.push(mono, mono.size, limit)
             }
             dec.releaseOutputBuffer(out, false)
@@ -180,6 +189,7 @@ internal class StreetAudio : StreetSource {
                 buffering = Playout.buffering(fifo.size, rate, buffering, chunk)
                 if (buffering) {
                     buf.fill(0)
+                    playingRms *= 0.85
                 } else {
                     val n = fifo.pop(buf, chunk)
                     if (n < chunk) buf.fill(0, n, chunk)
@@ -189,11 +199,11 @@ internal class StreetAudio : StreetSource {
                     if (muted) buf.fill(0)
                     // Пока приглушено (это наш же голос вернулся из домофона), громкость улицы не в счёт: иначе защита
                     // приняла бы эхо за речь гостя и закрыла бы наш микрофон посреди фразы.
-                    if (!muted) {
-                        var sum = 0.0
-                        for (i in 0 until chunk) sum += buf[i].toDouble() * buf[i]
-                        if (kotlin.math.sqrt(sum / chunk) > LOUD_RMS) lastLoudAt = System.nanoTime()
-                    }
+                    var sum = 0.0
+                    for (i in 0 until chunk) sum += buf[i].toDouble() * buf[i]
+                    val rms = kotlin.math.sqrt(sum / chunk)
+                    playingRms = maxOf(rms, playingRms * 0.85)
+                    if (!muted && rms > LOUD_RMS) lastLoudAt = System.nanoTime()
                 }
                 TalkDebug.write("street", buf, chunk, rate)
                 // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.

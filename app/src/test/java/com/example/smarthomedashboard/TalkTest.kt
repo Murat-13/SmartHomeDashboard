@@ -290,11 +290,11 @@ class TalkTest {
         repeat(100) { f ->
             val pcm = tone(30_000.0, f)
             gain.apply(pcm, 160, rms(pcm))
-            assertTrue(pcm.all { it in -32_767..32_767 })
+            assertTrue(pcm.all { kotlin.math.abs(it.toInt()) <= VoiceGain.CEILING })
         }
         assertEquals(1.0, gain.gain, 0.05)
-        assertTrue(VoiceGain.limit(100_000.0) <= 32_767)
-        assertEquals("ниже колена — без изменений", 12_000, VoiceGain.limit(12_000.0).toInt())
+        assertTrue("потолок пиков — динамик домофона выше только искажает", VoiceGain.limit(100_000.0) <= VoiceGain.CEILING)
+        assertEquals("ниже колена — без изменений", 8_000, VoiceGain.limit(8_000.0).toInt())
     }
 
     /** Тишина и фон между фразами не подтягивают усиление вверх (шум не нарастает). */
@@ -368,16 +368,17 @@ class TalkTest {
     private fun sine(freq: Double, amp: Double, n: Int, rate: Int = 16_000) =
         ShortArray(n) { (amp * kotlin.math.sin(2 * Math.PI * freq * it / rate)).toInt().toShort() }
 
-    /** Голос для динамика домофона: басы и гул срезаны (на них он хрипит), 1,5–4 кГц подняты (разборчивость). */
-    @Test fun speechFilterCutsBassAndLiftsPresence() {
+    /** Голос для динамика домофона: басы и гул срезаны (динамик их не отдаёт), остальное — без изменений. */
+    @Test fun speechFilterCutsBassAndKeepsVoiceBand() {
         fun through(freq: Double): Double {
             val pcm = sine(freq, 2_000.0, 16_000)
             SpeechFilter(16_000).apply(pcm, pcm.size)
             return rms(pcm.copyOfRange(8_000, 16_000)) / (2_000.0 / kotlin.math.sqrt(2.0))
         }
-        assertTrue("100 Гц: ${through(100.0)}", through(100.0) < 0.25)
-        assertTrue("500 Гц: ${through(500.0)}", through(500.0) in 0.8..1.6)
-        assertTrue("3 кГц: ${through(3_000.0)}", through(3_000.0) > 2.2)
+        assertTrue("100 Гц: ${through(100.0)}", through(100.0) < 0.12)
+        assertTrue("500 Гц: ${through(500.0)}", through(500.0) in 0.8..1.0)
+        assertTrue("1 кГц: ${through(1_000.0)}", through(1_000.0) in 0.95..1.05)
+        assertTrue("3 кГц: ${through(3_000.0)}", through(3_000.0) in 0.95..1.05)
     }
 
     /** Ровный шум комнаты — не речь (не подтягивает усиление и не глушит улицу); голос поверх шума — речь. */
@@ -396,5 +397,26 @@ class TalkTest {
         repeat(20) { f -> out = tone(200.0, f); gain.apply(out, 160, 141.0, speech = false) }
         val speechGainOnNoise = gain.gain * 141.0
         assertTrue("фон ${rms(out)} против ${speechGainOnNoise}", rms(out) < speechGainOnNoise * (VoiceGain.QUIET + 0.05))
+    }
+
+    /** Уличный фон из динамика рядом с микрофоном — не речь: иначе он уходит в домофон и снова глушит улицу. */
+    @Test fun streetFromSpeakerIsNotTakenForOwnVoice() {
+        val floor = NoiseFloor()
+        repeat(200) { floor.speech(25.0) }
+        val fromSpeaker = 90.0
+        assertFalse(floor.speech(fromSpeaker) && fromSpeaker > EchoGate.OVER_SPEAKER * fromSpeaker)
+        val voice = 400.0
+        assertTrue(floor.speech(voice) && voice > EchoGate.OVER_SPEAKER * fromSpeaker)
+    }
+
+    /** Измерительный сигнал: тоны 1 кГц нужных уровней, без перегрузки; для канала 8 кГц — без частот выше полосы. */
+    @Test fun probeSignalHasCalibratedTones() {
+        val wide = TalkProbe.signal(16_000, null)
+        val first = 16_000 + 16_000 * TalkProbe.TONE_MS / 2000 // середина первого тона
+        val peak = (first - 400 until first + 400).maxOf { kotlin.math.abs(wide[it].toInt()) }
+        assertEquals(32_767 * Math.pow(10.0, TalkProbe.LEVELS_DB.first() / 20.0), peak.toDouble(), 20.0)
+        assertTrue(wide.maxOf { kotlin.math.abs(it.toInt()) } <= 32_767 * Math.pow(10.0, -3 / 20.0) + 2)
+        val narrow = TalkProbe.signal(8_000, ShortArray(16_000) { 1_000 })
+        assertTrue("у узкого канала меньше тонов и речь прорежена", narrow.size * 2 < wide.size + 16_000 + 16_000)
     }
 }
