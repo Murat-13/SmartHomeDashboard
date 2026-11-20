@@ -132,4 +132,18 @@ class ReliabilityAuditTest {
             server.stop()
         }
     }
+    @Test fun noisyAddressCannotTakeAllHookWorkers() {
+        var now = 0L
+        val admission = HookAdmission(perSecond = 20, concurrent = 4) { now }
+        val noisy = InetAddress.getByName("192.168.1.66")
+        val camera = InetAddress.getByName("192.168.1.20")
+        // Шумный адрес держит не больше 4 соединений одновременно и не больше 20 в секунду.
+        assertEquals(4, (1..10).count { admission.enter(noisy) })
+        assertTrue("вебхук камеры проходит", admission.enter(camera))
+        admission.leave(camera)
+        repeat(4) { admission.leave(noisy) }
+        assertEquals("за ту же секунду — до 20 всего (4 уже было)", 16, (1..30).count { admission.enter(noisy).also { ok -> if (ok) admission.leave(noisy) } })
+        now += 1_001
+        assertTrue("через секунду снова можно", admission.enter(noisy))
+    }
 }

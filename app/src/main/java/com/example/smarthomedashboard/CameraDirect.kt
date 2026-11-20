@@ -17,7 +17,6 @@ import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.Locale
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
@@ -209,46 +208,64 @@ internal class PinnedTrust(@Volatile private var pin: String?, private val onPin
 }
 
 /**
- * Приёмник вебхуков на планшете: только `POST`, заголовки ≤ 8 КБ, тело ≤ 16 КБ, не больше [MAX_PER_SECOND] запросов
- * в секунду с одного адреса. [route] решает, принять ли запрос (секрет пути и адрес камеры), и вызывается на потоке
- * приёмника; ответ камере — сразу после него.
+ * Приёмник вебхуков на планшете: только `POST`, заголовки ≤ 8 КБ, тело ≤ 16 КБ, весь запрос — за [DEADLINE_MS].
+ * Допуск соединения — сразу при приёме, до очереди ([HookAdmission]: не больше [MAX_PER_SECOND] в секунду и
+ * [MAX_CONCURRENT] одновременно с одного адреса); очередь обработки ограничена, лишнее закрывается сразу
+ * (аудит 20.11.2026, A3: раньше очередь была неограниченной, а медленный клиент держал поток часами).
+ * [route] решает, принять ли запрос (секрет пути и адрес камеры), и вызывается на потоке приёмника; ответ
+ * камере — сразу после него.
  */
 internal class CameraHookServer(
     private val port: Int,
     private val route: (path: String, from: InetAddress, body: String) -> Boolean
 ) {
     private var server: ServerSocket? = null
-    private val pool = Executors.newFixedThreadPool(4) { Thread(it, "camera-hook").apply { isDaemon = true } }
-    private val recent = HashMap<InetAddress, ArrayDeque<Long>>()
+    private var pool: java.util.concurrent.ThreadPoolExecutor? = null
+    private val admission = HookAdmission(MAX_PER_SECOND, MAX_CONCURRENT)
 
     val running get() = server?.isClosed == false
     val localPort get() = server?.localPort ?: port
 
     @Throws(IOException::class)
+    @Synchronized
     fun start() {
         if (running) return
         val socket = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(port)) }
+        val workers = java.util.concurrent.ThreadPoolExecutor(WORKERS, WORKERS, 30, TimeUnit.SECONDS,
+            java.util.concurrent.ArrayBlockingQueue(QUEUE)) { Thread(it, "camera-hook").apply { isDaemon = true } }
         server = socket
+        pool = workers
         Thread({
             while (!socket.isClosed) {
                 val client = try { socket.accept() } catch (_: IOException) { break }
-                try { pool.execute { serve(client) } } catch (_: Exception) { client.close() }
+                val from = client.inetAddress
+                if (!admission.enter(from)) { closeQuietly(client); continue }
+                try {
+                    workers.execute { try { serve(client) } finally { admission.leave(from) } }
+                } catch (_: Exception) {
+                    // Очередь полна или приёмник остановлен: соединение закрывается сразу, камера повторит.
+                    admission.leave(from)
+                    closeQuietly(client)
+                }
             }
         }, "camera-hook-accept").apply { isDaemon = true; start() }
     }
 
+    @Synchronized
     fun stop() {
         try { server?.close() } catch (_: IOException) {}
         server = null
-        pool.shutdownNow()
+        pool?.shutdownNow()
+        pool = null
     }
+
+    private fun closeQuietly(s: Socket) = try { s.close() } catch (_: IOException) {}
 
     private fun serve(client: Socket) = client.use { s ->
         try {
-            s.soTimeout = 5_000
+            val deadline = System.nanoTime() + DEADLINE_MS * 1_000_000
             val from = s.inetAddress
-            if (!allow(from)) return@use
-            val input = s.getInputStream()
+            val input = DeadlineInput(s, deadline)
             val head = readHead(input) ?: return@use
             val lines = head.split("\r\n")
             val (method, path) = lines.first().split(' ').let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
@@ -265,15 +282,16 @@ internal class CameraHookServer(
         }
     }
 
-    @Synchronized
-    private fun allow(from: InetAddress): Boolean {
-        val now = System.nanoTime() / 1_000_000
-        val times = recent.getOrPut(from) { ArrayDeque() }
-        while (times.isNotEmpty() && now - times.first() > 1_000) times.removeFirst()
-        if (times.size >= MAX_PER_SECOND) return false
-        times.addLast(now)
-        if (recent.size > 64) recent.keys.retainAll { it == from }
-        return true
+    /** Чтение с общим сроком на весь запрос: каждое ожидание — не дольше остатка срока. */
+    private class DeadlineInput(private val socket: Socket, private val deadline: Long) : InputStream() {
+        private val input = socket.getInputStream()
+        private fun arm() {
+            val left = (deadline - System.nanoTime()) / 1_000_000
+            if (left <= 0) throw java.net.SocketTimeoutException("Запрос не уложился в срок")
+            socket.soTimeout = left.toInt().coerceAtLeast(1)
+        }
+        override fun read(): Int { arm(); return input.read() }
+        override fun read(b: ByteArray, off: Int, len: Int): Int { arm(); return input.read(b, off, len) }
     }
 
     private fun readHead(input: InputStream): String? {
@@ -304,5 +322,38 @@ internal class CameraHookServer(
         private const val MAX_HEAD = 8 * 1024
         private const val MAX_BODY = 16 * 1024
         private const val MAX_PER_SECOND = 20
+        /** Одновременно с одного адреса: камера шлёт события по одному, на это хватает с запасом. */
+        private const val MAX_CONCURRENT = 4
+        private const val WORKERS = 8
+        private const val QUEUE = 16
+        /** Камера шлёт запрос целиком сразу (сотни байт); на весь запрос — 3 с. */
+        const val DEADLINE_MS = 3_000L
+    }
+}
+
+/**
+ * Допуск соединений приёмника вебхуков по адресу: частота (за последнюю секунду) и сколько сейчас обрабатывается.
+ * Один шумный адрес сети не занимает всех обработчиков — вебхуки камеры (свой адрес) проходят.
+ */
+internal class HookAdmission(private val perSecond: Int, private val concurrent: Int, private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 }) {
+    private val recent = HashMap<InetAddress, ArrayDeque<Long>>()
+    private val active = HashMap<InetAddress, Int>()
+
+    @Synchronized
+    fun enter(from: InetAddress): Boolean {
+        val now = nowMs()
+        val times = recent.getOrPut(from) { ArrayDeque() }
+        while (times.isNotEmpty() && now - times.first() > 1_000) times.removeFirst()
+        if (times.size >= perSecond || (active[from] ?: 0) >= concurrent) return false
+        times.addLast(now)
+        active[from] = (active[from] ?: 0) + 1
+        if (recent.size > 64) recent.keys.retainAll { it == from || it in active }
+        return true
+    }
+
+    @Synchronized
+    fun leave(from: InetAddress) {
+        val n = (active[from] ?: return) - 1
+        if (n <= 0) active.remove(from) else active[from] = n
     }
 }
