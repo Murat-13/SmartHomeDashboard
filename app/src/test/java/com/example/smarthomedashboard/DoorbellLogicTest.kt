@@ -224,6 +224,11 @@ class DoorbellLogicTest {
         assertEquals("большое отставание — быстрее", LiveCatchUp.FAR_SPEED, LiveCatchUp.speedFor(2_000, 1f))
         assertEquals("догоняем, пока не опустимся ниже цели", LiveCatchUp.SPEED, LiveCatchUp.speedFor(500, LiveCatchUp.FAR_SPEED))
         assertEquals("догнали — обычная скорость", 1f, LiveCatchUp.speedFor(250, LiveCatchUp.SPEED))
+        // Плеер, который не опускается ниже 450 мс (ждёт кадры от декодера): пороги сдвигаются, цель — пол + 0,1 с.
+        assertEquals(0L, LiveCatchUp.shiftFor(0)); assertEquals(0L, LiveCatchUp.shiftFor(150)); assertEquals(250L, LiveCatchUp.shiftFor(450))
+        assertEquals("у пола не ускоряемся", 1f, LiveCatchUp.speedFor(700 - LiveCatchUp.shiftFor(450), 1f))
+        assertEquals(LiveCatchUp.SPEED, LiveCatchUp.speedFor(800 - LiveCatchUp.shiftFor(450), 1f))
+        assertEquals("остановились выше пола", 1f, LiveCatchUp.speedFor(540 - LiveCatchUp.shiftFor(450), LiveCatchUp.SPEED))
     }
 
     /** Задержка камеры по RTCP: отчёт отправителя связывает метку RTP с часами камеры. */

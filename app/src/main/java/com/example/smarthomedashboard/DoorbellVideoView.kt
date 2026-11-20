@@ -264,17 +264,50 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             val exo = player ?: return
             if (playingRtsp.isNotBlank()) {
                 val buffered = exo.totalBufferedDuration
-                val speed = LiveCatchUp.speedFor(buffered, exo.playbackParameters.speed)
-                if (speed != exo.playbackParameters.speed) {
-                    if (speed > 1f && exo.playbackParameters.speed == 1f) Log.i(TAG, "Видео отстаёт на $buffered мс — догоняю живое")
-                    if (speed == 1f) Log.i(TAG, "Видео догнало живое: в запасе $buffered мс")
+                bufferedMin = minOf(bufferedMin, buffered)
+                bufferedMax = maxOf(bufferedMax, buffered)
+                val current = exo.playbackParameters.speed
+                // Программному декодеру большого кадра 1,5× не по силам — только мягкое ускорение.
+                val cap = if (decoderInUse?.let(::isSoftwareDecoder) == true) LiveCatchUp.SPEED else LiveCatchUp.FAR_SPEED
+                var speed = minOf(LiveCatchUp.speedFor(buffered - LiveCatchUp.shiftFor(catchUpFloor), current), cap)
+                if (current > 1f) {
+                    // Запас перестал убывать: ниже плеер не опускается (ждёт кадр от декодера) — это его пол.
+                    if (buffered < catchUpBest - 50) { catchUpBest = buffered; catchUpStuck = 0 }
+                    else if (++catchUpStuck >= LiveCatchUp.STUCK_TICKS) { hitFloor(exo, catchUpBest); speed = 1f }
+                } else {
+                    catchUpBest = Long.MAX_VALUE
+                    catchUpStuck = 0
+                    // Начинаем, только если отставание держится (не всплеск) и после прошлой остановки прошло время.
+                    catchUpAbove = if (speed > 1f) catchUpAbove + 1 else 0
+                    if (speed > 1f && (catchUpAbove < LiveCatchUp.CONFIRM_TICKS || SystemClock.elapsedRealtime() < catchUpNotBefore)) speed = 1f
+                }
+                if (speed != current) {
+                    if (speed > 1f && current == 1f) Log.i(TAG, "Видео отстаёт на $buffered мс — догоняю живое")
                     exo.setPlaybackSpeed(speed)
                 }
             }
             main.postDelayed(this, LiveCatchUp.CHECK_MS)
         }
     }
-    private val retry =Runnable { retryPending = false; if (visible && player == null) start() }
+    /** Запас, ниже которого этот плеер уже не опускался (останавливался): догонять дальше незачем. */
+    private var catchUpFloor = 0L
+    private var catchUpBest = Long.MAX_VALUE
+    private var catchUpStuck = 0
+    private var catchUpAbove = 0
+    private var catchUpNotBefore = 0L
+    /** За время показа: запас плеера и число остановок (в журнал при закрытии). */
+    private var bufferedMin = Long.MAX_VALUE
+    private var bufferedMax = 0L
+    private var stalls = 0
+
+    private fun hitFloor(exo: ExoPlayer, buffered: Long) {
+        catchUpFloor = buffered.coerceAtLeast(0)
+        catchUpAbove = 0
+        catchUpNotBefore = SystemClock.elapsedRealtime() + LiveCatchUp.COOLDOWN_MS
+        if (exo.playbackParameters.speed != 1f) exo.setPlaybackSpeed(1f)
+    }
+
+    private val retry = Runnable { retryPending = false; if (visible && player == null) start() }
 
     private fun start() {
         val src = source ?: return
@@ -310,7 +343,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 })
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
             // Аппаратный декодер этот поток уже не принял — сразу программный, без лишней попытки.
-            play(software = rtsp == src.rtsp && rtsp in hardwareRejected) { it.setMediaSource(media) }
+            play(software = rtsp == src.rtsp && rtsp in hardwareRejected, live = true) { it.setMediaSource(media) }
         }
     }
 
@@ -356,10 +389,19 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         }
     }
 
-    private fun play(software: Boolean = false, setSource: (ExoPlayer) -> Unit) {
+    private fun play(software: Boolean = false, live: Boolean = false, setSource: (ExoPlayer) -> Unit) {
         // Не открылся декодер — плеер пробует следующий: так основной поток выше предела аппаратного декодера
         // показывает программный декодер Android (нагрузка на процессор — только пока он на экране).
-        val renderers = DefaultRenderersFactory(context).setEnableDecoderFallback(true)
+        // Живой RTSP: декодеру сообщается, что перестановки кадров нет, — иначе он держит у себя до 16 кадров.
+        val renderers = (if (live) LiveRenderers(context) else DefaultRenderersFactory(context)).setEnableDecoderFallback(true)
+        catchUpFloor = 0
+        catchUpBest = Long.MAX_VALUE
+        catchUpStuck = 0
+        catchUpAbove = 0
+        catchUpNotBefore = 0
+        bufferedMin = Long.MAX_VALUE
+        bufferedMax = 0
+        stalls = 0
         if (software) renderers.setMediaCodecSelector(SOFTWARE_FIRST)
         val exo = ExoPlayer.Builder(context, renderers)
             // Живое видео: минимальный буфер — задержка важнее плавности при обрывах сети.
@@ -413,6 +455,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             override fun onPlaybackStateChanged(state: Int) {
                 // Поток домофона не заканчивается: конец — обрыв.
                 if (player === exo && state == Player.STATE_ENDED) failed("поток закончился")
+                if (player === exo && state == Player.STATE_BUFFERING && firstFrameRendered) stalls++
+                if (player === exo && state == Player.STATE_BUFFERING && firstFrameRendered && exo.playbackParameters.speed > 1f) {
+                    hitFloor(exo, minOf(exo.totalBufferedDuration, catchUpBest))
+                }
             }
         })
         setSource(exo)
@@ -481,7 +527,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val size = exo.videoSize
         Log.i(TAG, "Видео: ${decoderInUse ?: "?"} ${size.width}×${size.height}, показано ${counters.renderedOutputBufferCount} " +
             "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
-                counters.renderedOutputBufferCount / seconds, seconds))
+                counters.renderedOutputBufferCount / seconds, seconds) +
+            if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс, остановок $stalls" else "")
     }
 
     // ---- Бесшовная смена потока (решение владельца): плитка ↔ раскрытие/окно звонка ----
@@ -800,14 +847,28 @@ internal class ConnectTimeoutSocketFactory(
 /**
  * Догоняющий режим живого видео: скорость по запасу в буфере плеера. С запасом — гистерезис, чтобы скорость не
  * дёргалась на границе: ускорение с [START_MS], возврат к 1× ниже [TARGET_MS]. Большое отставание — быстрее.
+ * У каждого плеера свой «пол» — запас, ниже которого он останавливается (декодер придерживает кадры, программный
+ * декодер не успевает): упёрлись — пороги поднимаются на [shiftFor], следующая попытка через [COOLDOWN_MS].
  */
 internal object LiveCatchUp {
     const val CHECK_MS = 1_000L
-    const val START_MS = 600L
+    const val START_MS = 500L
     const val TARGET_MS = 300L
     private const val FAR_MS = 1_500L
     const val SPEED = 1.2f
     const val FAR_SPEED = 1.5f
+    /** Столько проверок подряд запас не убывает при ускорении — дальше догонять нельзя. */
+    const val STUCK_TICKS = 5
+    /** Столько проверок подряд отставание выше порога — тогда догоняем (всплески не в счёт). */
+    const val CONFIRM_TICKS = 3
+    /** После упора в пол следующая попытка догнать — не раньше. */
+    const val COOLDOWN_MS = 15_000L
+
+    /** Запас, который плееру нужен всегда (кадр-другой у декодера): пол выше него сдвигает пороги. */
+    private const val BASE_MS = 200L
+
+    /** На сколько поднять пороги для плеера, который не опускается ниже [floorMs] (цель — пол + 0,1 с). */
+    fun shiftFor(floorMs: Long) = (floorMs - BASE_MS).coerceAtLeast(0)
 
     fun speedFor(bufferedMs: Long, current: Float): Float = when {
         bufferedMs > FAR_MS -> FAR_SPEED
