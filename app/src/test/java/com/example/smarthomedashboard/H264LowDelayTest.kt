@@ -126,4 +126,21 @@ class H264LowDelayTest {
         assertNull(H264LowDelay.rewriteAccessUnit(frame))
         assertNotNull(parse(H264LowDelay.rewriteSps(original)!!))
     }
+
+    @Test fun softwareDecoderAlsoGetsLowDelayAndShowsLateFramesUnlessHoldIsRequested() {
+        LiveTuning.mode(h264 = true, softwareOnly = false, softwareLowDelay = true).let { assertTrue(it.lowDelay); assertFalse(it.freshest) }
+        LiveTuning.mode(h264 = true, softwareOnly = true, softwareLowDelay = true).let { assertTrue(it.lowDelay); assertTrue(it.freshest) }
+        // Проверочный выключатель: программный декодер как раньше; аппаратного он не касается.
+        LiveTuning.mode(h264 = true, softwareOnly = true, softwareLowDelay = false).let { assertFalse(it.lowDelay); assertFalse(it.freshest) }
+        LiveTuning.mode(h264 = true, softwareOnly = false, softwareLowDelay = false).let { assertTrue(it.lowDelay); assertFalse(it.freshest) }
+        LiveTuning.mode(h264 = false, softwareOnly = true, softwareLowDelay = true).let { assertFalse(it.lowDelay); assertFalse(it.freshest) }
+    }
+
+    @Test fun holdSwitchIsAFileInTheAppFolderOnSharedStorage() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        assertFalse(LiveTuning.softwareHold(context))
+        val dir = java.io.File(context.getExternalFilesDir(null), "video_debug").apply { mkdirs() }
+        java.io.File(dir, "sw_hold").writeText("")
+        assertTrue(LiveTuning.softwareHold(context))
+    }
 }

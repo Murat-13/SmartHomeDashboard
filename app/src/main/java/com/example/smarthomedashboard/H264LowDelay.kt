@@ -17,6 +17,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.ByteBuffer
 
 /**
@@ -267,31 +268,33 @@ internal object H264LowDelay {
  * ключевым кадром).
  */
 @OptIn(UnstableApi::class)
-internal class LiveRenderers(context: Context) : DefaultRenderersFactory(context) {
+internal class LiveRenderers(context: Context, private val softwareLowDelay: Boolean = true) : DefaultRenderersFactory(context) {
     override fun buildVideoRenderers(
         context: Context, extensionRendererMode: Int, mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
         eventHandler: Handler, eventListener: VideoRendererEventListener, allowedVideoJoiningTimeMs: Long, out: ArrayList<Renderer>
     ) {
         out.add(LowDelayVideoRenderer(context, codecAdapterFactory, mediaCodecSelector, allowedVideoJoiningTimeMs,
-            enableDecoderFallback, eventHandler, eventListener))
+            enableDecoderFallback, eventHandler, eventListener, softwareLowDelay))
     }
 }
 
 @OptIn(UnstableApi::class)
 internal class LowDelayVideoRenderer(
     context: Context, adapters: MediaCodecAdapter.Factory, selector: MediaCodecSelector, joiningMs: Long, fallback: Boolean,
-    handler: Handler, listener: VideoRendererEventListener
+    handler: Handler, listener: VideoRendererEventListener, private val softwareLowDelay: Boolean = true
 ) : MediaCodecVideoRenderer(context, adapters, selector, joiningMs, fallback, handler, listener, DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY) {
-    /** SPS этого декодера переписывается: видео H.264 и декодер аппаратный. */
+    /** SPS этого декодера переписывается: декодер не держит кадры «на перестановку». */
     private var lowDelay = false
+    /** Кадр, готовый с опозданием, всё равно показывается ([LiveTuning.Mode.freshest]). */
+    private var freshest = false
 
     override fun getMediaCodecConfiguration(
         codecInfo: MediaCodecInfo, format: Format, crypto: MediaCrypto?, codecOperatingRate: Float
     ): MediaCodecAdapter.Configuration {
         val configuration = super.getMediaCodecConfiguration(codecInfo, format, crypto, codecOperatingRate)
-        // Программный декодер на большом кадре работает на пределе процессора: его запас кадров — заодно и запас
-        // времени, без него видео замирает (проверено на SM-X216B, 2560×1920). Ему SPS оставляем как есть.
-        lowDelay = codecInfo.codecMimeType == MimeTypes.VIDEO_H264 && !codecInfo.softwareOnly
+        val mode = LiveTuning.mode(codecInfo.codecMimeType == MimeTypes.VIDEO_H264, codecInfo.softwareOnly, softwareLowDelay)
+        lowDelay = mode.lowDelay
+        freshest = mode.freshest
         if (lowDelay) {
             val media = configuration.mediaFormat
             val csd = try { media.getByteBuffer("csd-0") } catch (_: Exception) { null }
@@ -306,6 +309,9 @@ internal class LowDelayVideoRenderer(
         }
         return configuration
     }
+
+    override fun shouldDropOutputBuffer(earlyUs: Long, elapsedRealtimeUs: Long, isLastBuffer: Boolean): Boolean =
+        !freshest && super.shouldDropOutputBuffer(earlyUs, elapsedRealtimeUs, isLastBuffer)
 
     override fun onQueueInputBuffer(buffer: DecoderInputBuffer) {
         super.onQueueInputBuffer(buffer)
@@ -326,4 +332,27 @@ internal class LowDelayVideoRenderer(
             data.position(0)
         }
     }
+}
+
+/**
+ * Настройка живого видео под декодер (docs/doorbell.md, «Задержка живого видео»).
+ *
+ * Аппаратный декодер: SPS без перестановки кадров — он отдаёт кадр сразу. Программный (основной поток больше
+ * предела аппаратного): то же самое, и вдобавок кадр, готовый с опозданием, показывается, а не выбрасывается.
+ * Обычное правило плеера «опоздал на 30 мс — не показывать» у декодера, работающего почти на пределе процессора,
+ * оставляло на экране застывшую картинку: каждый следующий кадр тоже опаздывал. Свежий кадр с опозданием лучше
+ * пропущенного; прыжок на более новый ключевой кадр при большом отставании остаётся за плеером.
+ */
+internal object LiveTuning {
+    class Mode(val lowDelay: Boolean, val freshest: Boolean)
+
+    fun mode(h264: Boolean, softwareOnly: Boolean, softwareLowDelay: Boolean) =
+        Mode(lowDelay = h264 && (!softwareOnly || softwareLowDelay), freshest = h264 && softwareOnly && softwareLowDelay)
+
+    /**
+     * Проверочный выключатель для сравнения на планшете: файл `video_debug/sw_hold` в папке приложения на общей
+     * памяти возвращает программному декодеру прежнее поведение (держит кадры, опоздавшие не показываются).
+     */
+    fun softwareHold(context: Context): Boolean =
+        context.getExternalFilesDir(null)?.let { File(File(it, "video_debug"), "sw_hold").exists() } == true
 }

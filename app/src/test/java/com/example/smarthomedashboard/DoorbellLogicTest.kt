@@ -250,4 +250,24 @@ class DoorbellLogicTest {
         val delay = probe.frame((4_294_000_000L + 45_000 + 90_000L * 60) and 0xFFFFFFFFL)!!
         assertTrue("задержка $delay", delay in 495..505)
     }
+
+    @Test fun screenDelayIsHowMuchOlderTheShownFrameIsThanTheFreshestArrived() {
+        // Край буфера 10,000 с; кадр 9,300 с показан 100 мс назад: в момент показа край был 9,900 → задержка 600 мс.
+        assertEquals(600L, ScreenDelay.of(edgeMs = 10_000, ptsUs = 9_300_000, shownAtNs = 5_000_000_000L, nowNs = 5_100_000_000L))
+        // Показ назначен на 20 мс вперёд — край к тому моменту уйдёт дальше.
+        assertEquals(720L, ScreenDelay.of(edgeMs = 10_000, ptsUs = 9_300_000, shownAtNs = 5_020_000_000L, nowNs = 5_000_000_000L))
+    }
+
+    @Test fun screenDelaySummaryGivesMedianAndNinetiethPercentileAndSkipsNonsense() {
+        val delay = ScreenDelay()
+        org.junit.Assert.assertNull("мало замеров — нет итога", delay.also { it.add(300) }.summary())
+        delay.reset()
+        (1..20).forEach { delay.add(it * 100L) }
+        delay.add(-2_000)   // смена потока
+        delay.add(60_000)   // источник стоял
+        assertEquals("медиана 1100 мс, 90 % — до 1900 мс, к концу 1700 мс", delay.summary())
+        delay.reset()
+        repeat(6) { delay.add(-100) }
+        assertEquals("кадр чуть свежее края буфера — ноль", "медиана 0 мс, 90 % — до 0 мс", delay.summary())
+    }
 }

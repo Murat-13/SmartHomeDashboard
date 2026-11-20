@@ -268,9 +268,12 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 val buffered = exo.totalBufferedDuration
                 bufferedMin = minOf(bufferedMin, buffered)
                 bufferedMax = maxOf(bufferedMax, buffered)
+                shownFrame?.last?.let { screenDelay.add(ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, System.nanoTime())) }
                 val current = exo.playbackParameters.speed
-                // Программному декодеру большого кадра 1,5× не по силам — только мягкое ускорение.
-                val cap = if (decoderInUse?.let(::isSoftwareDecoder) == true) LiveCatchUp.SPEED else LiveCatchUp.FAR_SPEED
+                // Программный декодер большого кадра 1,5× не тянет, но опоздавшие кадры он показывает сразу
+                // ([LiveTuning]): часы плеера уходят вперёд, декодер догоняет в полную силу. В прежнем режиме
+                // (кадры придерживаются, опоздавшие не показываются) — только мягкое ускорение.
+                val cap = if (softwareHold && decoderInUse?.let(::isSoftwareDecoder) == true) LiveCatchUp.SPEED else LiveCatchUp.FAR_SPEED
                 var speed = minOf(LiveCatchUp.speedFor(buffered - LiveCatchUp.shiftFor(catchUpFloor), current), cap)
                 if (current > 1f) {
                     // Запас перестал убывать: ниже плеер не опускается (ждёт кадр от декодера) — это его пол.
@@ -301,6 +304,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private var bufferedMin = Long.MAX_VALUE
     private var bufferedMax = 0L
     private var stalls = 0
+    /** Последний показанный кадр текущего плеера (пишет поток плеера) и замеры «от прихода до экрана». */
+    private var shownFrame: ShownFrame? = null
+    /** Проверочный выключатель [LiveTuning.softwareHold] у текущего плеера. */
+    private var softwareHold = false
+    private val screenDelay = ScreenDelay()
 
     private fun hitFloor(exo: ExoPlayer, buffered: Long) {
         catchUpFloor = buffered.coerceAtLeast(0)
@@ -395,7 +403,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         // Не открылся декодер — плеер пробует следующий: так основной поток выше предела аппаратного декодера
         // показывает программный декодер Android (нагрузка на процессор — только пока он на экране).
         // Живой RTSP: декодеру сообщается, что перестановки кадров нет, — иначе он держит у себя до 16 кадров.
-        val renderers = (if (live) LiveRenderers(context) else DefaultRenderersFactory(context)).setEnableDecoderFallback(true)
+        softwareHold = live && LiveTuning.softwareHold(context)
+        val renderers = (if (live) LiveRenderers(context, softwareLowDelay = !softwareHold) else DefaultRenderersFactory(context))
+            .setEnableDecoderFallback(true)
         catchUpFloor = 0
         catchUpBest = Long.MAX_VALUE
         catchUpStuck = 0
@@ -404,6 +414,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         bufferedMin = Long.MAX_VALUE
         bufferedMax = 0
         stalls = 0
+        screenDelay.reset()
+        val shown = ShownFrame()
+        shownFrame = shown
         if (software) renderers.setMediaCodecSelector(SOFTWARE_FIRST)
         val exo = ExoPlayer.Builder(context, renderers)
             // Живое видео: минимальный буфер — задержка важнее плавности при обрывах сети.
@@ -417,6 +430,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         exo.volume = volume
         if (callAudio) applyAudio(exo)
         exo.setVideoTextureView(texture)
+        exo.setVideoFrameMetadataListener { presentationTimeUs, releaseTimeNs, _, _ ->
+            shown.last = ShownFrame.At(presentationTimeUs, releaseTimeNs)
+        }
         exo.addAnalyticsListener(object : AnalyticsListener {
             override fun onVideoDecoderInitialized(
                 eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long
@@ -530,7 +546,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         Log.i(TAG, "Видео: ${decoderInUse ?: "?"} ${size.width}×${size.height}, показано ${counters.renderedOutputBufferCount} " +
             "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
                 counters.renderedOutputBufferCount / seconds, seconds) +
-            if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс, остановок $stalls" else "")
+            (if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс, остановок $stalls" else "") +
+            (screenDelay.summary()?.let { "; от прихода до экрана: $it" } ?: ""))
     }
 
     // ---- Бесшовная смена потока (решение владельца): плитка ↔ раскрытие/окно звонка ----
@@ -865,6 +882,56 @@ internal class ConnectTimeoutSocketFactory(
  * У каждого плеера свой «пол» — запас, ниже которого он останавливается (декодер придерживает кадры, программный
  * декодер не успевает): упёрлись — пороги поднимаются на [shiftFor], следующая попытка через [COOLDOWN_MS].
  */
+/** Последний показанный кадр: время кадра в потоке и момент показа (пишет поток плеера, читает главный). */
+internal class ShownFrame {
+    class At(val ptsUs: Long, val atNs: Long)
+    @Volatile var last: At? = null
+}
+
+/**
+ * Сколько кадр ждёт у нас — от прихода в плеер до экрана: запас плеера, кадры у декодера и опоздание показа
+ * (docs/doorbell.md, «Задержка живого видео»). Замер раз в секунду: на сколько последний показанный кадр старше
+ * самого свежего пришедшего. Задержка самой камеры и сети сюда не входит (сеть — в строке «Камера → планшет»).
+ */
+internal class ScreenDelay {
+    private var samples = IntArray(64)
+    private var count = 0
+
+    fun reset() { count = 0 }
+
+    fun add(ms: Long) {
+        // Вне разумного (смена потока, пауза источника) — не замер; кадр чуть «свежее» края буфера звука — ноль.
+        if (ms < -TOLERANCE_MS || ms > MAX_MS || count >= LIMIT) return
+        if (count == samples.size) samples = samples.copyOf(count * 2)
+        samples[count++] = ms.coerceAtLeast(0).toInt()
+    }
+
+    /** Медиана и 90-й процентиль; null — замеров мало. */
+    fun summary(): String? {
+        if (count < MIN_SAMPLES) return null
+        val sorted = samples.copyOf(count).also { it.sort() }
+        // «К концу» — установившееся значение: первые секунды плеер догоняет накопленное при подключении.
+        val settled = if (count < 2 * TAIL) "" else
+            ", к концу ${samples.copyOfRange(count - TAIL, count).also { it.sort() }[TAIL / 2]} мс"
+        return "медиана ${sorted[count / 2]} мс, 90 % — до ${sorted[(count * 9 / 10).coerceAtMost(count - 1)]} мс$settled"
+    }
+
+    companion object {
+        private const val TOLERANCE_MS = 500L
+        private const val MAX_MS = 10_000L
+        private const val MIN_SAMPLES = 5
+        private const val TAIL = 8
+        private const val LIMIT = 4_096
+
+        /**
+         * Задержка кадра в момент его показа: край буфера [edgeMs] сейчас ([nowNs]) минус время, прошедшее с показа
+         * (поток живой — край за это время ушёл вперёд ровно на столько), минус время кадра [ptsUs].
+         */
+        fun of(edgeMs: Long, ptsUs: Long, shownAtNs: Long, nowNs: Long): Long =
+            edgeMs - (nowNs - shownAtNs) / 1_000_000 - ptsUs / 1_000
+    }
+}
+
 internal object LiveCatchUp {
     const val CHECK_MS = 1_000L
     const val START_MS = 500L
