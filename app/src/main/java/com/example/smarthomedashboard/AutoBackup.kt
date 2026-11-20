@@ -1,6 +1,7 @@
 package com.example.smarthomedashboard
 
 import android.content.Context
+import android.util.Log
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.work.CoroutineWorker
@@ -23,6 +24,7 @@ import androidx.core.net.toUri
  */
 internal object AutoBackup {
     const val KEEP = 3
+    private const val TAG = "AutoBackup"
     const val PREFIX = "smarthome_auto_"
     const val PRE_UPDATE_PREFIX = "smarthome_preupdate_"
     const val PRE_UPDATE_KEEP = 2
@@ -62,9 +64,17 @@ internal object AutoBackup {
         override fun input(name: String) = runCatching { File(dir, name).inputStream() }.getOrNull()
     }
 
-    private class FolderStore(private val context: Context, private val tree: Uri) : Store {
+    internal class FolderStore(private val context: Context, private val tree: Uri) : Store {
         private val resolver get() = context.contentResolver
         private val root get() = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        /**
+         * Файлы, созданные этим экземпляром: проверка чтением и удаление идут по адресу, который вернул
+         * createDocument, а не поиском по имени. Список папки у провайдера может отставать от записи (найдено
+         * 20.11.2026 на SM-X216B: ночная копия записалась, но поиск по имени её не нашёл — «ошибка записи», и
+         * лишний файл не удалился).
+         */
+        private val created = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+        private fun find(name: String): Uri? = created[name] ?: children()[name]
         private fun children(): Map<String, Uri> = runCatching {
             val list = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
             resolver.query(list, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
@@ -74,18 +84,27 @@ internal object AutoBackup {
         }.getOrDefault(emptyMap())
         override fun names() = children().keys.toList()
         override fun write(name: String, text: String) = runCatching {
-            val doc = DocumentsContract.createDocument(resolver, root, "application/json", name) ?: return false
-            resolver.openOutputStream(doc, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) } ?: return false
+            val doc = DocumentsContract.createDocument(resolver, root, "application/json", name)
+                ?: return false.also { Log.w(TAG, "Папка копий: файл не создан") }
+            created[name] = doc
+            resolver.openOutputStream(doc, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                ?: return false.also { Log.w(TAG, "Папка копий: файл не открылся на запись") }
             true
-        }.getOrDefault(false)
-        override fun read(name: String) = children()[name]?.let { uri ->
-            runCatching { resolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull()
+        }.getOrElse { Log.w(TAG, "Папка копий: запись не удалась (${it.javaClass.simpleName})"); false }
+        override fun read(name: String) = find(name)?.let { uri ->
+            runCatching { resolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }
+                .onFailure { Log.w(TAG, "Папка копий: чтение не удалось (${it.javaClass.simpleName})") }.getOrNull()
         }
-        override fun delete(name: String) = children()[name]?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) }.getOrDefault(false) } ?: false
+        override fun delete(name: String) = find(name)?.let { uri ->
+            runCatching { DocumentsContract.deleteDocument(resolver, uri) }.getOrDefault(false).also { if (it) created.remove(name) }
+        } ?: false
         override fun output(name: String) = runCatching {
-            DocumentsContract.createDocument(resolver, root, "application/gzip", name)?.let { resolver.openOutputStream(it, "wt") }
-        }.getOrNull()
-        override fun input(name: String) = children()[name]?.let { runCatching { resolver.openInputStream(it) }.getOrNull() }
+            DocumentsContract.createDocument(resolver, root, "application/gzip", name)?.let { doc ->
+                created[name] = doc
+                resolver.openOutputStream(doc, "wt")
+            }
+        }.onFailure { Log.w(TAG, "Папка копий: запись не удалась (${it.javaClass.simpleName})") }.getOrNull()
+        override fun input(name: String) = find(name)?.let { runCatching { resolver.openInputStream(it) }.getOrNull() }
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
@@ -140,8 +159,16 @@ internal object AutoBackup {
         }
         val name = PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + ".json"
         // Новая копия засчитывается, только если записалась и читается обратно тем же содержимым.
-        val verified = store.write(name, text) && store.read(name)?.let { runCatching { JSONObject(it) }.isSuccess && it == text } == true
+        val written = store.write(name, text)
+        val back = if (written) store.read(name) else null
+        val verified = back != null && runCatching { JSONObject(back) }.isSuccess && back == text
         if (!verified) {
+            // Что именно не вышло — в журнал (без содержимого копии), иначе причину ночной ошибки не найти.
+            Log.w(TAG, when {
+                !written -> "Копия настроек не записалась"
+                back == null -> "Копия настроек записалась, но не читается обратно"
+                else -> "Копия настроек читается не тем содержимым (${back.length} из ${text.length} символов)"
+            })
             store.delete(name)
             prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED

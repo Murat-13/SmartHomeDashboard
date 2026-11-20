@@ -77,6 +77,7 @@ internal object PowerHistoryBackup {
         }.getOrDefault(false)
         // Засчитывается только копия, которая читается целиком с совпавшей суммой.
         if (!written || summary(store, name) == null) {
+            android.util.Log.w("PowerHistoryBackup", if (!written) "Копия истории не записалась" else "Копия истории записалась, но не читается обратно")
             store.delete(name)
             prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
