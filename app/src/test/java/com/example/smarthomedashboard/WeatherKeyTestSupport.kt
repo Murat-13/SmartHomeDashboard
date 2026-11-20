@@ -35,7 +35,15 @@ internal fun weatherAwait(condition: () -> Boolean) {
         org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle()
         Thread.yield()
     }
-    org.junit.Assert.assertTrue("Async condition timed out", condition())
+    if (!condition()) org.junit.Assert.fail("Async condition timed out\n" + weatherThreads())
+}
+
+/**
+ * Что делают все потоки процесса тестов. Тайм-ауты этих тестов на CI (05.11, 07.11, 20.11.2026) приходили пачкой на
+ * оба класса погоды без видимой причины: по снимку видно, кто держит общий замок ключа погоды или ждёт запись настроек.
+ */
+internal fun weatherThreads(): String = Thread.getAllStackTraces().entries.sortedBy { it.key.name }.joinToString("\n") { (thread, stack) ->
+    "${thread.name} [${thread.state}]\n" + stack.take(16).joinToString("\n") { "    at $it" }
 }
 
 internal fun weatherLive(activity: androidx.appcompat.app.AppCompatActivity) {
@@ -74,5 +82,6 @@ internal fun attachWeatherSettingsFields(activity: SettingsActivity, access: Wea
 internal fun <T> weatherWorker(action: () -> T): T {
     val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
     return try { pool.submit(java.util.concurrent.Callable { action() }).get(5, java.util.concurrent.TimeUnit.SECONDS) }
+    catch (e: java.util.concurrent.TimeoutException) { throw AssertionError("Worker timed out\n" + weatherThreads(), e) }
     finally { pool.shutdownNow() }
 }
