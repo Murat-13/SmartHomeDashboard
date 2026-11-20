@@ -79,6 +79,16 @@ class ReliabilityAuditTest {
         assertEquals(false, RecLocality.isLocal(camera, listOf(RecLocality.Iface("wlan0", InetAddress.getByName("10.0.0.5"), 24))))
     }
 
+    @Test fun unknownLocalityKeepsLastKnown() {
+        val memory = RecLocality.Memory()
+        assertNull("ещё ни разу не определялось — не решаем", memory.resolve("rtsp://cam.example/sub", null))
+        assertEquals(true, memory.resolve("rtsp://cam.example/sub", true))
+        assertEquals("сбой DNS не выключает запись локальной камеры", true, memory.resolve("rtsp://cam.example/sub", null))
+        assertEquals(false, memory.resolve("rtsp://cam.example/sub", false))
+        assertEquals("и не включает запись удалённой", false, memory.resolve("rtsp://cam.example/sub", null))
+        assertNull(memory.resolve("rtsp://other/sub", null))
+    }
+
     // ---- A8: сутки при переводе часов ----
 
     private fun localMs(zone: TimeZone, y: Int, m: Int, d: Int, h: Int, min: Int): Long = Calendar.getInstance(zone).apply {

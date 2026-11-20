@@ -240,10 +240,30 @@ internal object RecLayout {
 internal object RecLocality {
     data class Iface(val name: String, val address: java.net.InetAddress, val prefix: Int)
 
-    fun isLocal(camera: java.net.InetAddress, interfaces: List<Iface>): Boolean {
+    /**
+     * null — решить нельзя: у планшета сейчас нет обычного интерфейса того же семейства адресов (Wi-Fi ещё не
+     * поднялся, только VPN). Раньше это считалось «издалека» — запись локальной камеры останавливалась до
+     * следующей сверки (аудит 20.11.2026, A5).
+     */
+    fun isLocal(camera: java.net.InetAddress, interfaces: List<Iface>): Boolean? {
         if (camera.isLoopbackAddress) return true
-        return interfaces.any { i ->
-            TUNNELS.none { i.name.startsWith(it) } && i.address.javaClass == camera.javaClass && sameSubnet(camera, i.address, i.prefix)
+        val ordinary = interfaces.filter { i ->
+            TUNNELS.none { i.name.startsWith(it) } && !i.address.isLoopbackAddress && i.address.javaClass == camera.javaClass
+        }
+        if (ordinary.isEmpty()) return null
+        return ordinary.any { sameSubnet(camera, it.address, it.prefix) }
+    }
+
+    /**
+     * Последнее известное расположение камеры по адресу потока: сбой DNS или сети на минуту не переключает режим
+     * записи (не останавливает запись локальной камеры и не включает запись удалённой). null — ещё ни разу не
+     * определялось.
+     */
+    class Memory {
+        private val last = HashMap<String, Boolean>()
+        fun resolve(url: String, now: Boolean?): Boolean? {
+            if (now != null) { last[url] = now; return now }
+            return last[url]
         }
     }
 

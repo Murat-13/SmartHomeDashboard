@@ -40,6 +40,10 @@ class RecorderService : Service() {
     @Volatile private var freeCacheAt = 0L
     @Volatile private var paused = false
     private var started = false
+    /** Последнее известное расположение камер (поток управления). */
+    private val locality = RecLocality.Memory()
+    /** Повторная сверка через минуту уже назначена (расположение камеры пока неизвестно). */
+    private var retryScheduled = false
     /** Пишем в память планшета, хотя выбрана SD-карта (карту вынули или она сломалась). */
     private var sdMissing = false
 
@@ -92,7 +96,10 @@ class RecorderService : Service() {
             val hd = source.mainUrl
             if (sub.isBlank()) continue
             // Камера не в подсети планшета (VPN, интернет) — свой режим, по умолчанию выключен (трафик).
-            val mode = rec.effectiveMode(RecLocality.isLocal(sub) ?: true)
+            // Неизвестно (нет DNS или сети) — последнее известное; не было и его — решим через минуту (A5).
+            val local = if (rec.mode == rec.remoteMode) true else locality.resolve(sub, RecLocality.isLocal(sub))
+            if (local == null) { retrySoon(); continue }
+            val mode = rec.effectiveMode(local)
             if (!mode.continuous && !mode.events) continue
             val password = passwords.getOrPut(source.secretKey) { readPassword(source.secretKey) }
             passwordFor[tile.id] = password
@@ -148,6 +155,12 @@ class RecorderService : Service() {
             Log.i(TAG, "Запись: включённых камер нет — сервис остановлен")
             main.post { stopSelf() }
         }
+    }
+
+    private fun retrySoon() {
+        if (retryScheduled) return
+        retryScheduled = true
+        control.schedule({ retryScheduled = false; safe { sync() } }, 1, TimeUnit.MINUTES)
     }
 
     private fun stopAll() {
