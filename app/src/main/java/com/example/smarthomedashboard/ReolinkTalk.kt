@@ -25,6 +25,10 @@ import javax.crypto.spec.SecretKeySpec
  * TalkAbility → TalkConfig → непрерывный поток блоков IMA ADPCM (16 кГц, 1024 отсчёта = 64 мс) → TalkReset.
  * Голос приходит отсчётами 8 кГц (как для G.711) и удваивается по частоте. Без потока камера не играет — между
  * фразами идёт тишина; часть тишины в начале не отправляется ([DRAIN_MS]), чтобы очередь камеры растаяла.
+ *
+ * Очередь тает и во время разговора: если разговор начат раньше, чем набралось [DRAIN_MS] (ответили сразу после
+ * звонка), остаток добирается на тихих блоках между словами. Иначе голос доходил бы то через 0,5 с, то через 1,2 с —
+ * смотря когда нажали «Ответить» (измерение стендом 20.11.2026: эхо возвращалось через 0,7 или 1,1–1,3 с).
  */
 internal class BaichuanTalkSession(
     private val host: String,
@@ -44,6 +48,10 @@ internal class BaichuanTalkSession(
     @Volatile private var reader: Thread? = null
     @Volatile var droppedMs = 0.0
         private set
+    @Volatile private var sentTap: ((ShortArray, Int) -> Unit)? = null
+
+    /** Слушатель того, что реально ушло в домофон (как он это услышит — после кодека); блоки, которые не отправлены, сюда не попадают. */
+    override fun tap(sink: ((ShortArray, Int) -> Unit)?) { sentTap = sink }
 
     /** Голос 16 кГц, ещё не отправленный. */
     private val fifo = ShortFifo(16_000)
@@ -131,8 +139,11 @@ internal class BaichuanTalkSession(
         val blockNs = samples * 1_000_000_000L / rate
         val encoder = ImaAdpcm()
         val block = ShortArray(samples)
+        val heard = ShortArray(samples)
+        val blockMs = blockNs / 1e6
         var next = System.nanoTime()
         var silentRun = 0
+        var quietRun = 0
         try {
             while (open) {
                 var voice = 0
@@ -147,14 +158,25 @@ internal class BaichuanTalkSession(
                     block.fill(0)
                     silentRun++
                     // Очередь камеры: часть пустых блоков не отправляем, пока не «съели» DRAIN_MS — она тает.
-                    if (droppedMs + blockNs / 1e6 <= DRAIN_MS && silentRun % 4 == 2) {
-                        droppedMs += blockNs / 1e6
+                    if (droppedMs + blockMs <= DRAIN_MS && silentRun % 4 == 2) {
+                        droppedMs += blockMs
                         next += blockNs
                         if (!sleepUntil(next)) next = System.nanoTime()
                         continue
                     }
-                } else silentRun = 0
-                sendBlock(wrap(encoder.encode(block)))
+                } else {
+                    silentRun = 0
+                    // Разговор идёт, а очередь камеры ещё не растаяла: каждый второй тихий блок (пауза между словами,
+                    // фон комнаты) не отправляем. Речь не трогаем.
+                    quietRun = if (quiet(block, samples)) quietRun + 1 else 0
+                    if (droppedMs + blockMs <= DRAIN_MS && quietRun > 0 && quietRun % 2 == 0) {
+                        droppedMs += blockMs
+                        continue
+                    }
+                }
+                val encoded = encoder.encode(block)
+                sentTap?.let { sink -> ImaAdpcm.decode(encoded, heard); sink(heard, samples) }
+                sendBlock(wrap(encoded))
                 sentPackets++
                 if (voice > 0) {
                     sentVoice++
@@ -167,6 +189,12 @@ internal class BaichuanTalkSession(
             if (open) Log.w(TAG, "Отправка голоса (Reolink) прервалась: ${e.javaClass.simpleName}")
             open = false
         }
+    }
+
+    private fun quiet(block: ShortArray, count: Int): Boolean {
+        var sum = 0.0
+        for (i in 0 until count) sum += block[i].toDouble() * block[i]
+        return sum < count * QUIET_RMS * QUIET_RMS
     }
 
     /** false — сильно отстали (поток стоял); догонять рывком не нужно. */
@@ -324,6 +352,8 @@ internal class BaichuanTalkSession(
         private const val REPLY_TIMEOUT_MS = 5_000L
         private const val MAX_BODY = 1 shl 20
         private const val MAX_FIFO = 8_000 // 0,5 с при 16 кГц
+        /** Тише −47 дБ от шкалы — не речь (речь после усиления идёт около −18 дБ). */
+        private const val QUIET_RMS = 150.0
         private const val VOICE_HOLD_NS = 150_000_000L
         private const val WAIT_BLOCK_NS = 100_000_000L
         private const val XML_HEAD = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n"
@@ -415,6 +445,27 @@ internal class ImaAdpcm {
     }
 
     companion object {
+        /** Как блок услышит домофон: декодирование DVI4 (состояние — из заголовка блока) в [out]. */
+        fun decode(block: ByteArray, out: ShortArray) {
+            var predictor = ((block[1].toInt() shl 8) or (block[0].toInt() and 0xFF)).toShort().toInt()
+            var index = (block[2].toInt() and 0xFF).coerceIn(0, 88)
+            var o = 0
+            for (i in 4 until block.size) {
+                for (half in 0..1) {
+                    if (o >= out.size) return
+                    val code = if (half == 0) (block[i].toInt() shr 4) and 0x0F else block[i].toInt() and 0x0F
+                    val step = STEPS[index]
+                    var diff = step shr 3
+                    if (code and 4 != 0) diff += step
+                    if (code and 2 != 0) diff += step shr 1
+                    if (code and 1 != 0) diff += step shr 2
+                    predictor = (if (code and 8 != 0) predictor - diff else predictor + diff).coerceIn(-32768, 32767)
+                    index = (index + INDEX[code and 7]).coerceIn(0, 88)
+                    out[o++] = predictor.toShort()
+                }
+            }
+        }
+
         val STEPS = intArrayOf(7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73,
             80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658,
             724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026,

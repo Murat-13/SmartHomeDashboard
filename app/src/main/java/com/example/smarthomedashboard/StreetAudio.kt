@@ -26,6 +26,13 @@ internal interface StreetSource {
     val playingRms: Double get() = 0.0
     /** Приглушить улицу до момента [until] (`System.nanoTime`): наш голос вернётся эхом из микрофона домофона. */
     fun muteUntil(until: Long) {}
+    /** Частота принимаемого звука, Гц; 0 — звук ещё не идёт. */
+    val rate: Int get() = 0
+    /**
+     * Эхоподавление разговора ([DuplexEcho]): из принятого звука вычитается наш вернувшийся голос, а сыгранное
+     * запоминается как опора для микрофона. Источник сам включает его ([DuplexEcho.active]), если частота подходит.
+     */
+    fun duplex(echo: DuplexEcho?) {}
 }
 
 internal class StreetAudio : StreetSource {
@@ -45,9 +52,30 @@ internal class StreetAudio : StreetSource {
         private set
 
     override fun muteUntil(until: Long) { if (until > mutedUntil) mutedUntil = until }
+    @Volatile private var echo: DuplexEcho? = null
+
+    override fun duplex(echo: DuplexEcho?) {
+        this.echo = echo
+        // Звук уже идёт (канал голоса переподключился посреди разговора) — включить сразу.
+        if (echo != null && rate == DuplexEcho.RATE) echo.active = true
+    }
+
+    /** Наш голос, вернувшийся из микрофона домофона, — вычесть из принятого (на месте); и запись для разбора. */
+    private fun clean(pcm: ShortArray, rate: Int): ShortArray {
+        TalkDebug.write("street_rx", pcm, pcm.size, rate)
+        val d = echo
+        if (d != null && d.active) {
+            d.far.process(pcm, pcm.size)
+            TalkDebug.write("street_aec", pcm, pcm.size, rate)
+        }
+        return pcm
+    }
     @Volatile private var receivedSamples = 0L
+    @Volatile private var lostMs = 0L
     @Volatile private var startedAt = 0L
     @Volatile private var rateUsed = 8_000
+    @Volatile private var flowing = false
+    override val rate get() = if (flowing) rateUsed else 0
 
     /** Подключиться и играть; [onStarted] — из фонового потока: звук пошёл (true) или не получилось (false). */
     override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {
@@ -68,6 +96,7 @@ internal class StreetAudio : StreetSource {
         var track: AudioTrack? = null
         var player: Thread? = null
         var started = false
+        var mine: DuplexEcho? = null
         try {
             val relay = CameraHub.relayUrl(rtsp, user)
             val s = RtspSession(relay ?: rtsp, user, password, connectTimeoutMs = 3_000, readTimeoutMs = 10_000)
@@ -79,6 +108,10 @@ internal class StreetAudio : StreetSource {
             val g711 = if (aac == null) G711Depacketizer.create(setup.track) else null
             val rate = aac?.sampleRate ?: 8_000
             rateUsed = rate
+            flowing = true
+            // Эхоподавление считает на 16 кГц (звук Reolink); при другой частоте разговор остаётся с прежней защитой.
+            mine = echo
+            mine?.active = rate == DuplexEcho.RATE
             val fifo = ShortFifo(rate)
             val t = newTrack(rate)
             track = t
@@ -89,6 +122,7 @@ internal class StreetAudio : StreetSource {
             codec = dec
             val info = MediaCodec.BufferInfo()
             val limit = rate * MAX_QUEUE_MS / 1000
+            val gaps = RtpGaps(aac?.samplesPerFrame ?: 1, rate)
             Log.i(TAG, "Звук с улицы — отдельно от видео (${if (relay != null) "через планшет" else "напрямую"}, " +
                 "${if (aac != null) "AAC" else setup.track.encoding} ${rate / 1000} кГц)")
             s.read(object : RtspSession.Sink {
@@ -97,12 +131,20 @@ internal class StreetAudio : StreetSource {
                     val rtp = RtpPacket.parse(packet, length) ?: return
                     if (startedAt == 0L) startedAt = System.nanoTime()
                     if (g711 != null) {
-                        val pcm = g711.push(rtp).samples
+                        val pcm = clean(g711.push(rtp).samples, rate)
                         receivedSamples += pcm.size
-                        TalkDebug.write("street_rx", pcm, pcm.size, rate)
                         fifo.push(pcm, pcm.size, limit)
                     } else if (dec != null && aac != null) {
                         for (frame in aac.push(rtp)) {
+                            // Кадры потерялись по дороге (ретранслятор не успел): на их место — тишина той же длины.
+                            // Эхоподавление считает отсчёты: без этого сдвиг между «отправлено» и «вернулось» уехал бы.
+                            val lost = gaps.missing(frame.timestamp)
+                            if (lost > 0) {
+                                drain(dec, info, fifo, limit)
+                                val fill = clean(ShortArray(lost), rate)
+                                fifo.push(fill, fill.size, limit)
+                                lostMs += lost * 1000L / rate
+                            }
                             val index = dec.dequeueInputBuffer(5_000)
                             if (index >= 0) {
                                 val buf = dec.getInputBuffer(index) ?: continue
@@ -126,8 +168,11 @@ internal class StreetAudio : StreetSource {
             try { track?.release() } catch (_: Exception) {}
             session?.close()
             session = null
+            flowing = false
+            mine?.active = false
             if (started) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс; " +
-                "получено ${receivedSamples * 1000 / rateUsed.coerceAtLeast(1)} мс звука за ${(System.nanoTime() - startedAt) / 1_000_000} мс")
+                "получено ${receivedSamples * 1000 / rateUsed.coerceAtLeast(1)} мс звука за ${(System.nanoTime() - startedAt) / 1_000_000} мс" +
+                if (lostMs > 0) ", потеряно в пути $lostMs мс" else "")
             if (!started) onStarted(false)
         }
     }
@@ -153,14 +198,14 @@ internal class StreetAudio : StreetSource {
                 val all = ShortArray(info.size / 2).also { shorts.get(it) }
                 val mono = if (channels <= 1) all else ShortArray(all.size / channels) { all[it * channels] }
                 receivedSamples += mono.size
-                TalkDebug.write("street_rx", mono, mono.size, rateUsed)
+                clean(mono, rateUsed)
                 fifo.push(mono, mono.size, limit)
             }
             dec.releaseOutputBuffer(out, false)
         }
     }
 
-    private fun newTrack(rate: Int): AudioTrack {
+    internal fun newTrack(rate: Int): AudioTrack {
         val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val builder = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -206,10 +251,27 @@ internal class StreetAudio : StreetSource {
                     if (!muted && rms > LOUD_RMS) lastLoudAt = System.nanoTime()
                 }
                 TalkDebug.write("street", buf, chunk, rate)
+                // То, что сейчас прозвучит из динамика, — опора для микрофона (в том числе тишина: счёт отсчётов общий).
+                if (!silent) echo?.takeIf { it.active }?.played?.write(buf, chunk)
                 // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.
                 if (track.write(buf, 0, chunk) <= 0) Thread.sleep(20) else playedMs += 20
             }
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Счёт отсчётов по меткам RTP: если метка очередного кадра дальше, чем конец прошлого, на целые кадры — столько
+     * отсчётов потеряно. Мелкие расхождения меток (камера ставит их по своим часам) потерей не считаются.
+     */
+    internal class RtpGaps(private val frame: Int, private val limit: Int) {
+        private var next = Long.MIN_VALUE
+
+        /** Сколько отсчётов пропало перед кадром с меткой [timestamp] (0 — ничего; больше [limit] — разрыв, не потеря). */
+        fun missing(timestamp: Long): Int {
+            val gap = if (next == Long.MIN_VALUE) 0L else timestamp - next
+            next = timestamp + frame
+            return if (gap >= frame && gap <= limit) (gap / frame * frame).toInt() else 0
+        }
     }
 
     /** Чистая логика запаса воспроизведения (для тестов). */

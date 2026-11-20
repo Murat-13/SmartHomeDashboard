@@ -19,6 +19,13 @@ import kotlin.math.sin
  * Запускается только вручную через adb: файл `talk_debug/probe` (протокол Reolink) или `talk_debug/probe_onvif`
  * (обратный канал ONVIF) рядом с `talk_debug/on` ([TalkDebug]); без них ничего не делает. Динамик планшета молчит,
  * записи остаются на планшете в той же папке. Речь — из `talk_debug/speech.pcm` (16 кГц, 16 бит), если положен.
+ *
+ * Измерение эхоподавления (docs/talk-tz.md, «Одновременный разговор»):
+ * - `talk_debug/probe_echo` — дальний контур: в домофон трижды уходит речь из `speech.pcm`, принятый звук чистится
+ *   тем же [DuplexEcho], что в разговоре; записи `sent_ref` (что ушло), `street_rx` (что вернулось) и `street_aec`
+ *   (после очистки) показывают, насколько наш вернувшийся голос стал тише и проходит ли голос человека у домофона;
+ * - `talk_debug/probe_near` — ближний контур, без домофона: та же речь играет из динамика планшета (как звук улицы в
+ *   разговоре), микрофон чистится; записи `street` (что сыграно), `mic` и `mic_aec`.
  */
 internal object TalkProbe {
     private const val TAG = "Talk"
@@ -27,23 +34,85 @@ internal object TalkProbe {
     /** Проверить, просили ли измерение; [tiles] читаются, только если просили. */
     fun maybeRun(context: Context, tiles: () -> List<TileEntity>) {
         val dir = context.getExternalFilesDir(null)?.let { File(it, "talk_debug") } ?: return
-        val reolink = File(dir, "probe")
-        val onvif = File(dir, "probe_onvif")
-        val useOnvif = when { reolink.exists() -> false; onvif.exists() -> true; else -> return }
+        val asked = TRIGGERS.firstOrNull { File(dir, it).exists() } ?: return
         if (running) return
-        reolink.delete(); onvif.delete()
+        for (name in TRIGGERS) File(dir, name).delete()
+        val app = context.applicationContext
+        if (asked == "probe_near") {
+            running = true
+            Thread({ try { near(app, dir) } finally { running = false } }, "talk-probe").apply { isDaemon = true; start() }
+            return
+        }
         val config = tiles().firstOrNull { it.type == DoorbellConfig.TYPE }?.let { DoorbellConfig.from(it.config) } ?: return
         if (config.talkRtsp.isBlank()) return
         running = true
-        val app = context.applicationContext
         DoorbellHub.cameraPassword(app) { password ->
             Thread({
-                try { run(app, dir, config.talkRtsp, config.rtspUser, password, useOnvif) } finally { running = false }
+                try { run(app, dir, config.talkRtsp, config.rtspUser, password, asked == "probe_onvif", asked == "probe_echo") }
+                finally { running = false }
             }, "talk-probe").apply { isDaemon = true; start() }
         }
     }
 
-    private fun run(context: Context, dir: File, rtsp: String, user: String, password: String?, onvif: Boolean) {
+    private val TRIGGERS = listOf("probe", "probe_onvif", "probe_echo", "probe_near")
+
+    /**
+     * Ближний контур: речь из динамика планшета (тем же путём, что звук улицы в разговоре, в «разговорном» режиме
+     * звука) → микрофон → эхоподавление. Домофон не участвует.
+     */
+    private fun near(context: Context, dir: File) {
+        val log = StringBuilder()
+        fun note(text: String) {
+            Log.i(TAG, "Измерение: $text")
+            log.append(System.currentTimeMillis()).append(' ').append(text).append('\n')
+            runCatching { File(dir, "probe.log").writeText(log.toString()) }
+        }
+        File(dir, "probe.done").delete()
+        val speech = runCatching { pcm(File(dir, "speech.pcm")) }.getOrNull()
+        if (speech == null) { note("нет speech.pcm — играть нечего"); runCatching { File(dir, "probe.done").writeText("no speech") }; return }
+        TalkDebug.begin(context)
+        val rate = DuplexEcho.RATE
+        val duplex = DuplexEcho().apply { active = true; near.log = { note(it) } }
+        val mic = MicCapture({ _, _ -> }, { }).apply { echo = duplex }
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        val mode = audio?.mode
+        var track: android.media.AudioTrack? = null
+        try {
+            runCatching { audio?.mode = android.media.AudioManager.MODE_IN_COMMUNICATION }
+            val t = StreetAudio().newTrack(rate)
+            track = t
+            t.play()
+            mic.start(context, duplex = false, wideband = true)
+            val signal = echoSignal(rate, speech)
+            note("ближний контур: ${signal.size * 1000L / rate} мс речи из динамика планшета")
+            val frame = rate / 50
+            val buf = ShortArray(frame)
+            var i = 0
+            while (i < signal.size) {
+                val count = minOf(frame, signal.size - i)
+                signal.copyInto(buf, 0, i, i + count)
+                if (count < frame) buf.fill(0, count, frame)
+                duplex.played.write(buf, frame)
+                TalkDebug.write("street", buf, frame, rate)
+                if (t.write(buf, 0, frame) <= 0) Thread.sleep(20)
+                i += count
+            }
+            Thread.sleep(1_000)
+            note(duplex.near.summary())
+        } catch (e: Exception) {
+            note("ошибка: ${e.javaClass.simpleName}")
+        } finally {
+            mic.stop()
+            runCatching { track?.stop() }
+            runCatching { track?.release() }
+            runCatching { if (mode != null) audio?.mode = mode }
+            Thread.sleep(300)
+            TalkDebug.end()
+            runCatching { File(dir, "probe.done").writeText("ok") }
+        }
+    }
+
+    private fun run(context: Context, dir: File, rtsp: String, user: String, password: String?, onvif: Boolean, echo: Boolean = false) {
         val log = StringBuilder()
         fun note(text: String) {
             Log.i(TAG, "Измерение: $text")
@@ -54,6 +123,9 @@ internal object TalkProbe {
         TalkDebug.begin(context)
         val street = StreetAudio().apply { silent = true }
         val mic = MicCapture({ _, _ -> }, { })
+        // Дальний контур эхоподавления — как в разговоре (только у канала Reolink, 16 кГц): чистит принятый звук.
+        val duplex = if (onvif) null else DuplexEcho().apply { far.log = { note(it) } }
+        street.duplex(duplex)
         var channel: TalkChannel? = null
         try {
             street.start(rtsp, user, password) { ok -> note("звук домофона принимается: $ok") }
@@ -64,11 +136,12 @@ internal object TalkProbe {
             }
             channel = opened
             note("канал: ${if (onvif) "ONVIF" else "Reolink"} (${opened.open()})")
+            if (duplex != null) opened.tap { pcm, n -> duplex.sent.write(pcm, n); TalkDebug.write("sent_ref", pcm, n, DuplexEcho.RATE) }
             val rate = if (opened.wideband) 16_000 else 8_000
             mic.start(context, duplex = false, wideband = true)
             Thread.sleep(SETTLE_MS) // очередь домофона устоялась, как в обычном разговоре
             val speech = runCatching { pcm(File(dir, "speech.pcm")) }.getOrNull()
-            val signal = signal(rate, speech)
+            val signal = if (echo && speech != null) echoSignal(rate, speech) else signal(rate, speech)
             note("сигнал: ${signal.size * 1000L / rate} мс, $rate Гц, речь: ${speech != null}")
             opened.beginTalkspurt()
             val frame = rate / 50
@@ -89,6 +162,7 @@ internal object TalkProbe {
             }
             Thread.sleep(TAIL_MS)
             note("готово: отправлено $n кадров, канал жив: ${opened.alive}")
+            if (duplex != null) note(duplex.far.summary())
         } catch (e: Exception) {
             note("ошибка: ${e.javaClass.simpleName}")
         } finally {
@@ -150,6 +224,22 @@ internal object TalkProbe {
         return ShortArray(bytes.size / 2) { ((bytes[2 * it].toInt() and 0xFF) or (bytes[2 * it + 1].toInt() shl 8)).toShort() }
     }
 
+    /**
+     * Сигнал для измерения эхоподавления: речь [speech] (16 кГц) три раза подряд с паузами. Первый проход — контур
+     * находит сдвиг и учится, по второму и третьему меряется подавление (на третьем у домофона может говорить человек).
+     */
+    internal fun echoSignal(rate: Int, speech: ShortArray): ShortArray {
+        val step = 16_000 / rate
+        val once = ShortArray(speech.size / step) { speech[it * step] }
+        val gap = rate * ECHO_GAP_MS / 1000
+        val out = ShortArray(rate + ECHO_PASSES * (once.size + gap))
+        var at = rate
+        repeat(ECHO_PASSES) { once.copyInto(out, at); at += once.size + gap }
+        return out
+    }
+
+    const val ECHO_PASSES = 3
+    const val ECHO_GAP_MS = 1_500
     val LEVELS_DB = listOf(-36, -30, -24, -18, -12, -6, -3)
     val FREQS = listOf(300.0, 500.0, 2_000.0, 3_000.0)
     const val TONE_MS = 800

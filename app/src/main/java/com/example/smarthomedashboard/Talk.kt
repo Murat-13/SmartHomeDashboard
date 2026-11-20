@@ -72,6 +72,11 @@ internal interface TalkChannel : java.io.Closeable {
         val half = ShortArray(count / 2) { ((pcm[2 * it] + pcm[2 * it + 1]) / 2).toShort() }
         send(half, half.size)
     }
+    /**
+     * Слушать то, что реально уходит в динамик камеры (опорный сигнал эхоподавления, [DuplexEcho]); null — перестать.
+     * Канал, который этого не умеет, ничего не делает — разговор остаётся с прежней защитой [EchoGate].
+     */
+    fun tap(sink: ((ShortArray, Int) -> Unit)?) {}
     /** Сколько кадров по 20 мс ещё не ушло. */
     val queued: Int
     val alive: Boolean
@@ -315,6 +320,8 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
     /** У этого планшета есть аппаратное/системное подавление эха (для подсказки в разговоре). */
     @Volatile var echoCancel = false
         private set
+    /** Эхоподавление разговора: из микрофона вычитается звук улицы, сыгранный динамиком планшета ([DuplexEcho.near]). */
+    @Volatile var echo: DuplexEcho? = null
     private var thread: Thread? = null
 
     @SuppressLint("MissingPermission") // разрешение проверяется в start() перед созданием AudioRecord
@@ -345,10 +352,15 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
             val voiceGain = VoiceGain()
             val shape = SpeechFilter(rate)
             val floor = NoiseFloor()
+            val pace = MicPace(frame * 1_000_000_000L / rate)
             try {
                 record.startRecording()
                 while (running) {
                     val n = record.read(raw, 0, raw.size)
+                    // Микрофон не может отдать звука больше, чем прошло времени (плюс его буфер). Если отдаёт (источник
+                    // без ожидания — так ведёт себя поддельный микрофон в тестах) или не отдаёт ничего, не крутиться
+                    // вхолостую: иначе поток завалил бы главный сообщениями об уровне.
+                    if (n <= 0 || pace.ahead(System.nanoTime())) Thread.sleep(MicPace.WAIT_MS)
                     if (n <= 0) continue
                     val count = n / decimate
                     for (i in 0 until count) {
@@ -361,13 +373,20 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
                     // подъёмом 1,5–4 кГц. Без обработки Android микрофон этого планшета пишет речь очень глухо: 1–4 кГц
                     // на 25–30 дБ ниже басов (запись разговора 20.11.2026).
                     shape.apply(out, count)
+                    // Эхоподавление — до усиления: из микрофона убирается то, что играет динамик планшета.
+                    val duplex = echo?.takeIf { it.active && rate == DuplexEcho.RATE }
+                    if (duplex != null) {
+                        duplex.near.process(out, count)
+                        TalkDebug.write("mic_aec", out, count, rate)
+                    }
                     var sum = 0.0
                     for (i in 0 until count) sum += out[i] * out[i].toDouble()
                     val rms = sqrt(sum / count.coerceAtLeast(1))
-                    // Речь — только заметно громче того, что сейчас звучит из динамика планшета: иначе уличный фон из
-                    // динамика принимался за голос, уходил в домофон и снова глушил улицу («пинг-понг» каждые 2,5 с,
-                    // запись разговора 20.11.2026).
-                    speaking = floor.speech(rms) && rms > EchoGate.OVER_SPEAKER * speaker()
+                    // Речь — не остаток эха (с эхоподавлением это видно по спектру) и, без эхоподавления, только заметно
+                    // громче того, что сейчас звучит из динамика планшета: иначе уличный фон из динамика принимался за
+                    // голос, уходил в домофон и снова глушил улицу («пинг-понг» каждые 2,5 с, запись разговора 20.11.2026).
+                    speaking = floor.speech(rms) &&
+                        if (duplex != null) !duplex.near.echoDominant else rms > EchoGate.OVER_SPEAKER * speaker()
                     voiceGain.apply(out, count, rms, speaking)
                     onFrame(out, count)
                     // Уровень — до усиления: по нему определяется тишина (автозавершение разговора); речь — всегда «голос».
@@ -476,6 +495,7 @@ internal class DoorbellTalk(
         main.removeCallbacks(callWatch)
         mic.stop()
         stopStreet()
+        stopDuplex()
         TalkDebug.end()
         communication(false)
         onLevel?.invoke(0f)
@@ -517,13 +537,46 @@ internal class DoorbellTalk(
         if (streetOn) { streetOn = false; DoorbellVideoView.streetAudio = false; onDuck?.invoke(false) }
     }
 
+    /**
+     * Эхоподавление этого разговора (одновременный разговор, docs/talk-tz.md): есть, только если канал отдаёт то, что
+     * реально ушло в домофон, на 16 кГц (протокол Reolink) и звук улицы пришёл на той же частоте. Иначе — null или
+     * [DuplexEcho.active] = false, и работает прежняя защита «говорит кто-то один» ([EchoGate]).
+     */
+    @Volatile private var duplex: DuplexEcho? = null
+    private val cancelling get() = duplex?.active == true
+
+    private fun startDuplex(s: TalkChannel) {
+        if (!s.wideband || TalkDebug.flag(context, "no_aec")) return
+        val host = runCatching { java.net.URI(url.trim()).host }.getOrNull().orEmpty()
+        val d = DuplexEcho(key = host)
+        d.far.log = { Log.i(TAG, it) }
+        d.near.log = { Log.i(TAG, it) }
+        s.tap { pcm, n -> d.sent.write(pcm, n); TalkDebug.write("sent_ref", pcm, n, DuplexEcho.RATE) }
+        duplex = d
+        mic.echo = d
+        street.duplex(d)
+    }
+
+    private fun stopDuplex() {
+        val d = duplex ?: return
+        duplex = null
+        mic.echo = null
+        street.duplex(null)
+        session?.tap(null)
+        d.remember()
+        Log.i(TAG, "Разговор: " + d.far.summary())
+        Log.i(TAG, "Разговор: " + d.near.summary())
+    }
+
     private fun startCallAudio(s: TalkChannel) {
         s.beginTalkspurt()
         gatedFrames = 0
         TalkDebug.begin(context)
+        startDuplex(s)
         // Микрофон без «телефонной» обработки Android: на Galaxy Tab A9+ (SM-X21x) встроенное подавление эха вырезает
         // и сам голос (у калитки «слышно отвратительно», 20.11.2026; то же у разработчиков на форуме Samsung). Эхо
-        // гасят свои защиты: пока говорит улица — микрофон молчит, пока говорим мы — улица приглушена ([EchoGate]).
+        // убирает своё эхоподавление ([DuplexEcho]); где оно не работает (канал ONVIF, другая частота звука) — прежние
+        // защиты: пока говорит улица — микрофон молчит, пока говорим мы — улица приглушена ([EchoGate]).
         if (!mic.start(context, duplex = false, wideband = s.wideband)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
         startStreet()
         set(State.TALKING, "Идёт разговор — говорите")
@@ -549,13 +602,13 @@ internal class DoorbellTalk(
         val s = session ?: return@MicCapture
         // Защита от эха (дуплекс): пока из динамика планшета звучит улица, микрофон молчит — её голос не уходит обратно
         // в домофон (системное подавление эха этого планшета не справлялось, проверка 20.11.2026).
-        if (inCall && streetOn && EchoGate.closed(street.lastLoudAt, System.nanoTime())) { pcm.fill(0, 0, n); gatedFrames++ }
+        if (inCall && streetOn && !cancelling && EchoGate.closed(street.lastLoudAt, System.nanoTime())) { pcm.fill(0, 0, n); gatedFrames++ }
         TalkDebug.write("sent", pcm, n, micRate)
         try { s.sendAt(pcm, n, micRate) } catch (e: Exception) { main.post { failed(reason(e)) } }
     }, { level ->
         if (level > VOICE_LEVEL) lastVoiceAt = clock()
         // Вы говорите (микрофон не закрыт защитой) — улицу приглушить на путь «планшет → домофон → обратно».
-        if (inCall && streetOn && mic.speaking) {
+        if (inCall && streetOn && !cancelling && mic.speaking) {
             val now = System.nanoTime()
             if (!EchoGate.closed(street.lastLoudAt, now)) street.muteUntil(now + EchoGate.RETURN_NS)
         }
@@ -564,7 +617,7 @@ internal class DoorbellTalk(
 
     init {
         // Что сейчас звучит из динамика (звук с улицы в разговоре): речь в микрофоне должна быть заметно громче.
-        mic.speaker = { if (inCall && streetOn) street.playingRms else 0.0 }
+        mic.speaker = { if (inCall && streetOn && !cancelling) street.playingRms else 0.0 }
     }
 
     /**
@@ -664,6 +717,7 @@ internal class DoorbellTalk(
         if (disposed) return
         if (inCall) { inCall = false; communication(false); onCall?.invoke(false) }
         stopStreet()
+        stopDuplex()
         disposed = true
         pressed = false
         playing = false
@@ -719,6 +773,7 @@ internal class DoorbellTalk(
         playing = false
         if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
         stopStreet()
+        stopDuplex()
         mic.stop()
         if (pressed) onDuck?.invoke(false)
         pressed = false
@@ -910,6 +965,27 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
             setColor(Color.argb(alpha, Color.red(accent), Color.green(accent), Color.blue(accent)))
             setStroke((1.5f * density).toInt(), Color.argb(220, Color.red(accent), Color.green(accent), Color.blue(accent)))
         }
+    }
+}
+
+/**
+ * Темп микрофона: сколько звука получено против прошедшего времени. Настоящий микрофон опережать время не может больше
+ * чем на свой буфер (до 0,4 с); опережение больше [LIMIT_NS] значит, что чтение не ждёт звука.
+ */
+internal class MicPace(private val frameNs: Long) {
+    private var startedAt = 0L
+    private var got = 0L
+
+    /** Учесть ещё один кадр, полученный в момент [now]; true — получено больше, чем могло быть записано. */
+    fun ahead(now: Long): Boolean {
+        if (startedAt == 0L) startedAt = now
+        got += frameNs
+        return got - (now - startedAt) > LIMIT_NS
+    }
+
+    companion object {
+        const val LIMIT_NS = 600_000_000L
+        const val WAIT_MS = 20L
     }
 }
 

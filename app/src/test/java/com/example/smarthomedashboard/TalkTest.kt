@@ -344,6 +344,111 @@ class TalkTest {
         talk.dispose()
     }
 
+    /**
+     * Одновременный разговор: у канала с 16 кГц (протокол Reolink) включается эхоподавление — канал отдаёт опору, звук
+     * улицы и микрофон получают общий [DuplexEcho]; у ONVIF-канала всё остаётся как было (защита «говорит кто-то один»).
+     */
+    @Test fun widebandCallUsesEchoCancellerAndOnvifCallDoesNot() {
+        val taps = mutableListOf<Boolean>()
+        val wide = object : TalkChannel {
+            override fun open() = "тест 16 кГц"
+            override fun beginTalkspurt() {}
+            override fun send(pcm: ShortArray, count: Int) {}
+            override val wideband get() = true
+            override fun tap(sink: ((ShortArray, Int) -> Unit)?) { taps += sink != null }
+            override val queued = 0
+            override val alive = true
+            override val sentPackets = 0
+            override val sentVoice = 0
+            override fun close() {}
+        }
+        class Street : StreetSource {
+            val echoes = mutableListOf<DuplexEcho?>()
+            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) = onStarted(true)
+            override fun stop() {}
+            override val rate get() = DuplexEcho.RATE
+            override fun duplex(echo: DuplexEcho?) { echoes += echo; echo?.active = true }
+        }
+        fun call(url: String, street: Street) {
+            val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+            shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+            val talk = DoorbellTalk(activity) { _, result -> result(null) }
+            talk.street = street
+            talk.prepare(url, "")
+            val until = System.currentTimeMillis() + 5_000
+            while (talk.state != DoorbellTalk.State.READY) {
+                shadowOf(Looper.getMainLooper()).idle()
+                if (System.currentTimeMillis() > until) fail("Не подключились: ${talk.state}")
+                Thread.sleep(20)
+            }
+            talk.startCall()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(talk.inCall)
+            talk.endCall()
+            talk.dispose()
+        }
+        TalkChannels.forget() // прежние тесты могли запомнить, что у 127.0.0.1 протокола Reolink нет
+        TalkChannels.reolink = { _, _, _ -> wide }
+        try {
+            val street = Street()
+            call("rtsp://127.0.0.1:1/h264Preview_01_sub", street)
+            assertEquals("канал отдаёт опору на время разговора", listOf(true, false), taps)
+            assertEquals(2, street.echoes.size)
+            assertNotNull(street.echoes[0])
+            assertNull("конец разговора — эхоподавление снято", street.echoes[1])
+        } finally {
+            TalkChannels.reolink = { h, u, p -> BaichuanTalkSession(h, u, p) }
+            TalkChannels.forget()
+        }
+        // Канал ONVIF (G.711, 8 кГц): эхоподавления нет, прежняя защита.
+        val camera = Camera(reolinkBackchannel)
+        val plain = Street()
+        call(camera.url, plain)
+        assertTrue("у ONVIF эхоподавление не включается: ${plain.echoes}", plain.echoes.all { it == null })
+        TalkChannels.forget()
+    }
+
+    /**
+     * Темп микрофона: настоящий опережает время не больше чем на свой буфер; источник, отдающий звук без ожидания
+     * (поддельный микрофон тестов), притормаживается — иначе поток микрофона заваливал главный поток сообщениями.
+     */
+    @Test fun microphonePaceCatchesSourceThatDoesNotWait() {
+        val frame = 20_000_000L
+        val real = MicPace(frame)
+        var now = 1_000_000_000L
+        // Сначала разом отдаётся накопленный буфер (0,4 с), дальше — по кадру каждые 20 мс.
+        repeat(20) { assertFalse(real.ahead(now)) }
+        repeat(500) { now += frame; assertFalse(real.ahead(now)) }
+        val fake = MicPace(frame)
+        var flagged = 0
+        repeat(100) { now += 1_000; if (fake.ahead(now)) flagged++ }
+        assertTrue("после 0,6 с «звука» за доли миллисекунды — тормозить: $flagged", flagged in 60..75)
+    }
+
+    /** Потерянные по дороге кадры звука улицы восполняются тишиной той же длины — счёт отсчётов не сбивается. */
+    @Test fun lostStreetFramesAreCountedByRtpTimestamps() {
+        val gaps = StreetAudio.RtpGaps(1_024, 16_000)
+        assertEquals("первый кадр", 0, gaps.missing(50_000))
+        assertEquals("подряд", 0, gaps.missing(51_024))
+        assertEquals("метка чуть «гуляет» — не потеря", 0, gaps.missing(52_050))
+        assertEquals("пропал один кадр", 1_024, gaps.missing(52_050 + 2 * 1_024))
+        assertEquals("пропало три", 3 * 1_024, gaps.missing(52_050 + 6 * 1_024 + 10))
+        assertEquals("разрыв больше секунды — не восполняем", 0, gaps.missing(1_000_000))
+        assertEquals("назад — не потеря", 0, gaps.missing(900_000))
+    }
+
+    /** Сигнал стенда для эхоподавления: речь три раза с паузами (первый проход — обучение). */
+    @Test fun probeEchoSignalRepeatsSpeechThreeTimes() {
+        val speech = ShortArray(16_000) { 1_000 }
+        val signal = TalkProbe.echoSignal(16_000, speech)
+        assertEquals(16_000 + 3 * (16_000 + 24_000), signal.size)
+        assertEquals("перед речью секунда тишины", 0, signal[15_999].toInt())
+        assertEquals(1_000, signal[16_000].toInt())
+        assertEquals("между проходами — тишина", 0, signal[16_000 + 16_000 + 100].toInt())
+        assertEquals(1_000, signal[16_000 + 40_000].toInt())
+        assertEquals("для канала 8 кГц речь прорежена", 8_000 + 3 * (8_000 + 12_000), TalkProbe.echoSignal(8_000, speech).size)
+    }
+
     /** Запас звука с улицы: копится до 150 мс, кончился — копится снова; больше 400 мс — сбрасывается до 150 мс. */
     @Test fun streetPlayoutBuffersJitterAndTrimsBacklog() {
         val r = 16_000

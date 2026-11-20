@@ -8,9 +8,11 @@ import java.io.FileOutputStream
  * Проверочная запись звука последнего разговора — только если на планшете создан файл
  * `Android/data/<пакет>/files/talk_debug/on` (через adb, для разбора хрипа и эха). Без него ничего не пишется.
  *
- * Дорожки (16 бит, моно, без заголовка): `mic.pcm` — микрофон до усиления, `sent.pcm` — то, что ушло в домофон,
- * `street.pcm` — звук с улицы, как он прозвучал в динамике планшета. Каждый разговор перезаписывает прежние;
- * не длиннее [MAX_SECONDS] с. В резервные копии и на GitHub не попадает.
+ * Дорожки (16 бит, моно, без заголовка): `mic.pcm` — микрофон до обработки, `mic_aec.pcm` — после эхоподавления,
+ * `sent.pcm` — что отдано каналу, `sent_ref.pcm` — что реально ушло в домофон (после кодека, без пропущенных
+ * блоков), `street_rx.pcm` — звук с улицы как пришёл, `street_aec.pcm` — после эхоподавления, `street.pcm` — как он
+ * прозвучал в динамике планшета. Каждый разговор перезаписывает прежние; не длиннее [MAX_SECONDS] с. В резервные
+ * копии и на GitHub не попадает. Файл `no_aec` в той же папке выключает эхоподавление (сравнение со старой защитой).
  */
 internal object TalkDebug {
     private const val MAX_SECONDS = 90
@@ -31,6 +33,8 @@ internal object TalkDebug {
         if (count <= 0 || done > MAX_SECONDS.toLong() * rate * 2) return
         val out = files.getOrPut(track) {
             File(d, "$track.rate").writeText(rate.toString())
+            // Когда дорожка началась (по общим часам): по этому записи разных дорожек совмещаются при разборе.
+            File(d, "$track.t0").writeText(System.nanoTime().toString())
             FileOutputStream(File(d, "$track.pcm"))
         }
         val bytes = ByteArray(count * 2)
@@ -38,6 +42,10 @@ internal object TalkDebug {
         runCatching { out.write(bytes) }
         written[track] = done + bytes.size
     }
+
+    /** Есть ли в папке проверочных записей файл-переключатель [name] (создаётся через adb для измерений). */
+    fun flag(context: Context, name: String): Boolean =
+        context.getExternalFilesDir(null)?.let { File(File(it, "talk_debug"), name).exists() } == true
 
     @Synchronized fun end() {
         files.values.forEach { runCatching { it.close() } }

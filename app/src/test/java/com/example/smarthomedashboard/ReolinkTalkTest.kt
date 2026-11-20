@@ -185,6 +185,71 @@ class ReolinkTalkTest {
         }
     }
 
+    /** Что услышит домофон: декодер основного кода даёт ровно то же, что эталонный разбор блока DVI4. */
+    @Test fun adpcmDecoderGivesWhatTheDoorbellPlays() {
+        val enc = ImaAdpcm()
+        repeat(3) { b ->
+            val pcm = ShortArray(1024) { i -> (6_000 * sin(2 * PI * 700 * (b * 1024 + i) / 16_000.0)).toInt().toShort() }
+            val block = enc.encode(pcm)
+            val heard = ShortArray(1024)
+            ImaAdpcm.decode(block, heard)
+            assertArrayEquals(decode(block), heard)
+        }
+    }
+
+    /** Опорный сигнал эхоподавления — ровно то, что ушло в камеру, блок в блок, после кодека. */
+    @Test fun tapGetsExactlyWhatWasSent() {
+        FakeCamera().use { cam ->
+            val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)
+            val samples = AtomicInteger()
+            val loud = AtomicInteger()
+            talk.tap { pcm, n -> samples.addAndGet(n); if ((0 until n).any { pcm[it] > 3_000 }) loud.incrementAndGet() }
+            talk.open()
+            Thread.sleep(600) // тишина: часть блоков не отправляется (очередь камеры тает) — в опору они не попадают
+            talk.beginTalkspurt()
+            repeat(25) { talk.sendAt(ShortArray(320) { i -> (5_000 * sin(2 * PI * 300 * i / 16_000.0)).toInt().toShort() }, 320, 16_000); Thread.sleep(20) }
+            Thread.sleep(400)
+            val tapped = samples.get() / 1024
+            val got = cam.blocks.get()
+            assertTrue("в опоре $tapped блоков, камера получила $got", tapped - got in 0..1)
+            assertTrue("голос в опоре: ${loud.get()} блоков", loud.get() in 7..9)
+            assertTrue("часть тишины пропущена", talk.droppedMs >= 64.0)
+            talk.tap(null)
+            val after = samples.get()
+            Thread.sleep(200)
+            assertEquals("слушатель снят", after, samples.get())
+            talk.close()
+        }
+    }
+
+    /**
+     * Ответили сразу после звонка — очередь камеры ещё не растаяла: остаток добирается на тихих блоках между словами
+     * (каждый второй), речь не пропускается. Иначе голос доходил бы то через 0,5 с, то через 1,2 с.
+     */
+    @Test fun earlyCallKeepsDrainingOnQuietBlocksOnly() {
+        FakeCamera().use { cam ->
+            val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)
+            talk.open()
+            talk.beginTalkspurt()
+            val room = ShortArray(320) { i -> (40 * sin(2 * PI * 200 * i / 16_000.0)).toInt().toShort() }
+            repeat(140) { talk.sendAt(room, 320, 16_000); Thread.sleep(20) } // 2,8 с фона комнаты: микрофон шлёт без пауз
+            Thread.sleep(200)
+            assertTrue("очередь осушена на ${talk.droppedMs} мс", talk.droppedMs in 900.0..1_000.0)
+            val drained = talk.droppedMs
+            val before = talk.sentVoice
+            val speech = ShortArray(320) { i -> (5_000 * sin(2 * PI * 300 * i / 16_000.0)).toInt().toShort() }
+            repeat(50) { talk.sendAt(speech, 320, 16_000); Thread.sleep(20) } // 1 с речи = 15,6 блока
+            Thread.sleep(300)
+            assertTrue("блоков речи ${talk.sentVoice - before}", talk.sentVoice - before in 15..17)
+            // Снова тишина: больше ничего не пропускается — очередь камеры осталась бы без запаса.
+            repeat(40) { talk.sendAt(room, 320, 16_000); Thread.sleep(20) }
+            Thread.sleep(200)
+            assertEquals(drained, talk.droppedMs, 0.0)
+            assertTrue(cam.badBlocks.toString(), cam.badBlocks.isEmpty())
+            talk.close()
+        }
+    }
+
     @Test fun wrongPasswordIsAuthErrorAndNoOnvifRetryWithSamePassword() {
         FakeCamera(password = "other").use { cam ->
             val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)
