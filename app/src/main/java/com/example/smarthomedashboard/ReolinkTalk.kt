@@ -100,6 +100,17 @@ internal class BaichuanTalkSession(
 
     override fun beginTalkspurt() { lastVoiceAt = System.nanoTime() }
 
+    override val wideband get() = true
+
+    /** Голос 16 кГц (микрофон пишет сразу в 16 кГц) — без растягивания. */
+    override fun sendAt(pcm: ShortArray, count: Int, rate: Int) {
+        if (rate != 16_000) { send(pcm, count); return }
+        if (count <= 0) return
+        fifo.push(pcm, count, MAX_FIFO)
+        lastIn = pcm[count - 1]
+        lastVoiceAt = System.nanoTime()
+    }
+
     /** Отсчёты 8 кГц → 16 кГц (линейно) в очередь отправки; держим не больше ~0,5 с. */
     override fun send(pcm: ShortArray, count: Int) {
         if (count <= 0) return

@@ -169,6 +169,12 @@ class ReolinkTalkTest {
             repeat(25) { talk.send(ShortArray(160) { i -> (5_000 * sin(2 * PI * 300 * i / 8_000.0)).toInt().toShort() }, 160); Thread.sleep(20) }
             Thread.sleep(300)
             assertTrue("голосовых блоков ${talk.sentVoice - before}", talk.sentVoice - before in 7..9)
+            // Микрофон сразу в 16 кГц (канал широкополосный): 0,5 с голоса — те же ~8 блоков, без растягивания.
+            assertTrue(talk.wideband)
+            val before16 = talk.sentVoice
+            repeat(25) { talk.sendAt(ShortArray(320) { i -> (5_000 * sin(2 * PI * 300 * i / 16_000.0)).toInt().toShort() }, 320, 16_000); Thread.sleep(20) }
+            Thread.sleep(300)
+            assertTrue("голосовых блоков 16 кГц ${talk.sentVoice - before16}", talk.sentVoice - before16 in 7..9)
             assertTrue(cam.badBlocks.toString(), cam.badBlocks.isEmpty())
             assertTrue(talk.alive)
             talk.close()

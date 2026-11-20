@@ -64,6 +64,14 @@ internal interface TalkChannel : java.io.Closeable {
     fun beginTalkspurt()
     /** 16-битные отсчёты 8 кГц в очередь отправки. */
     fun send(pcm: ShortArray, count: Int)
+    /** Канал берёт голос 16 кГц (протокол Reolink) — микрофон пишет сразу в 16 кГц, без растягивания. */
+    val wideband: Boolean get() = false
+    /** Отсчёты с частотой [rate] (8 или 16 кГц). */
+    fun sendAt(pcm: ShortArray, count: Int, rate: Int) {
+        if (rate == 8_000) { send(pcm, count); return }
+        val half = ShortArray(count / 2) { ((pcm[2 * it] + pcm[2 * it + 1]) / 2).toShort() }
+        send(half, half.size)
+    }
     /** Сколько кадров по 20 мс ещё не ушло. */
     val queued: Int
     val alive: Boolean
@@ -259,10 +267,10 @@ internal class VoiceGain {
 
     companion object {
         /** Громкость речи на выходе (RMS из 32 767): около −15 дБ от предела. */
-        const val TARGET = 4_500.0
+        const val TARGET = 5_500.0
         /** Ниже — тишина или шум: усиление не подстраивается. */
         const val GATE = 300.0
-        const val MAX_GAIN = 6.0
+        const val MAX_GAIN = 8.0
         const val START_GAIN = 2.0
         private const val ATTACK = 0.5
         private const val RELEASE = 0.05
@@ -279,6 +287,9 @@ internal class VoiceGain {
 /** Микрофон 8 кГц моно (источник для разговора); если 8 кГц не поддержан — 16 кГц с прореживанием. */
 internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, private val onLevel: (Float) -> Unit) {
     @Volatile private var running = false
+    /** Частота отсчётов, которые получает [onFrame]: 8 кГц, или 16 кГц при [start] с `wideband`. */
+    @Volatile var rate = 8_000
+        private set
     /** У этого планшета есть аппаратное/системное подавление эха (для подсказки в разговоре). */
     @Volatile var echoCancel = false
         private set
@@ -290,11 +301,12 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
      * динамика планшета не уходит обратно). Симплекс (как рация) — улица на это время приглушена, эха нет: микрофон
      * без телефонной обработки (громче и естественнее; решение владельца 20.11.2026).
      */
-    fun start(context: Context, duplex: Boolean = true): Boolean {
+    fun start(context: Context, duplex: Boolean = true, wideband: Boolean = false): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
         if (running) return true
         val source = if (duplex) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
-        val record = open(8_000, source) ?: open(16_000, source) ?: return false
+        val record = (if (wideband) open(16_000, source) else null) ?: open(8_000, source) ?: open(16_000, source) ?: return false
+        rate = if (wideband && record.sampleRate == 16_000) 16_000 else 8_000
         Log.i(TAG, "Микрофон: ${record.sampleRate} Гц" + if (duplex) "" else ", без обработки (симплекс)")
         val effects = if (!duplex) emptyList() else listOfNotNull(
             runCatching { android.media.audiofx.AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull(),
@@ -304,9 +316,10 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         if (duplex) Log.i(TAG, "Подавление эха: " + if (echoCancel) "есть" else "нет на этом планшете")
         running = true
         thread = Thread({
-            val decimate = record.sampleRate / 8_000
-            val raw = ShortArray(160 * decimate)
-            val out = ShortArray(160)
+            val decimate = record.sampleRate / rate
+            val frame = rate / 50
+            val raw = ShortArray(frame * decimate)
+            val out = ShortArray(frame)
             val voiceGain = VoiceGain()
             try {
                 record.startRecording()
@@ -429,7 +442,7 @@ internal class DoorbellTalk(
         communication(false)
         onLevel?.invoke(0f)
         onCall?.invoke(false)
-        session?.let { Log.i(TAG, "Разговор: голосовых пакетов ${it.sentVoice}") }
+        session?.let { Log.i(TAG, "Разговор: голосовых пакетов ${it.sentVoice}, микрофон молчал из-за звука с улицы ${gatedFrames * 20 / 1000} с") }
         if (state == State.TALKING) set(State.READY, READY_TEXT)
     }
 
@@ -446,7 +459,7 @@ internal class DoorbellTalk(
 
     /** Звук с улицы на время разговора — отдельно от видео ([StreetAudio]); в тестах — подмена. */
     internal var street: StreetSource = StreetAudio()
-    private var streetOn = false
+    @Volatile private var streetOn = false
 
     private fun startStreet() {
         val target = url; val login = user
@@ -468,9 +481,13 @@ internal class DoorbellTalk(
 
     private fun startCallAudio(s: TalkChannel) {
         s.beginTalkspurt()
-        if (!mic.start(context)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
+        gatedFrames = 0
+        // Микрофон без «телефонной» обработки Android: на Galaxy Tab A9+ (SM-X21x) встроенное подавление эха вырезает
+        // и сам голос (у калитки «слышно отвратительно», 20.11.2026; то же у разработчиков на форуме Samsung). Эхо
+        // гасят свои защиты: пока говорит улица — микрофон молчит, пока говорим мы — улица приглушена ([EchoGate]).
+        if (!mic.start(context, duplex = false, wideband = s.wideband)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
         startStreet()
-        set(State.TALKING, if (mic.echoCancel) "Идёт разговор — говорите" else "Идёт разговор — держитесь подальше от динамика планшета")
+        set(State.TALKING, "Идёт разговор — говорите")
     }
 
     var onState: ((State, String) -> Unit)? = null
@@ -487,11 +504,21 @@ internal class DoorbellTalk(
     private var user = ""
     private var disposed = false
     private var pressed = false
-    private val mic = MicCapture({ pcm, n ->
+    @Volatile private var gatedFrames = 0
+    private val micRate get() = mic.rate
+    private val mic: MicCapture = MicCapture({ pcm, n ->
         val s = session ?: return@MicCapture
-        try { s.send(pcm, n) } catch (e: Exception) { main.post { failed(reason(e)) } }
+        // Защита от эха (дуплекс): пока из динамика планшета звучит улица, микрофон молчит — её голос не уходит обратно
+        // в домофон (системное подавление эха этого планшета не справлялось, проверка 20.11.2026).
+        if (inCall && streetOn && EchoGate.closed(street.lastLoudAt, System.nanoTime())) { pcm.fill(0, 0, n); gatedFrames++ }
+        try { s.sendAt(pcm, n, micRate) } catch (e: Exception) { main.post { failed(reason(e)) } }
     }, { level ->
         if (level > VOICE_LEVEL) lastVoiceAt = clock()
+        // Вы говорите (микрофон не закрыт защитой) — улицу приглушить на путь «планшет → домофон → обратно».
+        if (inCall && streetOn && level > VOICE_LEVEL) {
+            val now = System.nanoTime()
+            if (!EchoGate.closed(street.lastLoudAt, now)) street.muteUntil(now + EchoGate.RETURN_NS)
+        }
         main.post { if (pressed || inCall) onLevel?.invoke(level) }
     })
 
@@ -601,7 +628,7 @@ internal class DoorbellTalk(
 
     private fun startTalking(s: TalkChannel) {
         s.beginTalkspurt()
-        if (!mic.start(context, duplex = false)) { pressed = false; Log.w(TAG, "Микрофон не открылся"); set(State.ERROR, "Микрофон недоступен"); return }
+        if (!mic.start(context, duplex = false, wideband = s.wideband)) { pressed = false; Log.w(TAG, "Микрофон не открылся"); set(State.ERROR, "Микрофон недоступен"); return }
         Log.i(TAG, "Говорим")
         onDuck?.invoke(true)
         set(State.TALKING, "Говорите — вас слышно у калитки")
@@ -835,4 +862,15 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
             setStroke((1.5f * density).toInt(), Color.argb(220, Color.red(accent), Color.green(accent), Color.blue(accent)))
         }
     }
+}
+
+/** Защита от эха в дуплексе: после громкого звука с улицы микрофон молчит [HOLD_NS] (динамик + комната + запас). */
+internal object EchoGate {
+    const val HOLD_NS = 350_000_000L
+    /**
+     * Через сколько наш голос возвращается эхом из микрофона домофона: до динамика ≈ 0,5 с (протокол Reolink), обратно
+     * ≈ 0,05 с + запас воспроизведения 0,15 с, с запасом — 1,2 с; столько улица после нашей речи приглушена.
+     */
+    const val RETURN_NS = 1_200_000_000L
+    fun closed(lastLoudAt: Long, now: Long) = lastLoudAt != 0L && now - lastLoudAt < HOLD_NS
 }

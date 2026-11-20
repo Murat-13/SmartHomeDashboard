@@ -355,4 +355,13 @@ class TalkTest {
         assertFalse("играем, пока есть хоть порция", StreetAudio.Playout.buffering(chunk, r, false, chunk))
         assertTrue("кончилось — снова копим", StreetAudio.Playout.buffering(chunk - 1, r, false, chunk))
     }
+
+    /** Защита от эха: 350 мс после громкого звука с улицы микрофон молчит; улица не звучала — открыт. */
+    @Test fun echoGateClosesShortlyAfterLoudStreet() {
+        val loud = 1_000_000_000L
+        assertFalse(EchoGate.closed(0L, loud))
+        assertTrue(EchoGate.closed(loud, loud + 100_000_000L))
+        assertTrue(EchoGate.closed(loud, loud + 340_000_000L))
+        assertFalse(EchoGate.closed(loud, loud + 400_000_000L))
+    }
 }

@@ -20,6 +20,10 @@ import android.util.Log
 internal interface StreetSource {
     fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit)
     fun stop()
+    /** Когда из динамика последний раз звучала улица громко (`System.nanoTime`, 0 — не звучала). */
+    val lastLoudAt: Long get() = 0L
+    /** Приглушить улицу до момента [until] (`System.nanoTime`): наш голос вернётся эхом из микрофона домофона. */
+    fun muteUntil(until: Long) {}
 }
 
 internal class StreetAudio : StreetSource {
@@ -30,6 +34,11 @@ internal class StreetAudio : StreetSource {
         private set
     @Volatile var trimmedMs = 0L
         private set
+    @Volatile override var lastLoudAt = 0L
+        private set
+    @Volatile private var mutedUntil = 0L
+
+    override fun muteUntil(until: Long) { if (until > mutedUntil) mutedUntil = until }
     @Volatile private var receivedSamples = 0L
     @Volatile private var startedAt = 0L
     @Volatile private var rateUsed = 8_000
@@ -174,6 +183,16 @@ internal class StreetAudio : StreetSource {
                 } else {
                     val n = fifo.pop(buf, chunk)
                     if (n < chunk) buf.fill(0, n, chunk)
+                    // Наш голос, вернувшийся из микрофона домофона (его подавление эха не справляется), — почти беззвучно.
+                    val muted = System.nanoTime() < mutedUntil
+                    if (muted) for (i in 0 until chunk) buf[i] = (buf[i] / 12).toShort()
+                    // Пока приглушено (это наш же голос вернулся из домофона), громкость улицы не в счёт: иначе защита
+                    // приняла бы эхо за речь гостя и закрыла бы наш микрофон посреди фразы.
+                    if (!muted) {
+                        var sum = 0.0
+                        for (i in 0 until chunk) sum += buf[i].toDouble() * buf[i]
+                        if (kotlin.math.sqrt(sum / chunk) > LOUD_RMS) lastLoudAt = System.nanoTime()
+                    }
                 }
                 // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.
                 if (track.write(buf, 0, chunk) <= 0) Thread.sleep(20) else playedMs += 20
@@ -199,6 +218,8 @@ internal class StreetAudio : StreetSource {
         const val TARGET_MS = 150
         const val MAX_MS = 400
         private const val MAX_QUEUE_MS = 500
+        /** Громкость звука с улицы (RMS), от которой включается защита от эха: речь, а не фоновый шум. */
+        const val LOUD_RMS = 700.0
         private const val TAG = "Talk"
     }
 }
