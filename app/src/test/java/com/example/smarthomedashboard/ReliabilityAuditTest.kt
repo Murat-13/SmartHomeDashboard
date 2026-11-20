@@ -156,4 +156,19 @@ class ReliabilityAuditTest {
         now += 1_001
         assertTrue("через секунду снова можно", admission.enter(noisy))
     }
+    // ---- A7: отпечаток сертификата прожектора привязан к адресу камеры ----
+
+    @Test fun floodlightPinBelongsToCameraAddress() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val prefs = context.getSharedPreferences("light_pin_test", android.content.Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+        // Отпечаток прежнего формата (без адреса) по-прежнему действует.
+        prefs.edit().putString("cam.light_pin", "old").commit()
+        assertEquals("old", CameraLight.pinFor(prefs, "cam", "192.168.1.20"))
+        CameraLight.savePin(prefs, "cam", "192.168.1.20", "aa11")
+        prefs.edit().commit()
+        assertEquals("aa11", CameraLight.pinFor(prefs, "cam", "192.168.1.20"))
+        // Камеру в плитке сменили: прежний отпечаток к новой камере не применяется (иначе — отказ навсегда).
+        assertNull(CameraLight.pinFor(prefs, "cam", "192.168.1.21"))
+    }
 }

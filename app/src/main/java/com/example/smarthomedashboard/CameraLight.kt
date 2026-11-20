@@ -23,8 +23,22 @@ internal object CameraLight {
         if (host.isBlank() || config.rtspUser.isBlank()) null else {
             val prefs = context.getSharedPreferences(DirectEvents.PREFS, Context.MODE_PRIVATE)
             ReolinkDriver("https://$host", config.rtspUser, password,
-                ReolinkDriver.client(host, prefs.getString("$tileId.light_pin", null)) { pin -> prefs.edit().putString("$tileId.light_pin", pin).apply() })
+                ReolinkDriver.client(host, pinFor(prefs, tileId, host)) { pin -> savePin(prefs, tileId, host, pin) })
         }
+    }
+
+    /**
+     * Отпечаток сертификата камеры для прожектора — только для того адреса, при котором он запомнен: после смены
+     * камеры в плитке старый отпечаток не мешает новой (раньше прожектор отказывал навсегда — «сертификат
+     * изменился», сбросить было нечем; аудит 20.11.2026, A7). Отпечаток прежнего формата (без адреса) — как раньше.
+     */
+    internal fun pinFor(prefs: android.content.SharedPreferences, tileId: String, host: String): String? {
+        val pinned = prefs.getString("$tileId.light_pin_host", null)
+        return if (pinned == null || pinned.equals(host, ignoreCase = true)) prefs.getString("$tileId.light_pin", null) else null
+    }
+
+    internal fun savePin(prefs: android.content.SharedPreferences, tileId: String, host: String, pin: String) {
+        prefs.edit().putString("$tileId.light_pin", pin).putString("$tileId.light_pin_host", host).apply()
     }
 
     /** Состояние прожектора: из HA, если сущность выбрана, иначе с камеры. null — прожектора нет / не узнали. */
