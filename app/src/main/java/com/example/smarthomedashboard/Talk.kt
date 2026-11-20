@@ -56,13 +56,71 @@ internal object G711 {
 
 internal class TalkException(message: String) : java.io.IOException(message)
 
+/** Канал голоса в динамик камеры: ONVIF-обратный канал ([TalkSession]) или протокол Reolink ([BaichuanTalkSession]). */
+internal interface TalkChannel : java.io.Closeable {
+    /** Подключиться (блокирует; фоновый поток) и начать непрерывный поток. Возвращает описание кодека. */
+    fun open(): String
+    /** Начало фразы. */
+    fun beginTalkspurt()
+    /** 16-битные отсчёты 8 кГц в очередь отправки. */
+    fun send(pcm: ShortArray, count: Int)
+    /** Сколько кадров по 20 мс ещё не ушло. */
+    val queued: Int
+    val alive: Boolean
+    val sentPackets: Int
+    val sentVoice: Int
+}
+
+/**
+ * Выбор пути голоса: у камер Reolink — сначала их протокол (порт 9000; до динамика ~0,5 с вместо 2,2–2,4 с по ONVIF),
+ * не вышло — ONVIF, как раньше; для камеры, где протокол Reolink не открылся, он больше не пробуется до перезапуска.
+ */
+internal object TalkChannels {
+    private val noReolink = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** Для тестов: подключение по протоколу Reolink (по умолчанию — настоящий сеанс). */
+    internal var reolink: (host: String, user: String, password: String) -> TalkChannel = { h, u, p -> BaichuanTalkSession(h, u, p) }
+
+    fun looksReolink(rtsp: String) = "Preview_0" in rtsp
+
+    /** Открыть канал (блокирует; фоновый поток). */
+    fun open(rtsp: String, user: String, password: String, readTimeoutMs: Int): TalkChannel {
+        val host = runCatching { java.net.URI(rtsp.trim()).host }.getOrNull().orEmpty()
+        if (looksReolink(rtsp) && host.isNotEmpty() && host !in noReolink) {
+            val talk = reolink(host, user, password)
+            try {
+                val codec = talk.open()
+                Log.i("Talk", "Голос — по протоколу Reolink ($codec)")
+                return talk
+            } catch (e: BaichuanException) {
+                talk.close()
+                if (e.auth) throw e
+                fallBack(host, e)
+            } catch (e: Exception) {
+                talk.close()
+                fallBack(host, e)
+            }
+        }
+        val talk = TalkSession(RtspSession(rtsp, user, password, connectTimeoutMs = 4_000, readTimeoutMs = readTimeoutMs,
+            require = TalkSession.BACKCHANNEL))
+        try { Log.i("Talk", "Голос — по ONVIF (${talk.open()})") } catch (e: Exception) { talk.close(); throw e }
+        return talk
+    }
+
+    private fun fallBack(host: String, e: Exception) {
+        noReolink += host
+        Log.w("Talk", "Протокол Reolink не открылся (${e.javaClass.simpleName} ${e.message}) — голос по ONVIF")
+    }
+
+    internal fun forget() = noReolink.clear()
+}
+
 /**
  * Сессия обратного канала: RTSP с `Require: www.onvif.org/ver20/backchannel`, SETUP только дорожки `a=sendonly`
  * с G.711, PLAY. Пока сессия открыта, поток RTP идёт **непрерывно** каждые 20 мс: тишина, а во время разговора —
  * голос из очереди. Reolink молчащий после PLAY обратный канал не воспроизводит (проверено 19.11.2026 на планшете:
  * голос, отправленный через секунды тишины после PLAY, не был слышен; скрипт со звуком сразу после PLAY — был).
  */
-internal class TalkSession(private val session: RtspSession) : java.io.Closeable {
+internal class TalkSession(private val session: RtspSession) : TalkChannel {
     private lateinit var setup: RtspSession.Setup
     private var aLaw = false
     private val ssrc = java.util.Random().nextInt()
@@ -74,13 +132,13 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
     private val queue = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
     @Volatile private var open = false
     @Volatile private var reader: Thread? = null
-    @Volatile var sentPackets = 0
+    @Volatile override var sentPackets = 0
         private set
-    @Volatile var sentVoice = 0
+    @Volatile override var sentVoice = 0
         private set
 
     /** Подключиться (блокирует; фоновый поток) и начать непрерывный поток. Кодек — «PCMU»/«PCMA». */
-    fun open(): String {
+    override fun open(): String {
         val setups = try {
             session.open { it.isAudio && it.direction == "sendonly" && it.encoding in CODECS }
         } catch (e: RtspException) {
@@ -100,13 +158,13 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
     }
 
     /** Начало фразы: первый пакет голоса — с маркером. */
-    fun beginTalkspurt() {
+    override fun beginTalkspurt() {
         filled = 0
         talkspurt = true
     }
 
     /** 16-битные отсчёты 8 кГц → G.711 → кадры по 160 байт в очередь отправки (не больше ~0,5 с). */
-    fun send(pcm: ShortArray, count: Int) {
+    override fun send(pcm: ShortArray, count: Int) {
         for (i in 0 until count) {
             pending[filled++] = if (aLaw) G711.alaw(pcm[i].toInt()) else G711.ulaw(pcm[i].toInt())
             if (filled == FRAME) {
@@ -118,9 +176,9 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
     }
 
     /** Отправленное ещё не ушло (для «Проверить звук»: дождаться очереди перед закрытием). */
-    val queued get() = queue.size
+    override val queued get() = queue.size
 
-    val alive get() = open && reader?.isAlive == true
+    override val alive get() = open && reader?.isAlive == true
 
     /** Каждые 20 мс по часам: кадр голоса из очереди или тишина. */
     private fun stream() {
@@ -227,19 +285,23 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
     private var thread: Thread? = null
 
     @SuppressLint("MissingPermission") // разрешение проверяется в start() перед созданием AudioRecord
-    fun start(context: Context): Boolean {
+    /**
+     * [duplex] — разговор как по телефону: источник «разговор» Android с подавлением эха и шума (звук с улицы из
+     * динамика планшета не уходит обратно). Симплекс (как рация) — улица на это время приглушена, эха нет: микрофон
+     * без телефонной обработки (громче и естественнее; решение владельца 20.11.2026).
+     */
+    fun start(context: Context, duplex: Boolean = true): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
         if (running) return true
-        val record = open(8_000) ?: open(16_000) ?: return false
-        Log.i(TAG, "Микрофон: ${record.sampleRate} Гц")
-        // Разговор как по телефону (этап 2): подавление эха и шума Android — звук с улицы из динамика планшета
-        // не уходит обратно в домофон. Есть не на всех планшетах; нет — работает без него.
-        val effects = listOfNotNull(
+        val source = if (duplex) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
+        val record = open(8_000, source) ?: open(16_000, source) ?: return false
+        Log.i(TAG, "Микрофон: ${record.sampleRate} Гц" + if (duplex) "" else ", без обработки (симплекс)")
+        val effects = if (!duplex) emptyList() else listOfNotNull(
             runCatching { android.media.audiofx.AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull(),
             runCatching { android.media.audiofx.NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
         )
         echoCancel = effects.any { it is android.media.audiofx.AcousticEchoCanceler }
-        Log.i(TAG, "Подавление эха: " + if (echoCancel) "есть" else "нет на этом планшете")
+        if (duplex) Log.i(TAG, "Подавление эха: " + if (echoCancel) "есть" else "нет на этом планшете")
         running = true
         thread = Thread({
             val decimate = record.sampleRate / 8_000
@@ -284,11 +346,11 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
     }
 
     @SuppressLint("MissingPermission")
-    private fun open(rate: Int): AudioRecord? {
+    private fun open(rate: Int, source: Int): AudioRecord? {
         val min = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (min <= 0) return null
         val record = try {
-            AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate, AudioFormat.CHANNEL_IN_MONO,
+            AudioRecord(source, rate, AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT, maxOf(min, rate / 5 * 2))
         } catch (_: Exception) { return null }
         if (record.state != AudioRecord.STATE_INITIALIZED) { record.release(); return null }
@@ -381,7 +443,7 @@ internal class DoorbellTalk(
         } catch (_: Exception) {}
     }
 
-    private fun startCallAudio(s: TalkSession) {
+    private fun startCallAudio(s: TalkChannel) {
         s.beginTalkspurt()
         if (!mic.start(context)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
         set(State.TALKING, if (mic.echoCancel) "Идёт разговор — говорите" else "Идёт разговор — держитесь подальше от динамика планшета")
@@ -396,7 +458,7 @@ internal class DoorbellTalk(
 
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor { Thread(it, "talk").apply { isDaemon = true } }
-    @Volatile private var session: TalkSession? = null
+    @Volatile private var session: TalkChannel? = null
     private var url = ""
     private var user = ""
     private var disposed = false
@@ -462,7 +524,7 @@ internal class DoorbellTalk(
     @Volatile private var playing = false
     private var pendingClip: ShortArray? = null
 
-    private fun startClip(s: TalkSession, pcm: ShortArray) {
+    private fun startClip(s: TalkChannel, pcm: ShortArray) {
         playing = true
         onDuck?.invoke(true)
         set(State.TALKING, "Фраза звучит у калитки")
@@ -512,9 +574,9 @@ internal class DoorbellTalk(
         main.removeCallbacksAndMessages(null)
     }
 
-    private fun startTalking(s: TalkSession) {
+    private fun startTalking(s: TalkChannel) {
         s.beginTalkspurt()
-        if (!mic.start(context)) { pressed = false; Log.w(TAG, "Микрофон не открылся"); set(State.ERROR, "Микрофон недоступен"); return }
+        if (!mic.start(context, duplex = false)) { pressed = false; Log.w(TAG, "Микрофон не открылся"); set(State.ERROR, "Микрофон недоступен"); return }
         Log.i(TAG, "Говорим")
         onDuck?.invoke(true)
         set(State.TALKING, "Говорите — вас слышно у калитки")
@@ -528,11 +590,11 @@ internal class DoorbellTalk(
         password(context) { password ->
             if (disposed) return@password
             io.execute {
-                val talk = TalkSession(RtspSession(target, login, password, connectTimeoutMs = 4_000, readTimeoutMs = 30_000,
-                    require = TalkSession.BACKCHANNEL))
+                var opened: TalkChannel? = null
                 try {
-                    val codec = talk.open()
-                    Log.i(TAG, "Обратный канал открыт ($codec)")
+                    val talk = TalkChannels.open(target, login, password.orEmpty(), readTimeoutMs = 30_000)
+                    opened = talk
+                    Log.i(TAG, "Обратный канал открыт")
                     main.post {
                         if (disposed || target != url) { io.execute { talk.close() }; return@post }
                         session = talk
@@ -542,7 +604,7 @@ internal class DoorbellTalk(
                         if (inCall) startCallAudio(talk) else if (pressed) startTalking(talk) else if (clip != null) startClip(talk, clip)
                     }
                 } catch (e: Exception) {
-                    talk.close()
+                    opened?.close()
                     Log.w(TAG, "Обратный канал не открыт: ${e.javaClass.simpleName} ${e.message}")
                     main.post { if (!disposed) failed(reason(e)) }
                 }
@@ -575,6 +637,7 @@ internal class DoorbellTalk(
 
     private fun reason(e: Exception) = when {
         e is TalkException -> e.message.orEmpty()
+        e is BaichuanException -> e.message.orEmpty()
         e is RtspException && e.status == 401 -> "Камера не приняла логин или пароль"
         e is RtspException && e.status in setOf(453, 503) -> "Сейчас говорит другое устройство"
         e is java.net.SocketTimeoutException || e is java.net.ConnectException || e is java.net.NoRouteToHostException ->
@@ -600,28 +663,32 @@ internal object TalkCheck {
         val main = Handler(Looper.getMainLooper())
         CameraPasswords.read(context, secretKey) { password ->
             Thread({
-                val talk = TalkSession(RtspSession(rtsp, user, password, connectTimeoutMs = 4_000, readTimeoutMs = 10_000,
-                    require = TalkSession.BACKCHANNEL))
+                var talk: TalkChannel? = null
                 val result = try {
-                    val codec = talk.open()
+                    val opened = TalkChannels.open(rtsp, user, password.orEmpty(), readTimeoutMs = 10_000)
+                    talk = opened
+                    val codec = if (opened is BaichuanTalkSession) "протокол Reolink" else "ONVIF"
                     Log.i("Talk", "Проверка звука: обратный канал открыт ($codec)")
                     Thread.sleep(500) // немного тишины: камера начинает воспроизводить поток
-                    talk.beginTalkspurt()
+                    opened.beginTalkspurt()
                     val pcm = tone()
                     val frame = ShortArray(TalkSession.FRAME)
                     var i = 0
                     while (i < pcm.size) {
                         val n = minOf(TalkSession.FRAME, pcm.size - i)
                         System.arraycopy(pcm, i, frame, 0, n)
-                        talk.send(frame, n)
+                        opened.send(frame, n)
                         i += n
-                        while (talk.queued > 5) Thread.sleep(10)
+                        while (opened.queued > 5) Thread.sleep(10)
                     }
-                    while (talk.queued > 0) Thread.sleep(10)
+                    while (opened.queued > 0) Thread.sleep(10)
                     Thread.sleep(1_500) // камера доигрывает свой буфер — TEARDOWN раньше обрезал бы звук
-                    Log.i("Talk", "Проверка звука: отправлено ${talk.sentPackets} пакетов, из них звука ${talk.sentVoice}")
+                    Log.i("Talk", "Проверка звука: отправлено ${opened.sentPackets} пакетов, из них звука ${opened.sentVoice}")
                     "Сигнал отправлен ($codec) — его должно быть слышно у домофона"
                 } catch (e: TalkException) {
+                    Log.w("Talk", "Проверка звука не удалась: ${e.message}")
+                    e.message.orEmpty()
+                } catch (e: BaichuanException) {
                     Log.w("Talk", "Проверка звука не удалась: ${e.message}")
                     e.message.orEmpty()
                 } catch (e: RtspException) {
@@ -631,7 +698,7 @@ internal object TalkCheck {
                     Log.w("Talk", "Проверка звука не удалась: ${e.javaClass.simpleName} ${e.message}")
                     "Домофон не отвечает (${e.javaClass.simpleName})"
                 } finally {
-                    talk.close()
+                    talk?.close()
                 }
                 main.post { done(result) }
             }, "talk-check").apply { isDaemon = true; start() }
