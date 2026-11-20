@@ -103,7 +103,11 @@ tasks.withType<Test>().configureEach {
     (project.findProperty("test.heapDump") as String?)?.let { dir ->
         jvmArgs("-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=$dir")
     }
-    (project.findProperty("test.maxHeap") as String?)?.let { maxHeapSize = it }
+    // Robolectric копит память от класса к классу (экраны, ресурсы): к ~1450-му тесту куча 512 МБ (по умолчанию
+    // Gradle) кончалась на CI — OutOfMemoryError, и падали следующие тесты (погода, 20.11.2026). Куча 1 ГБ и новый
+    // процесс каждые 300 тестов: память не копится весь прогон.
+    maxHeapSize = (project.findProperty("test.maxHeap") as String?) ?: "1g"
+    setForkEvery((project.findProperty("test.forkEvery") as String?)?.toLong() ?: 300L)
 }
 
 dependencies {
