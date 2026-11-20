@@ -116,9 +116,11 @@ internal class EventPlanner(private val postMs: Long) {
 /**
  * Последние секунды потока в памяти — целыми группами кадров (от ключевого кадра), чтобы ролик начинался
  * с ключевого. Хранится от последнего ключевого кадра не позже [preUs] до текущего момента; память ограничена
- * [maxBytes] (старшие группы отбрасываются, текущая остаётся всегда).
+ * [maxBytes] (старшие группы отбрасываются, текущая остаётся). Жёсткий предел [hardBytes] — и для текущей группы
+ * (камера долго не шлёт ключевых кадров, видео встало, а звук идёт): буфер очищается и начинается заново со
+ * следующего ключевого кадра — предзаписи у такого события меньше, зато память не растёт (аудит 20.11.2026, A1).
  */
-internal class PreRollBuffer(private val preUs: Long, private val maxBytes: Long = MAX_BYTES) {
+internal class PreRollBuffer(private val preUs: Long, private val maxBytes: Long = MAX_BYTES, private val hardBytes: Long = HARD_BYTES) {
     sealed class Item(val us: Long) {
         class Video(val frame: VideoFrame, us: Long, val params: VideoParams?) : Item(us)
         class Audio(val frame: AudioFrame, us: Long) : Item(us)
@@ -137,12 +139,14 @@ internal class PreRollBuffer(private val preUs: Long, private val maxBytes: Long
         items.addLast(Item.Video(frame, us, params))
         bytes += frame.nals.sumOf { it.size + 4 }
         if (frame.key) trim(us)
+        if (bytes > hardBytes) overflow()
     }
 
     fun addAudio(frame: AudioFrame, us: Long) {
         if (items.none { it is Item.Video }) return
         items.addLast(Item.Audio(frame, us))
         bytes += frame.data.size
+        if (bytes > hardBytes) overflow()
     }
 
     fun clear() { items.clear(); bytes = 0 }
@@ -168,6 +172,17 @@ internal class PreRollBuffer(private val preUs: Long, private val maxBytes: Long
         repeat(start) { removeFirst() }
     }
 
+    /** Сверх жёсткого предела: сначала старшие группы, не помогло — всё (ждём следующий ключевой кадр). */
+    private fun overflow() {
+        var rest = bytes
+        var start = -1
+        for ((i, item) in items.withIndex()) {
+            if (i > 0 && (item as? Item.Video)?.frame?.key == true && rest <= hardBytes) { start = i; break }
+            rest -= size(item)
+        }
+        if (start > 0) repeat(start) { removeFirst() } else clear()
+    }
+
     private fun bytesFrom(index: Int): Long {
         var total = 0L
         items.forEachIndexed { i, item -> if (i >= index) total += size(item) }
@@ -184,6 +199,8 @@ internal class PreRollBuffer(private val preUs: Long, private val maxBytes: Long
     companion object {
         /** ~10 с основного потока 2K (2–4 Мбит/с) — 3–5 МБ; запас на высокий битрейт. */
         const val MAX_BYTES = 24L * 1024 * 1024
+        /** Сверх него не держится и текущая группа кадров. */
+        const val HARD_BYTES = MAX_BYTES + 8L * 1024 * 1024
     }
 }
 

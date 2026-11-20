@@ -77,6 +77,8 @@ internal class SharedStream(
 
     private class Attached(val recorder: CameraRecorder) {
         var sink: CameraRecorder.Sink? = null
+        /** Запись отключена: новых приёмников ей не создаём (их бы никто не закрыл). Под замком записи. */
+        var gone = false
     }
 
     private val consumers = CopyOnWriteArrayList<Attached>()
@@ -89,7 +91,8 @@ internal class SharedStream(
     /** Текущая сессия камеры: номер дорожки ретранслятора по каналу RTP. */
     @Volatile private var relayChannels: Map<Int, Int> = emptyMap()
     private val relayClients = CopyOnWriteArrayList<RtspRelay.Client>()
-    private var current: SessionInfo? = null
+    /** Параметры идущей сессии; пишется под замком потока, читается в [add] под ним же. */
+    @Volatile private var current: SessionInfo? = null
 
     private class SessionInfo(val videoClock: Int, val audioParams: AudioParams?)
 
@@ -97,10 +100,14 @@ internal class SharedStream(
 
     fun add(recorder: CameraRecorder) {
         val a = Attached(recorder)
-        synchronized(a) {
-            consumers += a
-            // Поток уже идёт — запись начинает со следующего ключевого кадра этой же сессии.
-            current?.let { begin(a, it) }
+        // Под замком потока: поток чтения не может раздать приёмники новой сессии «мимо» этой записи
+        // (аудит 20.11.2026, A2). Порядок замков тот же, что у потока чтения: поток → запись.
+        synchronized(this) {
+            synchronized(a) {
+                consumers += a
+                // Поток уже идёт — запись начинает со следующего ключевого кадра этой же сессии.
+                current?.let { begin(a, it) }
+            }
         }
         recorder.streamStatus(if (live) null else CameraRecorder.State.CONNECTING, "")
         if (!running) {
@@ -114,7 +121,7 @@ internal class SharedStream(
     /** true — подключённых записей больше нет. */
     fun remove(recorder: CameraRecorder): Boolean {
         consumers.firstOrNull { it.recorder === recorder }?.let { a ->
-            synchronized(a) { end(a); consumers.remove(a) }
+            synchronized(a) { a.gone = true; end(a); consumers.remove(a) }
         }
         return consumers.isEmpty()
     }
@@ -129,6 +136,7 @@ internal class SharedStream(
     }
 
     private fun begin(a: Attached, info: SessionInfo) {
+        if (a.gone) return
         a.sink = a.recorder.newSink().also {
             it.videoClock = info.videoClock
             it.audioParams = if (a.recorder.wantsAudio) info.audioParams else null
@@ -163,9 +171,11 @@ internal class SharedStream(
                 val depacketizer = VideoDepacketizer.create(video.track) ?: throw RtspException("Кодек не поддерживается")
                 val audioSetup = setups.firstOrNull { it.track.isAudio }
                 val aac = audioSetup?.let { AacDepacketizer.create(it.track) }
-                // G.711 (PCMA/PCMU) — для записи перекодируется в AAC; не вышло — запись без звука.
+                // G.711 (PCMA/PCMU) — для записи перекодируется в AAC; не вышло — запись без звука. Кодер создаётся
+                // всегда (не только если звук нужен записям, уже подключённым к началу сессии): запись со звуком
+                // может подключиться к идущей сессии (A2). Кодирует он, только пока звук кому-то нужен.
                 val g711 = if (aac == null) audioSetup?.let { G711Depacketizer.create(it.track) } else null
-                encoder = g711?.takeIf { consumers.any { c -> c.recorder.wantsAudio } }?.let {
+                encoder = g711?.let {
                     try { encoderFactory() } catch (e: Exception) {
                         Log.w(TAG, "AAC-кодер недоступен (${e.javaClass.simpleName}), запись без звука")
                         null
@@ -206,7 +216,7 @@ internal class SharedStream(
                         } else if (setup === audioSetup && aac != null) {
                             audioProbe?.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: звук приходит через $it мс после записи (по часам камеры, RTCP)") }
                             for (frame in aac.push(rtp)) each { a, sink -> if (a.recorder.wantsAudio) sink.audio(frame, aac.sampleRate) }
-                        } else if (setup === audioSetup && g711 != null && enc != null) {
+                        } else if (setup === audioSetup && g711 != null && enc != null && consumers.any { it.recorder.wantsAudio }) {
                             val pcm = g711.push(rtp)
                             // Привязка звука — по приходу отсчётов, а не по выходу кодера (у него своя задержка).
                             each { a, sink -> if (a.recorder.wantsAudio) sink.audioArrival(pcm.timestamp) }

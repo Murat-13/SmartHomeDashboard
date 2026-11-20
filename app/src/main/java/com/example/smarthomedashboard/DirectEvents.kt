@@ -134,7 +134,18 @@ internal object DirectEvents {
             setStatus(tileId, Status(Level.ERROR, "Нужен прямой поток (RTSP) с адресом камеры и логин"))
             return
         }
-        val changedCamera = p.getString("$tileId.host", null) != host
+        val oldHost = p.getString("$tileId.host", null)
+        val changedCamera = oldHost != host
+        // Камеру в плитке сменили: у прежней камеры свой вебхук убирается (её отпечатком сертификата), иначе он
+        // остаётся в её слоте навсегда (аудит 20.11.2026, A6). Чужие слоты не трогаются — только слот с нашим секретом.
+        if (changedCamera && oldHost != null && p.getBoolean("$tileId.enabled", false)) {
+            val oldUser = p.getString("$tileId.user", null)
+            val oldSecret = p.getString("$tileId.secret", null)
+            if (oldUser != null && oldSecret != null) {
+                removeFromCamera(application, oldHost, oldUser, oldSecret, p.getString("$tileId.secret_key", "").orEmpty(),
+                    p.getString("$tileId.pin", null))
+            }
+        }
         p.edit().putBoolean("$tileId.enabled", true).putString("$tileId.host", host).putString("$tileId.user", config.rtspUser)
             .putString("$tileId.secret_key", secretKey)
             .apply { if (changedCamera) remove("$tileId.pin").remove("$tileId.slot") }
@@ -275,17 +286,26 @@ internal object DirectEvents {
         val user = p.getString("$tileId.user", null)
         val secret = p.getString("$tileId.secret", null)
         val secretKey = p.getString("$tileId.secret_key", "").orEmpty()
+        val pin = p.getString("$tileId.pin", null)
         stopPoll(tileId)
         routes.entries.removeIf { it.value.tileId == tileId }
         p.edit().apply { listOf("enabled", "host", "user", "secret", "slot", "pin", "model", "last_at", "last_type", "secret_key").forEach { remove("$tileId.$it") } }.apply()
         setStatus(tileId, Status(Level.OFF, "Выключено"))
         if (routes.isEmpty()) stopServer()
         if (host == null || user == null || secret == null) return
+        removeFromCamera(context, host, user, secret, secretKey, pin)
+    }
+
+    /**
+     * Убрать свой вебхук (слот с [secret]) из камеры [host]. Сертификат — запомненный [pin]: пароль камеры уходит
+     * только той камере, что была при включении (раньше — любому, кто ответит по этому адресу; A7).
+     */
+    private fun removeFromCamera(context: Context, host: String, user: String, secret: String, secretKey: String, pin: String?) {
         val read: (Context, (String?) -> Unit) -> Unit = if (secretKey.isEmpty()) passwordSource else { c, r -> CameraPasswords.read(c, secretKey, r) }
         read(context) { password ->
-            if (password.isNullOrEmpty()) return@read
+            if (password.isNullOrEmpty()) { Log.w(TAG, "Вебхук из камеры не убран: пароль камеры не задан"); return@read }
             io.execute {
-                val driver = driverFactory(host, user, password, null) {}
+                val driver = driverFactory(host, user, password, pin) {}
                 try { driver.uninstall(secret); Log.i(TAG, "Вебхук убран из камеры") }
                 catch (e: Exception) { Log.w(TAG, "Вебхук из камеры не убран: ${reason(e)}") }
                 finally { driver.close() }
