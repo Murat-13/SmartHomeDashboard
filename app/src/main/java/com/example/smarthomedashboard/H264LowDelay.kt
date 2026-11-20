@@ -211,14 +211,14 @@ internal object H264LowDelay {
             private set
 
         fun bit(): Int {
-            if (position >= data.size * 8) throw IndexOutOfBoundsException()
+            if (position >= data.size * 8) throw IndexOutOfBoundsException("SPS короче, чем нужно")
             val b = (data[position ushr 3].toInt() ushr (7 - (position and 7))) and 1
             position++
             return b
         }
 
         fun u(bits: Int): Int { var v = 0; repeat(bits) { v = (v shl 1) or bit() }; return v }
-        fun skip(bits: Int) { if (position + bits > data.size * 8) throw IndexOutOfBoundsException(); position += bits }
+        fun skip(bits: Int) { if (position + bits > data.size * 8) throw IndexOutOfBoundsException("SPS короче, чем нужно"); position += bits }
 
         fun ue(): Int {
             var zeros = 0
