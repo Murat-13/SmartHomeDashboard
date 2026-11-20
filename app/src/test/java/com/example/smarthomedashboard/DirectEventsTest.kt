@@ -352,4 +352,42 @@ class DirectEventsTest {
         assertEquals(DirectEvents.Level.ERROR, DirectEvents.status(context, "door").level)
         assertFalse(DirectEvents.enabled(context, "door"))
     }
+    // ---- Аудит 20.11.2026 (A6, A7) ----
+
+    /** Драйвер, который запоминает, к какой камере и с каким отпечатком сертификата обращались за удалением. */
+    private val uninstalls = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String?>>())
+
+    private fun recordingDrivers() {
+        DirectEvents.driverFactory = { host, user, password, pin, _ ->
+            val real = ReolinkDriver(base, user, password, http)
+            object : CameraEventDriver by real {
+                override fun uninstall(secret: String) { uninstalls += host to pin; real.uninstall(secret) }
+            }
+        }
+    }
+
+    @Test fun changedCameraAddressRemovesWebhookFromOldCamera() {
+        recordingDrivers()
+        DirectEvents.attach(context)
+        DirectEvents.setEnabled(context, "door", config, true)
+        waitFor("подключено") { DirectEvents.status(context, "door").level == DirectEvents.Level.OK }
+        // Владелец поменял адрес камеры в плитке (новая камера): у старой камеры свой вебхук убирается.
+        DirectEvents.setEnabled(context, "door", config.copy(rtspMain = "rtsp://127.0.0.2:554/h264Preview_01_main"), true)
+        DirectEvents.drain()
+        waitFor("вебхук убран из прежней камеры") { uninstalls.any { it.first == "127.0.0.1" } }
+        assertTrue(uninstalls.none { it.first == "127.0.0.2" })
+    }
+
+    @Test fun removingWebhookKeepsCertificatePin() {
+        recordingDrivers()
+        DirectEvents.attach(context)
+        DirectEvents.setEnabled(context, "door", config, true)
+        waitFor("подключено") { DirectEvents.status(context, "door").level == DirectEvents.Level.OK }
+        context.getSharedPreferences("camera_events", Context.MODE_PRIVATE).edit().putString("door.pin", "ab12").commit()
+        DirectEvents.setEnabled(context, "door", config, false)
+        DirectEvents.drain()
+        waitFor("удаление вебхука") { uninstalls.isNotEmpty() }
+        // Пароль камеры уходит только той камере, чей сертификат запомнен (не первому ответившему).
+        assertEquals("127.0.0.1" to "ab12", uninstalls.single())
+    }
 }
