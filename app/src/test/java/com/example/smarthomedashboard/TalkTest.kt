@@ -196,6 +196,10 @@ class TalkTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
         val talk = DoorbellTalk(activity) { _, result -> result(null) }
+        talk.street = object : StreetSource { // звук с улицы проверяется отдельным тестом
+            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {}
+            override fun stop() {}
+        }
         var now = 0L
         talk.clock = { now }
         val calls = mutableListOf<Boolean>()
@@ -300,5 +304,50 @@ class TalkTest {
         val afterSpeech = gain.gain
         repeat(500) { f -> val pcm = tone(100.0, f); gain.apply(pcm, 160, rms(pcm)) }
         assertEquals(afterSpeech, gain.gain, 1e-9)
+    }
+
+    /** Звук с улицы в разговоре — отдельно от видео: пошёл — звук плеера выключен; конец разговора — обратно. */
+    @Test fun callPlaysStreetAudioSeparatelyAndMutesPlayer() {
+        val camera = Camera(reolinkBackchannel)
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val talk = DoorbellTalk(activity) { _, result -> result(null) }
+        val events = mutableListOf<String>()
+        talk.street = object : StreetSource {
+            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) { events += "start"; onStarted(true) }
+            override fun stop() { events += "stop" }
+        }
+        val ducks = mutableListOf<Boolean>()
+        talk.onDuck = { ducks += it }
+        talk.prepare(camera.url, "")
+        val until = System.currentTimeMillis() + 5_000
+        while (talk.state != DoorbellTalk.State.READY) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (System.currentTimeMillis() > until) fail("Не подключились: ${talk.state}")
+            Thread.sleep(20)
+        }
+        talk.startCall()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf("start"), events)
+        assertEquals("звук плеера выключен", listOf(true), ducks)
+        talk.endCall()
+        assertEquals(listOf("start", "stop"), events)
+        assertEquals(listOf(true, false), ducks)
+        // Отдельный звук не пошёл — остаётся звук плеера (не выключаем).
+        talk.street = object : StreetSource {
+            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) { onStarted(false) }
+            override fun stop() {}
+        }
+        talk.startCall()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf(true, false), ducks)
+        talk.dispose()
+    }
+
+    /** Запас воспроизведения звука с улицы не копится: больше 160 мс — сбрасывается до 60 мс. */
+    @Test fun streetPlayoutTrimsBacklog() {
+        assertEquals(0, StreetAudio.Playout.excess(16_000 * 100 / 1000, 16_000))
+        assertEquals(0, StreetAudio.Playout.excess(16_000 * 160 / 1000, 16_000))
+        assertEquals(16_000 * 240 / 1000, StreetAudio.Playout.excess(16_000 * 300 / 1000, 16_000))
     }
 }

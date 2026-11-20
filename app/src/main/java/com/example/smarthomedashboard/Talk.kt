@@ -425,6 +425,7 @@ internal class DoorbellTalk(
         inCall = false
         main.removeCallbacks(callWatch)
         mic.stop()
+        stopStreet()
         communication(false)
         onLevel?.invoke(0f)
         onCall?.invoke(false)
@@ -443,9 +444,31 @@ internal class DoorbellTalk(
         } catch (_: Exception) {}
     }
 
+    /** Звук с улицы на время разговора — отдельно от видео ([StreetAudio]); в тестах — подмена. */
+    internal var street: StreetSource = StreetAudio()
+    private var streetOn = false
+
+    private fun startStreet() {
+        val target = url; val login = user
+        password(context) { p ->
+            if (disposed || !inCall) return@password
+            street.start(target, login, p) { ok ->
+                main.post {
+                    if (ok && inCall && !disposed) { streetOn = true; onDuck?.invoke(true) } // звук плеера — выключить
+                }
+            }
+        }
+    }
+
+    private fun stopStreet() {
+        street.stop()
+        if (streetOn) { streetOn = false; onDuck?.invoke(false) }
+    }
+
     private fun startCallAudio(s: TalkChannel) {
         s.beginTalkspurt()
         if (!mic.start(context)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
+        startStreet()
         set(State.TALKING, if (mic.echoCancel) "Идёт разговор — говорите" else "Идёт разговор — держитесь подальше от динамика планшета")
     }
 
@@ -564,6 +587,7 @@ internal class DoorbellTalk(
     fun dispose() {
         if (disposed) return
         if (inCall) { inCall = false; communication(false); onCall?.invoke(false) }
+        stopStreet()
         disposed = true
         pressed = false
         playing = false
@@ -617,6 +641,7 @@ internal class DoorbellTalk(
         pendingClip = null
         playing = false
         if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
+        stopStreet()
         mic.stop()
         if (pressed) onDuck?.invoke(false)
         pressed = false

@@ -1,0 +1,183 @@
+package com.example.smarthomedashboard
+
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.os.Build
+import android.util.Log
+
+/**
+ * Звук с улицы на время разговора — отдельно от видео (docs/talk-tz.md, «Звук с улицы в разговоре»).
+ *
+ * В плеере звук идёт вместе с видео HD и ждёт его (≈ 1,1–1,4 с на SM-X216B: 2560×1920 декодируется программно). На время
+ * разговора звук камеры принимается отдельно — через ретранслятор планшета, если поток уже идёт ради записи (новых
+ * подключений к камере нет), иначе напрямую — декодируется и сразу играет с запасом [TARGET_MS]; запас больше
+ * [MAX_MS] сбрасывается до [TARGET_MS], чтобы задержка не копилась. Звук плеера на это время выключает владелец
+ * карточки. AAC (как у Reolink) — декодером Android, G.711 — сам. Не вышло — остаётся звук плеера, как раньше.
+ */
+/** Источник звука с улицы для разговора (в тестах — подмена). */
+internal interface StreetSource {
+    fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit)
+    fun stop()
+}
+
+internal class StreetAudio : StreetSource {
+    @Volatile private var running = false
+    @Volatile private var session: RtspSession? = null
+    private var thread: Thread? = null
+    @Volatile var playedMs = 0L
+        private set
+    @Volatile var trimmedMs = 0L
+        private set
+
+    /** Подключиться и играть; [onStarted] — из фонового потока: звук пошёл (true) или не получилось (false). */
+    override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {
+        if (running) return
+        running = true
+        thread = Thread({ run(rtsp, user, password, onStarted) }, "street-audio").apply { isDaemon = true; start() }
+    }
+
+    override fun stop() {
+        running = false
+        session?.close()
+        session = null
+        thread = null
+    }
+
+    private fun run(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {
+        var codec: MediaCodec? = null
+        var track: AudioTrack? = null
+        var player: Thread? = null
+        var started = false
+        try {
+            val relay = CameraHub.relayUrl(rtsp, user)
+            val s = RtspSession(relay ?: rtsp, user, password, connectTimeoutMs = 3_000, readTimeoutMs = 10_000)
+            session = s
+            if (!running) { s.close(); return }
+            val setup = s.open { it.isAudio && it.direction != "sendonly" &&
+                (AacDepacketizer.create(it) != null || G711Depacketizer.create(it) != null) }.first()
+            val aac = AacDepacketizer.create(setup.track)
+            val g711 = if (aac == null) G711Depacketizer.create(setup.track) else null
+            val rate = aac?.sampleRate ?: 8_000
+            val fifo = ShortFifo(rate)
+            val t = newTrack(rate)
+            track = t
+            t.play()
+            player = Thread({ playout(t, fifo, rate) }, "street-audio-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+            val dec = aac?.let { decoder(it) }
+            codec = dec
+            val info = MediaCodec.BufferInfo()
+            val limit = rate * MAX_QUEUE_MS / 1000
+            Log.i(TAG, "Звук с улицы — отдельно от видео (${if (relay != null) "через планшет" else "напрямую"}, " +
+                "${if (aac != null) "AAC" else setup.track.encoding} ${rate / 1000} кГц)")
+            s.read(object : RtspSession.Sink {
+                override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
+                    if (!running) { s.close(); return }
+                    val rtp = RtpPacket.parse(packet, length) ?: return
+                    if (g711 != null) {
+                        val pcm = g711.push(rtp).samples
+                        fifo.push(pcm, pcm.size, limit)
+                    } else if (dec != null && aac != null) {
+                        for (frame in aac.push(rtp)) {
+                            val index = dec.dequeueInputBuffer(5_000)
+                            if (index >= 0) {
+                                val buf = dec.getInputBuffer(index) ?: continue
+                                buf.clear(); buf.put(frame.data)
+                                dec.queueInputBuffer(index, 0, frame.data.size, frame.timestamp, 0)
+                            }
+                            drain(dec, info, fifo, limit)
+                        }
+                    }
+                    if (!started) { started = true; onStarted(true) }
+                }
+            })
+        } catch (e: Exception) {
+            if (running) Log.w(TAG, "Звук с улицы отдельно не пошёл: ${e.javaClass.simpleName} ${e.message}")
+        } finally {
+            running = false
+            player?.interrupt()
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            try { track?.stop() } catch (_: Exception) {}
+            try { track?.release() } catch (_: Exception) {}
+            session?.close()
+            session = null
+            if (started) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс")
+            if (!started) onStarted(false)
+        }
+    }
+
+    private fun decoder(aac: AacDepacketizer): MediaCodec {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, aac.sampleRate, aac.channels).apply {
+            setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(aac.config))
+            setInteger(MediaFormat.KEY_IS_ADTS, 0)
+        }
+        return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply { configure(format, null, null, 0); start() }
+    }
+
+    private fun drain(dec: MediaCodec, info: MediaCodec.BufferInfo, fifo: ShortFifo, limit: Int) {
+        while (true) {
+            val out = dec.dequeueOutputBuffer(info, 0)
+            if (out < 0) return
+            val buf = dec.getOutputBuffer(out)
+            if (buf != null && info.size > 0) {
+                val channels = dec.outputFormat.let { if (it.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) it.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1 }
+                buf.position(info.offset)
+                val shorts = buf.order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+                val all = ShortArray(info.size / 2).also { shorts.get(it) }
+                val mono = if (channels <= 1) all else ShortArray(all.size / channels) { all[it * channels] }
+                fifo.push(mono, mono.size, limit)
+            }
+            dec.releaseOutputBuffer(out, false)
+        }
+    }
+
+    private fun newTrack(rate: Int): AudioTrack {
+        val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val builder = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(maxOf(min, rate / 1000 * TARGET_MS * 2))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        return builder.build()
+    }
+
+    /** Играть по 20 мс; пусто — тишина (дорожка не останавливается); запас больше нормы — сбросить лишнее. */
+    private fun playout(track: AudioTrack, fifo: ShortFifo, rate: Int) {
+        val chunk = rate / 50
+        val buf = ShortArray(chunk)
+        val scratch = ShortArray(rate)
+        try {
+            while (running) {
+                val excess = Playout.excess(fifo.size, rate)
+                if (excess > 0) { fifo.pop(scratch, excess); trimmedMs += excess * 1000L / rate }
+                val n = fifo.pop(buf, chunk)
+                if (n < chunk) buf.fill(0, n, chunk)
+                // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.
+                if (track.write(buf, 0, chunk) <= 0) Thread.sleep(20) else playedMs += 20
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** Чистая логика запаса воспроизведения (для тестов). */
+    internal object Playout {
+        /** Сколько отсчётов сбросить: запас больше [MAX_MS] — оставить [TARGET_MS]. */
+        fun excess(size: Int, rate: Int): Int {
+            val max = rate * MAX_MS / 1000
+            val target = rate * TARGET_MS / 1000
+            return if (size > max) size - target else 0
+        }
+    }
+
+    companion object {
+        const val TARGET_MS = 60
+        const val MAX_MS = 160
+        private const val MAX_QUEUE_MS = 500
+        private const val TAG = "Talk"
+    }
+}
