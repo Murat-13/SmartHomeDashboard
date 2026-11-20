@@ -199,11 +199,28 @@ internal class SharedStream(
                 val probe = ArrivalDelay(video.track.clockRate.takeIf { it > 0 } ?: 90_000)
                 val audioProbe = audioSetup?.track?.clockRate?.takeIf { it > 0 }?.let { ArrivalDelay(it) }
                 s.read(object : RtspSession.Sink {
+                    /** За минуту: байты и кадры видео и самое долгое время, на которое получатели кадра заняли этот поток. */
+                    private var videoBytes = 0L
+                    private var videoFrames = 0
+                    private var busyMaxNs = 0L
+
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
                         relay(setup.rtpChannel, rtcp = false, packet, length)
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
-                            if (rtp.marker) probe.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: кадр приходит через $it мс после съёмки (по часам камеры, RTCP)") }
+                            videoBytes += rtp.length
+                            if (rtp.marker) videoFrames++
+                            if (rtp.marker) probe.frame(rtp.timestamp)?.let {
+                                // Неровный приход — главный предел задержки живого видео (docs/doorbell.md): плееру нужен
+                                // запас не меньше самой длинной паузы. «Запись занимала поток» — наша доля в этих паузах.
+                                Log.i(TAG, "Камера → планшет (≈ ${videoBytes * 8 / ArrivalDelay.REPORT_MS} кбит/с, " +
+                                    "%.1f к/с): кадр приходит через $it мс ".format(videoFrames * 1000f / ArrivalDelay.REPORT_MS) +
+                                    "после съёмки (по часам камеры, RTCP), самый поздний — через ${probe.slowest} мс; " +
+                                    "запись занимала поток чтения до ${busyMaxNs / 1_000_000} мс")
+                                videoBytes = 0
+                                videoFrames = 0
+                                busyMaxNs = 0
+                            }
                             if (sniffing && sniffer != null) {
                                 sniffer.push(rtp.payload, rtp.offset, rtp.length)
                                 sniffer.params?.let { params ->
@@ -212,7 +229,9 @@ internal class SharedStream(
                                     relaySdp = relaySdp?.let { sdp -> Media3Sdp.compatible(sdp) { params } }
                                 }
                             }
+                            val started = System.nanoTime()
                             for (frame in depacketizer.push(rtp)) each { _, sink -> sink.video(frame, depacketizer) }
+                            busyMaxNs = maxOf(busyMaxNs, System.nanoTime() - started)
                         } else if (setup === audioSetup && aac != null) {
                             audioProbe?.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: звук приходит через $it мс после записи (по часам камеры, RTCP)") }
                             for (frame in aac.push(rtp)) each { a, sink -> if (a.recorder.wantsAudio) sink.audio(frame, aac.sampleRate) }
@@ -508,6 +527,10 @@ internal class ArrivalDelay(private val clockRate: Int, private val now: () -> L
         }
     }
 
+    /** Самая большая задержка за последнюю отчётную минуту (кадр, пришедший позже всех). */
+    var slowest = 0L
+        private set
+
     /** Кадр с меткой [rtpTimestamp] пришёл сейчас. Раз в минуту — медиана задержки, иначе null. */
     fun frame(rtpTimestamp: Long): Long? {
         if (srWallMs == 0L || clockRate <= 0) return null
@@ -517,7 +540,9 @@ internal class ArrivalDelay(private val clockRate: Int, private val now: () -> L
         samples += t - shot
         if (since == 0L) since = t
         if (t - since < REPORT_MS) return null
-        val median = samples.sorted()[samples.size / 2]
+        val sorted = samples.sorted()
+        val median = sorted[sorted.size / 2]
+        slowest = sorted.last()
         samples.clear()
         since = t
         return median

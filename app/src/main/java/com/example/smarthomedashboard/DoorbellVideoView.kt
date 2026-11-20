@@ -876,12 +876,6 @@ internal class ConnectTimeoutSocketFactory(
     }
 }
 
-/**
- * Догоняющий режим живого видео: скорость по запасу в буфере плеера. С запасом — гистерезис, чтобы скорость не
- * дёргалась на границе: ускорение с [START_MS], возврат к 1× ниже [TARGET_MS]. Большое отставание — быстрее.
- * У каждого плеера свой «пол» — запас, ниже которого он останавливается (декодер придерживает кадры, программный
- * декодер не успевает): упёрлись — пороги поднимаются на [shiftFor], следующая попытка через [COOLDOWN_MS].
- */
 /** Последний показанный кадр: время кадра в потоке и момент показа (пишет поток плеера, читает главный). */
 internal class ShownFrame {
     class At(val ptsUs: Long, val atNs: Long)
@@ -895,15 +889,18 @@ internal class ShownFrame {
  */
 internal class ScreenDelay {
     private var samples = IntArray(64)
-    private var count = 0
+    /** Всего принято замеров; хранятся последние [LIMIT] (кольцом): плитка показывает видео часами. */
+    private var total = 0
+    private val count: Int get() = minOf(total, LIMIT)
 
-    fun reset() { count = 0 }
+    fun reset() { total = 0 }
 
     fun add(ms: Long) {
         // Вне разумного (смена потока, пауза источника) — не замер; кадр чуть «свежее» края буфера звука — ноль.
-        if (ms < -TOLERANCE_MS || ms > MAX_MS || count >= LIMIT) return
-        if (count == samples.size) samples = samples.copyOf(count * 2)
-        samples[count++] = ms.coerceAtLeast(0).toInt()
+        if (ms < -TOLERANCE_MS || ms > MAX_MS) return
+        if (total == samples.size && samples.size < LIMIT) samples = samples.copyOf(minOf(samples.size * 2, LIMIT))
+        samples[total % LIMIT] = ms.coerceAtLeast(0).toInt()
+        total++
     }
 
     /** Медиана и 90-й процентиль; null — замеров мало. */
@@ -912,7 +909,7 @@ internal class ScreenDelay {
         val sorted = samples.copyOf(count).also { it.sort() }
         // «К концу» — установившееся значение: первые секунды плеер догоняет накопленное при подключении.
         val settled = if (count < 2 * TAIL) "" else
-            ", к концу ${samples.copyOfRange(count - TAIL, count).also { it.sort() }[TAIL / 2]} мс"
+            ", к концу ${IntArray(TAIL) { samples[(total - 1 - it) % LIMIT] }.also { it.sort() }[TAIL / 2]} мс"
         return "медиана ${sorted[count / 2]} мс, 90 % — до ${sorted[(count * 9 / 10).coerceAtMost(count - 1)]} мс$settled"
     }
 
@@ -921,7 +918,7 @@ internal class ScreenDelay {
         private const val MAX_MS = 10_000L
         private const val MIN_SAMPLES = 5
         private const val TAIL = 8
-        private const val LIMIT = 4_096
+        internal const val LIMIT = 4_096
 
         /**
          * Задержка кадра в момент его показа: край буфера [edgeMs] сейчас ([nowNs]) минус время, прошедшее с показа
@@ -932,6 +929,12 @@ internal class ScreenDelay {
     }
 }
 
+/**
+ * Догоняющий режим живого видео: скорость по запасу в буфере плеера. С запасом — гистерезис, чтобы скорость не
+ * дёргалась на границе: ускорение с [START_MS], возврат к 1× ниже [TARGET_MS]. Большое отставание — быстрее.
+ * У каждого плеера свой «пол» — запас, ниже которого он останавливается (декодер придерживает кадры, программный
+ * декодер не успевает): упёрлись — пороги поднимаются на [shiftFor], следующая попытка через [COOLDOWN_MS].
+ */
 internal object LiveCatchUp {
     const val CHECK_MS = 1_000L
     const val START_MS = 500L

@@ -270,4 +270,14 @@ class DoorbellLogicTest {
         repeat(6) { delay.add(-100) }
         assertEquals("кадр чуть свежее края буфера — ноль", "медиана 0 мс, 90 % — до 0 мс", delay.summary())
     }
+
+    @Test fun screenDelayKeepsOnlyRecentSamplesOfLongPlayback() {
+        // Плитка показывает видео часами: итог — по последним замерам, старые вытесняются.
+        val delay = ScreenDelay()
+        repeat(ScreenDelay.LIMIT) { delay.add(900) }
+        repeat(ScreenDelay.LIMIT) { delay.add(300) }
+        assertEquals("медиана 300 мс, 90 % — до 300 мс, к концу 300 мс", delay.summary())
+        repeat(8) { delay.add(500) }
+        assertEquals("медиана 300 мс, 90 % — до 300 мс, к концу 500 мс", delay.summary())
+    }
 }
