@@ -136,11 +136,22 @@ class H264LowDelayTest {
         LiveTuning.mode(h264 = false, softwareOnly = true, softwareLowDelay = true).let { assertFalse(it.lowDelay); assertFalse(it.freshest) }
     }
 
+    @Test fun rendererStaysReadyWhileDecoderIsStillWorkingOnFreshFrame() {
+        assertTrue("кадр в декодере, отправлен только что — показ не останавливается", LiveTuning.decoding(inCodec = 1, sinceQueuedMs = 120))
+        assertFalse("в декодере пусто — ждать нечего", LiveTuning.decoding(inCodec = 0, sinceQueuedMs = 10))
+        assertFalse("кадров давно не было — поток встал, это настоящая остановка", LiveTuning.decoding(inCodec = 3, sinceQueuedMs = 900))
+    }
+
     @Test fun holdSwitchIsAFileInTheAppFolderOnSharedStorage() {
         val context = org.robolectric.RuntimeEnvironment.getApplication()
         assertFalse(LiveTuning.softwareHold(context))
         val dir = java.io.File(context.getExternalFilesDir(null), "video_debug").apply { mkdirs() }
         java.io.File(dir, "sw_hold").writeText("")
         assertTrue(LiveTuning.softwareHold(context))
+        assertFalse("у каждого выключателя свой файл", LiveTuning.off(context, "no_golive"))
+        java.io.File(dir, "no_golive").writeText("")
+        assertTrue(LiveTuning.off(context, "no_golive"))
+        assertFalse(LiveTuning.off(context, "no_retime"))
+        assertFalse(LiveTuning.off(context, "player_audio"))
     }
 }

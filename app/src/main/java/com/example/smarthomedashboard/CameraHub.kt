@@ -57,6 +57,13 @@ internal object CameraHub {
         return "rtsp://127.0.0.1:$port/${stream.token}"
     }
 
+    /**
+     * Неровность прихода кадров потока [url] за последнюю минуту: на сколько самый поздний кадр пришёл позже обычного.
+     * Плееру нужен запас не меньше ([LiveCatchUp.floorFor]). 0 — поток не открыт или ещё не измерен.
+     */
+    fun arrivalJitterMs(url: String, user: String): Long =
+        streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.arrivalJitterMs ?: 0
+
     internal fun byToken(token: String): SharedStream? = streams.values.firstOrNull { it.token == token }
 
     /** Для тестов: сколько общих потоков открыто. */
@@ -72,6 +79,10 @@ internal class SharedStream(
     private val sessionFactory: (String, String, String?) -> RtspSession,
     private val encoderFactory: () -> AacEncoder
 ) {
+    /** На сколько самый поздний кадр за последнюю минуту пришёл позже обычного (0 — ещё не измерено). */
+    @Volatile var arrivalJitterMs = 0L
+        private set
+
     /** Одноразовая часть адреса ретранслятора: без неё другие приложения планшета не увидят видео. */
     val token: String = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
 
@@ -211,6 +222,7 @@ internal class SharedStream(
                             videoBytes += rtp.length
                             if (rtp.marker) videoFrames++
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
+                                arrivalJitterMs = (probe.slowest - it).coerceIn(0, MAX_JITTER_MS)
                                 // Неровный приход — главный предел задержки живого видео (docs/doorbell.md): плееру нужен
                                 // запас не меньше самой длинной паузы. «Запись занимала поток» — наша доля в этих паузах.
                                 Log.i(TAG, "Камера → планшет (≈ ${videoBytes * 8 / ArrivalDelay.REPORT_MS} кбит/с, " +
@@ -286,6 +298,8 @@ internal class SharedStream(
     internal fun removeClient(client: RtspRelay.Client) { relayClients -= client }
 
     private companion object {
+        /** Больше — уже не неровность прихода, а сбой связи. */
+        const val MAX_JITTER_MS = 1_000L
         const val TAG = "CameraHub"
     }
 }

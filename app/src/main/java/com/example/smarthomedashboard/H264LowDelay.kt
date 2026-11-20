@@ -268,20 +268,29 @@ internal object H264LowDelay {
  * ключевым кадром).
  */
 @OptIn(UnstableApi::class)
-internal class LiveRenderers(context: Context, private val softwareLowDelay: Boolean = true) : DefaultRenderersFactory(context) {
+internal class LiveRenderers(
+    context: Context, private val softwareLowDelay: Boolean = true, private val retime: Boolean = true
+) : DefaultRenderersFactory(context) {
+    /** Выравнивание времени показа у созданного видеорендерера (для журнала); null — выключено. */
+    @Volatile var retimer: FrameRetimer? = null
+        private set
+
     override fun buildVideoRenderers(
         context: Context, extensionRendererMode: Int, mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
         eventHandler: Handler, eventListener: VideoRendererEventListener, allowedVideoJoiningTimeMs: Long, out: ArrayList<Renderer>
     ) {
+        val timing = if (retime) FrameRetimer() else null
+        retimer = timing
         out.add(LowDelayVideoRenderer(context, codecAdapterFactory, mediaCodecSelector, allowedVideoJoiningTimeMs,
-            enableDecoderFallback, eventHandler, eventListener, softwareLowDelay))
+            enableDecoderFallback, eventHandler, eventListener, softwareLowDelay, timing))
     }
 }
 
 @OptIn(UnstableApi::class)
 internal class LowDelayVideoRenderer(
     context: Context, adapters: MediaCodecAdapter.Factory, selector: MediaCodecSelector, joiningMs: Long, fallback: Boolean,
-    handler: Handler, listener: VideoRendererEventListener, private val softwareLowDelay: Boolean = true
+    handler: Handler, listener: VideoRendererEventListener, private val softwareLowDelay: Boolean = true,
+    private val retimer: FrameRetimer? = null
 ) : MediaCodecVideoRenderer(context, adapters, selector, joiningMs, fallback, handler, listener, DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY) {
     /** SPS этого декодера переписывается: декодер не держит кадры «на перестановку». */
     private var lowDelay = false
@@ -313,8 +322,65 @@ internal class LowDelayVideoRenderer(
     override fun shouldDropOutputBuffer(earlyUs: Long, elapsedRealtimeUs: Long, isLastBuffer: Boolean): Boolean =
         !freshest && super.shouldDropOutputBuffer(earlyUs, elapsedRealtimeUs, isLastBuffer)
 
+    /** Кадр показывается по выровненному времени ([FrameRetimer]): не позже своей метки, без «пачек» после ключевого. */
+    override fun processOutputBuffer(
+        positionUs: Long, elapsedRealtimeUs: Long, codec: MediaCodecAdapter?, buffer: ByteBuffer?, bufferIndex: Int, bufferFlags: Int,
+        sampleCount: Int, bufferPresentationTimeUs: Long, isDecodeOnlyBuffer: Boolean, isLastBuffer: Boolean, format: Format
+    ): Boolean {
+        val at = retimer?.timeFor(bufferPresentationTimeUs) ?: bufferPresentationTimeUs
+        val done = super.processOutputBuffer(positionUs, elapsedRealtimeUs, codec, buffer, bufferIndex, bufferFlags, sampleCount,
+            at, isDecodeOnlyBuffer, isLastBuffer, format)
+        if (done) retimer?.shown(bufferPresentationTimeUs)
+        return done
+    }
+
+    override fun resetCodecStateForFlush() {
+        super.resetCodecStateForFlush()
+        retimer?.reset()
+        inCodec = 0
+        wasReady = false
+        // Сброс посреди показа оставляет декодер без картинки до следующего ключевого кадра: такое должно быть видно
+        // в журнале (редкие остановки HD на ≈ 1,8 с, причина не найдена). При закрытии плеера сброс — обычное дело.
+        if (state == STATE_STARTED) {
+            Log.i("DoorbellVideo", "Декодер сброшен посреди показа: " +
+                Thread.currentThread().stackTrace.drop(FLUSH_OWN_FRAMES).take(FLUSH_CALLERS).joinToString(" < ") { it.methodName })
+        }
+    }
+
+    private companion object {
+        /** В стеке вызовов пропускаются getStackTrace и сам этот метод; в журнал — столько вызвавших. */
+        const val FLUSH_OWN_FRAMES = 3
+        const val FLUSH_CALLERS = 5
+    }
+
+    /** Кадры, отправленные в декодер и ещё не вышедшие из него, и когда отправлен последний. */
+    private var inCodec = 0
+    private var lastQueuedAtMs = 0L
+    private var wasReady = false
+
+    override fun onProcessedOutputBuffer(presentationTimeUs: Long) {
+        super.onProcessedOutputBuffer(presentationTimeUs)
+        if (inCodec > 0) inCodec--
+    }
+
+    /**
+     * Плеер считает рендерер готовым, только если есть декодированный кадр или непрочитанный кадр в очереди. У живого
+     * потока очередь пуста (кадр уходит в декодер сразу), а программный декодер большого кадра отдаёт картинку не
+     * мгновенно: пока он занят ключевым кадром, плеер останавливался «ждать данные» на 50–300 мс, хотя данные уже
+     * в декодере. Для такого декодера ([LiveTuning.Mode.freshest]) рендерер готов, пока в декодере есть свежий кадр:
+     * часы идут дальше, кадр покажется сразу, как будет готов.
+     */
+    override fun isReady(): Boolean {
+        if (super.isReady()) { wasReady = true; return true }
+        return freshest && wasReady &&
+            LiveTuning.decoding(inCodec, android.os.SystemClock.elapsedRealtime() - lastQueuedAtMs)
+    }
+
     override fun onQueueInputBuffer(buffer: DecoderInputBuffer) {
         super.onQueueInputBuffer(buffer)
+        retimer?.queued(buffer.timeUs)
+        inCodec++
+        lastQueuedAtMs = android.os.SystemClock.elapsedRealtime()
         if (!lowDelay || buffer.isEncrypted) return
         val data = buffer.data ?: return
         val size = data.limit()
@@ -346,13 +412,27 @@ internal class LowDelayVideoRenderer(
 internal object LiveTuning {
     class Mode(val lowDelay: Boolean, val freshest: Boolean)
 
+    /**
+     * Декодер ещё работает над кадром: в нём есть кадры ([inCodec]), и последний отправлен недавно. Дольше
+     * [DECODING_MS] без нового кадра — поток встал, это уже настоящая остановка.
+     */
+    fun decoding(inCodec: Int, sinceQueuedMs: Long) = inCodec > 0 && sinceQueuedMs in 0..DECODING_MS
+    private const val DECODING_MS = 400L
+
     fun mode(h264: Boolean, softwareOnly: Boolean, softwareLowDelay: Boolean) =
         Mode(lowDelay = h264 && (!softwareOnly || softwareLowDelay), freshest = h264 && softwareOnly && softwareLowDelay)
 
     /**
-     * Проверочный выключатель для сравнения на планшете: файл `video_debug/sw_hold` в папке приложения на общей
-     * памяти возвращает программному декодеру прежнее поведение (держит кадры, опоздавшие не показываются).
+     * Проверочные выключатели для сравнения на планшете — файлы в папке `video_debug` приложения на общей памяти,
+     * читаются при каждом открытии видео:
+     * - `sw_hold` — программному декодеру прежнее поведение (держит кадры, опоздавшие не показываются);
+     * - `no_golive` — без рывка к живому ([LiveCatchUp.burstMs]);
+     * - `no_retime` — показ строго по меткам камеры (без [FrameRetimer]);
+     * - `no_jitter_floor` — запас без поправки на измеренную неровность прихода ([LiveCatchUp.floorFor]);
+     * - `player_audio` — звук тем же плеером, что и видео (без отдельного плеера звука).
      */
-    fun softwareHold(context: Context): Boolean =
-        context.getExternalFilesDir(null)?.let { File(File(it, "video_debug"), "sw_hold").exists() } == true
+    fun off(context: Context, name: String): Boolean =
+        context.getExternalFilesDir(null)?.let { File(File(it, "video_debug"), name).exists() } == true
+
+    fun softwareHold(context: Context): Boolean = off(context, "sw_hold")
 }

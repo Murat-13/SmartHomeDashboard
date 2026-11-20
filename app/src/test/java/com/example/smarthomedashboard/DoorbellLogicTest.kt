@@ -280,4 +280,21 @@ class DoorbellLogicTest {
         repeat(8) { delay.add(500) }
         assertEquals("медиана 300 мс, 90 % — до 300 мс, к концу 500 мс", delay.summary())
     }
+
+    @Test fun burstToLiveLastsExactlyAsLongAsBacklogNeeds() {
+        // Запас убывает со скоростью «скорость рывка − 1»: с 2,4 с до 0,6 с при 4× — за 0,6 с.
+        assertEquals(600L, LiveCatchUp.burstMs(bufferedMs = 2_400, toMs = 600))
+        assertEquals("небольшое отставание снимает обычное ускорение", 0L, LiveCatchUp.burstMs(bufferedMs = 1_000, toMs = 600))
+        assertEquals(0L, LiveCatchUp.burstMs(bufferedMs = 300, toMs = 600))
+        assertEquals("рывок не бывает долгим", 1_500L, LiveCatchUp.burstMs(bufferedMs = 30_000, toMs = 600))
+    }
+
+    @Test fun streamWithLateKeyframesGetsMoreReserveThanEvenStream() {
+        // Цель догоняющего режима — 300 мс плюс сдвиг. Субпоток: самый поздний кадр на 0,17 с позже обычного;
+        // основной: на 0,37 с — ему нужен запас больше паузы на ключевом кадре.
+        assertEquals(70L, LiveCatchUp.shiftFor(LiveCatchUp.floorFor(170)))
+        assertEquals(270L, LiveCatchUp.shiftFor(LiveCatchUp.floorFor(370)))
+        assertEquals("не измерено — как раньше", 0L, LiveCatchUp.shiftFor(LiveCatchUp.floorFor(0)))
+        assertEquals("сбой связи — не неровность", 800L, LiveCatchUp.shiftFor(LiveCatchUp.floorFor(9_000)))
+    }
 }
