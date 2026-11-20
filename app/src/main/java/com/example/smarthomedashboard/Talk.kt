@@ -307,7 +307,7 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         val source = if (duplex) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
         val record = (if (wideband) open(16_000, source) else null) ?: open(8_000, source) ?: open(16_000, source) ?: return false
         rate = if (wideband && record.sampleRate == 16_000) 16_000 else 8_000
-        Log.i(TAG, "Микрофон: ${record.sampleRate} Гц" + if (duplex) "" else ", без обработки (симплекс)")
+        Log.i(TAG, "Микрофон: ${record.sampleRate} Гц" + if (duplex) "" else ", без обработки Android")
         val effects = if (!duplex) emptyList() else listOfNotNull(
             runCatching { android.media.audiofx.AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull(),
             runCatching { android.media.audiofx.NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
