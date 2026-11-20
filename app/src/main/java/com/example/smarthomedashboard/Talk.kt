@@ -259,10 +259,10 @@ internal class VoiceGain {
 
     companion object {
         /** Громкость речи на выходе (RMS из 32 767): около −15 дБ от предела. */
-        const val TARGET = 5_500.0
+        const val TARGET = 4_500.0
         /** Ниже — тишина или шум: усиление не подстраивается. */
         const val GATE = 300.0
-        const val MAX_GAIN = 8.0
+        const val MAX_GAIN = 6.0
         const val START_GAIN = 2.0
         private const val ATTACK = 0.5
         private const val RELEASE = 0.05
@@ -454,7 +454,8 @@ internal class DoorbellTalk(
             if (disposed || !inCall) return@password
             street.start(target, login, p) { ok ->
                 main.post {
-                    if (ok && inCall && !disposed) { streetOn = true; onDuck?.invoke(true) } // звук плеера — выключить
+                    // Звук плееров — выключить (все: иначе второй, запоздалый, слышен как эхо).
+                    if (ok && inCall && !disposed) { streetOn = true; DoorbellVideoView.streetAudio = true; onDuck?.invoke(true) }
                 }
             }
         }
@@ -462,7 +463,7 @@ internal class DoorbellTalk(
 
     private fun stopStreet() {
         street.stop()
-        if (streetOn) { streetOn = false; onDuck?.invoke(false) }
+        if (streetOn) { streetOn = false; DoorbellVideoView.streetAudio = false; onDuck?.invoke(false) }
     }
 
     private fun startCallAudio(s: TalkChannel) {

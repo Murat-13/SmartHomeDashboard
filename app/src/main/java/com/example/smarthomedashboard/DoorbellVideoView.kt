@@ -100,6 +100,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             applyVolume()
         }
 
+    init { synchronized(all) { all += this } }
+
     /** Приглушение на время разговора (docs/talk-tz.md): звук с улицы не попадает обратно в микрофон. */
     var ducked = false
         set(value) {
@@ -107,7 +109,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             applyVolume()
         }
 
-    private val volume get() = if (muted || ducked) 0f else 1f
+    private val volume get() = if (muted || ducked || streetAudio) 0f else 1f
 
     /**
      * Идёт разговор как по телефону (docs/talk-tz.md, этап 2): звук с улицы — как голос собеседника (разговорный
@@ -765,6 +767,19 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     internal val hasPlayer get() = player != null
 
     companion object {
+        private val all = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DoorbellVideoView, Boolean>())
+
+        /**
+         * Звук с улицы идёт отдельно ([StreetAudio], разговор): все плееры домофона молчат — иначе звук слышен дважды
+         * (второй — с задержкой видео, как эхо). Только главный поток.
+         */
+        var streetAudio = false
+            set(value) {
+                if (field == value) return
+                field = value
+                synchronized(all) { all.toList() }.forEach { it.applyVolume() }
+            }
+
         private const val TAG = "DoorbellVideo"
         const val SNAPSHOT_EVERY_MS = 60_000L
         private const val RELEASE_DELAY_MS = 2_500L

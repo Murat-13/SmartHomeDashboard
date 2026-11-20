@@ -344,10 +344,15 @@ class TalkTest {
         talk.dispose()
     }
 
-    /** Запас воспроизведения звука с улицы не копится: больше 160 мс — сбрасывается до 60 мс. */
-    @Test fun streetPlayoutTrimsBacklog() {
-        assertEquals(0, StreetAudio.Playout.excess(16_000 * 100 / 1000, 16_000))
-        assertEquals(0, StreetAudio.Playout.excess(16_000 * 160 / 1000, 16_000))
-        assertEquals(16_000 * 240 / 1000, StreetAudio.Playout.excess(16_000 * 300 / 1000, 16_000))
+    /** Запас звука с улицы: копится до 150 мс, кончился — копится снова; больше 400 мс — сбрасывается до 150 мс. */
+    @Test fun streetPlayoutBuffersJitterAndTrimsBacklog() {
+        val r = 16_000
+        assertEquals(0, StreetAudio.Playout.excess(r * 300 / 1000, r))
+        assertEquals(r * 350 / 1000, StreetAudio.Playout.excess(r * 500 / 1000, r))
+        val chunk = r / 50
+        assertTrue("пока не набралось 150 мс — копим", StreetAudio.Playout.buffering(r * 100 / 1000, r, true, chunk))
+        assertFalse("набралось — играем", StreetAudio.Playout.buffering(r * 150 / 1000, r, true, chunk))
+        assertFalse("играем, пока есть хоть порция", StreetAudio.Playout.buffering(chunk, r, false, chunk))
+        assertTrue("кончилось — снова копим", StreetAudio.Playout.buffering(chunk - 1, r, false, chunk))
     }
 }

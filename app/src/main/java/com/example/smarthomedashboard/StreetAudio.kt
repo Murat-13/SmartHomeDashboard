@@ -5,7 +5,6 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.os.Build
 import android.util.Log
 
 /**
@@ -31,6 +30,9 @@ internal class StreetAudio : StreetSource {
         private set
     @Volatile var trimmedMs = 0L
         private set
+    @Volatile private var receivedSamples = 0L
+    @Volatile private var startedAt = 0L
+    @Volatile private var rateUsed = 8_000
 
     /** Подключиться и играть; [onStarted] — из фонового потока: звук пошёл (true) или не получилось (false). */
     override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {
@@ -61,6 +63,7 @@ internal class StreetAudio : StreetSource {
             val aac = AacDepacketizer.create(setup.track)
             val g711 = if (aac == null) G711Depacketizer.create(setup.track) else null
             val rate = aac?.sampleRate ?: 8_000
+            rateUsed = rate
             val fifo = ShortFifo(rate)
             val t = newTrack(rate)
             track = t
@@ -76,8 +79,10 @@ internal class StreetAudio : StreetSource {
                 override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
                     if (!running) { s.close(); return }
                     val rtp = RtpPacket.parse(packet, length) ?: return
+                    if (startedAt == 0L) startedAt = System.nanoTime()
                     if (g711 != null) {
                         val pcm = g711.push(rtp).samples
+                        receivedSamples += pcm.size
                         fifo.push(pcm, pcm.size, limit)
                     } else if (dec != null && aac != null) {
                         for (frame in aac.push(rtp)) {
@@ -104,7 +109,8 @@ internal class StreetAudio : StreetSource {
             try { track?.release() } catch (_: Exception) {}
             session?.close()
             session = null
-            if (started) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс")
+            if (started) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс; " +
+                "получено ${receivedSamples * 1000 / rateUsed.coerceAtLeast(1)} мс звука за ${(System.nanoTime() - startedAt) / 1_000_000} мс")
             if (!started) onStarted(false)
         }
     }
@@ -120,6 +126,7 @@ internal class StreetAudio : StreetSource {
     private fun drain(dec: MediaCodec, info: MediaCodec.BufferInfo, fifo: ShortFifo, limit: Int) {
         while (true) {
             val out = dec.dequeueOutputBuffer(info, 0)
+            if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) { Log.i(TAG, "Звук с улицы: декодер выдаёт ${dec.outputFormat}"); continue }
             if (out < 0) return
             val buf = dec.getOutputBuffer(out)
             if (buf != null && info.size > 0) {
@@ -128,6 +135,7 @@ internal class StreetAudio : StreetSource {
                 val shorts = buf.order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
                 val all = ShortArray(info.size / 2).also { shorts.get(it) }
                 val mono = if (channels <= 1) all else ShortArray(all.size / channels) { all[it * channels] }
+                receivedSamples += mono.size
                 fifo.push(mono, mono.size, limit)
             }
             dec.releaseOutputBuffer(out, false)
@@ -141,23 +149,32 @@ internal class StreetAudio : StreetSource {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(maxOf(min, rate / 1000 * TARGET_MS * 2))
+            .setBufferSizeInBytes(maxOf(min, rate / 1000 * 60 * 2))
             .setTransferMode(AudioTrack.MODE_STREAM)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        // Без «быстрого» режима вывода: на Samsung он может идти мимо подавления эха (эхо у калитки, проверка 20.11.2026).
         return builder.build()
     }
 
-    /** Играть по 20 мс; пусто — тишина (дорожка не останавливается); запас больше нормы — сбросить лишнее. */
+    /**
+     * Играть по 20 мс. Камера шлёт звук пачками (разброс 100–200 мс, проверка 20.11.2026): запас [TARGET_MS]; кончился —
+     * тишина, пока не накопится снова (не дробить речь); вырос больше [MAX_MS] — сбросить до [TARGET_MS].
+     */
     private fun playout(track: AudioTrack, fifo: ShortFifo, rate: Int) {
         val chunk = rate / 50
         val buf = ShortArray(chunk)
         val scratch = ShortArray(rate)
+        var buffering = true
         try {
             while (running) {
                 val excess = Playout.excess(fifo.size, rate)
                 if (excess > 0) { fifo.pop(scratch, excess); trimmedMs += excess * 1000L / rate }
-                val n = fifo.pop(buf, chunk)
-                if (n < chunk) buf.fill(0, n, chunk)
+                buffering = Playout.buffering(fifo.size, rate, buffering, chunk)
+                if (buffering) {
+                    buf.fill(0)
+                } else {
+                    val n = fifo.pop(buf, chunk)
+                    if (n < chunk) buf.fill(0, n, chunk)
+                }
                 // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.
                 if (track.write(buf, 0, chunk) <= 0) Thread.sleep(20) else playedMs += 20
             }
@@ -172,11 +189,15 @@ internal class StreetAudio : StreetSource {
             val target = rate * TARGET_MS / 1000
             return if (size > max) size - target else 0
         }
+
+        /** Копим запас: начать играть, когда набралось [TARGET_MS]; кончилось (меньше порции) — снова копить. */
+        fun buffering(size: Int, rate: Int, was: Boolean, chunk: Int): Boolean =
+            if (was) size < rate * TARGET_MS / 1000 else size < chunk
     }
 
     companion object {
-        const val TARGET_MS = 60
-        const val MAX_MS = 160
+        const val TARGET_MS = 150
+        const val MAX_MS = 400
         private const val MAX_QUEUE_MS = 500
         private const val TAG = "Talk"
     }
