@@ -71,12 +71,12 @@ class EchoReplayTest {
 
     /** Прогон контура: опора и вход подаются в том же порядке по времени, что на планшете (по началу дорожек). */
     private fun run(loop: EchoLoop, tap: RefTap, ref: Track, cap: ShortArray, lead: Int, rate: Int, log: Boolean): Result {
-        if (log) loop.log = { println("REPLAY   $it") }
+        var at = 0
+        if (log) loop.log = { println("REPLAY   %.1f с: $it".format(at.toDouble() / rate)) }
         val out = ShortArray(cap.size)
         val chunk = rate / 50
         var written = 0
         val buf = ShortArray(chunk)
-        var at = 0
         while (at + chunk <= cap.size) {
             // К этому мгновению в опоре записано всё до (время входа + lead).
             val refUntil = minOf(ref.pcm.size, at + chunk + lead)
@@ -100,22 +100,37 @@ class EchoReplayTest {
         val result = run(loop, tap, ref, cap.pcm, lead, rate, log = true)
         val out = result.out
         val seconds = cap.pcm.size / rate
-        val line = StringBuilder("REPLAY   по 2 с (вход → выход, дБ тише")
-        if (onDevice != null) line.append("; на планшете")
-        line.append("):")
-        var s = 0
-        while (s + 2 <= seconds) {
-            val a = s * rate; val b = (s + 2) * rate
-            val inRms = rms(cap.pcm, a, b)
-            line.append(" %.0f→%.0f (%.0f".format(inRms, rms(out, a, b), 20 * log10((inRms + 1) / (rms(out, a, b) + 1))))
-            if (onDevice != null) line.append("; %.0f".format(20 * log10((inRms + 1) / (rms(onDevice.pcm, a + 2 * EchoLoop.BLOCK, b + 2 * EchoLoop.BLOCK) + 1))))
-            line.append(")")
-            s += 2
-        }
-        println(line)
         println("REPLAY   итог: ${loop.summary()}")
         if (!loop.locked) return
         val shift = loop.alignment.toInt()
+        // По 2 с: громкость опоры (там, откуда сейчас приходит эхо), входа, выхода при разборе и выхода на планшете.
+        val line = StringBuilder("REPLAY   по 2 с — опора | вход → выход" + (if (onDevice != null) " / на планшете" else "") + ":")
+        var s = 0
+        while (s + 2 <= seconds) {
+            val a = s * rate; val b = (s + 2) * rate
+            line.append("\nREPLAY     %2d с: %5.0f | %5.0f → %5.0f".format(s, rms(ref.pcm, a - shift, b - shift), rms(cap.pcm, a, b), rms(out, a, b)))
+            if (onDevice != null) line.append(" / %5.0f".format(rms(onDevice.pcm, a + 2 * EchoLoop.BLOCK, b + 2 * EchoLoop.BLOCK)))
+            s += 2
+        }
+        println(line)
+        // Участки (секунды «от-до» через запятую в TALK_SEGMENTS): эхо — то, что повторяет опору; остальное — голос
+        // собеседника и фон. Сколько осталось того и другого после очистки.
+        System.getenv("TALK_SEGMENTS")?.split(',')?.forEach { range ->
+            val (a, b) = range.trim().split('-').map { it.trim().toInt() * rate }
+            fun parts(x: ShortArray, extra: Int): Pair<Double, Double> {
+                val coh = coherent(ref.pcm, x, shift + extra, a + extra, b + extra, rate)
+                return coh to (coherent(x, x, 0, a + extra, b + extra, rate) - coh).coerceAtLeast(1.0)
+            }
+            val (echoIn, otherIn) = parts(cap.pcm, 0)
+            val (echoOut, otherOut) = parts(out, 0)
+            val text = StringBuilder("REPLAY   участок $range с: эхо тише на %.1f дБ, остальное (голос, фон) изменилось на %+.1f дБ".format(
+                10 * log10(echoIn / echoOut), 10 * log10(otherOut / otherIn)))
+            if (onDevice != null) {
+                val (echoDev, otherDev) = parts(onDevice.pcm, 2 * EchoLoop.BLOCK)
+                text.append("; на планшете: эхо тише на %.1f дБ, остальное %+.1f дБ".format(10 * log10(echoIn / echoDev), 10 * log10(otherDev / otherIn)))
+            }
+            println(text)
+        }
         val from = minOf(12, seconds / 3) * rate
         val to = cap.pcm.size
         val before = coherent(ref.pcm, cap.pcm, shift, from, to, rate)

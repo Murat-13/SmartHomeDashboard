@@ -302,7 +302,7 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         // Второй признак: рабочий фильтр меняется раз за разом (обученный каждый раз «значимо лучше»), модель обещает
         // заметное эхо, а вход всё равно не ослабляется. При голосе собеседника так не бывает — тогда обученный не
         // лучше и замен нет. Блоки, где эха по модели почти нет (паузы, один фон), в счёт не идут.
-        if (sxx > n * ACTIVE && syy > 0.25 * sdd) {
+        if (sxx > n * ACTIVE && syy > 0.25 * sdd && syy > n * POOR_LEVEL) {
             if (sdd > POOR_GAIN * see) poorRun = 0
             else { poorRun = if (clock - poorAt < POOR_WINDOW) poorRun + 1 else 1; poorAt = clock }
         }
@@ -423,8 +423,10 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         leak = peyAvg / pyyAvg
 
         var rer = (0.0001 * sxx + 3.0 * leak * syy) / see
+        // Ошибка заметно повторяет оценку эха — фильтр недооценивает эхо, учить быстрее. Слабое совпадение (до 0,15)
+        // бывает и случайно, когда во входе голос собеседника, — оно шаг не поднимает.
         val bound = sey * sey / (1.0 + see * syy)
-        if (rer < bound) rer = bound
+        if (bound > LIKE_ECHO && rer < bound) rer = bound
         if (rer > 0.5) rer = 0.5
         // В рабочий режим — когда обученный фильтр уже заметно ослабляет вход (больше 4 дБ) и в любом случае после
         // полутора секунд быстрого шага: дольше им учить нельзя — при одновременной речи он портит фильтр.
@@ -432,7 +434,10 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         val active = sxx > n * ACTIVE
 
         if (adapted) {
-            val low = if (active) MIN_STEP else 0.0
+            // Нижняя граница шага — только пока эхо составляет заметную часть входа. Когда голос собеседника намного
+            // громче эха (на записи разговора 20.11.2026 — на 12–20 дБ у микрофона планшета), даже малый постоянный
+            // шаг за секунды учил фильтр вычитать этот голос; потом модель признавалась потерянной.
+            val low = if (active) MIN_STEP * min(1.0, 4 * syy / see) else 0.0
             for (i in 0 until k) {
                 val e = rf[i] + 1
                 var r = leak * yf[i]
@@ -527,8 +532,14 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
     private companion object {
         const val MIN_LEAK = 0.005
         const val BACKTRACK = 4.0
-        /** Опора «звучит»: громче −50 дБ от шкалы (после подъёма верхних частот). */
-        const val ACTIVE = 1_000.0
+        /**
+         * Опора «звучит»: громче −55 дБ от шкалы (после подъёма верхних частот). Тише — не в счёт: совсем тихий звук
+         * (около −60 дБ) планшет SM-X216B динамиком почти не воспроизводит — модель обещает эхо, которого нет (запись
+         * разговора 20.11.2026: три ложные «потери модели» за минуту на тихом фоне улицы).
+         */
+        const val ACTIVE = 3_600.0
+        /** «Пустые» замены считаются, только когда модель обещает эхо громче −58 дБ: тише — нечего и сравнивать. */
+        const val POOR_LEVEL = 1_600.0
         const val BOOT = 0.5
         const val BOOT_LIMIT = 8
         /** «Только эхо»: вход ослаблен не меньше чем на 2 дБ и не меньше 0,6 от лучшего. */
@@ -553,6 +564,7 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
          * собеседника (найдено на речи синтезатора). За уходом часов следит контур, а не шаг.
          */
         const val MIN_STEP = 0.01
+        const val LIKE_ECHO = 0.15
     }
 }
 
@@ -672,10 +684,14 @@ internal class Suppressor(private val n: Int, rate: Int, private val preset: Dou
         }
         // «Ошибка времени»: если настоящее эхо чуть позже модели, ошибка — это оценка эха, повёрнутая по фазе тем
         // сильнее, чем выше частота. Голос собеседника с оценкой не связан и в сумме даёт ноль.
-        for (i in lowBin..highBin) {
-            val w = 2 * PI * i / f
-            timeNum -= w * (eIm[i] * yRe[i] - eRe[i] * yIm[i])
-            timeDen += w * w * py[i]
+        // Копится только по блокам без собеседника: при долгом наложении его голос понемногу уводил оценку ухода
+        // часов (на записи разговора — до −13 млн⁻¹ при настоящем нуле).
+        if (echoOnly) {
+            for (i in lowBin..highBin) {
+                val w = 2 * PI * i / f
+                timeNum -= w * (eIm[i] * yRe[i] - eRe[i] * yIm[i])
+                timeDen += w * w * py[i]
+            }
         }
         pyy = sqrt(pyy)
         if (pyy > 0 && errNow > 0) {
@@ -899,7 +915,10 @@ internal class KotlinEcho(override val block: Int, private val parts: Int, priva
  * кодеки и искажения динамика, а голос собеседника во входе с опорой не связан и максимум не сдвигает. Точность —
  * около половины блока; дальше модель пути эха уточняет сама.
  */
-internal class DelayFinder(private val n: Int, rate: Int, private val ref: RefTap, minDelayMs: Int, maxDelayMs: Int) {
+internal class DelayFinder(private val n: Int, rate: Int, private val ref: RefTap, minDelayMs: Int, maxDelayMs: Int,
+                           loudRms: Double = 150.0) {
+    /** Громкость опоры, от которой её эхо стоит глушить, пока сдвиг не найден ([echoPossible]). */
+    private val loudPower = (loudRms * loudRms).toFloat()
     private val fft = Fft(n)
     private val re = DoubleArray(n)
     private val im = DoubleArray(n)
@@ -961,7 +980,7 @@ internal class DelayFinder(private val n: Int, rate: Int, private val ref: RefTa
         var possible = false
         var i = max(0L, refBlocks - 1 - maxLag - TAIL)
         val last = refBlocks - 1 - minLag
-        while (i <= last && !possible) { possible = refPower[(i % size).toInt()] > ACTIVE_POWER; i++ }
+        while (i <= last && !possible) { possible = refPower[(i % size).toInt()] > loudPower; i++ }
         echoPossible = possible
         if (capBlocks % EVERY != 0L || capBlocks - windowStart < MIN_WINDOW) return false
         return evaluate()
@@ -1068,10 +1087,16 @@ internal class EchoLoop(
     preset: Double,
     /** Следить за расхождением часов (у дальнего контура часы разные; у ближнего динамик и микрофон — одно устройство). */
     private val followClock: Boolean = true,
+    /**
+     * Громкость опоры, от которой вход глушится, пока сдвиг не найден. У микрофона планшета — только при громком звуке
+     * улицы (как у прежней защиты, [StreetAudio.LOUD_RMS]): на записи разговора 20.11.2026 тихий звук улицы срезал
+     * первые две секунды голоса хозяина, хотя его эхо в микрофоне было на 15 дБ тише голоса.
+     */
+    loudRms: Double = 150.0,
     private val engine: EchoEngine = KotlinEcho(BLOCK, parts, rate, preset)
 ) {
     private val n = engine.block
-    private val finder = DelayFinder(n, rate, ref, minDelayMs, maxDelayMs)
+    private val finder = DelayFinder(n, rate, ref, minDelayMs, maxDelayMs, loudRms)
     private val pending = DoubleArray(n)
     private var filled = 0
     private val refBlock = DoubleArray(n)
@@ -1295,12 +1320,12 @@ internal class EchoLoop(
         /** Запас перед найденным сдвигом, блоков: оценка по огибающей неточна на блок-полтора. */
         private const val PRE_ROLL = 2
         /**
-         * Совпадение рисунка громкости: у настоящего эха 0,9 и выше (под голосом собеседника 0,5–0,75), у двух
-         * разных голосов случайно бывает до 0,55 — и держится несколько оценок подряд (окно сдвигается медленно).
-         * Поэтому захват — от 0,7 шесть оценок подряд (0,4 с), спор с текущим сдвигом — от 0,6.
+         * Совпадение рисунка громкости: на модели у эха 0,9 и выше, на стенде и в разговоре — 0,71–0,80 (во входе ещё
+         * фон и голос у домофона); у двух разных голосов случайно бывает до 0,55 — и держится несколько оценок подряд
+         * (окно сдвигается медленно). Поэтому захват — от 0,65 шесть оценок подряд (0,4 с), спор с текущим сдвигом — от 0,6.
          */
         private const val MIN_SCORE = 0.6
-        private const val LOCK_SCORE = 0.7
+        private const val LOCK_SCORE = 0.65
         private const val LOCK_VOTES = 6
         private const val RELOCK_VOTES = 8
         private const val RELOCK_VOTES_GOOD = 20
@@ -1338,7 +1363,8 @@ internal class DuplexEcho(rate: Int = RATE, private val key: String = "") {
     /** Дальний контур: наш голос, вернувшийся в звуке улицы (через 0,3–3 с). */
     val far = EchoLoop("свой голос с улицы", sent, rate, FAR_MIN_MS, FAR_MAX_MS, FAR_PARTS, FAR_PRESET)
     /** Ближний контур: звук улицы из динамика планшета в его микрофоне (до 0,7 с — запас динамика и микрофона). */
-    val near = EchoLoop("улица в микрофоне", played, rate, 0, NEAR_MAX_MS, NEAR_PARTS, NEAR_PRESET, followClock = false)
+    val near = EchoLoop("улица в микрофоне", played, rate, 0, NEAR_MAX_MS, NEAR_PARTS, NEAR_PRESET, followClock = false,
+        loudRms = NEAR_LOUD_RMS)
     /** Звук улицы пошёл с нужной частотой — контуры работают. */
     @Volatile var active = false
 
@@ -1365,5 +1391,7 @@ internal class DuplexEcho(rate: Int = RATE, private val key: String = "") {
         const val FAR_PRESET = 1.0
         /** Динамик планшета рядом с микрофоном: эхо может быть громче записанного в динамик. */
         const val NEAR_PRESET = 4.0
+        /** Звук улицы тише этого (−33 дБ от шкалы) — фон, а не речь: до захвата сдвига микрофон из-за него не глушится. */
+        const val NEAR_LOUD_RMS = 700.0
     }
 }
