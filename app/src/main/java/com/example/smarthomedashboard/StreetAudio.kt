@@ -183,9 +183,10 @@ internal class StreetAudio : StreetSource {
                 } else {
                     val n = fifo.pop(buf, chunk)
                     if (n < chunk) buf.fill(0, n, chunk)
-                    // Наш голос, вернувшийся из микрофона домофона (его подавление эха не справляется), — почти беззвучно.
+                    TalkDebug.write("street_raw", buf, chunk, rate)
+                    // Наш голос, вернувшийся из микрофона домофона (его подавление эха не справляется), — тишина.
                     val muted = System.nanoTime() < mutedUntil
-                    if (muted) for (i in 0 until chunk) buf[i] = (buf[i] / 12).toShort()
+                    if (muted) buf.fill(0)
                     // Пока приглушено (это наш же голос вернулся из домофона), громкость улицы не в счёт: иначе защита
                     // приняла бы эхо за речь гостя и закрыла бы наш микрофон посреди фразы.
                     if (!muted) {
@@ -194,6 +195,7 @@ internal class StreetAudio : StreetSource {
                         if (kotlin.math.sqrt(sum / chunk) > LOUD_RMS) lastLoudAt = System.nanoTime()
                     }
                 }
+                TalkDebug.write("street", buf, chunk, rate)
                 // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.
                 if (track.write(buf, 0, chunk) <= 0) Thread.sleep(20) else playedMs += 20
             }

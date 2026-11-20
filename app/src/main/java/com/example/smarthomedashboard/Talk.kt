@@ -251,15 +251,23 @@ internal class VoiceGain {
     private var sumGain = 0.0
     private var frames = 0
 
-    /** Усилить кадр на месте; [rms] — громкость кадра до усиления. */
-    fun apply(pcm: ShortArray, count: Int, rms: Double) {
-        if (rms > GATE) {
+    private var open = 1.0
+
+    /**
+     * Усилить кадр на месте; [rms] — громкость кадра до усиления. [speech] = false (фон между словами) — усиление не
+     * подстраивается, а фон приглушается до [QUIET] плавно за кадр: шум комнаты не шипит в динамике домофона.
+     */
+    fun apply(pcm: ShortArray, count: Int, rms: Double, speech: Boolean = true) {
+        if (speech && rms > GATE) {
             val wanted = (TARGET / rms).coerceIn(1.0, MAX_GAIN)
             gain = if (wanted < gain) gain + (wanted - gain) * ATTACK else gain + (wanted - gain) * RELEASE
         }
         sumGain += gain
         frames++
-        for (i in 0 until count) pcm[i] = limit(pcm[i] * gain)
+        val from = open
+        val to = if (speech) 1.0 else maxOf(QUIET, open * 0.7)
+        open = to
+        for (i in 0 until count) pcm[i] = limit(pcm[i] * gain * (from + (to - from) * i / count.coerceAtLeast(1)))
     }
 
     /** Среднее усиление за разговор (для журнала). */
@@ -269,8 +277,10 @@ internal class VoiceGain {
         /** Громкость речи на выходе (RMS из 32 767): около −15 дБ от предела. */
         const val TARGET = 5_500.0
         /** Ниже — тишина или шум: усиление не подстраивается. */
-        const val GATE = 300.0
-        const val MAX_GAIN = 8.0
+        const val GATE = 100.0
+        const val MAX_GAIN = 10.0
+        /** Фон между словами — тише в столько раз (около −12 дБ). */
+        const val QUIET = 0.25
         const val START_GAIN = 2.0
         private const val ATTACK = 0.5
         private const val RELEASE = 0.05
@@ -289,6 +299,9 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
     @Volatile private var running = false
     /** Частота отсчётов, которые получает [onFrame]: 8 кГц, или 16 кГц при [start] с `wideband`. */
     @Volatile var rate = 8_000
+        private set
+    /** В последнем кадре — речь (заметно громче шума комнаты), а не фон: она вернётся из домофона эхом. */
+    @Volatile var speaking = false
         private set
     /** У этого планшета есть аппаратное/системное подавление эха (для подсказки в разговоре). */
     @Volatile var echoCancel = false
@@ -321,25 +334,33 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
             val raw = ShortArray(frame * decimate)
             val out = ShortArray(frame)
             val voiceGain = VoiceGain()
+            val shape = SpeechFilter(rate)
+            val floor = NoiseFloor()
             try {
                 record.startRecording()
                 while (running) {
                     val n = record.read(raw, 0, raw.size)
                     if (n <= 0) continue
                     val count = n / decimate
-                    var sum = 0.0
                     for (i in 0 until count) {
                         var acc = 0
                         for (k in 0 until decimate) acc += raw[i * decimate + k]
-                        val v = (acc / decimate).toShort()
-                        out[i] = v
-                        sum += v * v.toDouble()
+                        out[i] = (acc / decimate).toShort()
                     }
+                    TalkDebug.write("mic", out, count, rate)
+                    // Голос — разборчивым для маленького динамика домофона: без гула и басов (на них он хрипит), с
+                    // подъёмом 1,5–4 кГц. Без обработки Android микрофон этого планшета пишет речь очень глухо: 1–4 кГц
+                    // на 25–30 дБ ниже басов (запись разговора 20.11.2026).
+                    shape.apply(out, count)
+                    var sum = 0.0
+                    for (i in 0 until count) sum += out[i] * out[i].toDouble()
                     val rms = sqrt(sum / count.coerceAtLeast(1))
-                    voiceGain.apply(out, count, rms)
+                    speaking = floor.speech(rms)
+                    voiceGain.apply(out, count, rms, speaking)
                     onFrame(out, count)
-                    // Уровень — до усиления: по нему же определяется тишина (автозавершение разговора), как раньше.
-                    onLevel((rms / 8_000.0).toFloat().coerceIn(0f, 1f))
+                    // Уровень — до усиления: по нему определяется тишина (автозавершение разговора); речь — всегда «голос».
+                    val level = (rms / 8_000.0).toFloat().coerceIn(0f, 1f)
+                    onLevel(if (speaking) maxOf(level, SPEECH_LEVEL) else minOf(level, SPEECH_LEVEL / 2))
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Микрофон: ${e.javaClass.simpleName}")
@@ -370,7 +391,11 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         return record
     }
 
-    private companion object { const val TAG = "Talk" }
+    private companion object {
+        const val TAG = "Talk"
+        /** Уровень «голос» для кадра речи — выше порога тишины разговора (VOICE_LEVEL = 0,04). */
+        const val SPEECH_LEVEL = 0.06f
+    }
 }
 
 /**
@@ -439,6 +464,7 @@ internal class DoorbellTalk(
         main.removeCallbacks(callWatch)
         mic.stop()
         stopStreet()
+        TalkDebug.end()
         communication(false)
         onLevel?.invoke(0f)
         onCall?.invoke(false)
@@ -482,6 +508,7 @@ internal class DoorbellTalk(
     private fun startCallAudio(s: TalkChannel) {
         s.beginTalkspurt()
         gatedFrames = 0
+        TalkDebug.begin(context)
         // Микрофон без «телефонной» обработки Android: на Galaxy Tab A9+ (SM-X21x) встроенное подавление эха вырезает
         // и сам голос (у калитки «слышно отвратительно», 20.11.2026; то же у разработчиков на форуме Samsung). Эхо
         // гасят свои защиты: пока говорит улица — микрофон молчит, пока говорим мы — улица приглушена ([EchoGate]).
@@ -511,11 +538,12 @@ internal class DoorbellTalk(
         // Защита от эха (дуплекс): пока из динамика планшета звучит улица, микрофон молчит — её голос не уходит обратно
         // в домофон (системное подавление эха этого планшета не справлялось, проверка 20.11.2026).
         if (inCall && streetOn && EchoGate.closed(street.lastLoudAt, System.nanoTime())) { pcm.fill(0, 0, n); gatedFrames++ }
+        TalkDebug.write("sent", pcm, n, micRate)
         try { s.sendAt(pcm, n, micRate) } catch (e: Exception) { main.post { failed(reason(e)) } }
     }, { level ->
         if (level > VOICE_LEVEL) lastVoiceAt = clock()
         // Вы говорите (микрофон не закрыт защитой) — улицу приглушить на путь «планшет → домофон → обратно».
-        if (inCall && streetOn && level > VOICE_LEVEL) {
+        if (inCall && streetOn && mic.speaking) {
             val now = System.nanoTime()
             if (!EchoGate.closed(street.lastLoudAt, now)) street.muteUntil(now + EchoGate.RETURN_NS)
         }
@@ -596,7 +624,7 @@ internal class DoorbellTalk(
             main.post {
                 playing = false
                 if (disposed) return@post
-                main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, 300)
+                main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, EchoGate.TAIL_MS)
                 if (state == State.TALKING && !pressed) set(State.READY, READY_TEXT)
             }
         }
@@ -608,7 +636,10 @@ internal class DoorbellTalk(
         mic.stop()
         session?.let { Log.i(TAG, "Отпустили: голосовых пакетов ${it.sentVoice}, всего ${it.sentPackets}") }
         onLevel?.invoke(0f)
-        main.postDelayed({ if (!pressed) onDuck?.invoke(false) }, 300)
+        // Домофон доигрывает очередь (≈ 0,5 с) и его микрофон возвращает её в звук с улицы (плеер HD ещё ≈ 1,4 с):
+        // улица молчит, пока хвост фразы не вернётся, иначе её конец слышен эхом (проверка владельца 20.11.2026).
+        main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, EchoGate.TAIL_MS)
+        main.postDelayed({ TalkDebug.end() }, EchoGate.TAIL_MS)
         if (state == State.TALKING) set(State.READY, READY_TEXT)
     }
 
@@ -628,6 +659,7 @@ internal class DoorbellTalk(
 
     private fun startTalking(s: TalkChannel) {
         s.beginTalkspurt()
+        TalkDebug.begin(context)
         if (!mic.start(context, duplex = false, wideband = s.wideband)) { pressed = false; Log.w(TAG, "Микрофон не открылся"); set(State.ERROR, "Микрофон недоступен"); return }
         Log.i(TAG, "Говорим")
         onDuck?.invoke(true)
@@ -869,8 +901,74 @@ internal object EchoGate {
     const val HOLD_NS = 350_000_000L
     /**
      * Через сколько наш голос возвращается эхом из микрофона домофона: до динамика ≈ 0,5 с (протокол Reolink), обратно
-     * ≈ 0,05 с + запас воспроизведения 0,15 с, с запасом — 1,2 с; столько улица после нашей речи приглушена.
+     * ≈ 0,05 с + запас воспроизведения 0,15 с + слова в конце фразы; с запасом — 2 с; столько улица после нашей речи молчит.
      */
-    const val RETURN_NS = 1_200_000_000L
+    const val RETURN_NS = 2_000_000_000L
+    /** Симплекс: после отпускания улица молчит столько — очередь домофона + путь обратно через плеер HD. */
+    const val TAIL_MS = 2_500L
     fun closed(lastLoudAt: Long, now: Long) = lastLoudAt != 0L && now - lastLoudAt < HOLD_NS
+}
+
+/**
+ * Голос для динамика домофона: срез ниже ~250 Гц (гул и басы — маленький динамик на них хрипит, а громкость уходит
+ * в то, что он не воспроизводит) и подъём +9 дБ выше ~1,8 кГц (разборчивость). Фильтры — по «кулинарной книге» RBJ.
+ */
+internal class SpeechFilter(rate: Int) {
+    private val hp = Biquad.highPass(rate, 250.0)
+    private val shelf = Biquad.highShelf(rate, 1_800.0, 9.0)
+
+    fun apply(pcm: ShortArray, count: Int) {
+        for (i in 0 until count) {
+            val y = shelf.step(hp.step(pcm[i].toDouble()))
+            pcm[i] = y.coerceIn(-32_767.0, 32_767.0).toInt().toShort()
+        }
+    }
+
+    internal class Biquad(private val b0: Double, private val b1: Double, private val b2: Double,
+                          private val a1: Double, private val a2: Double) {
+        private var x1 = 0.0; private var x2 = 0.0; private var y1 = 0.0; private var y2 = 0.0
+
+        fun step(x: Double): Double {
+            val y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2 = x1; x1 = x; y2 = y1; y1 = y
+            return y
+        }
+
+        companion object {
+            fun highPass(rate: Int, f: Double): Biquad {
+                val w = 2 * Math.PI * f / rate; val c = kotlin.math.cos(w); val al = kotlin.math.sin(w) / (2 * 0.707)
+                val a0 = 1 + al
+                return Biquad((1 + c) / 2 / a0, -(1 + c) / a0, (1 + c) / 2 / a0, -2 * c / a0, (1 - al) / a0)
+            }
+
+            fun highShelf(rate: Int, f: Double, db: Double): Biquad {
+                val a = Math.pow(10.0, db / 40); val w = 2 * Math.PI * f / rate
+                val c = kotlin.math.cos(w); val al = kotlin.math.sin(w) / 2 * sqrt(2.0); val sa = 2 * sqrt(a) * al
+                val a0 = (a + 1) - (a - 1) * c + sa
+                return Biquad(a * ((a + 1) + (a - 1) * c + sa) / a0, -2 * a * ((a - 1) + (a + 1) * c) / a0,
+                    a * ((a + 1) + (a - 1) * c - sa) / a0, 2 * ((a - 1) - (a + 1) * c) / a0, ((a + 1) - (a - 1) * c - sa) / a0)
+            }
+        }
+    }
+}
+
+/**
+ * Уровень шума комнаты (медленно растёт, сразу опускается) и речь — кадр громче шума в [RATIO] раз. Шум не
+ * подтягивает усиление и не считается нашим голосом (иначе улица молчала бы весь разговор — запись 20.11.2026).
+ */
+internal class NoiseFloor {
+    var floor = 0.0
+        private set
+
+    fun speech(rms: Double): Boolean {
+        floor = if (floor == 0.0 || rms < floor) rms.coerceAtLeast(MIN) else floor * RISE
+        return rms > floor * RATIO && rms > MIN_SPEECH
+    }
+
+    companion object {
+        const val RATIO = 3.0
+        private const val RISE = 1.003 // ≈ +15 % в секунду при кадрах 20 мс
+        private const val MIN = 5.0
+        const val MIN_SPEECH = 60.0
+    }
 }

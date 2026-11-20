@@ -364,4 +364,37 @@ class TalkTest {
         assertTrue(EchoGate.closed(loud, loud + 340_000_000L))
         assertFalse(EchoGate.closed(loud, loud + 400_000_000L))
     }
+
+    private fun sine(freq: Double, amp: Double, n: Int, rate: Int = 16_000) =
+        ShortArray(n) { (amp * kotlin.math.sin(2 * Math.PI * freq * it / rate)).toInt().toShort() }
+
+    /** Голос для динамика домофона: басы и гул срезаны (на них он хрипит), 1,5–4 кГц подняты (разборчивость). */
+    @Test fun speechFilterCutsBassAndLiftsPresence() {
+        fun through(freq: Double): Double {
+            val pcm = sine(freq, 2_000.0, 16_000)
+            SpeechFilter(16_000).apply(pcm, pcm.size)
+            return rms(pcm.copyOfRange(8_000, 16_000)) / (2_000.0 / kotlin.math.sqrt(2.0))
+        }
+        assertTrue("100 Гц: ${through(100.0)}", through(100.0) < 0.25)
+        assertTrue("500 Гц: ${through(500.0)}", through(500.0) in 0.8..1.6)
+        assertTrue("3 кГц: ${through(3_000.0)}", through(3_000.0) > 2.2)
+    }
+
+    /** Ровный шум комнаты — не речь (не подтягивает усиление и не глушит улицу); голос поверх шума — речь. */
+    @Test fun noiseFloorTellsSpeechFromRoomNoise() {
+        val floor = NoiseFloor()
+        repeat(500) { assertFalse(floor.speech(50.0 + (it % 7))) }
+        assertTrue(floor.speech(400.0))
+        assertFalse("тише порога речи — не голос", NoiseFloor().also { f -> repeat(50) { f.speech(5.0) } }.speech(40.0))
+    }
+
+    /** Фон между словами приглушается плавно, речь — нет. */
+    @Test fun backgroundBetweenWordsIsQuieter() {
+        val gain = VoiceGain()
+        repeat(20) { gain.apply(tone(2_000.0, it), 160, 1_414.0, speech = true) }
+        var out = ShortArray(0)
+        repeat(20) { f -> out = tone(200.0, f); gain.apply(out, 160, 141.0, speech = false) }
+        val speechGainOnNoise = gain.gain * 141.0
+        assertTrue("фон ${rms(out)} против ${speechGainOnNoise}", rms(out) < speechGainOnNoise * (VoiceGain.QUIET + 0.05))
+    }
 }
