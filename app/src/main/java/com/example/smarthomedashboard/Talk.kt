@@ -172,6 +172,52 @@ internal class TalkSession(private val session: RtspSession) : java.io.Closeable
     }
 }
 
+/**
+ * Автоусиление голоса для динамика домофона (проверка владельца 20.11.2026: у калитки «очень тихо» при максимальной
+ * громкости домофона). Микрофон в режиме разговора Android с подавлением шума отдаёт тихий сигнал, а G.711 его
+ * не усиливает. Усиление подстраивается по речи: громкость кадра выше [GATE] — тянем к [TARGET] (быстро вниз,
+ * плавно вверх, в пределах 1–[MAX_GAIN]); тишину и фоновый шум не усиливаем сильнее, чем для последней речи.
+ * Пики сверх [KNEE] мягко сжимаются — без хрипа от обрезания.
+ */
+internal class VoiceGain {
+    var gain = START_GAIN
+        private set
+    private var sumGain = 0.0
+    private var frames = 0
+
+    /** Усилить кадр на месте; [rms] — громкость кадра до усиления. */
+    fun apply(pcm: ShortArray, count: Int, rms: Double) {
+        if (rms > GATE) {
+            val wanted = (TARGET / rms).coerceIn(1.0, MAX_GAIN)
+            gain = if (wanted < gain) gain + (wanted - gain) * ATTACK else gain + (wanted - gain) * RELEASE
+        }
+        sumGain += gain
+        frames++
+        for (i in 0 until count) pcm[i] = limit(pcm[i] * gain)
+    }
+
+    /** Среднее усиление за разговор (для журнала). */
+    val average get() = if (frames == 0) gain else sumGain / frames
+
+    companion object {
+        /** Громкость речи на выходе (RMS из 32 767): около −15 дБ от предела. */
+        const val TARGET = 5_500.0
+        /** Ниже — тишина или шум: усиление не подстраивается. */
+        const val GATE = 300.0
+        const val MAX_GAIN = 8.0
+        const val START_GAIN = 2.0
+        private const val ATTACK = 0.5
+        private const val RELEASE = 0.05
+        const val KNEE = 24_000.0
+
+        fun limit(x: Double): Short {
+            val a = kotlin.math.abs(x)
+            val y = if (a <= KNEE) a else KNEE + (32_767.0 - KNEE) * kotlin.math.tanh((a - KNEE) / (32_767.0 - KNEE))
+            return (if (x < 0) -y else y).toInt().coerceIn(-32_767, 32_767).toShort()
+        }
+    }
+}
+
 /** Микрофон 8 кГц моно (источник для разговора); если 8 кГц не поддержан — 16 кГц с прореживанием. */
 internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, private val onLevel: (Float) -> Unit) {
     @Volatile private var running = false
@@ -199,6 +245,7 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
             val decimate = record.sampleRate / 8_000
             val raw = ShortArray(160 * decimate)
             val out = ShortArray(160)
+            val voiceGain = VoiceGain()
             try {
                 record.startRecording()
                 while (running) {
@@ -213,12 +260,16 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
                         out[i] = v
                         sum += v * v.toDouble()
                     }
+                    val rms = sqrt(sum / count.coerceAtLeast(1))
+                    voiceGain.apply(out, count, rms)
                     onFrame(out, count)
-                    onLevel((sqrt(sum / count.coerceAtLeast(1)) / 8_000.0).toFloat().coerceIn(0f, 1f))
+                    // Уровень — до усиления: по нему же определяется тишина (автозавершение разговора), как раньше.
+                    onLevel((rms / 8_000.0).toFloat().coerceIn(0f, 1f))
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Микрофон: ${e.javaClass.simpleName}")
             } finally {
+                Log.i(TAG, "Микрофон: усиление голоса в среднем ×%.1f".format(voiceGain.average))
                 try { record.stop() } catch (_: Exception) {}
                 effects.forEach { runCatching { it.release() } }
                 record.release()

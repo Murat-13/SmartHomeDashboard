@@ -265,4 +265,40 @@ class TalkTest {
         assertTrue(asked!!.requestedPermissions.contains(Manifest.permission.RECORD_AUDIO))
         talk.dispose()
     }
+
+    private fun tone(amplitude: Double, frame: Int) = ShortArray(160) { i ->
+        (amplitude * kotlin.math.sin(2 * Math.PI * 400 * (frame * 160 + i) / 8_000.0)).toInt().toShort()
+    }
+    private fun rms(pcm: ShortArray) = kotlin.math.sqrt(pcm.sumOf { it.toDouble() * it } / pcm.size)
+
+    /** Тихий голос (как у планшета в режиме разговора) усиливается до разборчивой громкости у домофона. */
+    @Test fun quietVoiceIsAmplifiedTowardsTarget() {
+        val gain = VoiceGain()
+        var out = 0.0
+        repeat(150) { f -> val pcm = tone(1_000.0, f); val before = rms(pcm); gain.apply(pcm, 160, before); out = rms(pcm) }
+        assertTrue("громкость после усиления $out", out > VoiceGain.TARGET * 0.8 && out < VoiceGain.TARGET * 1.2)
+        assertTrue(gain.gain <= VoiceGain.MAX_GAIN)
+    }
+
+    /** Громкий голос не усиливается и не хрипит: пики мягко сжимаются, обрезания нет. */
+    @Test fun loudVoiceIsNotBoostedAndNotClipped() {
+        val gain = VoiceGain()
+        repeat(100) { f ->
+            val pcm = tone(30_000.0, f)
+            gain.apply(pcm, 160, rms(pcm))
+            assertTrue(pcm.all { it in -32_767..32_767 })
+        }
+        assertEquals(1.0, gain.gain, 0.05)
+        assertTrue(VoiceGain.limit(100_000.0) <= 32_767)
+        assertEquals("ниже колена — без изменений", 12_000, VoiceGain.limit(12_000.0).toInt())
+    }
+
+    /** Тишина и фон между фразами не подтягивают усиление вверх (шум не нарастает). */
+    @Test fun silenceDoesNotRaiseGain() {
+        val gain = VoiceGain()
+        repeat(50) { f -> val pcm = tone(3_000.0, f); gain.apply(pcm, 160, rms(pcm)) }
+        val afterSpeech = gain.gain
+        repeat(500) { f -> val pcm = tone(100.0, f); gain.apply(pcm, 160, rms(pcm)) }
+        assertEquals(afterSpeech, gain.gain, 1e-9)
+    }
 }
