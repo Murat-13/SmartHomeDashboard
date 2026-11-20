@@ -184,11 +184,14 @@ internal object EchoSim {
         return DoubleArray(out.size) { if (it + latency < out.size) out[it + latency].toDouble() else 0.0 }
     }
 
-    /** Путь «отправлено → вернулось с улицы» у домофона: слабые басы динамика, сжатие пиков, короткий отклик, шум кодеков. */
-    fun farEcho(sent: DoubleArray, delaySamples: Int, seed: Long = 7): DoubleArray {
+    /**
+     * Путь «отправлено → вернулось с улицы» у домофона: слабые басы динамика, сжатие пиков, короткий отклик, шум
+     * кодеков. Доля шума [grit] — по стенду 20.11.2026: вычитание убирает 15 дБ (остаётся ~0,18 по амплитуде).
+     */
+    fun farEcho(sent: DoubleArray, delaySamples: Int, seed: Long = 7, grit: Double = 0.18): DoubleArray {
         val speaker = squash(highPass(sent, 500.0), 14_000.0)
         val path = convolve(speaker, room(seed, direct = 12, gain = 0.3, rt60Ms = 150, reverbDb = -8.0, length = 1_600))
-        return delay(grit(path, 0.3, seed + 1), delaySamples)
+        return delay(grit(path, grit, seed + 1), delaySamples)
     }
 
     /** Путь «динамик планшета → микрофон планшета»: рядом, громко, с комнатой. */

@@ -425,16 +425,19 @@ class TalkTest {
         assertTrue("после 0,6 с «звука» за доли миллисекунды — тормозить: $flagged", flagged in 60..75)
     }
 
-    /** Потерянные по дороге кадры звука улицы восполняются тишиной той же длины — счёт отсчётов не сбивается. */
-    @Test fun lostStreetFramesAreCountedByRtpTimestamps() {
-        val gaps = StreetAudio.RtpGaps(1_024, 16_000)
-        assertEquals("первый кадр", 0, gaps.missing(50_000))
-        assertEquals("подряд", 0, gaps.missing(51_024))
-        assertEquals("метка чуть «гуляет» — не потеря", 0, gaps.missing(52_050))
-        assertEquals("пропал один кадр", 1_024, gaps.missing(52_050 + 2 * 1_024))
-        assertEquals("пропало три", 3 * 1_024, gaps.missing(52_050 + 6 * 1_024 + 10))
-        assertEquals("разрыв больше секунды — не восполняем", 0, gaps.missing(1_000_000))
-        assertEquals("назад — не потеря", 0, gaps.missing(900_000))
+    /**
+     * Потерянные по дороге пакеты звука улицы считаются по номерам RTP (на их место — тишина той же длины), а не по
+     * меткам времени: у домофона Reolink метки убегают без всяких потерь (стенд 20.11.2026).
+     */
+    @Test fun lostStreetPacketsAreCountedBySequenceNumbers() {
+        val gaps = StreetAudio.RtpGaps()
+        assertEquals("первый пакет", 0, gaps.missing(65_534))
+        assertEquals("подряд", 0, gaps.missing(65_535))
+        assertEquals("подряд через ноль", 0, gaps.missing(0))
+        assertEquals("пропал один", 1, gaps.missing(2))
+        assertEquals("пропало три", 3, gaps.missing(6))
+        assertEquals("разрыв — не восполняем", 0, gaps.missing(5_000))
+        assertEquals("назад — не потеря", 0, gaps.missing(4_990))
     }
 
     /** Сигнал стенда для эхоподавления: речь три раза с паузами (первый проход — обучение). */

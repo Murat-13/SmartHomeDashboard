@@ -122,7 +122,7 @@ internal class StreetAudio : StreetSource {
             codec = dec
             val info = MediaCodec.BufferInfo()
             val limit = rate * MAX_QUEUE_MS / 1000
-            val gaps = RtpGaps(aac?.samplesPerFrame ?: 1, rate)
+            val gaps = RtpGaps()
             Log.i(TAG, "Звук с улицы — отдельно от видео (${if (relay != null) "через планшет" else "напрямую"}, " +
                 "${if (aac != null) "AAC" else setup.track.encoding} ${rate / 1000} кГц)")
             s.read(object : RtspSession.Sink {
@@ -135,16 +135,16 @@ internal class StreetAudio : StreetSource {
                         receivedSamples += pcm.size
                         fifo.push(pcm, pcm.size, limit)
                     } else if (dec != null && aac != null) {
+                        // Пакеты потерялись по дороге: на их место — тишина той же длины. Эхоподавление считает
+                        // отсчёты: без этого сдвиг между «отправлено» и «вернулось» уехал бы.
+                        val lost = gaps.missing(rtp.sequence) * aac.samplesPerFrame
+                        if (lost > 0) {
+                            drain(dec, info, fifo, limit)
+                            val fill = clean(ShortArray(lost), rate)
+                            fifo.push(fill, fill.size, limit)
+                            lostMs += lost * 1000L / rate
+                        }
                         for (frame in aac.push(rtp)) {
-                            // Кадры потерялись по дороге (ретранслятор не успел): на их место — тишина той же длины.
-                            // Эхоподавление считает отсчёты: без этого сдвиг между «отправлено» и «вернулось» уехал бы.
-                            val lost = gaps.missing(frame.timestamp)
-                            if (lost > 0) {
-                                drain(dec, info, fifo, limit)
-                                val fill = clean(ShortArray(lost), rate)
-                                fifo.push(fill, fill.size, limit)
-                                lostMs += lost * 1000L / rate
-                            }
                             val index = dec.dequeueInputBuffer(5_000)
                             if (index >= 0) {
                                 val buf = dec.getInputBuffer(index) ?: continue
@@ -260,18 +260,21 @@ internal class StreetAudio : StreetSource {
     }
 
     /**
-     * Счёт отсчётов по меткам RTP: если метка очередного кадра дальше, чем конец прошлого, на целые кадры — столько
-     * отсчётов потеряно. Мелкие расхождения меток (камера ставит их по своим часам) потерей не считаются.
+     * Потерянные пакеты — по номерам RTP, а не по меткам времени: домофон Reolink ставит метки не по счёту отсчётов
+     * (за минуту они «убегают» на 15 кадров, хотя ни один кадр не потерян — измерение стендом 20.11.2026; вставка
+     * тишины по меткам сдвигала эхо на 64 мс каждые несколько секунд).
      */
-    internal class RtpGaps(private val frame: Int, private val limit: Int) {
-        private var next = Long.MIN_VALUE
+    internal class RtpGaps {
+        private var last = -1
 
-        /** Сколько отсчётов пропало перед кадром с меткой [timestamp] (0 — ничего; больше [limit] — разрыв, не потеря). */
-        fun missing(timestamp: Long): Int {
-            val gap = if (next == Long.MIN_VALUE) 0L else timestamp - next
-            next = timestamp + frame
-            return if (gap >= frame && gap <= limit) (gap / frame * frame).toInt() else 0
+        /** Сколько пакетов пропало перед пакетом с номером [sequence] (0 — ничего; больше [LIMIT] — разрыв, не потеря). */
+        fun missing(sequence: Int): Int {
+            val gap = if (last < 0) 0 else ((sequence - last - 1) and 0xFFFF)
+            last = sequence
+            return if (gap in 1..LIMIT) gap else 0
         }
+
+        private companion object { const val LIMIT = 16 }
     }
 
     /** Чистая логика запаса воспроизведения (для тестов). */

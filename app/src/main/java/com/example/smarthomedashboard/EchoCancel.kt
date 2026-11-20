@@ -219,9 +219,6 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
     /** В последнем блоке вычитание не применено (сделало бы хуже): на выходе весь вход, эхо в нём целиком. */
     var raw = false
         private set
-    /** Доля оценки эха, оставшаяся после вычитания в этом блоке, если блок — «громкий пик» (иначе 0). */
-    var residue = 0.0
-        private set
     /** Рабочий фильтр добавляет ложное эхо (путь изменился); снимается, когда фильтр снова помогает. */
     var lost = false
         private set
@@ -267,7 +264,7 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
             val diff = echo[i] - yBg[i]
             dbf += diff * diff
         }
-        raw = false; residue = 0.0
+        raw = false
         if (!(sff.isFinite() && see.isFinite() && syy.isFinite())) { reset(); for (i in 0 until n) e[i] = d[i]; return }
         when (switchFilters(sff, see, dbf)) {
             1 -> { for (i in 0 until n) { e[i] = eBg[i]; echo[i] = yBg[i] }; sff = see; weigh(sdd, see, syy, sxx) }
@@ -289,13 +286,6 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         // оставляем — подавитель должен знать, что эхо здесь есть, и целиком.
         raw = sff > sdd
         if (raw) System.arraycopy(d, 0, e, 0, n)
-        // Громкий пик: по модели почти весь вход — эхо, а после вычитания осталась заметная часть (динамик на пиках
-        // искажает, и вычитание там слабее обычного). Столько и считать остатком в этом блоке. При голосе собеседника
-        // сравнимой с эхом громкости модель объясняет меньшую часть входа, и правило не срабатывает.
-        val left = if (raw) sdd else sff
-        var promised = 0.0
-        for (i in 0 until n) promised += echo[i] * echo[i]
-        residue = if (sxx > n * ACTIVE && promised > PEAK_ECHO * sdd && left > PEAK_LEFT * sdd) left / max(promised, 1.0) else 0.0
     }
 
     /**
@@ -542,13 +532,10 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         const val BOOT = 0.5
         const val BOOT_LIMIT = 8
         /** «Только эхо»: вход ослаблен не меньше чем на 2 дБ и не меньше 0,6 от лучшего. */
-        /** «Громкий пик»: оценка эха — не меньше 0,75 входа, а после вычитания осталось больше 0,3 входа. */
-        const val PEAK_ECHO = 0.75
-        const val PEAK_LEFT = 0.3
         const val ONLY_MIN = 1.6
         const val ONLY_PART = 0.6
         /** Лучшее ослабление забывается медленно (десятки секунд речи): долгая одновременная речь его не сбивает. */
-        const val FORGET = 0.0005
+        const val FORGET = 0.0002
         /** Модель «была хорошей» — ослабляла эхо больше чем на 5 дБ: только тогда её обвал значит скачок сдвига. */
         const val PROVEN = 3.2
         const val COLLAPSE = 0.3
@@ -798,20 +785,21 @@ internal class Suppressor(private val n: Int, rate: Int, private val preset: Dou
         /** Нижняя граница усиления по частоте: −40 дБ. */
         const val FLOOR = 0.01
         /**
-         * Остаток считается не меньше этой доли оценки эха (−10 дБ), даже если модель кажется идеальной: маленький
-         * динамик на громких местах искажает, и вычитанию больше чем на 10 дБ верить нельзя (так же устроен AEC3).
+         * Остаток считается не меньше этой доли оценки эха (−15 дБ), даже если модель кажется идеальной. На стенде
+         * (20.11.2026) вычитание даёт 15 дБ у домофона и 21 дБ у планшета; запас больше (−10 дБ и правило «громкого
+         * пика») давал эху −44…−49 дБ, но глушил голос собеседника при наложении — выбран баланс: эхо −30…−32 дБ.
          */
-        const val MIN_SHARE = 0.1
+        const val MIN_SHARE = 0.03
         /** И не больше учетверённой оценки (фильтр устарел: настоящего эха больше, чем он думает). */
         const val MAX_SHARE = 4.0
-        private const val LEAK_RATE = 0.064
+        private const val LEAK_RATE = 0.016
         private const val TIMING_MIN = 1e6
-        /** Запас по оценке остатка: +4 дБ, пока собеседник молчит, +1 дБ, когда говорит. */
-        const val OVER_SHUT = 2.5
-        const val OVER_OPEN = 1.25
+        /** Запас по оценке остатка: +3 дБ, пока собеседник молчит, без запаса, когда говорит. */
+        const val OVER_SHUT = 2.0
+        const val OVER_OPEN = 1.0
         private const val DD = 0.6
-        /** Остаток гаснет на 1,8 дБ за блок — хвост комнаты после слова. */
-        private const val HOLD = 0.66
+        /** Остаток гаснет на 3 дБ за блок — хвост комнаты после слова. */
+        private const val HOLD = 0.5
         private const val SMEAR = 0.5
         private const val NOISE_BIAS = 1.5
         /** Среднее для оценки «разлитого» остатка: около 0,8 с звучания эха. */
@@ -866,7 +854,7 @@ internal class KotlinEcho(override val block: Int, private val parts: Int, priva
         trust = if (wanted > trust) min(wanted, trust + TRUST_UP) else max(wanted, trust - TRUST_DOWN)
         // Остаток после вычитания — доля от оценки эха: при ослаблении в G раз остаётся 1 / (G − 1).
         val usual = if (linear.gain > 1.0) 1.0 / (linear.gain - 1.0) else 1.0
-        val share = if (linear.raw) 1.0 else max(usual, linear.residue)
+        val share = if (linear.raw) 1.0 else usual
         suppressor.process(error, linear.echo, refPre, trust, share, linear.echoOnly, out)
         deemphasize(out)
     }
@@ -1131,6 +1119,8 @@ internal class EchoLoop(
     val linearDb: Double get() = engine.linearDb
     /** Модель пути эха сошлась — вычитание работает. */
     val converged: Boolean get() = locked && engine.converged
+    /** На сколько отсчётов эхо во входе отстаёт от опоры (номер во входе минус номер в опоре); для разбора записей. */
+    internal val alignment: Long get() = offset + peak
 
     /** Очистить [count] отсчётов на месте. Задержка постоянная: 2 блока. */
     fun process(pcm: ShortArray, count: Int) {
