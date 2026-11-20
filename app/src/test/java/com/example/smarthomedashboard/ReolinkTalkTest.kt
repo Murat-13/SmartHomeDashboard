@@ -51,8 +51,9 @@ class ReolinkTalkTest {
         var pred = ((block[1].toInt() shl 8) or (block[0].toInt() and 0xFF)).toShort().toInt()
         var index = block[2].toInt() and 0xFF
         val out = ArrayList<Short>()
-        out += pred.toShort()
-        for (i in 4 until block.size) for (code in listOf(block[i].toInt() and 0x0F, (block[i].toInt() shr 4) and 0x0F)) {
+        // Как домофон (DVI4, RFC 3551): заголовок — только состояние; отсчётов столько, сколько полубайтов; первый
+        // отсчёт пары — в старших битах (измерение стендом 20.11.2026).
+        for (i in 4 until block.size) for (code in listOf((block[i].toInt() shr 4) and 0x0F, block[i].toInt() and 0x0F)) {
             val step = ImaAdpcm.STEPS[index]
             var diff = step shr 3
             if (code and 4 != 0) diff += step
@@ -69,11 +70,12 @@ class ReolinkTalkTest {
         val enc = ImaAdpcm()
         var signal = 0.0; var noise = 0.0
         repeat(5) { b ->
-            val pcm = ShortArray(1025) { i -> (8_000 * sin(2 * PI * 440 * (b * 1025 + i) / 16_000.0)).toInt().toShort() }
+            val pcm = ShortArray(1024) { i -> (8_000 * sin(2 * PI * 440 * (b * 1024 + i) / 16_000.0)).toInt().toShort() }
             val block = enc.encode(pcm)
             assertEquals("заголовок 4 байта + 512 байт", 516, block.size)
             val back = decode(block)
-            for (i in 0 until 1025) { signal += pcm[i].toDouble() * pcm[i]; val d = pcm[i] - back[i]; noise += d.toDouble() * d }
+            assertEquals("блок = ровно 1024 отсчёта (64 мс), ни один не теряется", 1024, back.size)
+            for (i in 0 until 1024) { signal += pcm[i].toDouble() * pcm[i]; val d = pcm[i] - back[i]; noise += d.toDouble() * d }
         }
         val snr = 10 * log10(signal / noise)
         assertTrue("ADPCM SNR $snr дБ", snr > 20)

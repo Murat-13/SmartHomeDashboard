@@ -22,7 +22,7 @@ import javax.crypto.spec.SecretKeySpec
  * владельца, 8 замеров 0,52–0,56 с). Протокол закрытый; устройство взято из открытого проекта neolink.
  *
  * Сеанс: вход (камера присылает одноразовое число; имя и пароль уходят только как MD5 с ним, ключ AES — из него же),
- * TalkAbility → TalkConfig → непрерывный поток блоков IMA ADPCM (16 кГц, 1025 отсчётов ≈ 64 мс) → TalkReset.
+ * TalkAbility → TalkConfig → непрерывный поток блоков IMA ADPCM (16 кГц, 1024 отсчёта = 64 мс) → TalkReset.
  * Голос приходит отсчётами 8 кГц (как для G.711) и удваивается по частоте. Без потока камера не играет — между
  * фразами идёт тишина; часть тишины в начале не отправляется ([DRAIN_MS]), чтобы очередь камеры растаяла.
  */
@@ -126,7 +126,8 @@ internal class BaichuanTalkSession(
     }
 
     private fun stream() {
-        val samples = lengthPerEncoder + 1
+        // Блок — ровно lengthPerEncoder новых отсчётов (64 мс): домофон проигрывает столько же ([ImaAdpcm]).
+        val samples = lengthPerEncoder
         val blockNs = samples * 1_000_000_000L / rate
         val encoder = ImaAdpcm()
         val block = ShortArray(samples)
@@ -369,21 +370,29 @@ internal object BcCrypto {
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02X".format(it) }
 }
 
-/** IMA ADPCM (DVI): блок = заголовок 4 байта (первый отсчёт, индекс шага) + по два отсчёта в байте. */
+/**
+ * ADPCM для домофона Reolink — DVI4 по RFC 3551 (п. 4.5.1), а не «IMA ADPCM как в WAV». Три отличия:
+ * 1) заголовок 4 байта — **состояние** кодера (предсказанное значение и индекс шага после предыдущего блока), а не
+ *    первый отсчёт; 2) в блоке чётное число отсчётов (1024 = 64 мс), все закодированы; 3) в байте первый отсчёт —
+ *    в старших четырёх битах.
+ * Раскладка «как в WAV» (так в neolink/GStreamer: первый отсчёт в заголовке, 1025 на блок, младшие биты первыми)
+ * давала хрип: домофон терял отсчёт на блок (тон 1000 Гц звучал как 1000,98 Гц) и декодировал пары отсчётов в
+ * обратном порядке (шум на высоких частотах) — измерено стендом [TalkProbe] 20.11.2026.
+ */
 internal class ImaAdpcm {
     private var predictor = 0
     private var index = 0
 
     fun encode(samples: ShortArray): ByteArray {
-        predictor = samples[0].toInt()
-        val out = ByteArray(4 + (samples.size - 1 + 1) / 2)
+        val out = ByteArray(4 + (samples.size + 1) / 2)
         out[0] = predictor.toByte(); out[1] = (predictor shr 8).toByte(); out[2] = index.toByte(); out[3] = 0
         var o = 4
-        var i = 1
+        var i = 0
         while (i < samples.size) {
-            val lo = nibble(samples[i].toInt())
-            val hi = if (i + 1 < samples.size) nibble(samples[i + 1].toInt()) else 0
-            out[o++] = (lo or (hi shl 4)).toByte()
+            // DVI4 (RFC 3551): первый отсчёт пары — в старших четырёх битах (в IMA WAV — наоборот).
+            val first = nibble(samples[i].toInt())
+            val second = if (i + 1 < samples.size) nibble(samples[i + 1].toInt()) else 0
+            out[o++] = ((first shl 4) or second).toByte()
             i += 2
         }
         return out
