@@ -158,7 +158,9 @@ internal class RecArchive(private val context: Context, private val roots: () ->
  * позиция на шкале (время на стене) переводится в (номер отрезка, смещение) и обратно.
  */
 internal class ArchiveDay(val dayStartMs: Long, segments: List<RecFile>, events: List<RecArchive.Event>) {
-    val dayEndMs = dayStartMs + 86_400_000L
+    /** Следующая местная полночь: при переводе часов в сутках 23 или 25 ч (аудит 20.11.2026, A8). */
+    val dayEndMs = ArchiveTimeline.nextDay(dayStartMs)
+    private val spanMs = (dayEndMs - dayStartMs).coerceAtLeast(1)
     val segments = segments.filter { it.endMs > dayStartMs && it.startMs < dayEndMs }.sortedBy { it.startMs }
     val events = events.filter { it.file.endMs > dayStartMs && it.file.startMs < dayEndMs }
 
@@ -187,9 +189,9 @@ internal class ArchiveDay(val dayStartMs: Long, segments: List<RecFile>, events:
     fun wallTime(segment: Int, offsetMs: Long): Long? = segments.getOrNull(segment)?.let { it.startMs + offsetMs }
 
     /** Доля суток (0–1) для времени на стене — для шкалы. */
-    fun fraction(wallMs: Long) = ((wallMs - dayStartMs).toFloat() / 86_400_000f).coerceIn(0f, 1f)
+    fun fraction(wallMs: Long) = ((wallMs - dayStartMs).toFloat() / spanMs).coerceIn(0f, 1f)
 
-    fun timeAt(fraction: Float) = dayStartMs + (fraction.coerceIn(0f, 1f) * 86_400_000L).toLong()
+    fun timeAt(fraction: Float) = dayStartMs + (fraction.coerceIn(0f, 1f) * spanMs).toLong()
 
     companion object {
         /** Отрезки режутся на ключевом кадре — между ними бывают доли секунды; это не пропуск. */

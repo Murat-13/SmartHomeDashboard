@@ -248,7 +248,7 @@ class ArchiveActivity : AppCompatActivity() {
     /** День списка событий; [recenter] — шкала встаёт на последнюю запись этого дня. */
     private fun selectDay(selected: Long?, days: List<Long> = ui.value.days, recenter: Boolean = false) {
         val center = if (recenter && selected != null) {
-            val end = selected + 86_400_000L
+            val end = ArchiveTimeline.nextDay(selected)
             ArchiveTimeline.latest(snapshot.continuous.filter { it.startMs in selected until end },
                 snapshot.events.filter { it.file.startMs in selected until end })?.minus(60_000) ?: (selected + 12 * 3_600_000L)
         } else ui.value.center
@@ -262,7 +262,8 @@ class ArchiveActivity : AppCompatActivity() {
     }
 
     /** Начало недели для «Неделя»: полночь шесть дней назад (сегодня и 6 дней до него). */
-    private fun weekStart(): Long = RecArchive.dayStart(System.currentTimeMillis() - 6 * 86_400_000L)
+    private fun weekStart(): Long = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_MONTH, -6) }
+        .let { RecArchive.dayStart(it.timeInMillis) }
 
     /** Шкала целиком (все дни): участки 24/7 и ролики событий с их длительностью. */
     private fun timelineOf(filter: String?): ArchiveUi.Timeline {
@@ -1358,7 +1359,7 @@ private fun dayTitle(dayStart: Long): String {
     val today = RecArchive.dayStart(System.currentTimeMillis())
     return when (dayStart) {
         today -> "Сегодня"
-        today - 86_400_000L -> "Вчера"
+        RecArchive.dayStart(today - 1) -> "Вчера"
         else -> dayFormat.format(Date(dayStart))
     }
 }
