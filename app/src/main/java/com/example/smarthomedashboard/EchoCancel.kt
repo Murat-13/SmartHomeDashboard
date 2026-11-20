@@ -139,6 +139,8 @@ internal interface EchoEngine {
     fun realign(blocks: Int, history: DoubleArray)
     /** В последнем блоке почти всё, что было на входе, — эхо (а не голос собеседника). */
     val echoDominant: Boolean
+    /** В последнем блоке, по оценке вычитания, только эхо — собеседник молчит (по таким блокам меряется подавление). */
+    val echoOnly: Boolean
     /** Модель пути эха сошлась (линейная часть работает). */
     val converged: Boolean
     /** Модель была, но теперь добавляет ложное эхо: путь изменился (например, сдвиг скакнул). */
@@ -195,7 +197,6 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
     private var sffAct = 1.0
     private var seeAct = 1.0
     private var failing = 0
-    private var stalled = 0
     private var strength = 0.0
     private var current = 0.0
     private val usualRef = DoubleArray(k)
@@ -243,7 +244,7 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         xTime.fill(0.0); power.fill(1.0); eh.fill(0.0); yh.fill(0.0); echo.fill(0.0)
         peyAvg = 1.0; pyyAvg = 1.0; sumAdapt = 0.0; leak = 0.0; adapted = false; updates = 0
         davg1 = 0.0; davg2 = 0.0; dvar1 = 0.0; dvar2 = 0.0; broken = 0
-        sddAct = 1.0; sffAct = 1.0; seeAct = 1.0; failing = 0; stalled = 0; gain = 1.0; echoOnly = false; lost = false; strength = 0.0; current = 0.0; poorRun = 0; shallow = 0; raw = false; usualRef.fill(0.0)
+        sddAct = 1.0; sffAct = 1.0; seeAct = 1.0; failing = 0; gain = 1.0; echoOnly = false; lost = false; strength = 0.0; current = 0.0; poorRun = 0; shallow = 0; raw = false; usualRef.fill(0.0)
         // До схождения шаг поровну по блокам: где главный отклик, заранее неизвестно.
         prop.fill(1.0 / parts)
     }
@@ -330,15 +331,14 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         sddAct += 0.1 * (sdd - sddAct); sffAct += 0.1 * (sff - sffAct); seeAct += 0.1 * (see - seeAct)
         val now = sddAct / max(sffAct, 1.0)
         gain += (now - gain) * if (now > gain) 0.2 else FORGET
-        // Рабочий фильтр добавляет ложное эхо (путь изменился): подряд дольше 0,2 с — модели больше не верим.
+        // Рабочий фильтр добавляет ложное эхо подряд дольше 0,2 с — его оценке больше не верим: подавитель считает
+        // эхом всё, что звучало в опоре, пока фильтр не начнёт помогать снова. Сдвиг при этом не трогаем: так бывает и
+        // без скачка задержки (фильтр подпортила долгая одновременная речь).
         failing = if (sffAct > 1.25 * sddAct) failing + 1 else 0
-        if (failing >= 12) { if (gain > PROVEN) { lost = true; lostWhy = "фильтр добавляет ложное эхо" }; gain = 1.0 }
+        if (failing >= 12) gain = 1.0
         if (gain > 2.0) lost = false
         // Привычная сила отклика — среднее за последние секунды речи (ранний «перелёт» обучения быстро забывается).
         strength += STRENGTH_RATE * (current - strength)
-        // Оба фильтра ничего не дают дольше секунды — учить заново быстрым шагом (при одновременной речи рабочий цел).
-        stalled = if (adapted && sddAct < 1.3 * seeAct && sddAct < 1.3 * sffAct) stalled + 1 else 0
-        if (stalled >= 60) { adapted = false; sumAdapt = 0.0; stalled = 0; prop.fill(1.0 / parts) }
     }
 
     private fun pushReference(x: DoubleArray) {
@@ -436,8 +436,9 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         val bound = sey * sey / (1.0 + see * syy)
         if (rer < bound) rer = bound
         if (rer > 0.5) rer = 0.5
-        // В рабочий режим — когда обученный фильтр уже заметно ослабляет вход (больше 4 дБ).
-        if (!adapted && sumAdapt > parts && sddAct > 2.5 * seeAct) adapted = true
+        // В рабочий режим — когда обученный фильтр уже заметно ослабляет вход (больше 4 дБ) и в любом случае после
+        // полутора секунд быстрого шага: дольше им учить нельзя — при одновременной речи он портит фильтр.
+        if (!adapted && sumAdapt > parts && (sddAct > 2.5 * seeAct || sumAdapt > BOOT_LIMIT * parts)) adapted = true
         val active = sxx > n * ACTIVE
 
         if (adapted) {
@@ -539,6 +540,7 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         /** Опора «звучит»: громче −50 дБ от шкалы (после подъёма верхних частот). */
         const val ACTIVE = 1_000.0
         const val BOOT = 0.5
+        const val BOOT_LIMIT = 8
         /** «Только эхо»: вход ослаблен не меньше чем на 2 дБ и не меньше 0,6 от лучшего. */
         /** «Громкий пик»: оценка эха — не меньше 0,75 входа, а после вычитания осталось больше 0,3 входа. */
         const val PEAK_ECHO = 0.75
@@ -559,8 +561,11 @@ internal class LinearStage(val n: Int, val parts: Int, rate: Int) {
         const val POOR_WINDOW = 62L
         /** Привычная сила отклика — среднее примерно за 3 с речи. */
         const val STRENGTH_RATE = 0.005
-        /** Нижняя граница шага после схождения: модель успевает за медленным уходом пути. */
-        const val MIN_STEP = 0.06
+        /**
+         * Нижняя граница шага после схождения — малая: при одновременной речи большой шаг учит фильтр вычитать голос
+         * собеседника (найдено на речи синтезатора). За уходом часов следит контур, а не шаг.
+         */
+        const val MIN_STEP = 0.01
     }
 }
 
@@ -833,6 +838,7 @@ internal class KotlinEcho(override val block: Int, private val parts: Int, priva
     override val latency get() = block
     override val taps get() = parts * block
     override val echoDominant get() = suppressor.echoDominant
+    override val echoOnly get() = linear.echoOnly
     override val converged get() = trust > 0.5
     override val lost get() = linear.lost
     internal val lostWhy get() = linear.lostWhy
@@ -1120,7 +1126,7 @@ internal class EchoLoop(
 
     init { ready.push(ShortArray(n), n, Int.MAX_VALUE) }
 
-    /** Насколько вход стал тише в блоках, где слышно только эхо, дБ. */
+    /** Насколько вход стал тише в блоках, где слышно только эхо, дБ; 0 — таких блоков почти не было. */
     val suppressionDb: Double get() = if (activeBlocks < 20 || outSum <= 0) 0.0 else 10 * kotlin.math.log10(inSum / outSum)
     val linearDb: Double get() = engine.linearDb
     /** Модель пути эха сошлась — вычитание работает. */
@@ -1219,8 +1225,14 @@ internal class EchoLoop(
         val need = if (searching) LOCK_VOTES else if (engine.converged) RELOCK_VOTES_GOOD else RELOCK_VOTES
         if (votes < need) return
         votes = 0; doubt = false
-        // Эхо там же, где было: модель переучится сама, сдвиг трогать незачем.
-        if (agrees) { confirmed = true; return }
+        // Эхо там же, где было: сдвиг не трогаем, модель учится заново (быстрый старт безопасен — совпадение рисунка
+        // громкости высокое, значит сейчас во входе в основном эхо).
+        if (agrees) {
+            confirmed = true; lostSeen = false
+            engine.reset()
+            log("Эхо ($name): сдвиг прежний, модель учится заново")
+            return
+        }
         if (locked) relocks++
         offset = candidate - PRE_ROLL.toLong() * n
         slip = 0.0
@@ -1273,7 +1285,7 @@ internal class EchoLoop(
         var x2 = 0.0; var d2 = 0.0; var o2 = 0.0
         for (j in 0 until n) { x2 += refBlock[j] * refBlock[j]; d2 += pending[j] * pending[j]; o2 += outBlock[j] * outBlock[j] }
         // Только блоки, где слышно одно эхо: при голосе собеседника вход и не должен становиться тише.
-        if (x2 > n * ACTIVE_POWER && engine.echoDominant) { inSum += d2; outSum += o2; activeBlocks++ }
+        if (x2 > n * ACTIVE_POWER && engine.echoOnly) { inSum += d2; outSum += o2; activeBlocks++ }
     }
 
     /** Состояние контура одной строкой — для разбора в тестах и на стенде. */
@@ -1282,7 +1294,7 @@ internal class EchoLoop(
 
     /** Сводка для журнала: что получилось за разговор. */
     fun summary(): String = when {
-        locked -> "$name: эхо тише на %.0f дБ (вычитанием %.0f дБ), возвращалось через %d мс, уход часов %+.0f млн⁻¹, перезахватов %d"
+        locked -> "$name: эхо без собеседника тише на %.0f дБ (вычитанием %.0f дБ), возвращалось через %d мс, уход часов %+.0f млн⁻¹, перезахватов %d"
             .format(suppressionDb, linearDb, echoDelayMs, drift * 1e6, relocks)
         noEcho -> "$name: эха не было"
         else -> "$name: сдвиг не найден (опора молчала)"
