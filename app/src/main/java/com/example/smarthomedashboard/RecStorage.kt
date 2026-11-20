@@ -158,6 +158,7 @@ internal data class RecFile(
 internal object RecLayout {
     const val ROOT = "records"
     private val SAFE = Regex("[^A-Za-z0-9_-]")
+    private const val REMUX = ".remux"
     private val NAME = Regex("^([ce])_(\\d{10,15})(?:_(\\d{1,10}))?(_s)?(\\.part)?\\.mp4$")
 
     fun cameraKey(tileId: String) = tileId.replace(SAFE, "_").take(64).ifEmpty { "camera" }
@@ -217,6 +218,13 @@ internal object RecLayout {
      * Длительность — по времени последнего изменения файла. Непригодный файл удаляется.
      */
     fun recover(root: File, skip: Set<File> = emptySet()): Int {
+        // Процесс убит во время перекладки в обычный MP4 (Mp4Finalize): временный файл очистке не виден и занимал
+        // место навсегда (аудит 20.11.2026). Сам отрезок цел — перекладка повторится при открытии архива.
+        File(root, ROOT).listFiles()?.forEach { cam -> cam.listFiles()?.forEach { day ->
+            day.listFiles { f -> f.name.endsWith(REMUX) }?.forEach { tmp ->
+                if (!Mp4Finalize.pending(File(tmp.parentFile, tmp.name.removeSuffix(REMUX)))) tmp.delete()
+            }
+        } }
         var fixed = 0
         for (f in scan(root)) {
             if (!f.open || f.path in skip) continue

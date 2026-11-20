@@ -171,4 +171,18 @@ class ReliabilityAuditTest {
         // Камеру в плитке сменили: прежний отпечаток к новой камере не применяется (иначе — отказ навсегда).
         assertNull(CameraLight.pinFor(prefs, "cam", "192.168.1.21"))
     }
+    // ---- Сверх замечаний: временный файл оглавления после падения ----
+
+    @Test fun leftoverRemuxFileIsRemovedOnRecovery() {
+        val root = java.nio.file.Files.createTempDirectory("rec").toFile()
+        try {
+            val day = RecLayout.dayDir(root, "door", 1_790_000_000_000L).apply { mkdirs() }
+            val done = File(day, RecLayout.closedName(RecFile.Kind.CONTINUOUS, 1_790_000_000_000L, 600_000)).apply { writeBytes(ByteArray(10)) }
+            // Процесс убит, пока Mp4Finalize перекладывал отрезок: временный файл не виден очистке и занимал место навсегда.
+            val tmp = File(day, done.name + ".remux").apply { writeBytes(ByteArray(1_000)) }
+            RecLayout.recover(root)
+            assertTrue("временный файл удалён", !tmp.exists())
+            assertTrue("сам отрезок цел", done.exists())
+        } finally { root.deleteRecursively() }
+    }
 }

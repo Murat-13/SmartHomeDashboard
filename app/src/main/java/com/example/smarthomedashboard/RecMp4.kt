@@ -198,6 +198,9 @@ internal object Mp4Finalize {
         }
     }
 
+    /** Файл сейчас в очереди или перекладывается (его временный `.remux` трогать нельзя). */
+    fun pending(file: File) = file.path in pending
+
     /** Фрагментированный MP4: в `moov` есть `mvex` (оглавление фрагментов вместо таблиц кадров). */
     fun isFragmented(file: File): Boolean {
         if (!file.isFile) return false
