@@ -402,6 +402,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private var revealPending = false
     /** Когда показан первый кадр и через сколько после него картинка оказалась у живого (в журнал). */
     private var firstFrameAt = 0L
+    /** Через сколько после создания плеер показал первый кадр (−1 — ещё не показал); смена поверхности его не меняет. */
+    private var firstFrameDelayMs = -1L
     private var liveAfterMs = -1L
     /** Последняя остановка плеера: когда началась и что было в этот момент (в журнал, когда плеер пойдёт дальше). */
     private var stallAt = 0L
@@ -587,6 +589,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         backlogTicks = 0
         revealPending = false
         firstFrameAt = 0
+        firstFrameDelayMs = -1
         liveAfterMs = -1
         stallAt = 0
         catchUpBest = Long.MAX_VALUE
@@ -654,6 +657,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 status = Status.PLAYING
                 updateQuality()
                 firstFrameAt = SystemClock.elapsedRealtime()
+                if (firstFrameDelayMs < 0) firstFrameDelayMs = firstFrameAt - startedAt
                 main.removeCallbacks(settleProbe)
                 main.postDelayed(settleProbe, LiveCatchUp.SETTLE_STEP_MS)
                 // Свой поток пошёл. Временная картинка (субпоток плитки) живая, а свой поток начинает с отставанием:
@@ -760,7 +764,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             (if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс (нужен от $catchUpFloor), остановок $stalls" else "") +
             (if (splitSound) "; звук отдельно" else "") +
             (screenDelay.summary()?.let { "; от прихода до экрана: $it" } ?: "") +
-            (if (firstFrameAt != 0L) "; первый кадр через ${firstFrameAt - startedAt} мс, у живого — через ${liveAfterMs.coerceAtLeast(0)} мс после него" else "") +
+            (if (firstFrameAt != 0L) "; первый кадр через $firstFrameDelayMs мс, у живого — через ${liveAfterMs.coerceAtLeast(0)} мс после него" else "") +
             (liveFactory?.retimer?.takeIf { it.moved > 0 }?.let { "; выровнено кадров ${it.moved} (сдвиг до ${it.maxShiftUs / 1000} мс)" } ?: "") +
             (sequenceRestarts?.get()?.takeIf { it > 0 }?.let { "; отсчёт номеров пакетов начат заново $it раз" } ?: ""))
     }
