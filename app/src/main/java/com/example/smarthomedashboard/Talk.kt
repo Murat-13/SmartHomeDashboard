@@ -410,8 +410,12 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         thread = null
     }
 
+    /** Для тестов: частоты, на которых микрофон «открывается» (на устройстве это решает Android). */
+    internal var rates: (Int) -> Boolean = { true }
+
     @SuppressLint("MissingPermission")
     private fun open(rate: Int, source: Int): AudioRecord? {
+        if (!rates(rate)) return null
         val min = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (min <= 0) return null
         val record = try {
@@ -518,21 +522,62 @@ internal class DoorbellTalk(
     /** Звук с улицы на время разговора — отдельно от видео ([StreetAudio]); в тестах — подмена. */
     internal var street: StreetSource = StreetAudio()
     @Volatile private var streetOn = false
+    /** Номер запуска звука улицы: ответ прежнего запуска (прежнего разговора) не трогает нынешний. */
+    private var streetRun = 0
+    /** Сколько раз подряд звук улицы не пошёл или оборвался (пауза перед следующей попыткой — [STREET_RETRY_MS]). */
+    private var streetFailures = 0
+    /** Запуск звука улицы отправлен, ответа ещё нет. */
+    private var streetStarting = false
+    private val restartStreet = Runnable { if (inCall && !disposed) startStreet() }
 
     private fun startStreet() {
+        // Уже играет или запускается: повторный вызов не должен обесценить ответ идущего запуска.
+        if (streetOn || streetStarting) return
+        streetStarting = true
         val target = url; val login = user
+        val run = ++streetRun
         password(context) { p ->
-            if (disposed || !inCall) return@password
+            if (disposed || !inCall || run != streetRun) return@password
             street.start(target, login, p) { ok ->
                 main.post {
-                    // Звук плееров — выключить (все: иначе второй, запоздалый, слышен как эхо).
-                    if (ok && inCall && !disposed) { streetOn = true; DoorbellVideoView.streetAudio = true; onDuck?.invoke(true) }
+                    if (run != streetRun || !inCall || disposed) return@post
+                    streetStarting = false
+                    if (ok) {
+                        // Звук плееров — выключить (все: иначе второй, запоздалый, слышен как эхо).
+                        streetFailures = 0
+                        streetOn = true
+                        DoorbellVideoView.streetAudio = true
+                        onDuck?.invoke(true)
+                    } else streetLost()
                 }
             }
         }
     }
 
+    /**
+     * Отдельный звук улицы не пошёл или оборвался посреди разговора (камера переподключилась — ретранслятор закрыл
+     * слушателей; сбой Wi-Fi): гостя снова играет плеер, а приём запускается заново, пока идёт разговор. Раньше об
+     * обрыве никто не узнавал, и плееры оставались заглушёнными до «Завершить» (аудит 21.11.2026).
+     */
+    private fun streetLost() {
+        street.stop()
+        if (streetOn) {
+            streetOn = false
+            DoorbellVideoView.streetAudio = false
+            onDuck?.invoke(false)
+            Log.i(TAG, "Звук с улицы оборвался — играет плеер, отдельный приём запускается заново")
+        }
+        val pause = STREET_RETRY_MS[minOf(streetFailures, STREET_RETRY_MS.lastIndex)]
+        streetFailures++
+        main.removeCallbacks(restartStreet)
+        main.postDelayed(restartStreet, pause)
+    }
+
     private fun stopStreet() {
+        streetRun++
+        streetStarting = false
+        streetFailures = 0
+        main.removeCallbacks(restartStreet)
         street.stop()
         if (streetOn) { streetOn = false; DoorbellVideoView.streetAudio = false; onDuck?.invoke(false) }
     }
@@ -543,7 +588,12 @@ internal class DoorbellTalk(
      * [DuplexEcho.active] = false, и работает прежняя защита «говорит кто-то один» ([EchoGate]).
      */
     @Volatile private var duplex: DuplexEcho? = null
-    private val cancelling get() = duplex?.active == true
+    /**
+     * Своё эхоподавление работает в обе стороны: улица пришла на 16 кГц ([DuplexEcho.active] ставит источник звука) и
+     * микрофон открылся на 16 кГц. Микрофон только на 8 кГц — вычитание у него не считается ([MicCapture]), и защита
+     * «говорит кто-то один» остаётся; раньше она снималась по одной частоте улицы (аудит 21.11.2026).
+     */
+    private val cancelling get() = duplex?.active == true && mic.rate == DuplexEcho.RATE
 
     private fun startDuplex(s: TalkChannel) {
         if (!s.wideband || TalkDebug.flag(context, "no_aec")) return
@@ -618,6 +668,9 @@ internal class DoorbellTalk(
         }
         main.post { if (pressed || inCall) onLevel?.invoke(level) }
     })
+
+    /** Для тестов: какие частоты микрофон может открыть ([MicCapture.rates]). */
+    internal fun micRates(allow: (Int) -> Boolean) { mic.rates = allow }
 
     init {
         // Что сейчас звучит из динамика (звук с улицы в разговоре): речь в микрофоне должна быть заметно громче.
@@ -809,6 +862,8 @@ internal class DoorbellTalk(
     companion object {
         const val REQUEST_MIC = 4711
         const val CALL_SILENCE_MS = 120_000L
+        /** Через сколько повторять запуск отдельного звука улицы, если он не пошёл или оборвался посреди разговора. */
+        val STREET_RETRY_MS = longArrayOf(1_000, 2_000, 4_000)
         const val CALL_MAX_MS = 10 * 60_000L
         /** Уровень микрофона (0–1), выше которого считается, что говорят (не тишина). */
         private const val VOICE_LEVEL = 0.04f

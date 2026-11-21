@@ -197,7 +197,7 @@ class TalkTest {
         shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
         val talk = DoorbellTalk(activity) { _, result -> result(null) }
         talk.street = object : StreetSource { // звук с улицы проверяется отдельным тестом
-            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {}
+            override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) {}
             override fun stop() {}
         }
         var now = 0L
@@ -314,7 +314,7 @@ class TalkTest {
         val talk = DoorbellTalk(activity) { _, result -> result(null) }
         val events = mutableListOf<String>()
         talk.street = object : StreetSource {
-            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) { events += "start"; onStarted(true) }
+            override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) { events += "start"; onSound(true) }
             override fun stop() { events += "stop" }
         }
         val ducks = mutableListOf<Boolean>()
@@ -335,7 +335,7 @@ class TalkTest {
         assertEquals(listOf(true, false), ducks)
         // Отдельный звук не пошёл — остаётся звук плеера (не выключаем).
         talk.street = object : StreetSource {
-            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) { onStarted(false) }
+            override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) { onSound(false) }
             override fun stop() {}
         }
         talk.startCall()
@@ -364,7 +364,7 @@ class TalkTest {
         }
         class Street : StreetSource {
             val echoes = mutableListOf<DuplexEcho?>()
-            override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) = onStarted(true)
+            override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) = onSound(true)
             override fun stop() {}
             override val rate get() = DuplexEcho.RATE
             override fun duplex(echo: DuplexEcho?) { echoes += echo; echo?.active = true }
@@ -532,5 +532,276 @@ class TalkTest {
     @Test fun simplexTailIsShorterOnlyForQuickEchoPath() {
         assertEquals(2_500L, EchoGate.tailMs(quick = false))
         assertEquals(1_500L, EchoGate.tailMs(quick = true))
+    }
+
+    private fun call(url: String = Camera(reolinkBackchannel).url, setup: (DoorbellTalk) -> Unit = {}): DoorbellTalk {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val talk = DoorbellTalk(activity) { _, result -> result(null) }
+        setup(talk)
+        talk.prepare(url, "")
+        val until = System.currentTimeMillis() + 5_000
+        while (talk.state != DoorbellTalk.State.READY) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (System.currentTimeMillis() > until) fail("Не подключились: ${talk.state}")
+            Thread.sleep(20)
+        }
+        return talk
+    }
+
+    /** Источник звука улицы, который отвечает по команде теста: каждый запуск отдаёт свой ответ. */
+    private class ScriptedStreet : StreetSource {
+        val answers = CopyOnWriteArrayList<(Boolean) -> Unit>()
+        @Volatile var stops = 0
+        override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) { answers += onSound }
+        override fun stop() { stops++ }
+    }
+
+    /**
+     * Отдельный звук улицы оборвался посреди разговора (камера переподключилась — ретранслятор закрыл слушателей): гостя
+     * снова играет плеер, отдельный звук запускается заново в том же разговоре, а после «Завершить» попыток больше нет.
+     * Раньше об обрыве никто не узнавал: плееры оставались заглушёнными до конца разговора (аудит 21.11.2026).
+     */
+    @Test fun streetAudioLostMidCallGivesPlayerSoundBackAndRestarts() {
+        val street = ScriptedStreet()
+        val ducks = mutableListOf<Boolean>()
+        val talk = call { it.street = street; it.onDuck = { on -> ducks += on } }
+        val looper = shadowOf(Looper.getMainLooper())
+        talk.startCall()
+        looper.idle()
+        assertEquals(1, street.answers.size)
+        // Отдельный звук не пошёл с первого раза — остаётся звук плеера, попытка повторяется.
+        street.answers[0](false)
+        looper.idle()
+        assertEquals(emptyList<Boolean>(), ducks)
+        assertFalse(DoorbellVideoView.streetAudio)
+        looper.idleFor(DoorbellTalk.STREET_RETRY_MS.first() + 100, TimeUnit.MILLISECONDS)
+        assertEquals("вторая попытка", 2, street.answers.size)
+        street.answers[1](true)
+        looper.idle()
+        assertEquals("звук плеера выключен: играет отдельный", listOf(true), ducks)
+        assertTrue(DoorbellVideoView.streetAudio)
+        // Обрыв после нескольких секунд разговора.
+        street.answers[1](false)
+        looper.idle()
+        assertEquals("звук плеера возвращён", listOf(true, false), ducks)
+        assertFalse(DoorbellVideoView.streetAudio)
+        assertTrue("разговор продолжается", talk.inCall)
+        looper.idleFor(DoorbellTalk.STREET_RETRY_MS.first() + 100, TimeUnit.MILLISECONDS)
+        assertEquals("отдельный звук запускается заново", 3, street.answers.size)
+        street.answers[2](true)
+        looper.idle()
+        assertEquals("снова один источник", listOf(true, false, true), ducks)
+        assertTrue(DoorbellVideoView.streetAudio)
+        // Обрыв и «Завершить», пока идёт восстановление: попыток больше нет, плееры не заглушены.
+        street.answers[2](false)
+        looper.idle()
+        talk.endCall()
+        assertEquals(listOf(true, false, true, false), ducks)
+        looper.idleFor(30, TimeUnit.SECONDS)
+        assertEquals("после конца разговора звук улицы не запускается", 3, street.answers.size)
+        assertFalse(DoorbellVideoView.streetAudio)
+        talk.dispose()
+    }
+
+    /** Запоздалый ответ звука улицы от прежнего разговора не глушит плееры следующего. */
+    @Test fun lateAnswerOfPreviousCallDoesNotMuteNextCall() {
+        val street = ScriptedStreet()
+        val ducks = mutableListOf<Boolean>()
+        val talk = call { it.street = street; it.onDuck = { on -> ducks += on } }
+        val looper = shadowOf(Looper.getMainLooper())
+        talk.startCall()
+        looper.idle()
+        talk.endCall()
+        talk.startCall()
+        looper.idle()
+        assertEquals(2, street.answers.size)
+        street.answers[0](true) // первый разговор уже закончен
+        looper.idle()
+        assertEquals("ответ прежнего разговора не в счёт", emptyList<Boolean>(), ducks)
+        assertFalse(DoorbellVideoView.streetAudio)
+        street.answers[0](false)
+        looper.idle()
+        looper.idleFor(30, TimeUnit.SECONDS)
+        assertEquals("и новых попыток из-за него нет", 2, street.answers.size)
+        street.answers[1](true)
+        looper.idle()
+        assertEquals(listOf(true), ducks)
+        talk.endCall()
+        talk.dispose()
+        assertFalse(DoorbellVideoView.streetAudio)
+    }
+
+    /** Поддельная камера со звуком G.711: после PLAY шлёт пакеты по 20 мс; [packets] — сколько до обрыва (null — без конца). */
+    private class AudioCamera(private val packets: Int?) {
+        val server = ServerSocket(0)
+        val url get() = "rtsp://127.0.0.1:${server.localPort}/audio"
+
+        init {
+            thread(isDaemon = true) {
+                try { while (true) { val s = server.accept(); thread(isDaemon = true) { serve(s) } } } catch (_: Exception) {}
+            }
+        }
+
+        private fun serve(s: Socket) = s.use {
+            val input = DataInputStream(s.getInputStream())
+            val out = s.getOutputStream()
+            fun reply(cseq: String, headers: String = "", body: String = "") {
+                val b = body.toByteArray()
+                synchronized(out) {
+                    out.write(("RTSP/1.0 200 OK\r\nCSeq: $cseq\r\n$headers" +
+                        (if (b.isNotEmpty()) "Content-Length: ${b.size}\r\n" else "") + "\r\n").toByteArray() + b)
+                    out.flush()
+                }
+            }
+            try {
+                while (true) {
+                    val first = input.read()
+                    if (first < 0) break
+                    if (first == '$'.code) { input.readUnsignedByte(); input.skipBytes(input.readUnsignedShort()); continue }
+                    val head = StringBuilder().append(first.toChar())
+                    while (!head.endsWith("\r\n\r\n")) head.append(input.read().toChar())
+                    val text = head.toString()
+                    val cseq = Regex("CSeq: (\\d+)").find(text)!!.groupValues[1]
+                    when (text.substringBefore(' ')) {
+                        "DESCRIBE" -> reply(cseq, "Content-Type: application/sdp\r\nContent-Base: $url/\r\n",
+                            "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=x\r\nt=0 0\r\nm=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=control:track1\r\n")
+                        "SETUP" -> reply(cseq, "Session: 7;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n")
+                        "PLAY" -> {
+                            reply(cseq, "Session: 7\r\n")
+                            thread(isDaemon = true) {
+                                try {
+                                    var n = 0
+                                    while (packets == null || n < packets) {
+                                        val rtp = ByteArray(12 + 160) { 0xFF.toByte() }
+                                        rtp[0] = 0x80.toByte(); rtp[1] = 0
+                                        rtp[2] = (n shr 8).toByte(); rtp[3] = n.toByte()
+                                        val ts = n * 160
+                                        rtp[4] = (ts shr 24).toByte(); rtp[5] = (ts shr 16).toByte(); rtp[6] = (ts shr 8).toByte(); rtp[7] = ts.toByte()
+                                        synchronized(out) {
+                                            out.write(byteArrayOf('$'.code.toByte(), 0, (rtp.size shr 8).toByte(), rtp.size.toByte()) + rtp)
+                                            out.flush()
+                                        }
+                                        n++
+                                        Thread.sleep(20)
+                                    }
+                                    s.close()
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        "TEARDOWN" -> { reply(cseq); break }
+                        else -> reply(cseq, "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n")
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun await(what: String, condition: () -> Boolean) {
+        val until = System.currentTimeMillis() + 5_000
+        while (!condition()) {
+            if (System.currentTimeMillis() > until) fail("Не дождались: $what")
+            Thread.sleep(10)
+        }
+    }
+
+    /** Настоящий приём звука улицы: поток оборвался после нескольких пакетов — источник сообщает об этом, а не молчит. */
+    @Test fun streetAudioReportsBreakAfterItStarted() {
+        val camera = AudioCamera(packets = 15)
+        val street = StreetAudio().apply { silent = true }
+        val answers = CopyOnWriteArrayList<Boolean>()
+        street.start(camera.url, "", null) { answers += it }
+        await("звук пошёл: $answers") { answers.firstOrNull() == true }
+        await("обрыв замечен: $answers") { answers.toList() == listOf(true, false) }
+        assertEquals("после обрыва звук не идёт", 0, street.rate)
+        // Тот же источник можно запустить заново (так делает разговор), и остановка обходится без ответа.
+        val again = CopyOnWriteArrayList<Boolean>()
+        street.start(AudioCamera(packets = null).url, "", null) { again += it }
+        await("после перезапуска звук пошёл: $again") { again.firstOrNull() == true }
+        street.stop()
+        Thread.sleep(300)
+        assertEquals("остановленный источник не сообщает об обрыве", listOf(true), again.toList())
+    }
+
+    /** «Завершить» и сразу «Ответить»: поток прежнего приёма, досматривая свой обрыв, не гасит новый приём. */
+    @Test fun streetAudioRestartedAtOnceKeepsPlaying() {
+        val street = StreetAudio().apply { silent = true }
+        val first = CopyOnWriteArrayList<Boolean>()
+        street.start(AudioCamera(packets = null).url, "", null) { first += it }
+        await("первый приём: $first") { first.firstOrNull() == true }
+        street.stop()
+        val second = CopyOnWriteArrayList<Boolean>()
+        street.start(AudioCamera(packets = null).url, "", null) { second += it }
+        await("второй приём: $second") { second.firstOrNull() == true }
+        Thread.sleep(500)
+        assertEquals("второй приём идёт", 8_000, street.rate)
+        assertEquals(listOf(true), second.toList())
+        assertEquals("первый, остановленный, больше ничего не сообщает", listOf(true), first.toList())
+        street.stop()
+        assertEquals(0, street.rate)
+    }
+
+    /**
+     * Канал и звук улицы — 16 кГц (Reolink), а микрофон открылся только на 8 кГц: своё эхоподавление у микрофона на такой
+     * частоте не работает, значит, запасная защита «говорит кто-то один» должна остаться — пока улица звучит из
+     * динамика, микрофон молчит. Раньше защита снималась по одной лишь частоте улицы (аудит 21.11.2026).
+     */
+    @Test fun echoGateStaysWhenMicrophoneOpensOnlyAtNarrowband() {
+        class Wide : TalkChannel {
+            val frames = CopyOnWriteArrayList<Int>() // наибольший по модулю отсчёт каждого кадра, ушедшего в домофон
+            override fun open() = "тест 16 кГц"
+            override fun beginTalkspurt() {}
+            override fun send(pcm: ShortArray, count: Int) { frames += (0 until count).maxOfOrNull { abs(pcm[it].toInt()) } ?: 0 }
+            override val wideband get() = true
+            override val queued = 0
+            override val alive = true
+            override val sentPackets = 0
+            override val sentVoice = 0
+            override fun close() {}
+        }
+        // Улица 16 кГц звучит громко и не умолкает; эхоподавление она включает по своей частоте, как StreetAudio.
+        class LoudStreet : StreetSource {
+            override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) = onSound(true)
+            override fun stop() {}
+            override val rate get() = DuplexEcho.RATE
+            override val lastLoudAt get() = System.nanoTime()
+            override val playingRms get() = 3_000.0
+            override fun duplex(echo: DuplexEcho?) { echo?.active = true }
+        }
+        // В микрофоне — громкий тон (как голос гостя из динамика планшета).
+        org.robolectric.shadows.ShadowAudioRecord.setSourceProvider {
+            object : org.robolectric.shadows.ShadowAudioRecord.AudioRecordSource {
+                var at = 0
+                override fun readInShortArray(audioData: ShortArray, offsetInShorts: Int, sizeInShorts: Int, isBlocking: Boolean): Int {
+                    for (i in 0 until sizeInShorts) audioData[offsetInShorts + i] = (8_000 * kotlin.math.sin(2 * Math.PI * 1_000 * (at++) / 8_000.0)).toInt().toShort()
+                    return sizeInShorts
+                }
+            }
+        }
+        fun sent(micRates: (Int) -> Boolean): List<Int> {
+            val wide = Wide()
+            TalkChannels.forget()
+            TalkChannels.reolink = { _, _, _ -> wide }
+            val talk = call("rtsp://127.0.0.1:1/h264Preview_01_sub") { it.street = LoudStreet(); it.micRates(micRates) }
+            talk.startCall()
+            shadowOf(Looper.getMainLooper()).idle()
+            // Звук улицы принят (ответ источника обработан) — дальше защита уже действует; кадры до этого не в счёт.
+            wide.frames.clear()
+            await("голос пошёл в канал") { shadowOf(Looper.getMainLooper()).idle(); wide.frames.size >= 25 }
+            talk.endCall()
+            talk.dispose()
+            return wide.frames.drop(3)
+        }
+        try {
+            val narrow = sent { it == 8_000 }
+            assertTrue("микрофон 8 кГц: пока улица звучит, в домофон уходит тишина, а ушло до ${narrow.max()}", narrow.all { it == 0 })
+            // Штатный случай 16/16: работает своё эхоподавление, микрофон защитой не закрывается.
+            val wide = sent { true }
+            assertTrue("микрофон 16 кГц: голос не глушится защитой «говорит кто-то один»", wide.any { it > 0 })
+        } finally {
+            org.robolectric.shadows.ShadowAudioRecord.clearSource()
+            TalkChannels.reolink = { h, u, p -> BaichuanTalkSession(h, u, p) }
+            TalkChannels.forget()
+        }
     }
 }

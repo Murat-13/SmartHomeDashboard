@@ -18,7 +18,11 @@ import android.util.Log
  */
 /** Источник звука с улицы для разговора (в тестах — подмена). */
 internal interface StreetSource {
-    fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit)
+    /**
+     * Подключиться и играть. [onSound] — из фонового потока: `true` — звук пошёл; `false` — не получилось или звук
+     * оборвался сам (связь с камерой пропала посреди разговора). После [stop] источник больше ничего не сообщает.
+     */
+    fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit)
     fun stop()
     /** Когда из динамика последний раз звучала улица громко (`System.nanoTime`, 0 — не звучала). */
     val lastLoudAt: Long get() = 0L
@@ -36,11 +40,15 @@ internal interface StreetSource {
 }
 
 internal class StreetAudio : StreetSource {
-    @Volatile private var running = false
+    /**
+     * Один запуск приёма. У остановленного или сменённого запуска поток досматривает свой обрыв сам и общего состояния
+     * уже не трогает: иначе «Завершить» и сразу «Ответить» гасили бы новый приём руками старого потока.
+     */
+    private class Run { @Volatile var session: RtspSession? = null }
+    @Volatile private var current: Run? = null
+    private fun alive(run: Run) = current === run
     /** Только принимать (измерение [TalkProbe]): динамик планшета молчит. */
     @Volatile var silent = false
-    @Volatile private var session: RtspSession? = null
-    private var thread: Thread? = null
     @Volatile var playedMs = 0L
         private set
     @Volatile var trimmedMs = 0L
@@ -77,21 +85,23 @@ internal class StreetAudio : StreetSource {
     @Volatile private var flowing = false
     override val rate get() = if (flowing) rateUsed else 0
 
-    /** Подключиться и играть; [onStarted] — из фонового потока: звук пошёл (true) или не получилось (false). */
-    override fun start(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {
-        if (running) return
-        running = true
-        thread = Thread({ run(rtsp, user, password, onStarted) }, "street-audio").apply { isDaemon = true; start() }
+    override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) {
+        if (current != null) return
+        val run = Run()
+        current = run
+        playedMs = 0; trimmedMs = 0; receivedSamples = 0; lostMs = 0; startedAt = 0
+        Thread({ run(run, rtsp, user, password, onSound) }, "street-audio").apply { isDaemon = true; start() }
     }
 
     override fun stop() {
-        running = false
-        session?.close()
-        session = null
-        thread = null
+        val run = current ?: return
+        current = null
+        flowing = false
+        echo?.active = false
+        run.session?.close()
     }
 
-    private fun run(rtsp: String, user: String, password: String?, onStarted: (Boolean) -> Unit) {
+    private fun run(run: Run, rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) {
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
         var player: Thread? = null
@@ -100,8 +110,8 @@ internal class StreetAudio : StreetSource {
         try {
             val relay = CameraHub.relayUrl(rtsp, user)
             val s = RtspSession(relay ?: rtsp, user, password, connectTimeoutMs = 3_000, readTimeoutMs = 10_000)
-            session = s
-            if (!running) { s.close(); return }
+            run.session = s
+            if (!alive(run)) { s.close(); return }
             val setup = s.open { it.isAudio && it.direction != "sendonly" &&
                 (AacDepacketizer.create(it) != null || G711Depacketizer.create(it) != null) }.first()
             val aac = AacDepacketizer.create(setup.track)
@@ -117,7 +127,7 @@ internal class StreetAudio : StreetSource {
             track = t
             if (silent) t.setVolume(0f)
             t.play()
-            player = Thread({ playout(t, fifo, rate) }, "street-audio-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+            player = Thread({ playout(run, t, fifo, rate) }, "street-audio-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
             val dec = aac?.let { decoder(it) }
             codec = dec
             val info = MediaCodec.BufferInfo()
@@ -127,7 +137,7 @@ internal class StreetAudio : StreetSource {
                 "${if (aac != null) "AAC" else setup.track.encoding} ${rate / 1000} кГц)")
             s.read(object : RtspSession.Sink {
                 override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
-                    if (!running) { s.close(); return }
+                    if (!alive(run)) { s.close(); return }
                     val rtp = RtpPacket.parse(packet, length) ?: return
                     if (startedAt == 0L) startedAt = System.nanoTime()
                     if (g711 != null) {
@@ -154,26 +164,26 @@ internal class StreetAudio : StreetSource {
                             drain(dec, info, fifo, limit)
                         }
                     }
-                    if (!started) { started = true; onStarted(true) }
+                    if (!started) { started = true; onSound(true) }
                 }
             })
         } catch (e: Exception) {
-            if (running) Log.w(TAG, "Звук с улицы отдельно не пошёл: ${e.javaClass.simpleName} ${e.message}")
+            if (alive(run)) Log.w(TAG, "Звук с улицы отдельно ${if (started) "оборвался" else "не пошёл"}: ${e.javaClass.simpleName} ${e.message}")
         } finally {
-            running = false
+            // Остановили ([stop]) — общее состояние уже принадлежит следующему запуску или сброшено; оборвалось само —
+            // сбрасываем и сообщаем: разговор вернёт звук плеера и запустит приём заново.
+            val broken = alive(run)
+            if (broken) { current = null; flowing = false; mine?.active = false }
             player?.interrupt()
             try { codec?.stop() } catch (_: Exception) {}
             try { codec?.release() } catch (_: Exception) {}
             try { track?.stop() } catch (_: Exception) {}
             try { track?.release() } catch (_: Exception) {}
-            session?.close()
-            session = null
-            flowing = false
-            mine?.active = false
-            if (started) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс; " +
+            run.session?.close()
+            if (started && broken) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс; " +
                 "получено ${receivedSamples * 1000 / rateUsed.coerceAtLeast(1)} мс звука за ${(System.nanoTime() - startedAt) / 1_000_000} мс" +
                 if (lostMs > 0) ", потеряно в пути $lostMs мс" else "")
-            if (!started) onStarted(false)
+            if (broken) onSound(false)
         }
     }
 
@@ -222,13 +232,13 @@ internal class StreetAudio : StreetSource {
      * Играть по 20 мс. Камера шлёт звук пачками (разброс 100–200 мс, проверка 20.11.2026): запас [TARGET_MS]; кончился —
      * тишина, пока не накопится снова (не дробить речь); вырос больше [MAX_MS] — сбросить до [TARGET_MS].
      */
-    private fun playout(track: AudioTrack, fifo: ShortFifo, rate: Int) {
+    private fun playout(run: Run, track: AudioTrack, fifo: ShortFifo, rate: Int) {
         val chunk = rate / 50
         val buf = ShortArray(chunk)
         val scratch = ShortArray(rate)
         var buffering = true
         try {
-            while (running) {
+            while (alive(run)) {
                 val excess = Playout.excess(fifo.size, rate)
                 if (excess > 0) { fifo.pop(scratch, excess); trimmedMs += excess * 1000L / rate }
                 buffering = Playout.buffering(fifo.size, rate, buffering, chunk)
