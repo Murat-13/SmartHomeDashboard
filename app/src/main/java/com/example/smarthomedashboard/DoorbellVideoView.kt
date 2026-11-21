@@ -189,25 +189,30 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         exo.playWhenReady = true
         exo.prepare()
         soundPlayer = exo
+        soundLate.reset()
     }
 
     private fun stopSound() {
         soundPlayer?.release()
         soundPlayer = null
+        soundLate.reset()
     }
 
-    /** Звук держится у живого так же, как картинка: накопил лишнее — чуть быстрее (тон не меняется). */
+    /**
+     * Звук держится у живого так же, как картинка: накопил лишнее — чуть быстрее (тон не меняется). И не позже
+     * картинки: плеер звука стартует сам по себе и мог остаться позади неё на 0,2–0,4 с (камеры со звуком G.711,
+     * стенд 21.11.2026) — тогда он её догоняет. Раньше картинки звук не тормозится (решение владельца — после
+     * проверки на слух).
+     */
     private fun paceSound() {
         val exo = soundPlayer ?: return
         val to = LiveCatchUp.TARGET_MS + LiveCatchUp.shiftFor(catchUpFloor)
-        val buffered = exo.totalBufferedDuration
         val current = exo.playbackParameters.speed
-        val speed = when {
-            buffered > to + LiveCatchUp.SOUND_START_MS -> LiveCatchUp.SOUND_SPEED
-            buffered < to + LiveCatchUp.SOUND_STOP_MS -> 1f
-            else -> current
-        }
-        if (speed != current) exo.setPlaybackSpeed(speed)
+        val late = if (soundFollows) soundLate.value() else null
+        val speed = LiveCatchUp.soundSpeed(exo.totalBufferedDuration, to, late, current)
+        if (speed == current) return
+        if (current == 1f && late != null && late > LiveCatchUp.SOUND_LATE_START_MS) soundCatchUps++
+        exo.setPlaybackSpeed(speed)
     }
 
     /**
@@ -346,7 +351,6 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 bufferedMax = maxOf(bufferedMax, buffered)
                 lastBuffered = buffered
                 syncSound()
-                paceSound()
                 // Неровность прихода измеряется раз в минуту. Плеер, запущенный раньше первого замера (старт
                 // приложения — плитка ждёт общий поток и стартует с его первым кадром) или до того, как неровность
                 // выросла (ночь → день), поднимает запас сам, а не после серии остановок (замер 21.11.2026).
@@ -355,13 +359,20 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     if (seed > seedFloor) { seedFloor = seed; if (catchUpFloor < seed) catchUpFloor = seed }
                 }
                 val videoLag = shownFrame?.last?.let { ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, System.nanoTime()) }
+                // Звук отдельным плеером: на сколько он опережает картинку (в журнал при закрытии) и не отстал ли.
+                val sound = soundPlayer?.takeIf { it.isPlaying }
                 if (videoLag != null) {
                     screenDelay.add(videoLag)
-                    // Звук отдельным плеером: на сколько он опережает картинку (только замер, в журнал при закрытии).
-                    soundPlayer?.takeIf { it.isPlaying }?.let { sound ->
-                        soundLead.add(videoLag, sound.totalBufferedDuration, CameraHub.audioAheadMs(playingRtsp, source?.user.orEmpty()))
+                    if (sound != null) {
+                        val soundLag = sound.totalBufferedDuration
+                        val ahead = CameraHub.audioAheadMs(playingRtsp, source?.user.orEmpty())
+                        soundLead.add(videoLag, soundLag, ahead)
+                        soundLate.add(soundLag - videoLag - (ahead ?: 0), sound.playbackParameters.speed)
                     }
                 }
+                // Нет свежего замера (звук или картинка стоят) — прежние не в счёт: по старым звук не ускоряется.
+                if (videoLag == null || sound == null) soundLate.reset()
+                paceSound()
                 // Рывок идёт сам (его останавливает [endBurst]); большое отставание, которое держится, — повод для рывка.
                 backlogTicks = if (LiveCatchUp.burstMs(buffered, burstTo()) > 0) backlogTicks + 1 else 0
                 if (burstUntil != 0L || (backlogTicks >= LiveCatchUp.BURST_CONFIRM_TICKS && startBurst(exo))) {
@@ -413,6 +424,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Звук отдельным плеером против картинки и сколько раз он прерывался за показ (в журнал при закрытии). */
     private val soundLead = SoundLead()
     private var soundStalls = 0
+    /** Звук позже картинки (сглаженно) и сколько раз за показ он её догонял; [soundFollows] — проверочный выключатель. */
+    private val soundLate = SoundLate()
+    private var soundCatchUps = 0
+    private var soundFollows = true
     /** Рендереры живого видео текущего плеера (счётчики выравнивания — в журнал при закрытии). */
     private var liveFactory: LiveRenderers? = null
 
@@ -577,6 +592,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             val relay = if (skipRelay) null else CameraHub.relayUrl(rtsp, src.user)
             viaRelay = relay != null
             splitSound = viaRelay && !LiveTuning.off(context, "player_audio")
+            soundFollows = !LiveTuning.off(context, "sound_free")
             soundPassword = password
             val url = relay ?: DoorbellConfig.withCredentials(rtsp, src.user, password)
             val sequenceRestarts = java.util.concurrent.atomic.AtomicInteger().also { this.sequenceRestarts = it }
@@ -662,7 +678,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         firstFrameAt = 0
         firstFrameDelayMs = -1
         soundLead.reset()
+        soundLate.reset()
         soundStalls = 0
+        soundCatchUps = 0
         catchUpStart = if (LiveTuning.off(context, "wide_corridor")) LiveCatchUp.WIDE_START_MS else LiveCatchUp.START_MS
         liveAfterMs = -1
         stallAt = 0
@@ -839,6 +857,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 counters.renderedOutputBufferCount / seconds, seconds) +
             (if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс (нужен от $catchUpFloor), остановок $stalls" else "") +
             (if (splitSound) "; звук отдельно" + (soundLead.summary()?.let { ": $it" } ?: "") +
+                (if (soundCatchUps > 0) ", догонял картинку $soundCatchUps раз" else "") +
                 (if (soundStalls > 0) ", прерывался $soundStalls раз" else "") else "") +
             (screenDelay.summary()?.let { "; от прихода до экрана: $it" } ?: "") +
             (if (firstFrameAt != 0L) "; первый кадр через $firstFrameDelayMs мс, у живого — через ${liveAfterMs.coerceAtLeast(0)} мс после него" else "") +
@@ -1224,6 +1243,40 @@ internal class SoundLead {
     }
 }
 
+/**
+ * На сколько звук отдельного плеера позже картинки — сглаженно, по последним замерам (раз в секунду): запас видео
+ * от кадра к кадру прыгает, одиночный замер ничего не значит. Пока звук ускорен, прежние замеры уменьшаются на
+ * набранное за секунду — оценка не отстаёт от дела, и звук не проскакивает картинку.
+ */
+internal class SoundLate {
+    private val recent = LongArray(SIZE)
+    private var count = 0
+
+    fun reset() { count = 0 }
+
+    /** [lateMs] — звук позже картинки на столько (минус — раньше); [speed] — скорость плеера звука в эту секунду. */
+    fun add(lateMs: Long, speed: Float) {
+        if (lateMs < -MAX_MS || lateMs > MAX_MS) return
+        val gained = ((speed - 1f) * LiveCatchUp.CHECK_MS).toLong()
+        if (gained != 0L) for (i in 0 until minOf(count, SIZE)) recent[i] -= gained
+        recent[count % SIZE] = lateMs
+        count++
+    }
+
+    /** Середина последних замеров; null — замеров мало. */
+    fun value(): Long? {
+        val n = minOf(count, SIZE)
+        if (n < MIN_SAMPLES) return null
+        return recent.copyOf(n).also { it.sort() }[n / 2]
+    }
+
+    private companion object {
+        const val SIZE = 5
+        const val MIN_SAMPLES = 3
+        const val MAX_MS = 10_000L
+    }
+}
+
 /** Последний показанный кадр: время кадра в потоке и момент показа (пишет поток плеера, читает главный). */
 internal class ShownFrame {
     class At(val ptsUs: Long, val atNs: Long)
@@ -1347,6 +1400,30 @@ internal object LiveCatchUp {
     const val SOUND_START_MS = 400L
     const val SOUND_STOP_MS = 100L
     const val SOUND_SPEED = 1.25f
+    /**
+     * Звук позже картинки больше чем на [SOUND_LATE_START_MS] — догоняет её ([SOUND_LATE_SPEED]; дальше
+     * [SOUND_LATE_FAR_MS] — [SOUND_SPEED]) и возвращается к обычной скорости, догнав до [SOUND_LATE_STOP_MS].
+     * Отставание звука заметно примерно со 125 мс. Ниже [SOUND_MIN_MS] своего запаса звук не ускоряется: дальше обрывы.
+     */
+    const val SOUND_LATE_START_MS = 120L
+    const val SOUND_LATE_STOP_MS = 40L
+    const val SOUND_LATE_FAR_MS = 400L
+    const val SOUND_LATE_SPEED = 1.1f
+    const val SOUND_MIN_MS = 200L
+
+    /**
+     * Скорость отдельного плеера звука: [bufferedMs] — его запас, [targetMs] — цель видеоплеера, [lateMs] — на сколько
+     * звук позже картинки (минус — раньше; null — неизвестно, тогда только прежнее правило «не отставать от живого»).
+     */
+    fun soundSpeed(bufferedMs: Long, targetMs: Long, lateMs: Long?, current: Float): Float = when {
+        bufferedMs > targetMs + SOUND_START_MS -> SOUND_SPEED
+        lateMs == null -> if (bufferedMs < targetMs + SOUND_STOP_MS) 1f else current
+        bufferedMs <= SOUND_MIN_MS -> 1f
+        lateMs > SOUND_LATE_FAR_MS -> SOUND_SPEED
+        lateMs > SOUND_LATE_START_MS -> SOUND_LATE_SPEED
+        lateMs > SOUND_LATE_STOP_MS && current > 1f -> SOUND_LATE_SPEED
+        else -> 1f
+    }
 
     fun speedFor(bufferedMs: Long, current: Float, startMs: Long = START_MS): Float = when {
         bufferedMs > FAR_MS -> FAR_SPEED

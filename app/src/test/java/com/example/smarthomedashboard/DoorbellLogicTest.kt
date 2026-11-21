@@ -320,4 +320,46 @@ class DoorbellLogicTest {
             "rtsp://10.0.0.5:554/cam/realmonitor?channel=1&subtype=0", "rtsp://[fe80::1]:554/x")
             .forEach { assertEquals(it, DoorbellConfig.playableRtsp(it)) }
     }
+
+    @Test fun soundCatchesUpWithPictureButIsNeverSlowedOrDrained() {
+        val to = LiveCatchUp.TARGET_MS
+        // Звук позже картинки (камера с G.711 на стенде: на 0,2–0,4 с) — мягко догоняет, далеко позади — быстрее.
+        assertEquals(LiveCatchUp.SOUND_LATE_SPEED, LiveCatchUp.soundSpeed(600, to, lateMs = 250, current = 1f), 0f)
+        assertEquals(LiveCatchUp.SOUND_SPEED, LiveCatchUp.soundSpeed(650, to, lateMs = 450, current = 1f), 0f)
+        // Догоняет до 40 мс, не останавливаясь на пороге начала.
+        assertEquals(LiveCatchUp.SOUND_LATE_SPEED, LiveCatchUp.soundSpeed(450, to, lateMs = 80, current = LiveCatchUp.SOUND_LATE_SPEED), 0f)
+        assertEquals(1f, LiveCatchUp.soundSpeed(400, to, lateMs = 30, current = LiveCatchUp.SOUND_LATE_SPEED), 0f)
+        // Небольшое отставание и звук раньше картинки — обычная скорость (раньше картинки звук не тормозится).
+        assertEquals(1f, LiveCatchUp.soundSpeed(400, to, lateMs = 100, current = 1f), 0f)
+        assertEquals(1f, LiveCatchUp.soundSpeed(250, to, lateMs = -200, current = 1f), 0f)
+        // Свой запас звука мал — не ускоряется, сколько бы ни отставал: иначе обрывы.
+        assertEquals(1f, LiveCatchUp.soundSpeed(LiveCatchUp.SOUND_MIN_MS, to, lateMs = 300, current = 1f), 0f)
+        // Прежнее правило «не отставать от живого» работает и без сведений о картинке.
+        assertEquals(LiveCatchUp.SOUND_SPEED, LiveCatchUp.soundSpeed(to + 401, to, lateMs = null, current = 1f), 0f)
+        assertEquals(LiveCatchUp.SOUND_SPEED, LiveCatchUp.soundSpeed(to + 200, to, lateMs = null, current = LiveCatchUp.SOUND_SPEED), 0f)
+        assertEquals(1f, LiveCatchUp.soundSpeed(to + 99, to, lateMs = null, current = LiveCatchUp.SOUND_SPEED), 0f)
+        assertEquals(LiveCatchUp.SOUND_SPEED, LiveCatchUp.soundSpeed(to + 401, to, lateMs = -100, current = 1f), 0f)
+    }
+
+    @Test fun soundLateIsSmoothedAndFollowsCatchUp() {
+        val late = SoundLate()
+        assertNull("по одному-двум замерам звук не трогаем", late.apply { add(400, 1f); add(380, 1f) }.value())
+        late.add(900, 1f) // всплеск: запас видео на миг упал
+        assertEquals("одиночный всплеск не решает", 400L, late.value())
+        late.add(390, 1f); late.add(410, 1f)
+        assertEquals(400L, late.value())
+        // Звук ускорен на 10 %: за секунду набирает 100 мс, прежние замеры «стареют» на столько же.
+        var speedUps = 0
+        var real = 400L
+        while (LiveCatchUp.soundSpeed(600, LiveCatchUp.TARGET_MS, late.value(), if (speedUps == 0) 1f else LiveCatchUp.SOUND_LATE_SPEED) > 1f) {
+            real -= 100
+            late.add(real, LiveCatchUp.SOUND_LATE_SPEED)
+            speedUps++
+            assertTrue("догон не бесконечен", speedUps < 10)
+        }
+        assertTrue("остановился около картинки, а не проскочил её: осталось $real мс", real in -60..LiveCatchUp.SOUND_LATE_STOP_MS)
+        late.reset()
+        assertNull(late.value())
+        assertNull("замер вне разумного — не замер", SoundLate().apply { add(60_000, 1f); add(60_000, 1f); add(60_000, 1f) }.value())
+    }
 }
