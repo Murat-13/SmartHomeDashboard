@@ -145,6 +145,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private var soundPlayer: ExoPlayer? = null
     /** Текущий видеоплеер создан без звуковой дорожки. */
     private var splitSound = false
+    /** Звук улицы играет отдельный плеер: после приглушения он начинает с живого, без старого запаса. */
+    internal val soundSeparate get() = splitSound
     private var soundPassword: String? = null
     private var soundNotBefore = 0L
 

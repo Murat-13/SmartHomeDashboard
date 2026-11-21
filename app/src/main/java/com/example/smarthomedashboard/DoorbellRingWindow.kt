@@ -116,6 +116,7 @@ internal class DoorbellRingWindow private constructor(
         lightButton.setOnClickListener { touched(); toggleLight() }
         talkButton.onActivity = { touched() }
         talk.onDuck = { card.video.ducked = it }
+        talk.freshStreetSound = { card.video.soundSeparate }
         // Разговор как по телефону: звук с улицы — разговорным потоком; окно не закрывается, пока говорят.
         talk.onCall = { on -> card.video.callAudio = on; if (on) inCallKeep.run() else main.removeCallbacks(inCallKeep) }
         replyButton.setOnClickListener { touched(); showReplies(replies.visibility != VISIBLE) }

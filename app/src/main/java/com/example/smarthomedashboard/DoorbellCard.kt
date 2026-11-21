@@ -409,6 +409,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
     } else null
     private val talkButton: TalkButton? = talk?.let { t ->
         t.onDuck = { video.ducked = it }
+        t.freshStreetSound = { video.soundSeparate }
         // Разговор как по телефону: звук с улицы — разговорным потоком; пока говорят, карточка не сворачивается.
         t.onCall = { on -> video.callAudio = on; if (on) keepOpen.run() else removeCallbacks(keepOpen) }
         TalkButton(context, t).apply { visibility = GONE; onActivity = { this@DoorbellCard.onActivity?.invoke() } }

@@ -586,6 +586,10 @@ internal class DoorbellTalk(
     var onLevel: ((Float) -> Unit)? = null
     /** Голос пошёл/закончился — приглушить звук с улицы (эхо). */
     var onDuck: ((Boolean) -> Unit)? = null
+    /** Звук улицы после паузы играет новый плеер без старого запаса ([DoorbellVideoView.soundSeparate]) — пауза короче. */
+    var freshStreetSound: (() -> Boolean)? = null
+    /** Сколько улица молчит после нашей речи в симплексе ([EchoGate.tailMs]). */
+    private fun tailMs() = EchoGate.tailMs(session?.wideband == true && freshStreetSound?.invoke() == true)
     var state = State.IDLE
         private set
 
@@ -694,7 +698,7 @@ internal class DoorbellTalk(
             main.post {
                 playing = false
                 if (disposed) return@post
-                main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, EchoGate.TAIL_MS)
+                main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, tailMs())
                 if (state == State.TALKING && !pressed) set(State.READY, READY_TEXT)
             }
         }
@@ -708,8 +712,8 @@ internal class DoorbellTalk(
         onLevel?.invoke(0f)
         // Домофон доигрывает очередь (≈ 0,5 с) и его микрофон возвращает её в звук с улицы (плеер HD ещё ≈ 1,4 с):
         // улица молчит, пока хвост фразы не вернётся, иначе её конец слышен эхом (проверка владельца 20.11.2026).
-        main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, EchoGate.TAIL_MS)
-        main.postDelayed({ TalkDebug.end() }, EchoGate.TAIL_MS)
+        main.postDelayed({ if (!pressed && !playing) onDuck?.invoke(false) }, tailMs())
+        main.postDelayed({ TalkDebug.end() }, tailMs())
         if (state == State.TALKING) set(State.READY, READY_TEXT)
     }
 
@@ -999,8 +1003,15 @@ internal object EchoGate {
      * ≈ 0,05 с + запас воспроизведения 0,15 с + слова в конце фразы; с запасом — 2 с; столько улица после нашей речи молчит.
      */
     const val RETURN_NS = 2_000_000_000L
-    /** Симплекс: после отпускания улица молчит столько — очередь домофона + путь обратно через плеер HD. */
+    /**
+     * Симплекс: после отпускания кнопки улица молчит столько — пока домофон доигрывает очередь, а его микрофон
+     * возвращает конец фразы в звук улицы. Обычно — 2,5 с: динамик по ONVIF отстаёт на 2,2–2,4 с, а звук в плеере
+     * видео — ещё до 1,4 с. [quick] — голос ушёл по протоколу Reolink (эхо возвращается через 0,7–1,06 с: стенд и
+     * четыре разговора 20.11.2026), а звук улицы после паузы начинает новый плеер без старого запаса: хватает 1,5 с.
+     */
+    fun tailMs(quick: Boolean) = if (quick) QUICK_TAIL_MS else TAIL_MS
     const val TAIL_MS = 2_500L
+    const val QUICK_TAIL_MS = 1_500L
     fun closed(lastLoudAt: Long, now: Long) = lastLoudAt != 0L && now - lastLoudAt < HOLD_NS
 }
 

@@ -527,4 +527,10 @@ class TalkTest {
         val narrow = TalkProbe.signal(8_000, ShortArray(16_000) { 1_000 })
         assertTrue("у узкого канала меньше тонов и речь прорежена", narrow.size * 2 < wide.size + 16_000 + 16_000)
     }
+
+    /** Симплекс: пауза после «Говорить» — 2,5 с, а с каналом Reolink и отдельным плеером звука — 1,5 с. */
+    @Test fun simplexTailIsShorterOnlyForQuickEchoPath() {
+        assertEquals(2_500L, EchoGate.tailMs(quick = false))
+        assertEquals(1_500L, EchoGate.tailMs(quick = true))
+    }
 }
