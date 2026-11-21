@@ -149,18 +149,25 @@ internal object TalkChannels {
                 holds.remove(host)
                 Log.i("Talk", "Голос — по протоколу Reolink ($codec)")
                 return talk
-            } catch (e: Exception) {
+            } catch (e: BaichuanException) {
                 talk.close()
                 // Неверный пароль: ошибка сразу — второй вход с тем же паролем по ONVIF не делаем.
-                if (e is BaichuanException && e.auth) throw e
-                refused = true
-                Log.w("Talk", "Протокол Reolink не открылся (${e.javaClass.simpleName} ${e.message}) — голос по ONVIF")
+                if (e.auth) throw e
+                refused = refusedBy(e)
+            } catch (e: Exception) {
+                talk.close()
+                refused = refusedBy(e)
             }
         }
         val talk = onvif(rtsp, user, password, readTimeoutMs)
         try { Log.i("Talk", "Голос — по ONVIF (${talk.open()})") } catch (e: Exception) { talk.close(); throw e }
         if (refused) hold(host)
         return talk
+    }
+
+    private fun refusedBy(e: Exception): Boolean {
+        Log.w("Talk", "Протокол Reolink не открылся (${e.javaClass.simpleName} ${e.message}) — голос по ONVIF")
+        return true
     }
 
     private fun held(host: String) = holds[host]?.let { clock() < it.until } == true
