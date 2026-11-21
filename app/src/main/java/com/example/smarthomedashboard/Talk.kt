@@ -85,46 +85,69 @@ internal interface TalkChannel : java.io.Closeable {
 }
 
 /**
- * Выбор пути голоса: у камер Reolink — сначала их протокол (порт 9000; до динамика ~0,5 с вместо 2,2–2,4 с по ONVIF),
- * не вышло — ONVIF, как раньше; для камеры, где протокол Reolink не открылся, он больше не пробуется до перезапуска.
+ * Выбор пути голоса: у камер Reolink — сначала их протокол (порт 9000; до динамика ~0,5 с вместо 2,2–2,4 с по ONVIF, и
+ * только с ним разговор одновременный), не вышло — ONVIF, как раньше.
+ *
+ * Отказ протокола Reolink запоминается ненадолго и только если ONVIF при этом открылся — то есть камера на связи и дело
+ * в самом протоколе: после первого отказа следующий разговор пробует его снова, после второго подряд — через 5 минут,
+ * дальше — раз в 30 минут ([HOLD_MS]); удача сбрасывает счёт. Не открылось ничего — это сбой связи, о камере он ничего
+ * не говорит. Раньше любой отказ (камера перезагружалась, моргнул Wi-Fi, «занято») запоминался до перезапуска
+ * приложения, а оно работает сутками: все следующие разговоры шли по ONVIF (аудит 21.11.2026).
  */
 internal object TalkChannels {
-    private val noReolink = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** Протокол Reolink у камеры не открылся [failures] раз подряд; до [until] он не пробуется. */
+    private class Hold(val failures: Int, val until: Long)
+    private val holds = java.util.concurrent.ConcurrentHashMap<String, Hold>()
     /** Для тестов: подключение по протоколу Reolink (по умолчанию — настоящий сеанс). */
     internal var reolink: (host: String, user: String, password: String) -> TalkChannel = { h, u, p -> BaichuanTalkSession(h, u, p) }
+    /** Для тестов: подключение по ONVIF (по умолчанию — настоящий обратный канал RTSP). */
+    internal var onvif: (rtsp: String, user: String, password: String, readTimeoutMs: Int) -> TalkChannel = { r, u, p, t ->
+        TalkSession(RtspSession(r, u, p, connectTimeoutMs = 4_000, readTimeoutMs = t, require = TalkSession.BACKCHANNEL))
+    }
+    /** Часы для срока, на который протокол Reolink не пробуется (в тестах — свои). */
+    internal var clock: () -> Long = { android.os.SystemClock.elapsedRealtime() }
 
     fun looksReolink(rtsp: String) = "Preview_0" in rtsp
 
     /** Открыть канал (блокирует; фоновый поток). */
     fun open(rtsp: String, user: String, password: String, readTimeoutMs: Int): TalkChannel {
         val host = runCatching { java.net.URI(rtsp.trim()).host }.getOrNull().orEmpty()
-        if (looksReolink(rtsp) && host.isNotEmpty() && host !in noReolink) {
+        var refused = false
+        if (looksReolink(rtsp) && host.isNotEmpty() && !held(host)) {
             val talk = reolink(host, user, password)
             try {
                 val codec = talk.open()
+                holds.remove(host)
                 Log.i("Talk", "Голос — по протоколу Reolink ($codec)")
                 return talk
-            } catch (e: BaichuanException) {
-                talk.close()
-                if (e.auth) throw e
-                fallBack(host, e)
             } catch (e: Exception) {
                 talk.close()
-                fallBack(host, e)
+                // Неверный пароль: ошибка сразу — второй вход с тем же паролем по ONVIF не делаем.
+                if (e is BaichuanException && e.auth) throw e
+                refused = true
+                Log.w("Talk", "Протокол Reolink не открылся (${e.javaClass.simpleName} ${e.message}) — голос по ONVIF")
             }
         }
-        val talk = TalkSession(RtspSession(rtsp, user, password, connectTimeoutMs = 4_000, readTimeoutMs = readTimeoutMs,
-            require = TalkSession.BACKCHANNEL))
+        val talk = onvif(rtsp, user, password, readTimeoutMs)
         try { Log.i("Talk", "Голос — по ONVIF (${talk.open()})") } catch (e: Exception) { talk.close(); throw e }
+        if (refused) hold(host)
         return talk
     }
 
-    private fun fallBack(host: String, e: Exception) {
-        noReolink += host
-        Log.w("Talk", "Протокол Reolink не открылся (${e.javaClass.simpleName} ${e.message}) — голос по ONVIF")
+    private fun held(host: String) = holds[host]?.let { clock() < it.until } == true
+
+    /** Камера на связи (ONVIF открылся), а протокол Reolink — нет: какое-то время его не пробуем. */
+    private fun hold(host: String) {
+        val failures = (holds[host]?.failures ?: 0) + 1
+        val pause = HOLD_MS[minOf(failures, HOLD_MS.size) - 1]
+        holds[host] = Hold(failures, clock() + pause)
+        if (pause > 0) Log.i("Talk", "Протокол Reolink не открылся $failures раз подряд — следующая попытка через ${pause / 60_000} мин")
     }
 
-    internal fun forget() = noReolink.clear()
+    internal fun forget() = holds.clear()
+
+    /** На сколько протокол Reolink не пробуется после отказа: первого, второго, третьего и дальше подряд. */
+    val HOLD_MS = longArrayOf(0, 5 * 60_000L, 30 * 60_000L)
 }
 
 /**

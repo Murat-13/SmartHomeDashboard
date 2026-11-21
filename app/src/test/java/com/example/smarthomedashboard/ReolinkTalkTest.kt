@@ -28,9 +28,14 @@ import kotlin.math.sqrt
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class ReolinkTalkTest {
+    private val realOnvif = TalkChannels.onvif
+    private val realClock = TalkChannels.clock
+
     @After fun tearDown() {
         TalkChannels.forget()
         TalkChannels.reolink = { h, u, p -> BaichuanTalkSession(h, u, p) }
+        TalkChannels.onvif = realOnvif
+        TalkChannels.clock = realClock
     }
 
     private fun hex(s: String) = ByteArray(s.length / 2) { s.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
@@ -258,25 +263,99 @@ class ReolinkTalkTest {
         }
     }
 
-    /** Нет протокола Reolink у этой камеры — голос по ONVIF; второй раз протокол Reolink не пробуется. */
-    @Test fun fallsBackToOnvifAndRemembersCamera() {
+    /** Канал-заглушка для выбора пути голоса: открывается или падает с заданной ошибкой. */
+    private class StubChannel(private val error: Exception? = null, override val wideband: Boolean = false) : TalkChannel {
+        override fun open(): String = error?.let { throw it } ?: "тест"
+        override fun beginTalkspurt() {}
+        override fun send(pcm: ShortArray, count: Int) {}
+        override val queued = 0
+        override val alive = true
+        override val sentPackets = 0
+        override val sentVoice = 0
+        override fun close() {}
+    }
+
+    private val doorbell = "rtsp://192.0.2.7:554/h264Preview_01_sub"
+
+    /**
+     * Быстрый канал Reolink один раз не открылся из-за сбоя сети — этот разговор идёт по ONVIF, а следующий снова
+     * пробует быстрый канал. Раньше камера до перезапуска приложения оставалась на ONVIF: голос до динамика 2,2–2,4 с
+     * вместо ~0,5 с и разговор «по очереди» вместо одновременного (аудит 21.11.2026).
+     */
+    @Test fun oneNetworkFailureDoesNotKeepNextCallOnSlowPath() {
         var tries = 0
-        TalkChannels.reolink = { _, _, _ ->
-            tries++
-            object : TalkChannel {
-                override fun open(): String = throw java.net.ConnectException("refused")
-                override fun beginTalkspurt() {}
-                override fun send(pcm: ShortArray, count: Int) {}
-                override val queued = 0
-                override val alive = false
-                override val sentPackets = 0
-                override val sentVoice = 0
-                override fun close() {}
-            }
+        val errors = ArrayDeque<Exception?>(listOf(java.net.SocketTimeoutException("connect timed out"), null))
+        TalkChannels.reolink = { _, _, _ -> tries++; StubChannel(errors.removeFirst(), wideband = true) }
+        TalkChannels.onvif = { _, _, _, _ -> StubChannel() }
+        val first = TalkChannels.open(doorbell, "admin", "x", 2_000)
+        assertFalse("сбой: этот разговор — по ONVIF", first.wideband)
+        val second = TalkChannels.open(doorbell, "admin", "x", 2_000)
+        assertEquals("следующий разговор снова пробует быстрый канал", 2, tries)
+        assertTrue("и получает его", second.wideband)
+    }
+
+    /**
+     * У камеры протокола Reolink нет вовсе (порт закрыт, а ONVIF работает): чтобы не ждать его перед каждым разговором,
+     * после второго отказа подряд он не пробуется 5 минут, после третьего и дальше — по 30; удача сбрасывает счёт.
+     */
+    @Test fun cameraWithoutReolinkTalkIsNotAskedBeforeEveryCall() {
+        var now = 1_000_000L
+        TalkChannels.clock = { now }
+        var tries = 0
+        var works = false
+        TalkChannels.reolink = { _, _, _ -> tries++; StubChannel(if (works) null else java.net.ConnectException("refused"), wideband = true) }
+        TalkChannels.onvif = { _, _, _, _ -> StubChannel() }
+        fun open() = TalkChannels.open(doorbell, "admin", "x", 2_000)
+        open(); open()
+        assertEquals("после первого отказа следующий разговор пробует снова", 2, tries)
+        open()
+        assertEquals("два отказа подряд — пауза", 2, tries)
+        now += TalkChannels.HOLD_MS[1] - 1_000
+        open()
+        assertEquals(2, tries)
+        now += 2_000
+        open()
+        assertEquals("пауза вышла — ещё одна попытка", 3, tries)
+        now += TalkChannels.HOLD_MS[1] + 1_000
+        open()
+        assertEquals("третий отказ — пауза длиннее", 3, tries)
+        now += TalkChannels.HOLD_MS[2]
+        works = true
+        assertTrue("протокол заработал — канал быстрый", open().wideband)
+        assertEquals(4, tries)
+        works = false
+        open(); open()
+        assertEquals("удача сбросила счёт: один отказ паузы не даёт", 6, tries)
+    }
+
+    /**
+     * Камера не отвечает совсем (не открылся ни быстрый канал, ни ONVIF): это сбой связи, а не свойство камеры —
+     * о протоколе Reolink ничего не запоминается. Раньше он после такого не пробовался до перезапуска приложения.
+     */
+    @Test fun unreachableCameraTeachesNothing() {
+        var tries = 0
+        TalkChannels.reolink = { _, _, _ -> tries++; StubChannel(java.net.SocketTimeoutException("connect timed out"), wideband = true) }
+        TalkChannels.onvif = { _, _, _, _ -> StubChannel(java.net.SocketTimeoutException("connect timed out")) }
+        repeat(3) {
+            try { TalkChannels.open(doorbell, "admin", "x", 2_000); fail("камера недоступна") } catch (_: java.net.SocketTimeoutException) {}
         }
-        val url = "rtsp://127.0.0.1:1/h264Preview_01_sub" // ONVIF тоже недоступен — важен только выбор пути
-        repeat(2) { runCatching { TalkChannels.open(url, "admin", "x", 2_000) } }
-        assertEquals("протокол Reolink пробуется один раз", 1, tries)
+        assertEquals("каждая попытка начинает с быстрого канала", 3, tries)
         assertFalse("у Hikvision протокол Reolink не пробуется", TalkChannels.looksReolink("rtsp://h/Streaming/Channels/101"))
+    }
+
+    /** Неверный пароль: ошибка сразу, без второй попытки входа по ONVIF с тем же паролем; на выбор пути не влияет. */
+    @Test fun wrongPasswordIsNotRetriedOverOnvifAndIsNotRemembered() {
+        var onvifTries = 0
+        var auth = true
+        TalkChannels.reolink = { _, _, _ ->
+            StubChannel(if (auth) BaichuanException("Камера не приняла логин или пароль", auth = true) else null, wideband = true)
+        }
+        TalkChannels.onvif = { _, _, _, _ -> onvifTries++; StubChannel() }
+        repeat(2) {
+            try { TalkChannels.open(doorbell, "admin", "x", 2_000); fail("вход должен не пройти") } catch (e: BaichuanException) { assertTrue(e.auth) }
+        }
+        assertEquals("по ONVIF с неверным паролем не входим", 0, onvifTries)
+        auth = false
+        assertTrue("пароль исправлен — канал быстрый", TalkChannels.open(doorbell, "admin", "x", 2_000).wideband)
     }
 }
