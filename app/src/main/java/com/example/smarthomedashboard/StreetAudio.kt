@@ -54,6 +54,8 @@ internal class StreetAudio : StreetSource {
      * первого звука — как при переподключении камеры посреди разговора. 0 — не обрывать.
      */
     @Volatile var breakAfterMs = 0L
+    /** Запись в звуковую дорожку; в тестах — подмена (отказ вывода звука Android). */
+    internal var write: (AudioTrack, ShortArray, Int) -> Int = { track, buf, n -> track.write(buf, 0, n) }
     @Volatile var playedMs = 0L
         private set
     @Volatile var trimmedMs = 0L
@@ -110,7 +112,9 @@ internal class StreetAudio : StreetSource {
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
         var player: Thread? = null
-        var started = false
+        // «Звук пошёл» — когда принятый звук камеры отдан на вывод (сообщает поток воспроизведения), а не когда пришёл
+        // первый пакет: по этому сигналу разговор глушит плееры, и до него гостя должен играть плеер.
+        val started = java.util.concurrent.atomic.AtomicBoolean(false)
         var mine: DuplexEcho? = null
         try {
             val relay = CameraHub.relayUrl(rtsp, user)
@@ -132,7 +136,8 @@ internal class StreetAudio : StreetSource {
             track = t
             if (silent) t.setVolume(0f)
             t.play()
-            player = Thread({ playout(run, t, fifo, rate) }, "street-audio-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+            player = Thread({ playout(run, t, fifo, rate) { if (started.compareAndSet(false, true)) onSound(true) } },
+                "street-audio-play").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
             val dec = aac?.let { decoder(it) }
             codec = dec
             val info = MediaCodec.BufferInfo()
@@ -169,7 +174,6 @@ internal class StreetAudio : StreetSource {
                             drain(dec, info, fifo, limit)
                         }
                     }
-                    if (!started) { started = true; onSound(true) }
                     val breakAfter = breakAfterMs
                     if (breakAfter > 0 && System.nanoTime() - startedAt > breakAfter * 1_000_000) {
                         breakAfterMs = 0
@@ -179,7 +183,7 @@ internal class StreetAudio : StreetSource {
                 }
             })
         } catch (e: Exception) {
-            if (alive(run)) Log.w(TAG, "Звук с улицы отдельно ${if (started) "оборвался" else "не пошёл"}: ${e.javaClass.simpleName} ${e.message}")
+            if (alive(run)) Log.w(TAG, "Звук с улицы отдельно ${if (started.get()) "оборвался" else "не пошёл"}: ${e.javaClass.simpleName} ${e.message}")
         } finally {
             // Остановили ([stop]) — общее состояние уже принадлежит следующему запуску или сброшено; оборвалось само —
             // сбрасываем и сообщаем: разговор вернёт звук плеера и запустит приём заново.
@@ -191,7 +195,7 @@ internal class StreetAudio : StreetSource {
             try { track?.stop() } catch (_: Exception) {}
             try { track?.release() } catch (_: Exception) {}
             run.session?.close()
-            if (started && broken) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс; " +
+            if (started.get() && broken) Log.i(TAG, "Звук с улицы: сыграно ${playedMs / 1000} с, сброшено лишнего запаса $trimmedMs мс; " +
                 "получено ${receivedSamples * 1000 / rateUsed.coerceAtLeast(1)} мс звука за ${(System.nanoTime() - startedAt) / 1_000_000} мс" +
                 if (lostMs > 0) ", потеряно в пути $lostMs мс" else "")
             if (broken) onSound(false)
@@ -242,12 +246,15 @@ internal class StreetAudio : StreetSource {
     /**
      * Играть по 20 мс. Камера шлёт звук пачками (разброс 100–200 мс, проверка 20.11.2026): запас [TARGET_MS]; кончился —
      * тишина, пока не накопится снова (не дробить речь); вырос больше [MAX_MS] — сбросить до [TARGET_MS].
+     * [ready] — принятый звук камеры отдан на вывод (зовётся на каждой порции; тишина ожидания запаса не в счёт, а
+     * настоящая тишина камеры — в счёт: это её звук).
      */
-    private fun playout(run: Run, track: AudioTrack, fifo: ShortFifo, rate: Int) {
+    private fun playout(run: Run, track: AudioTrack, fifo: ShortFifo, rate: Int, ready: () -> Unit) {
         val chunk = rate / 50
         val buf = ShortArray(chunk)
         val scratch = ShortArray(rate)
         var buffering = true
+        var refused = 0
         try {
             while (alive(run)) {
                 val excess = Playout.excess(fifo.size, rate)
@@ -274,8 +281,20 @@ internal class StreetAudio : StreetSource {
                 TalkDebug.write("street", buf, chunk, rate)
                 // То, что сейчас прозвучит из динамика, — опора для микрофона (в том числе тишина: счёт отсчётов общий).
                 if (!silent) echo?.takeIf { it.active }?.played?.write(buf, chunk)
-                // Дорожка сама держит темп (запись блокирует); отказ записи — не крутиться впустую.
-                if (track.write(buf, 0, chunk) <= 0) Thread.sleep(20) else playedMs += 20
+                // Дорожка сама держит темп (запись блокирует).
+                val written = write(track, buf, chunk)
+                if (written > 0) {
+                    refused = 0
+                    playedMs += 20
+                    if (!buffering) ready()
+                } else if (written == AudioTrack.ERROR_DEAD_OBJECT || ++refused >= WRITE_REFUSALS) {
+                    // Вывод звука отказал (служба звука Android перезапустилась — дорожка «мертва»), а приём с камеры
+                    // идёт: это обрыв. Разговор вернёт звук плеера и запустит приём заново, с новой дорожкой. Раньше
+                    // цикл молча крутился вхолостую, и гостя не было слышно до «Завершить» (аудит 21.11.2026).
+                    Log.w(TAG, "Звук с улицы: вывод звука отказал (код $written) — приём запускается заново")
+                    run.session?.close()
+                    return
+                } else Thread.sleep(20) // разовый отказ записи — не крутиться впустую
             }
         } catch (_: Exception) {}
     }
@@ -316,6 +335,8 @@ internal class StreetAudio : StreetSource {
         const val TARGET_MS = 150
         const val MAX_MS = 400
         private const val MAX_QUEUE_MS = 500
+        /** Столько отказов записи в дорожку подряд (≈ 0,5 с) — вывод звука не работает. */
+        private const val WRITE_REFUSALS = 25
         /** Громкость звука с улицы (RMS), от которой включается защита от эха: речь, а не фоновый шум. */
         const val LOUD_RMS = 700.0
         private const val TAG = "Talk"

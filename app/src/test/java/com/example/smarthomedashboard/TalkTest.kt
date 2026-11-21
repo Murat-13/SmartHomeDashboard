@@ -632,8 +632,11 @@ class TalkTest {
         assertFalse(DoorbellVideoView.streetAudio)
     }
 
-    /** Поддельная камера со звуком G.711: после PLAY шлёт пакеты по 20 мс; [packets] — сколько до обрыва (null — без конца). */
-    private class AudioCamera(private val packets: Int?) {
+    /**
+     * Поддельная камера со звуком G.711: после PLAY шлёт пакеты по 20 мс; [packets] — сколько до обрыва (null — без
+     * конца); [hold] — после них не обрывать связь, а замолчать (поток стоит, соединение открыто).
+     */
+    private class AudioCamera(private val packets: Int?, private val hold: Boolean = false) {
         val server = ServerSocket(0)
         val url get() = "rtsp://127.0.0.1:${server.localPort}/audio"
 
@@ -685,7 +688,7 @@ class TalkTest {
                                         n++
                                         Thread.sleep(20)
                                     }
-                                    s.close()
+                                    if (!hold) s.close()
                                 } catch (_: Exception) {}
                             }
                         }
@@ -696,6 +699,13 @@ class TalkTest {
             } catch (_: Exception) {}
         }
     }
+
+    /**
+     * Вывод звука для тестов: звуковая дорожка Robolectric звук не принимает (запись возвращает 0 — для приложения
+     * это отказ вывода), поэтому запись подменяется исправной, в темпе настоящей дорожки.
+     */
+    private val workingOutput: (android.media.AudioTrack, ShortArray, Int) -> Int = { _, _, n -> Thread.sleep(20); n }
+    private fun streetAudio() = StreetAudio().apply { silent = true; write = workingOutput }
 
     private fun await(what: String, condition: () -> Boolean) {
         val until = System.currentTimeMillis() + 5_000
@@ -708,7 +718,7 @@ class TalkTest {
     /** Настоящий приём звука улицы: поток оборвался после нескольких пакетов — источник сообщает об этом, а не молчит. */
     @Test fun streetAudioReportsBreakAfterItStarted() {
         val camera = AudioCamera(packets = 15)
-        val street = StreetAudio().apply { silent = true }
+        val street = streetAudio()
         val answers = CopyOnWriteArrayList<Boolean>()
         street.start(camera.url, "", null) { answers += it }
         await("звук пошёл: $answers") { answers.firstOrNull() == true }
@@ -725,7 +735,7 @@ class TalkTest {
 
     /** «Завершить» и сразу «Ответить»: поток прежнего приёма, досматривая свой обрыв, не гасит новый приём. */
     @Test fun streetAudioRestartedAtOnceKeepsPlaying() {
-        val street = StreetAudio().apply { silent = true }
+        val street = streetAudio()
         val first = CopyOnWriteArrayList<Boolean>()
         street.start(AudioCamera(packets = null).url, "", null) { first += it }
         await("первый приём: $first") { first.firstOrNull() == true }
@@ -980,5 +990,59 @@ class TalkTest {
         SendWatch.closeWithin(100, abort = { aborted = true }) {}
         Thread.sleep(250)
         assertFalse(aborted)
+    }
+
+    /**
+     * Вывод звука Android отказал посреди разговора (служба звука перезапустилась — дорожка «мертва»), а приём с камеры
+     * идёт: источник сообщает об обрыве, и разговор запускает его заново с новой дорожкой. Раньше цикл воспроизведения
+     * молча крутился вхолостую: плееры заглушены, гостя не слышно до «Завершить» (аудит 21.11.2026).
+     */
+    @Test fun streetAudioReportsBreakWhenAndroidOutputDies() {
+        val street = streetAudio()
+        val writes = java.util.concurrent.atomic.AtomicInteger()
+        street.write = { track, buf, n -> if (writes.incrementAndGet() <= 30) workingOutput(track, buf, n) else android.media.AudioTrack.ERROR_DEAD_OBJECT }
+        val answers = CopyOnWriteArrayList<Boolean>()
+        street.start(AudioCamera(packets = null).url, "", null) { answers += it }
+        await("звук пошёл: $answers") { answers.firstOrNull() == true }
+        await("отказ вывода замечен: $answers") { answers.toList() == listOf(true, false) }
+        assertEquals("после отказа звук не идёт", 0, street.rate)
+        // Запуск заново (так делает разговор) — с исправным выводом звук идёт.
+        street.write = workingOutput
+        val again = CopyOnWriteArrayList<Boolean>()
+        street.start(AudioCamera(packets = null).url, "", null) { again += it }
+        await("после перезапуска звук пошёл: $again") { again.firstOrNull() == true }
+        street.stop()
+    }
+
+    /**
+     * «Звук пошёл» — это когда принятый звук камеры отдан на вывод, а не когда пришёл первый пакет: по этому сигналу
+     * разговор глушит плееры. Пакеты пришли, но играть ещё нечего (запас не набран, декодер молчит) — гостя должен
+     * по-прежнему играть плеер. Раньше сигнал давался по первому пакету.
+     */
+    @Test fun streetAudioIsReadyOnlyWhenCameraSoundIsPlayed() {
+        val street = streetAudio()
+        val answers = CopyOnWriteArrayList<Boolean>()
+        // 60 мс звука — меньше запаса воспроизведения: играть нечего, а соединение открыто.
+        street.start(AudioCamera(packets = 3, hold = true).url, "", null) { answers += it }
+        Thread.sleep(800)
+        assertEquals("пакеты пришли, но звук камеры не сыгран", emptyList<Boolean>(), answers.toList())
+        street.stop()
+        // Обычный поток: сигнал приходит, когда запас набран и звук играет.
+        val flowing = CopyOnWriteArrayList<Boolean>()
+        val played = java.util.concurrent.atomic.AtomicInteger()
+        street.write = { track, buf, n -> played.incrementAndGet(); workingOutput(track, buf, n) }
+        street.start(AudioCamera(packets = null).url, "", null) { flowing += it }
+        await("звук пошёл: $flowing") { flowing.firstOrNull() == true }
+        assertTrue("к этому моменту на вывод уже что-то отдано", played.get() > 0)
+        street.stop()
+    }
+
+    /** Дорожка не принимает звук вовсе (запись возвращает 0, как у дорожки Robolectric): через полсекунды это обрыв, а не тишина до конца разговора. */
+    @Test fun streetAudioReportsBreakWhenOutputAcceptsNothing() {
+        val street = StreetAudio().apply { silent = true; write = { _, _, _ -> 0 } }
+        val answers = CopyOnWriteArrayList<Boolean>()
+        street.start(AudioCamera(packets = null).url, "", null) { answers += it }
+        await("отказ вывода замечен: $answers") { answers.toList() == listOf(false) }
+        assertEquals(0, street.rate)
     }
 }
