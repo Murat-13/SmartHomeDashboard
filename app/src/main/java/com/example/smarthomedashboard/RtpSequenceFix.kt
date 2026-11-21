@@ -49,7 +49,11 @@ internal class RtpSequenceFix(private val restarts: AtomicInteger? = null) {
         const val CHANNELS = 256
         const val MASK = 0xFFFF
         const val NONE = -1
-        const val FIRST = 1
+        /**
+         * С какого номера идёт свой отсчёт. Не с 1: подключившись посреди кадра, Media3 пишет в журнал «Expected: 0;
+         * received: <первый номер>» — с 1 это не отличить от самой ошибки перехода через ноль («received: 1»).
+         */
+        const val FIRST = 1_000
         /** С этого номера отсчёт начинается заново на первой же границе кадров. */
         const val RESTART_FROM = 32_768
         /** Скачок с номеров выше 64 535 очередь Media3 приняла бы за переход через ноль — до них не доходим. */

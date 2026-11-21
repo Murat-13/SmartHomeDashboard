@@ -60,23 +60,23 @@ class RtpSequenceFixTest {
             val out = fix.map(0, camera, marker)
             assertEquals("пакет $index (номер камеры $camera) дошёл до разборщика сразу", out, queue.pass(out))
             if (index > 0 && out != previous + 1) assertTrue("отсчёт начинается заново только на границе кадров", previousMarker)
-            assertTrue("до перехода через ноль номера не доходят", out in 1..40_000)
+            assertTrue("до перехода через ноль номера не доходят", out in FIRST..40_000)
             previous = out
             previousMarker = marker
             camera = (camera + 1) and 0xFFFF
         }
-        assertEquals("отсчёт начат заново столько раз, сколько раз номера дошли до середины", 200_000 / 32_784, restarts.get())
+        assertEquals("отсчёт начат заново столько раз, сколько раз номера дошли до середины", 6, restarts.get())
     }
 
     @Test fun firstPacketStartsOwnCountAndCameraGapsStayVisible() {
         val fix = RtpSequenceFix()
-        assertEquals(1, fix.map(0, 41_000, marker = false))
-        assertEquals(2, fix.map(0, 41_001, marker = true))
+        assertEquals(FIRST, fix.map(0, 41_000, marker = false))
+        assertEquals(FIRST + 1, fix.map(0, 41_001, marker = true))
         // Камера (или ретранслятор) потеряла три пакета: пропуск тот же — Media3 должна его увидеть.
-        assertEquals(6, fix.map(0, 41_005, marker = false))
+        assertEquals(FIRST + 5, fix.map(0, 41_005, marker = false))
         // Звук на своём канале считается отдельно.
-        assertEquals(1, fix.map(2, 7, marker = true))
-        assertEquals(7, fix.map(0, 41_006, marker = false))
+        assertEquals(FIRST, fix.map(2, 7, marker = true))
+        assertEquals(FIRST + 6, fix.map(0, 41_006, marker = false))
     }
 
     @Test fun streamWithoutFrameMarkersStillRestartsBeforeWrap() {
@@ -87,7 +87,7 @@ class RtpSequenceFixTest {
         repeat(140_000) { index ->
             val out = fix.map(0, index and 0xFFFF, marker = false)
             if (queue.pass(out) != out) lost++
-            assertTrue(out in 1..64_000)
+            assertTrue(out in FIRST..64_000)
         }
         assertEquals("очередь Media3 принимает и такой скачок без потерь", 0, lost)
         assertEquals(2, restarts.get())
@@ -147,8 +147,8 @@ class RtpSequenceFixTest {
         both(reply())
         var video = 65_533
         var audio = 9
-        var videoOut = 1
-        var audioOut = 1
+        var videoOut = FIRST
+        var audioOut = FIRST
         repeat(60) { index ->
             val marker = index % 5 == 4
             source.write(rtp(0, video, marker)); expected.write(rtp(0, videoOut, marker).also { patched ->
@@ -184,5 +184,7 @@ class RtpSequenceFixTest {
     private companion object {
         /** Пакетов в кадре: не делитель 32 768, чтобы граница кадра не совпадала с порогом. */
         const val FRAME = 17
+        /** С этого номера идёт свой отсчёт ([RtpSequenceFix]). */
+        const val FIRST = 1_000
     }
 }
