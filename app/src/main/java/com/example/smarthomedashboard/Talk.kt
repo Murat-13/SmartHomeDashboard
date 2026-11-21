@@ -628,6 +628,7 @@ internal class DoorbellTalk(
         // убирает своё эхоподавление ([DuplexEcho]); где оно не работает (канал ONVIF, другая частота звука) — прежние
         // защиты: пока говорит улица — микрофон молчит, пока говорим мы — улица приглушена ([EchoGate]).
         if (!mic.start(context, duplex = false, wideband = s.wideband)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
+        (street as? StreetAudio)?.breakAfterMs = if (TalkDebug.flag(context, "drop_street")) STREET_TEST_BREAK_MS else 0
         startStreet()
         set(State.TALKING, "Идёт разговор — говорите")
     }
@@ -864,6 +865,7 @@ internal class DoorbellTalk(
         const val CALL_SILENCE_MS = 120_000L
         /** Через сколько повторять запуск отдельного звука улицы, если он не пошёл или оборвался посреди разговора. */
         val STREET_RETRY_MS = longArrayOf(1_000, 2_000, 4_000)
+        private const val STREET_TEST_BREAK_MS = 8_000L
         const val CALL_MAX_MS = 10 * 60_000L
         /** Уровень микрофона (0–1), выше которого считается, что говорят (не тишина). */
         private const val VOICE_LEVEL = 0.04f

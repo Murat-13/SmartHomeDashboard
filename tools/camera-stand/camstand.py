@@ -7,11 +7,15 @@
 
 Запуск: python3 -I camstand.py <папка с роликами> [--bind адрес]
 В журнал пишутся только номера подключений и счётчики — без адресов.
+
+Сбой сети по команде: `kill -USR1 <pid>` задерживает все потоки на 1,2 с (кадры потом приходят пачкой, как после
+провала Wi-Fi), `kill -USR2 <pid>` — на 0,15 с (обычная короткая заминка).
 """
 import base64
 import os
 import random
 import re
+import signal
 import socket
 import struct
 import sys
@@ -25,6 +29,17 @@ NTP_EPOCH = 2208988800
 LOCK = threading.Lock()
 CONNECTIONS = [0]
 ACTIVE = {}
+STALL_UNTIL = [0.0]
+
+
+def stall(ms):
+    STALL_UNTIL[0] = time.monotonic() + ms / 1000.0
+    log("сбой сети по команде: потоки задержаны на %d мс" % ms)
+
+
+def wait_stall():
+    while time.monotonic() < STALL_UNTIL[0]:
+        time.sleep(0.005)
 
 
 def log(text):
@@ -367,6 +382,7 @@ class Client(threading.Thread):
                 wait = due - time.monotonic()
                 if wait > 0:
                     time.sleep(wait)
+                wait_stall()
                 stamp = s.video_base + n * 90000 // v.fps
                 out = bytearray()
                 for payload, marker in v.packets[index]:
@@ -391,6 +407,7 @@ class Client(threading.Thread):
                 wait = T0 + k * a.step / a.clock - time.monotonic()
                 if wait > 0:
                     time.sleep(wait)
+                wait_stall()
                 self.write(self.rtp(1, a.pt, a.marker, s.audio_base + k * a.step, a.frames[k % len(a.frames)]))
                 if time.monotonic() >= next_report:
                     self.report(1, a.clock, s.audio_base)
@@ -459,7 +476,9 @@ def main():
                 cam.title, cam.port, s.path, "H.265" if v.hevc else "H.264", v.width, v.height, v.fps, v.kbps,
                 len(v.keys) / max(1, sum(v.keys)) / v.fps, s.audio.kind if s.audio else "нет"))
         threading.Thread(target=serve, args=(cam, bind), daemon=True).start()
-    log("стенд слушает")
+    signal.signal(signal.SIGUSR1, lambda *_: stall(1200))
+    signal.signal(signal.SIGUSR2, lambda *_: stall(150))
+    log("стенд слушает (pid %d)" % os.getpid())
     last = {}
     while True:
         time.sleep(60)

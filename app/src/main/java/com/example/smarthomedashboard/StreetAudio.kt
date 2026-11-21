@@ -49,6 +49,11 @@ internal class StreetAudio : StreetSource {
     private fun alive(run: Run) = current === run
     /** Только принимать (измерение [TalkProbe]): динамик планшета молчит. */
     @Volatile var silent = false
+    /**
+     * Проверка восстановления (файл `talk_debug/drop_street`): один раз оборвать приём через столько миллисекунд после
+     * первого звука — как при переподключении камеры посреди разговора. 0 — не обрывать.
+     */
+    @Volatile var breakAfterMs = 0L
     @Volatile var playedMs = 0L
         private set
     @Volatile var trimmedMs = 0L
@@ -165,6 +170,12 @@ internal class StreetAudio : StreetSource {
                         }
                     }
                     if (!started) { started = true; onSound(true) }
+                    val breakAfter = breakAfterMs
+                    if (breakAfter > 0 && System.nanoTime() - startedAt > breakAfter * 1_000_000) {
+                        breakAfterMs = 0
+                        Log.i(TAG, "Звук с улицы: проверочный обрыв приёма")
+                        s.close()
+                    }
                 }
             })
         } catch (e: Exception) {
