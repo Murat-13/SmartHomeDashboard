@@ -354,9 +354,23 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 // Неровность прихода измеряется раз в минуту. Плеер, запущенный раньше первого замера (старт
                 // приложения — плитка ждёт общий поток и стартует с его первым кадром) или до того, как неровность
                 // выросла (ночь → день), поднимает запас сам, а не после серии остановок (замер 21.11.2026).
+                // Запас следует за ней в обе стороны: плохая минута (сбой Wi-Fi) поднимает его, а когда она уходит из
+                // памяти замеров — он снижается обратно. Раньше он только рос до пересоздания плеера: после одного сбоя
+                // плитка, которая показывает видео часами, оставалась с лишней задержкой (аудит 21.11.2026).
                 if (jitterFloor) {
-                    val seed = LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, source?.user.orEmpty()))
-                    if (seed > seedFloor) { seedFloor = seed; if (catchUpFloor < seed) catchUpFloor = seed }
+                    val user = source?.user.orEmpty()
+                    if (floorFollows) {
+                        val seed = LiveCatchUp.floorFor(CameraHub.floorJitterMs(playingRtsp, user))
+                        if (seed != seedFloor) {
+                            val (nextSeed, nextFloor) = LiveCatchUp.followFloor(seedFloor, catchUpFloor, seed)
+                            Log.i(TAG, "Запас по неровности прихода: $seedFloor → $nextSeed мс (${shownHeight}p)")
+                            seedFloor = nextSeed
+                            catchUpFloor = nextFloor
+                        }
+                    } else {
+                        val seed = LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, user))
+                        if (seed > seedFloor) { seedFloor = seed; if (catchUpFloor < seed) catchUpFloor = seed }
+                    }
                 }
                 val videoLag = shownFrame?.last?.let { ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, System.nanoTime()) }
                 // Звук отдельным плеером: на сколько он опережает картинку (в журнал при закрытии) и не отстал ли.
@@ -433,6 +447,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     /** Запас, который потоку нужен по измеренной неровности прихода кадров ([LiveCatchUp.floorFor]); 0 — не измерено. */
     private var seedFloor = 0L
+    /** Запас снижается, когда неровность прихода прошла (проверочный выключатель `video_debug/floor_grows` — как раньше, только рост). */
+    private var floorFollows = true
     /** Запас этого плеера считается по измеренной неровности прихода (проверочный выключатель — нет). */
     private var jitterFloor = false
     /** Рывок к живому: до какого времени идёт (0 — не идёт) и не раньше какого можно начать следующий. */
@@ -668,7 +684,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         // Запас по измеренной неровности прихода кадров этого потока (известна, пока идёт запись): основному потоку
         // Reolink его нужно больше, чем субпотоку, — иначе плеер останавливается на каждом позднем ключевом кадре.
         jitterFloor = live && !LiveTuning.off(context, "no_jitter_floor")
-        seedFloor = if (jitterFloor) LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, source?.user.orEmpty())) else 0
+        floorFollows = !LiveTuning.off(context, "floor_grows")
+        seedFloor = if (!jitterFloor) 0 else LiveCatchUp.floorFor(source?.user.orEmpty().let { user ->
+            if (floorFollows) CameraHub.floorJitterMs(playingRtsp, user) else CameraHub.arrivalJitterMs(playingRtsp, user)
+        })
         catchUpFloor = seedFloor
         burstUntil = 0
         burstNotBefore = 0
@@ -1244,6 +1263,27 @@ internal class SoundLead {
 }
 
 /**
+ * Неровность прихода кадров за последние минуты (замер — раз в минуту): запас плеера держится по наибольшей из них.
+ * Плохая минута поднимает запас сразу и уходит из памяти через [MINUTES] спокойных — сбои сети идут сериями, одной
+ * спокойной минуты мало.
+ */
+internal class JitterMemory(private val size: Int = MINUTES) {
+    private val recent = LongArray(size)
+    private var count = 0
+
+    /** Замер очередной минуты; возвращает наибольший из последних [size]. */
+    fun add(jitterMs: Long): Long {
+        recent[count % size] = jitterMs
+        count++
+        return max
+    }
+
+    val max: Long get() = (0 until minOf(count, size)).maxOfOrNull { recent[it] } ?: 0
+
+    companion object { const val MINUTES = 3 }
+}
+
+/**
  * На сколько звук отдельного плеера позже картинки — сглаженно, по последним замерам (раз в секунду): запас видео
  * от кадра к кадру прыгает, одиночный замер ничего не значит. Пока звук ускорен, прежние замеры уменьшаются на
  * набранное за секунду — оценка не отстаёт от дела, и звук не проскакивает картинку.
@@ -1392,6 +1432,14 @@ internal object LiveCatchUp {
      * пока кадр опаздывает, плеер показывает запас, и запаса должно хватать. 0 — неровность не измерена.
      */
     fun floorFor(jitterMs: Long): Long = if (jitterMs <= 0) 0 else (jitterMs + FLOOR_MARGIN_MS).coerceAtMost(MAX_FLOOR_MS)
+    /**
+     * Запас плеера следует за измеренной неровностью в обе стороны. [seedFloor] — прежний запас по неровности,
+     * [catchUpFloor] — действующий пол плеера (выше, если плеер упёрся сам: декодер придерживает кадры), [seed] — новый
+     * запас по неровности. Возвращает новые (запас по неровности, пол): пол, найденный самим плеером, не снижается.
+     */
+    fun followFloor(seedFloor: Long, catchUpFloor: Long, seed: Long): Pair<Long, Long> =
+        seed to if (catchUpFloor > seedFloor) maxOf(catchUpFloor, seed) else seed
+
     /** Сверх измеренной неровности: кадр после паузы ещё нужно принять целиком и декодировать (замер 21.11.2026). */
     private const val FLOOR_MARGIN_MS = 100L
     private const val MAX_FLOOR_MS = 1_000L

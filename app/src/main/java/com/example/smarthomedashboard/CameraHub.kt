@@ -64,6 +64,10 @@ internal object CameraHub {
     fun arrivalJitterMs(url: String, user: String): Long =
         streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.arrivalJitterMs ?: 0
 
+    /** Неровность прихода кадров, по которой плеер держит запас: наибольшая за последние минуты ([JitterMemory]). */
+    fun floorJitterMs(url: String, user: String): Long =
+        streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.floorJitterMs ?: 0
+
     /**
      * Общий поток [url] вот-вот будет готов к показу — живому видео стоит недолго подождать его, а не открывать второе
      * соединение с камерой (docs/doorbell.md, «Старт через общий поток»): запись на планшете только запускается
@@ -100,6 +104,10 @@ internal class SharedStream(
     /** На сколько самый поздний кадр за последнюю минуту пришёл позже обычного (0 — ещё не измерено). */
     @Volatile var arrivalJitterMs = 0L
         private set
+    /** Она же — наибольшая за последние минуты: одна плохая минута уходит из памяти, и запас плеера снижается обратно. */
+    @Volatile var floorJitterMs = 0L
+        private set
+    private val jitterMemory = JitterMemory()
 
     /** Одноразовая часть адреса ретранслятора: без неё другие приложения планшета не увидят видео. */
     val token: String = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
@@ -259,6 +267,7 @@ internal class SharedStream(
                             if (rtp.marker) videoFrames++
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
                                 arrivalJitterMs = (probe.slowest - it).coerceIn(0, MAX_JITTER_MS)
+                                floorJitterMs = jitterMemory.add(arrivalJitterMs)
                                 videoArrivalMs = it
                                 // Неровный приход — главный предел задержки живого видео (docs/doorbell.md): плееру нужен
                                 // запас не меньше самой длинной паузы. «Запись занимала поток» — наша доля в этих паузах.

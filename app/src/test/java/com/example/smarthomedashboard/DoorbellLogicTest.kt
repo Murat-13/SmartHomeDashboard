@@ -362,4 +362,60 @@ class DoorbellLogicTest {
         assertNull(late.value())
         assertNull("замер вне разумного — не замер", SoundLate().apply { add(60_000, 1f); add(60_000, 1f); add(60_000, 1f) }.value())
     }
+
+    @Test fun jitterMemoryForgetsBadMinuteAfterCalmOnes() {
+        val memory = JitterMemory()
+        assertEquals(0L, memory.max)
+        assertEquals(170L, memory.add(170))
+        assertEquals("плохая минута поднимает запас сразу", 900L, memory.add(900))
+        assertEquals(900L, memory.add(170))
+        assertEquals("сбои идут сериями — одной спокойной минуты мало", 900L, memory.add(170))
+        assertEquals("после трёх спокойных минут плохая забыта", 170L, memory.add(170))
+    }
+
+    @Test fun floorFollowsMeasuredJitterBothWaysButKeepsPlayersOwnFloor() {
+        // Запас задан неровностью прихода: растёт и снижается вместе с ней.
+        assertEquals(1_000L to 1_000L, LiveCatchUp.followFloor(seedFloor = 270, catchUpFloor = 270, seed = 1_000))
+        assertEquals(270L to 270L, LiveCatchUp.followFloor(seedFloor = 1_000, catchUpFloor = 1_000, seed = 270))
+        // Плеер сам упёрся выше измеренного (декодер придерживает кадры): его пол не снижается, но и не мешает росту.
+        assertEquals(270L to 600L, LiveCatchUp.followFloor(seedFloor = 400, catchUpFloor = 600, seed = 270))
+        assertEquals(800L to 800L, LiveCatchUp.followFloor(seedFloor = 400, catchUpFloor = 600, seed = 800))
+    }
+
+    /**
+     * Расчёт по правилам догона (не замер на устройстве): две спокойные минуты, сбой сети на 0,9 с, потом десять
+     * спокойных минут с обычными короткими заминками по 80 мс раз в полминуты. По прежнему правилу запас после плохой
+     * минуты оставался поднятым навсегда, заминки копились и картинка отставала больше секунды; теперь плохая минута
+     * через три спокойные забывается и отставание возвращается к обычному.
+     */
+    @Test fun delayReturnsToUsualAfterOneBadMinute() {
+        fun lagAfterTwelveMinutes(follows: Boolean): Long {
+            val memory = JitterMemory()
+            var seedFloor = LiveCatchUp.floorFor(170)
+            var floor = seedFloor
+            var buffered = 370L
+            var speed = 1f
+            for (second in 1..720) {
+                if (second == 150) buffered += 900                       // сбой: кадры пришли с опозданием 0,9 с
+                else if (second % 30 == 0) buffered += 80                // обычная короткая заминка
+                speed = LiveCatchUp.speedFor(buffered - LiveCatchUp.shiftFor(floor), speed)
+                buffered = (buffered - ((speed - 1f) * 1_000).toLong()).coerceAtLeast(150)
+                if (second % 60 == 0) {                                  // замер неровности — раз в минуту
+                    val jitter = if (second == 180) 900L else 170L
+                    if (follows) {
+                        val (s, f) = LiveCatchUp.followFloor(seedFloor, floor, LiveCatchUp.floorFor(memory.add(jitter)))
+                        seedFloor = s; floor = f
+                    } else {
+                        val seed = LiveCatchUp.floorFor(jitter)
+                        if (seed > seedFloor) { seedFloor = seed; if (floor < seed) floor = seed }
+                    }
+                }
+            }
+            return buffered
+        }
+        val before = lagAfterTwelveMinutes(follows = false)
+        val now = lagAfterTwelveMinutes(follows = true)
+        assertTrue("по прежнему правилу отставание остаётся больше секунды: $before мс", before > 1_000)
+        assertTrue("теперь возвращается к обычному: $now мс", now < 500)
+    }
 }
