@@ -3,6 +3,7 @@ package com.example.smarthomedashboard
 import android.content.Context
 import android.util.Log
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -77,8 +78,11 @@ internal object AutoBackup {
         private fun find(name: String): Uri? = created[name] ?: children()[name]
         private fun children(): Map<String, Uri> = runCatching {
             val list = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
-            resolver.query(list, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
-                null, null, null)?.use { c ->
+            val columns = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            // С Android 8 список папки запрашивается новой формой запроса (старую хранилище документов отвергает).
+            val rows = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) resolver.query(list, columns, null, null)
+            else resolver.query(list, columns, null, null, null)
+            rows?.use { c ->
                 buildMap { while (c.moveToNext()) put(c.getString(1), DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0))) }
             }.orEmpty()
         }.getOrDefault(emptyMap())
@@ -95,9 +99,18 @@ internal object AutoBackup {
             runCatching { resolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }
                 .onFailure { Log.w(TAG, "Папка копий: чтение не удалось (${it.javaClass.simpleName})") }.getOrNull()
         }
-        override fun delete(name: String) = find(name)?.let { uri ->
-            runCatching { DocumentsContract.deleteDocument(resolver, uri) }.getOrDefault(false).also { if (it) created.remove(name) }
-        } ?: false
+        override fun delete(name: String): Boolean {
+            val listed = find(name)
+            if (listed != null && remove(listed)) { created.remove(name); return true }
+            // Файла нет в списке папки или по адресу из списка он не удалился: у хранилища Android адрес файла —
+            // адрес папки и имя, пробуем напрямую (у других хранилищ такого адреса нет — отказ без последствий).
+            val direct = runCatching {
+                DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree) + "/" + name)
+            }.getOrNull() ?: return false
+            return direct != listed && remove(direct)
+        }
+        private fun remove(uri: Uri) = runCatching { DocumentsContract.deleteDocument(resolver, uri) }
+            .onFailure { Log.w(TAG, "Папка копий: удаление не удалось (${it.javaClass.simpleName})") }.getOrDefault(false)
         override fun output(name: String) = runCatching {
             DocumentsContract.createDocument(resolver, root, "application/gzip", name)?.let { doc ->
                 created[name] = doc
@@ -155,6 +168,7 @@ internal object AutoBackup {
         val text = ConfigBackup.build(context).toString(2)
         val fingerprint = ConfigBackup.fingerprint(text)
         if (fingerprint == prefs.getString(PREF_LAST_FP, null) && store.names().any { it.startsWith(PREFIX) }) {
+            trim(store, KEEP) { it.startsWith(PREFIX) && it.endsWith(".json") }
             return Outcome.UNCHANGED
         }
         val name = PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + ".json"
@@ -173,9 +187,24 @@ internal object AutoBackup {
             prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
         }
-        store.names().filter { it.startsWith(PREFIX) && it.endsWith(".json") }.sorted().dropLast(KEEP).forEach { store.delete(it) }
+        trim(store, KEEP, name) { it.startsWith(PREFIX) && it.endsWith(".json") }
         prefs.edit { putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok") }
         return Outcome.CREATED
+    }
+
+    /**
+     * Убрать старые копии вида [mine], оставив [keep] последних (имена копий сортируются по времени). [fresh] — только
+     * что записанная: список папки может её ещё не показывать, и без неё лишняя старая копия оставалась бы каждую
+     * ночь (SM-X216B, 21.11.2026: 4 копии настроек и 5 копий истории вместо 3). Вызывается и когда новая копия не
+     * нужна — чтобы убрать накопившееся. Что не удалилось — в журнал.
+     */
+    internal fun trim(store: Store, keep: Int, fresh: String? = null, mine: (String) -> Boolean) {
+        val names = (store.names().filter(mine) + listOfNotNull(fresh)).distinct().sorted()
+        val old = names.dropLast(keep)
+        if (old.isEmpty()) return
+        val failed = old.count { !store.delete(it) }
+        if (failed > 0) Log.w(TAG, "Старые копии: не удалилось $failed из ${old.size} (копий в папке ${names.size})")
+        else Log.i(TAG, "Старые копии удалены: ${old.size} (осталось ${names.size - old.size})")
     }
 
     /**

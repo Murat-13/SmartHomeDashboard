@@ -54,7 +54,10 @@ internal object PowerHistoryBackup {
         val sources = db.sources()
         if (sources.isEmpty()) return Outcome.EMPTY
         val fingerprint = db.fingerprint()
-        if (fingerprint == prefs.getString(PREF_LAST_FP, null) && store.names().any { it.startsWith(PREFIX) }) return Outcome.UNCHANGED
+        if (fingerprint == prefs.getString(PREF_LAST_FP, null) && store.names().any { it.startsWith(PREFIX) }) {
+            AutoBackup.trim(store, KEEP) { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }
+            return Outcome.UNCHANGED
+        }
         val name = PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + SUFFIX
         val written = runCatching {
             val out = store.output(name) ?: return@runCatching false
@@ -82,7 +85,7 @@ internal object PowerHistoryBackup {
             prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
         }
-        store.names().filter { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }.sorted().dropLast(KEEP).forEach { store.delete(it) }
+        AutoBackup.trim(store, KEEP, name) { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }
         prefs.edit { putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok") }
         return Outcome.CREATED
     }

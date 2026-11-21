@@ -64,6 +64,35 @@ class BackupFolderLagTest {
         assertEquals(0, LaggingDocs.dir.list()!!.size)
     }
 
+    /**
+     * Ночь 21.11.2026 на SM-X216B: новая копия записалась и проверилась, но список папки её ещё не показывал — лишняя
+     * старая копия осталась (4 вместо 3). Свежая копия учитывается и без списка.
+     */
+    @Test fun oldCopiesAreTrimmedEvenWhenFolderListingLags() {
+        val old = listOf("20261105", "20261106", "20261107").map { AutoBackup.PREFIX + it + "_030000.json" }
+        old.forEach { File(LaggingDocs.dir, it).writeText("{}") }
+        File(LaggingDocs.dir, "smarthome_config.json").writeText("{}")   // ручная копия владельца — не наша
+        val store = AutoBackup.FolderStore(context, tree)
+        assertEquals(AutoBackup.Outcome.CREATED, AutoBackup.run(context, store, 1_800_000_000_000L))
+        val left = LaggingDocs.dir.list()!!.filter { it.startsWith(AutoBackup.PREFIX) }.sorted()
+        assertEquals("остаются ${AutoBackup.KEEP} последние копии", AutoBackup.KEEP, left.size)
+        assertEquals(old.drop(1), left.take(2))
+        assertTrue("ручная копия не тронута", File(LaggingDocs.dir, "smarthome_config.json").exists())
+    }
+
+    /** Накопившиеся лишние копии убираются и той ночью, когда новая копия не нужна (настройки не менялись). */
+    @Test fun unchangedNightStillTrimsLeftovers() {
+        val store = AutoBackup.FolderStore(context, tree)
+        assertEquals(AutoBackup.Outcome.CREATED, AutoBackup.run(context, store, 1_800_000_000_000L))
+        LaggingDocs.unlisted.clear()
+        val old = listOf("20200101", "20200102", "20200103", "20200104").map { AutoBackup.PREFIX + it + "_030000.json" }
+        old.forEach { File(LaggingDocs.dir, it).writeText("{}") }
+        assertEquals(AutoBackup.Outcome.UNCHANGED, AutoBackup.run(context, AutoBackup.FolderStore(context, tree), 1_800_086_400_000L))
+        val left = LaggingDocs.dir.list()!!.filter { it.startsWith(AutoBackup.PREFIX) }.sorted()
+        assertEquals(AutoBackup.KEEP, left.size)
+        assertEquals(old.drop(2), left.take(2))
+    }
+
     /** Провайдер документов: новые файлы появляются в списке папки только после «индексации» (никогда в тесте). */
     class LaggingDocs : DocumentsProvider() {
         companion object {
