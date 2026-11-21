@@ -372,20 +372,26 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                         if (seed > seedFloor) { seedFloor = seed; if (catchUpFloor < seed) catchUpFloor = seed }
                     }
                 }
-                val videoLag = shownFrame?.last?.let { ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, System.nanoTime()) }
+                val now = System.nanoTime()
+                val shown = shownFrame?.last
+                val videoLag = shown?.let { ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, now) }
                 // Звук отдельным плеером: на сколько он опережает картинку (в журнал при закрытии) и не отстал ли.
                 val sound = soundPlayer?.takeIf { it.isPlaying }
-                if (videoLag != null) {
+                var late: Long? = null
+                if (shown != null && videoLag != null) {
                     screenDelay.add(videoLag)
                     if (sound != null) {
                         val soundLag = sound.totalBufferedDuration
                         val ahead = CameraHub.audioAheadMs(playingRtsp, source?.user.orEmpty())
-                        soundLead.add(videoLag, soundLag, ahead)
-                        soundLate.add(soundLag - videoLag - (ahead ?: 0), sound.playbackParameters.speed)
+                        late = SoundLate.sample(videoLag, soundLag, ahead ?: 0, (now - shown.atNs) / 1_000_000)
+                        if (late != null) {
+                            soundLead.add(videoLag, soundLag, ahead)
+                            soundLate.add(late, sound.playbackParameters.speed)
+                        }
                     }
                 }
                 // Нет свежего замера (звук или картинка стоят) — прежние не в счёт: по старым звук не ускоряется.
-                if (videoLag == null || sound == null) soundLate.reset()
+                if (late == null) soundLate.reset()
                 paceSound()
                 // Раз в минуту — как идёт показ: по этим строкам видно, вернулась ли задержка после сбоя сети.
                 if (++minuteTicks >= MINUTE_TICKS) {
@@ -1321,10 +1327,26 @@ internal class SoundLate {
         return recent.copyOf(n).also { it.sort() }[n / 2]
     }
 
-    private companion object {
-        const val SIZE = 5
-        const val MIN_SAMPLES = 3
-        const val MAX_MS = 10_000L
+    companion object {
+        private const val SIZE = 5
+        private const val MIN_SAMPLES = 3
+        private const val MAX_MS = 10_000L
+
+        /**
+         * Один замер: на сколько звук позже картинки. [videoLagMs] — задержка показанного кадра ([ScreenDelay.of]),
+         * [soundLagMs] — запас плеера звука, [aheadMs] — на сколько звук приходит от камеры раньше видео,
+         * [shownAgoMs] — сколько назад показан последний кадр. null — замера нет: картинка стоит.
+         *
+         * Задержка кадра считается в предположении, что край буфера видео идёт вперёд в реальном времени. Когда видео
+         * встало (кадры не приходят), а звук играет, выходило, будто звук с каждой секундой всё сильнее отстаёт: на
+         * третьей секунде он зря ускорялся до 1,25× и уходил вперёд на своём запасе (аудит 21.11.2026). Обычные паузы
+         * показа (ключевой кадр — до 0,5 с) замером остаются.
+         */
+        fun sample(videoLagMs: Long, soundLagMs: Long, aheadMs: Long, shownAgoMs: Long): Long? =
+            if (shownAgoMs > FRESH_FRAME_MS) null else soundLagMs - videoLagMs - aheadMs
+
+        /** Кадр показан не раньше — картинка идёт. */
+        const val FRESH_FRAME_MS = 700L
     }
 }
 

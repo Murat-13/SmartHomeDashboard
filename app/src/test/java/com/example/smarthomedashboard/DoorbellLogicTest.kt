@@ -426,4 +426,44 @@ class DoorbellLogicTest {
         assertTrue("по прежнему правилу отставание остаётся больше секунды: $before мс", before > 1_000)
         assertTrue("теперь возвращается к обычному: $now мс", now < 500)
     }
+
+    /**
+     * Картинка застыла на несколько секунд (кадры видео не приходят), а отдельный звук играет как играл. Расчёт задержки
+     * кадра считает, что край буфера видео идёт вперёд в реальном времени; когда он стоит, выходит, будто звук с каждой
+     * секундой всё сильнее отстаёт от картинки, — и звук зря ускорялся до 1,25×, уходя вперёд на своём запасе
+     * (аудит 21.11.2026). Застывшая картинка — не замер: звук идёт с обычной скоростью.
+     */
+    @Test fun frozenPictureDoesNotSpeedSoundUp() {
+        val second = 1_000_000_000L
+        val edgeMs = 10_300L        // край буфера видео: встал
+        val ptsUs = 10_000_000L     // последний показанный кадр
+        val shownAt = 5 * second
+        val soundLag = 350L         // запас плеера звука — обычный
+        val target = LiveCatchUp.TARGET_MS
+        val late = SoundLate()
+        var speed = 1f
+        // До остановки: кадры свежие, звук вровень с картинкой.
+        repeat(5) {
+            val videoLag = ScreenDelay.of(edgeMs, ptsUs, shownAt, shownAt + 50_000_000L)
+            SoundLate.sample(videoLag, soundLag, 0, 50)?.let { late.add(it, speed) } ?: late.reset()
+            speed = LiveCatchUp.soundSpeed(soundLag, target, late.value(), speed)
+            assertEquals(1f, speed)
+        }
+        // Картинка стоит 5 секунд: проверка раз в секунду, кадр и край буфера те же.
+        for (tick in 1..5) {
+            val now = shownAt + tick * second
+            val videoLag = ScreenDelay.of(edgeMs, ptsUs, shownAt, now)
+            SoundLate.sample(videoLag, soundLag, 0, (now - shownAt) / 1_000_000)?.let { late.add(it, speed) } ?: late.reset()
+            speed = LiveCatchUp.soundSpeed(soundLag, target, late.value(), speed)
+            assertEquals("картинка стоит $tick с — звук не ускоряется", 1f, speed)
+        }
+        // Видео пошло снова, и звук действительно позже картинки (как у камеры с G.711): догон работает, как прежде.
+        repeat(3) {
+            SoundLate.sample(200, 550, 0, 40)?.let { late.add(it, speed) } ?: late.reset()
+            speed = LiveCatchUp.soundSpeed(550, target, late.value(), speed)
+        }
+        assertEquals("настоящее отставание звука по-прежнему догоняется", LiveCatchUp.SOUND_LATE_SPEED, speed)
+        // Обычная неровность показа (кадр показан 0,4 с назад — пауза на ключевом кадре) замером остаётся.
+        assertNotNull(SoundLate.sample(300, 350, 0, 400))
+    }
 }
