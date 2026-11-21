@@ -231,13 +231,16 @@ internal class TalkSession(private val session: RtspSession) : TalkChannel {
     }
 
     /** Начало фразы: первый пакет голоса — с маркером. */
-    override fun beginTalkspurt() {
+    @Synchronized override fun beginTalkspurt() {
         filled = 0
         talkspurt = true
     }
 
-    /** 16-битные отсчёты 8 кГц → G.711 → кадры по 160 байт в очередь отправки (не больше ~0,5 с). */
-    override fun send(pcm: ShortArray, count: Int) {
+    /**
+     * 16-битные отсчёты 8 кГц → G.711 → кадры по 160 байт в очередь отправки (не больше ~0,5 с). Под замком: кадр
+     * собирается по отсчёту, и два потока разом (микрофон прежнего и нового разговора) выходили за его границу.
+     */
+    @Synchronized override fun send(pcm: ShortArray, count: Int) {
         for (i in 0 until count) {
             pending[filled++] = if (aLaw) G711.alaw(pcm[i].toInt()) else G711.ulaw(pcm[i].toInt())
             if (filled == FRAME) {
@@ -371,7 +374,13 @@ internal class VoiceGain {
 
 /** Микрофон 8 кГц моно (источник для разговора); если 8 кГц не поддержан — 16 кГц с прореживанием. */
 internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, private val onLevel: (Float) -> Unit) {
-    @Volatile private var running = false
+    /**
+     * Один запуск микрофона. У остановленного запуска поток завершается сам, даже если следом сразу начат новый:
+     * с общим признаком «работает» поток прежнего разговора при «Завершить» и сразу «Ответить» не успевал заметить
+     * остановку и работал дальше вторым — оба писали голос в один канал.
+     */
+    private class Run { @Volatile var on = true }
+    @Volatile private var current: Run? = null
     /** Частота отсчётов, которые получает [onFrame]: 8 кГц, или 16 кГц при [start] с `wideband`. */
     @Volatile var rate = 8_000
         private set
@@ -395,7 +404,7 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
      */
     fun start(context: Context, duplex: Boolean = true, wideband: Boolean = false): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
-        if (running) return true
+        if (current != null) return true
         val source = if (duplex) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
         val record = (if (wideband) open(16_000, source) else null) ?: open(8_000, source) ?: open(16_000, source) ?: return false
         rate = if (wideband && record.sampleRate == 16_000) 16_000 else 8_000
@@ -406,7 +415,8 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         )
         echoCancel = effects.any { it is android.media.audiofx.AcousticEchoCanceler }
         if (duplex) Log.i(TAG, "Подавление эха: " + if (echoCancel) "есть" else "нет на этом планшете")
-        running = true
+        val run = Run()
+        current = run
         thread = Thread({
             val decimate = record.sampleRate / rate
             val frame = rate / 50
@@ -418,13 +428,14 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
             val pace = MicPace(frame * 1_000_000_000L / rate)
             try {
                 record.startRecording()
-                while (running) {
+                while (run.on) {
                     val n = record.read(raw, 0, raw.size)
                     // Микрофон не может отдать звука больше, чем прошло времени (плюс его буфер). Если отдаёт (источник
                     // без ожидания — так ведёт себя поддельный микрофон в тестах) или не отдаёт ничего, не крутиться
                     // вхолостую: иначе поток завалил бы главный сообщениями об уровне.
                     if (n <= 0 || pace.ahead(System.nanoTime())) Thread.sleep(MicPace.WAIT_MS)
                     if (n <= 0) continue
+                    if (!run.on) break // остановили, пока ждали звук: этот кадр уже не нужен
                     val count = n / decimate
                     for (i in 0 until count) {
                         var acc = 0
@@ -469,7 +480,8 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
     }
 
     fun stop() {
-        running = false
+        current?.on = false
+        current = null
         thread = null
     }
 

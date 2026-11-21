@@ -1045,4 +1045,30 @@ class TalkTest {
         await("отказ вывода замечен: $answers") { answers.toList() == listOf(false) }
         assertEquals(0, street.rate)
     }
+
+    /**
+     * «Завершить» и сразу «Ответить»: микрофон прежнего разговора останавливается, а не работает дальше вторым потоком.
+     * Раньше оба потока писали голос в один канал: кадры путались, а канал ONVIF от этого падал с ошибкой — и новый
+     * разговор завершался «Связь с домофоном прервалась» (так изредка падал тест lateAnswerOfPreviousCall…).
+     */
+    @Test fun endAndAnswerAtOnceLeavesOneMicrophoneThread() {
+        fun mics() = Thread.getAllStackTraces().keys.count { it.name == "talk-mic" && it.isAlive }
+        await("микрофоны прежних тестов остановлены") { mics() == 0 }
+        val talk = call { it.street = ScriptedStreet() }
+        val looper = shadowOf(Looper.getMainLooper())
+        talk.startCall()
+        looper.idle()
+        await("микрофон работает") { mics() == 1 }
+        repeat(3) {
+            talk.endCall()
+            talk.startCall()
+            looper.idle()
+        }
+        Thread.sleep(300)
+        assertEquals("работает один поток микрофона", 1, mics())
+        assertTrue("разговор идёт", talk.inCall)
+        talk.endCall()
+        talk.dispose()
+        await("микрофон остановлен") { mics() == 0 }
+    }
 }
