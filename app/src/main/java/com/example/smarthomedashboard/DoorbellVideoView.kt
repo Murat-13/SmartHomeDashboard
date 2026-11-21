@@ -172,7 +172,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         exo.setMediaSource(RtspMediaSource.Factory()
             .setForceUseRtpTcp(true)
             .setTimeoutMs(RTSP_TIMEOUT_MS)
-            .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS) { H264Params.forStream(rtsp, src.user, password) })
+            .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS, renumber = !LiveTuning.off(context, "no_seq_fix")) {
+                H264Params.forStream(rtsp, src.user, password)
+            })
             .createMediaSource(MediaItem.fromUri(Uri.parse(relay))))
         exo.playWhenReady = true
         exo.prepare()
@@ -501,12 +503,14 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             splitSound = viaRelay && !LiveTuning.off(context, "player_audio")
             soundPassword = password
             val url = relay ?: DoorbellConfig.withCredentials(rtsp, src.user, password)
+            val sequenceRestarts = java.util.concurrent.atomic.AtomicInteger().also { this.sequenceRestarts = it }
             val media = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
                 .setTimeoutMs(RTSP_TIMEOUT_MS)
                 // Media3 открывает RTSP-сокет без таймаута: недоступный адрес держал бы поток плеера минутами,
                 // а освобождение плеера ждёт этот поток в главном — отсюда «жуткие лаги» при выключенной камере.
-                .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS) {
+                .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS,
+                    renumber = !LiveTuning.off(context, "no_seq_fix"), restarts = sequenceRestarts) {
                     H264Params.forStream(rtsp, src.user, password)
                 })
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
@@ -517,6 +521,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     private var attempt = 0
+    /** Сколько раз за текущее подключение отсчёт номеров RTP-пакетов начат заново ([RtpSequenceFix]). */
+    private var sequenceRestarts: java.util.concurrent.atomic.AtomicInteger? = null
     /** Адрес RTSP текущей попытки (основной или запасной); пусто — HLS через HA. */
     internal var playingRtsp = ""
     /** Декодер видео текущего плеера (для проверки на планшете и журнала). */
@@ -752,8 +758,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             (if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс (нужен от $catchUpFloor), остановок $stalls" else "") +
             (if (splitSound) "; звук отдельно" else "") +
             (screenDelay.summary()?.let { "; от прихода до экрана: $it" } ?: "") +
-            (if (firstFrameAt != 0L) "; у живого через ${liveAfterMs.coerceAtLeast(0)} мс после первого кадра" else "") +
-            (liveFactory?.retimer?.takeIf { it.moved > 0 }?.let { "; выровнено кадров ${it.moved} (сдвиг до ${it.maxShiftUs / 1000} мс)" } ?: ""))
+            (if (firstFrameAt != 0L) "; первый кадр через ${firstFrameAt - startedAt} мс, у живого — через ${liveAfterMs.coerceAtLeast(0)} мс после него" else "") +
+            (liveFactory?.retimer?.takeIf { it.moved > 0 }?.let { "; выровнено кадров ${it.moved} (сдвиг до ${it.maxShiftUs / 1000} мс)" } ?: "") +
+            (sequenceRestarts?.get()?.takeIf { it > 0 }?.let { "; отсчёт номеров пакетов начат заново $it раз" } ?: ""))
     }
 
     // ---- Бесшовная смена потока (решение владельца): плитка ↔ раскрытие/окно звонка ----
@@ -1055,16 +1062,22 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
  */
 internal class ConnectTimeoutSocketFactory(
     private val timeoutMs: Int,
+    /** Свои номера RTP-пакетов для Media3 ([RtpSequenceFix]); false — номера камеры как есть. */
+    private val renumber: Boolean = true,
+    /** Сюда считается, сколько раз отсчёт номеров начат заново (для журнала). */
+    private val restarts: java.util.concurrent.atomic.AtomicInteger? = null,
     /** Параметры видео H.264, если камера не дала их в описании ([H264Params]). */
     private val h264: (() -> String?)? = null
 ) : javax.net.SocketFactory() {
-    override fun createSocket(): java.net.Socket = SdpFixingSocket(h264)
+    private fun socket() = SdpFixingSocket(h264, if (renumber) RtpSequenceFix(restarts) else null)
+
+    override fun createSocket(): java.net.Socket = socket()
 
     override fun createSocket(host: String, port: Int): java.net.Socket =
         connect(java.net.InetSocketAddress(host, port))
 
     override fun createSocket(host: String, port: Int, localHost: java.net.InetAddress?, localPort: Int): java.net.Socket =
-        SdpFixingSocket(h264).apply {
+        socket().apply {
             bind(java.net.InetSocketAddress(localHost, localPort))
             connectOrClose(this, java.net.InetSocketAddress(host, port))
         }
@@ -1073,12 +1086,12 @@ internal class ConnectTimeoutSocketFactory(
         connect(java.net.InetSocketAddress(host, port))
 
     override fun createSocket(address: java.net.InetAddress, port: Int, localAddress: java.net.InetAddress?, localPort: Int): java.net.Socket =
-        SdpFixingSocket(h264).apply {
+        socket().apply {
             bind(java.net.InetSocketAddress(localAddress, localPort))
             connectOrClose(this, java.net.InetSocketAddress(address, port))
         }
 
-    private fun connect(address: java.net.InetSocketAddress) = SdpFixingSocket(h264).also { connectOrClose(it, address) }
+    private fun connect(address: java.net.InetSocketAddress) = socket().also { connectOrClose(it, address) }
 
     private fun connectOrClose(socket: java.net.Socket, address: java.net.InetSocketAddress) {
         try { socket.connect(address, timeoutMs) } catch (e: java.io.IOException) { socket.close(); throw e }

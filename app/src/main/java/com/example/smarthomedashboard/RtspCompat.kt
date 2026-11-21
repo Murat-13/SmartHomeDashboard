@@ -174,14 +174,19 @@ internal object H264Params {
 }
 
 /**
- * Сокет RTSP-плеера: ответ на DESCRIBE проходит через [Media3Sdp]. Остальное — байт в байт; после описания
- * (и с первым пакетом `$` в любом случае) поток не разбирается вовсе.
+ * Сокет RTSP-плеера: ответ на DESCRIBE проходит через [Media3Sdp], номера RTP-пакетов — через [RtpSequenceFix]
+ * ([sequence]; null — номера камеры как есть). Остальное — байт в байт.
  */
-internal class SdpFixingSocket(private val h264: (() -> String?)? = null) : java.net.Socket() {
+internal class SdpFixingSocket(
+    private val h264: (() -> String?)? = null,
+    private val sequence: RtpSequenceFix? = RtpSequenceFix()
+) : java.net.Socket() {
     private var wrapped: InputStream? = null
 
     @Synchronized
-    override fun getInputStream(): InputStream = wrapped ?: SdpFixingInputStream(super.getInputStream(), h264).also { wrapped = it }
+    override fun getInputStream(): InputStream = wrapped ?: SdpFixingInputStream(super.getInputStream(), h264)
+        .let { fixed -> sequence?.let { RtpSequenceInputStream(fixed, it) } ?: fixed }
+        .also { wrapped = it }
 }
 
 /** Читает ответы RTSP целиком, пока не встретит описание потока; дальше — прозрачная труба. */
@@ -194,6 +199,7 @@ internal class SdpFixingInputStream(
     private var passThrough = false
 
     override fun read(): Int {
+        if (passThrough && pending == null) return source.read()
         val one = ByteArray(1)
         return if (read(one, 0, 1) <= 0) -1 else one[0].toInt() and 0xFF
     }
