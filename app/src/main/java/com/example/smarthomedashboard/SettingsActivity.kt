@@ -255,7 +255,10 @@ class SettingsActivity : PinProtectedActivity() {
             if (!isPinAccessAllowed()) return@setOnClickListener
             button.isEnabled = false
             lifecycleScope.launch {
-                val outcome = withContext(Dispatchers.IO) { AutoBackup.run(applicationContext) }
+                val outcome = withContext(Dispatchers.IO) {
+                    // Заодно — копия истории мощности: та же папка, тот же порядок, что ночью.
+                    AutoBackup.run(applicationContext).also { runCatching { PowerHistoryBackup.run(applicationContext) } }
+                }
                 button.isEnabled = true
                 updateBackupStatus()
                 Toast.makeText(this@SettingsActivity, when (outcome) {

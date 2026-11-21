@@ -34,6 +34,8 @@ internal object AutoBackup {
     const val PREF_LAST_TIME = "backup_last_time"
     const val PREF_LAST_RESULT = "backup_last_result"
     const val PREF_LAST_CHECK = "backup_last_check"
+    /** Место хранения и имена ежедневных копий, оставшихся после последней уборки ([trim]). */
+    const val PREF_KEPT = "backup_kept_names"
     private const val WORK = "daily_auto_backup"
     private const val NIGHT_WORK = "night_auto_backup"
 
@@ -46,6 +48,8 @@ internal object AutoBackup {
         fun write(name: String, text: String): Boolean
         fun read(name: String): String?
         fun delete(name: String): Boolean
+        /** Какое это место: имена копий, которые помнит приложение, относятся только к нему ([trim]). */
+        val id: String get() = ""
         /** Потоковая запись/чтение больших файлов (история мощности); null — недоступно. */
         fun output(name: String): java.io.OutputStream? = null
         fun input(name: String): java.io.InputStream? = null
@@ -53,6 +57,7 @@ internal object AutoBackup {
 
     private class InternalStore(context: Context) : Store {
         private val dir = File(context.filesDir, "backups")
+        override val id get() = "internal"
         override fun names() = dir.list()?.toList().orEmpty()
         override fun write(name: String, text: String) = runCatching {
             dir.mkdirs()
@@ -75,6 +80,7 @@ internal object AutoBackup {
          * лишний файл не удалился).
          */
         private val created = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+        override val id get() = tree.toString()
         private fun find(name: String): Uri? = created[name] ?: children()[name]
         private fun children(): Map<String, Uri> = runCatching {
             val list = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
@@ -85,7 +91,7 @@ internal object AutoBackup {
             rows?.use { c ->
                 buildMap { while (c.moveToNext()) put(c.getString(1), DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0))) }
             }.orEmpty()
-        }.getOrDefault(emptyMap())
+        }.onFailure { Log.w(TAG, "Папка копий: список не получен (${it.javaClass.simpleName})") }.getOrDefault(emptyMap())
         override fun names() = children().keys.toList()
         override fun write(name: String, text: String) = runCatching {
             val doc = DocumentsContract.createDocument(resolver, root, "application/json", name)
@@ -167,8 +173,9 @@ internal object AutoBackup {
         }
         val text = ConfigBackup.build(context).toString(2)
         val fingerprint = ConfigBackup.fingerprint(text)
-        if (fingerprint == prefs.getString(PREF_LAST_FP, null) && store.names().any { it.startsWith(PREFIX) }) {
-            trim(store, KEEP) { it.startsWith(PREFIX) && it.endsWith(".json") }
+        val mine: (String) -> Boolean = { it.startsWith(PREFIX) && it.endsWith(".json") }
+        if (fingerprint == prefs.getString(PREF_LAST_FP, null) && exists(prefs, PREF_KEPT, store) { it.startsWith(PREFIX) }) {
+            trim(prefs, PREF_KEPT, store, KEEP, mine = mine)
             return Outcome.UNCHANGED
         }
         val name = PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + ".json"
@@ -187,25 +194,44 @@ internal object AutoBackup {
             prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
         }
-        trim(store, KEEP, name) { it.startsWith(PREFIX) && it.endsWith(".json") }
+        trim(prefs, PREF_KEPT, store, KEEP, name, mine)
         prefs.edit { putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok") }
         return Outcome.CREATED
     }
 
     /**
-     * Убрать старые копии вида [mine], оставив [keep] последних (имена копий сортируются по времени). [fresh] — только
-     * что записанная: список папки может её ещё не показывать, и без неё лишняя старая копия оставалась бы каждую
-     * ночь (SM-X216B, 21.11.2026: 4 копии настроек и 5 копий истории вместо 3). Вызывается и когда новая копия не
-     * нужна — чтобы убрать накопившееся. Что не удалилось — в журнал.
+     * Убрать старые копии вида [mine], оставив [keep] последних (имена копий сортируются по времени).
+     *
+     * На список папки полагаться нельзя (SM-X216B): ночью 20.11.2026 он не показал только что записанную копию, ночью
+     * 21.11 по нему не удалилось ничего (накопилось по 5 копий вместо 3), а днём он полон и удаление проходит.
+     * Поэтому приложение помнит свои копии само ([key] в настройках, вместе с местом хранения): в расчёт идут список
+     * папки, запомненные имена и только что записанная [fresh]; файл, которого в списке нет, удаляется по прямому
+     * адресу. Вызывается и когда новая копия не нужна — убрать накопившееся. Итог — в журнал.
      */
-    internal fun trim(store: Store, keep: Int, fresh: String? = null, mine: (String) -> Boolean) {
-        val names = (store.names().filter(mine) + listOfNotNull(fresh)).distinct().sorted()
+    internal fun trim(prefs: android.content.SharedPreferences, key: String, store: Store, keep: Int, fresh: String? = null,
+                      mine: (String) -> Boolean) {
+        val listed = store.names().filter(mine)
+        val names = (listed + remembered(prefs, key, store).filter(mine) + listOfNotNull(fresh)).distinct().sorted()
         val old = names.dropLast(keep)
-        if (old.isEmpty()) return
-        val failed = old.count { !store.delete(it) }
-        if (failed > 0) Log.w(TAG, "Старые копии: не удалилось $failed из ${old.size} (копий в папке ${names.size})")
-        else Log.i(TAG, "Старые копии удалены: ${old.size} (осталось ${names.size - old.size})")
+        // Не удалилась, и список папки (он не пуст) её не показывает — файла уже нет: забываем.
+        val stuck = old.filter { !store.delete(it) && (listed.isEmpty() || it in listed) }
+        prefs.edit { putString(key, (listOf(store.id) + (names.takeLast(keep) + stuck).distinct().sorted()).joinToString("\n")) }
+        when {
+            stuck.isNotEmpty() -> Log.w(TAG, "Старые копии: не удалилось ${stuck.size} из ${old.size} (в списке папки ${listed.size})")
+            old.isNotEmpty() -> Log.i(TAG, "Старые копии удалены: ${old.size} (в списке папки ${listed.size})")
+        }
+        if (fresh != null && fresh !in listed) Log.i(TAG, "Копии: свежей нет в списке папки (в списке ${listed.size})")
     }
+
+    /** Имена копий, оставшихся после прошлой уборки в этом же месте хранения. */
+    private fun remembered(prefs: android.content.SharedPreferences, key: String, store: Store): List<String> {
+        val lines = prefs.getString(key, null)?.split('\n').orEmpty()
+        return if (lines.firstOrNull() == store.id) lines.drop(1).filter { it.isNotBlank() } else emptyList()
+    }
+
+    /** Копия вида [mine] уже есть — по списку папки или по памяти (ночью список бывает пуст). */
+    internal fun exists(prefs: android.content.SharedPreferences, key: String, store: Store, mine: (String) -> Boolean) =
+        store.names().any(mine) || remembered(prefs, key, store).any(mine)
 
     /**
      * Копия «перед обновлением» на версию [versionName]: создаётся всегда (даже без изменений), засчитывается

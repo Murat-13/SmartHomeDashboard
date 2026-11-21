@@ -39,6 +39,8 @@ internal object PowerHistoryBackup {
     const val PREF_LAST_TIME = "power_backup_last_time"
     const val PREF_LAST_RESULT = "power_backup_last_result"
     const val PREF_LAST_FP = "power_backup_last_fingerprint"
+    /** Место хранения и имена копий истории, оставшихся после последней уборки ([AutoBackup.trim]). */
+    const val PREF_KEPT = "power_backup_kept_names"
     private const val WORK = "daily_power_history_backup"
     private const val NIGHT_WORK = "night_power_history_backup"
 
@@ -54,8 +56,9 @@ internal object PowerHistoryBackup {
         val sources = db.sources()
         if (sources.isEmpty()) return Outcome.EMPTY
         val fingerprint = db.fingerprint()
-        if (fingerprint == prefs.getString(PREF_LAST_FP, null) && store.names().any { it.startsWith(PREFIX) }) {
-            AutoBackup.trim(store, KEEP) { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }
+        val mine: (String) -> Boolean = { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }
+        if (fingerprint == prefs.getString(PREF_LAST_FP, null) && AutoBackup.exists(prefs, PREF_KEPT, store) { it.startsWith(PREFIX) }) {
+            AutoBackup.trim(prefs, PREF_KEPT, store, KEEP, mine = mine)
             return Outcome.UNCHANGED
         }
         val name = PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(Date(now)) + SUFFIX
@@ -85,7 +88,7 @@ internal object PowerHistoryBackup {
             prefs.edit { putString(PREF_LAST_RESULT, "error") }
             return Outcome.FAILED
         }
-        AutoBackup.trim(store, KEEP, name) { it.startsWith(PREFIX) && it.endsWith(SUFFIX) }
+        AutoBackup.trim(prefs, PREF_KEPT, store, KEEP, name, mine)
         prefs.edit { putString(PREF_LAST_FP, fingerprint).putLong(PREF_LAST_TIME, now).putString(PREF_LAST_RESULT, "ok") }
         return Outcome.CREATED
     }
