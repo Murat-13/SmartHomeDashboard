@@ -30,6 +30,8 @@ class RecordingHubTest {
     private val server = ServerSocket(0)
     private val connections = AtomicInteger()
     private val sent = AtomicInteger()
+    /** Каждый такой по счёту кадр камеры — ключевой (SPS, PPS, IDR тремя пакетами); 0 — ключевых нет. */
+    @Volatile private var keyEvery = 0
 
     private val sdp = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=cam\r\na=control:*\r\n" +
         "m=video 0 RTP/AVP 96\r\na=control:trackID=1\r\na=rtpmap:96 H264/90000\r\n" +
@@ -77,12 +79,18 @@ class RecordingHubTest {
                     reply(cseq, "Session: 42\r\n")
                     thread(isDaemon = true) {
                         var i = 0
+                        var frame = 0
                         try {
                             while (!s.isClosed) {
-                                val p = RecordingTestSupport.rtp(96, true, i and 0xFFFF, i * 3000L, byteArrayOf(0x41, i.toByte(), 2, 3))
-                                synchronized(out) { out.write(byteArrayOf('$'.code.toByte(), 0, (p.size shr 8).toByte(), p.size.toByte()) + p); out.flush() }
-                                sent.incrementAndGet()
-                                i++
+                                val key = keyEvery > 0 && frame % keyEvery == 0
+                                val nals = if (key) listOf(SPS, PPS, byteArrayOf(0x65, i.toByte(), 2, 3)) else listOf(byteArrayOf(0x41, i.toByte(), 2, 3))
+                                for ((index, nal) in nals.withIndex()) {
+                                    val p = RecordingTestSupport.rtp(96, index == nals.lastIndex, i and 0xFFFF, frame * 3000L, nal)
+                                    synchronized(out) { out.write(byteArrayOf('$'.code.toByte(), 0, (p.size shr 8).toByte(), p.size.toByte()) + p); out.flush() }
+                                    sent.incrementAndGet()
+                                    i++
+                                }
+                                frame++
                                 Thread.sleep(20)
                             }
                         } catch (_: Exception) {}
@@ -150,6 +158,41 @@ class RecordingHubTest {
         assertNull("записи нет — смотреть напрямую", CameraHub.relayUrl(url, ""))
     }
 
+    /**
+     * Быстрый старт плитки: плеер, подключившийся посреди группы кадров, сразу получает её ключевой кадр (а не ждёт
+     * следующего до 4 с), и дальше живые пакеты идут за сохранёнными без пропуска и повторов.
+     */
+    @Test fun relayViewerStartsFromLastKeyFrameWithoutGap() {
+        keyEvery = 10
+        val a = recorder(audio = false)
+        a.start()
+        try {
+            waitFor(5_000, "поток пошёл") { CameraHub.relayUrl(url, "") != null }
+            waitFor(5_000, "прошёл второй ключевой кадр и несколько обычных") { sent.get() >= 18 }
+            Thread.sleep(100)
+            val viewer = RtspSession(CameraHub.relayUrl(url, "")!!, "", null, readTimeoutMs = 3_000)
+            viewer.open { it.isVideo }
+            val sentBefore = sent.get()
+            val types = mutableListOf<Int>()
+            val sequences = mutableListOf<Int>()
+            try {
+                viewer.read(object : RtspSession.Sink {
+                    override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
+                        val rtp = RtpPacket.parse(packet, length)!!
+                        types += rtp.payload[rtp.offset].toInt() and 0x1F
+                        sequences += rtp.sequence
+                        if (sequences.size >= 30) viewer.close()
+                    }
+                })
+            } catch (_: Exception) {}
+            assertEquals("первым — ключевой кадр целиком: SPS, PPS, IDR", listOf(7, 8, 5), types.take(3))
+            assertTrue("это уже прошедший ключевой кадр, а не следующий: ${sequences.first()} из $sentBefore", sequences.first() < sentBefore)
+            assertTrue("сохранённое и живое идут подряд: $sequences", sequences.size >= 30 && sequences.zipWithNext().all { (x, y) -> y == x + 1 })
+        } finally {
+            a.stop()
+        }
+    }
+
     @Test fun relayRejectsUnknownAddress() {
         val a = recorder(audio = false)
         a.start()
@@ -184,5 +227,11 @@ class RecordingHubTest {
         assertNotNull(a.status)
         assertEquals(CameraRecorder.State.STOPPED, a.status.state)
         viewer.close()
+    }
+
+    private companion object {
+        /** Параметры видео из описания потока (sprop-parameter-sets): с ними запись принимает ключевой кадр. */
+        val SPS: ByteArray = java.util.Base64.getDecoder().decode("Z2QAM6wVFKAoAPGQ")
+        val PPS: ByteArray = java.util.Base64.getDecoder().decode("aO48sA==")
     }
 }

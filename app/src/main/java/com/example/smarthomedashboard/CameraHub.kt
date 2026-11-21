@@ -102,6 +102,10 @@ internal class SharedStream(
     /** Текущая сессия камеры: номер дорожки ретранслятора по каналу RTP. */
     @Volatile private var relayChannels: Map<Int, Int> = emptyMap()
     private val relayClients = CopyOnWriteArrayList<RtspRelay.Client>()
+    /** Видео с последнего ключевого кадра — для нового плеера ([RecentVideo]); замок — он же порядок «старое, потом живое». */
+    private val recent = RecentVideo()
+    /** Дорожка видео у ретранслятора в текущей сессии камеры. */
+    @Volatile private var relayVideoTrack = -1
     /** Параметры идущей сессии; пишется под замком потока, читается в [add] под ним же. */
     @Volatile private var current: SessionInfo? = null
 
@@ -200,6 +204,8 @@ internal class SharedStream(
                     for (a in consumers) synchronized(a) { end(a); begin(a, info) }
                 }
                 relayChannels = setups.withIndex().associate { (i, setup) -> setup.rtpChannel to i }
+                relayVideoTrack = setups.indexOf(video)
+                recent.clear()
                 relaySdp = Media3Sdp.compatible(RtspRelay.sdpFor(s.sdp, setups)) { H264Params.cached(key.url) }
                 // Камера не дала SPS/PPS в описании (субпоток Reolink): берём их из потока и дописываем для плеера.
                 val sniffer = H264Params.Collector().takeIf {
@@ -216,7 +222,13 @@ internal class SharedStream(
                     private var busyMaxNs = 0L
 
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
-                        relay(setup.rtpChannel, rtcp = false, packet, length)
+                        if (setup === video) {
+                            // Под одним замком с подключением плеера: он получает сохранённое и дальше живое без пропуска.
+                            synchronized(recent) {
+                                recent.add(packet, length)
+                                relay(setup.rtpChannel, rtcp = false, packet, length)
+                            }
+                        } else relay(setup.rtpChannel, rtcp = false, packet, length)
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
                             videoBytes += rtp.length
@@ -242,7 +254,10 @@ internal class SharedStream(
                                 }
                             }
                             val started = System.nanoTime()
-                            for (frame in depacketizer.push(rtp)) each { _, sink -> sink.video(frame, depacketizer) }
+                            for (frame in depacketizer.push(rtp)) {
+                                recent.frame(frame.key)
+                                each { _, sink -> sink.video(frame, depacketizer) }
+                            }
                             busyMaxNs = maxOf(busyMaxNs, System.nanoTime() - started)
                         } else if (setup === audioSetup && aac != null) {
                             audioProbe?.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: звук приходит через $it мс после записи (по часам камеры, RTCP)") }
@@ -269,6 +284,8 @@ internal class SharedStream(
             } finally {
                 // Новая сессия камеры — новые номера и метки RTP: клиенты ретранслятора переподключаются сами.
                 relaySdp = null
+                relayVideoTrack = -1
+                recent.clear()
                 relayClients.forEach { it.close() }
                 synchronized(this) {
                     current = null
@@ -294,7 +311,17 @@ internal class SharedStream(
         for (c in relayClients) c.offer(track, rtcp, packet, length)
     }
 
-    internal fun addClient(client: RtspRelay.Client) { relayClients += client }
+    /**
+     * Плеер начал смотреть: сначала видео с последнего ключевого кадра (картинка сразу, а не через секунды ожидания
+     * следующего ключевого), потом живые пакеты. Отставание на возраст ключевого кадра плеер снимает рывком к живому.
+     */
+    internal fun addClient(client: RtspRelay.Client) {
+        synchronized(recent) {
+            val track = relayVideoTrack
+            if (track >= 0) recent.replay { data, offset, length -> client.offer(track, rtcp = false, data, length, offset) }
+            relayClients += client
+        }
+    }
     internal fun removeClient(client: RtspRelay.Client) { relayClients -= client }
 
     private companion object {
@@ -373,12 +400,12 @@ internal object RtspRelay {
         private var stream: SharedStream? = null
         private val session = ByteArray(8).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
 
-        fun offer(track: Int, rtcp: Boolean, packet: ByteArray, length: Int) {
+        fun offer(track: Int, rtcp: Boolean, packet: ByteArray, length: Int, offset: Int = 0) {
             if (!playing || closed) return
             val channel = channels[track]?.let { if (rtcp) it + 1 else it } ?: return
             val frame = ByteArray(length + 4)
             frame[0] = '$'.code.toByte(); frame[1] = channel.toByte(); frame[2] = (length shr 8).toByte(); frame[3] = length.toByte()
-            System.arraycopy(packet, 0, frame, 4, length)
+            System.arraycopy(packet, offset, frame, 4, length)
             // Плеер не успевает (завис, медленный) — отключаем: он переподключится, а камера и запись не ждут.
             if (!queue.offer(frame)) close()
         }
@@ -510,6 +537,90 @@ internal object RtspRelay {
             /** ~ несколько секунд основного потока: дольше плеер не может отставать. */
             const val QUEUE = 2_000
         }
+    }
+}
+
+/**
+ * Видеопакеты RTP с последнего ключевого кадра (docs/doorbell.md, «Быстрый старт плитки»). Плеер, подключившийся к
+ * ретранслятору, без них ждёт следующий ключевой кадр камеры — у субпотока до 4 с чёрной плитки после пробуждения
+ * экрана, смены страницы или сохранения настроек. С ними первый кадр — сразу.
+ *
+ * Буфер один и заранее выделен (пакеты идут сотнями в секунду — без мусора для сборщика). Группа кадров, которая в
+ * него не помещается (основной поток: до 1,3 МБ за 2 с), не хранится вовсе — основной поток и так подменяется
+ * картинкой плитки, пока не придёт его ключевой кадр. Поток без битов marker не хранится: границы кадров неизвестны.
+ */
+internal class RecentVideo(capacity: Int = CAPACITY) {
+    private val data = ByteArray(capacity)
+    private var size = 0
+    /** Где в буфере начался текущий кадр и лежит ли он там целиком. */
+    private var frameStart = 0
+    private var frameWhole = true
+    private var frameEnded = true
+    /** Буфер начинается с ключевого кадра. */
+    private var valid = false
+    /** Столько ближайших ключевых кадров пакеты не копятся (группа не поместилась). */
+    private var skipGroups = 0
+
+    /** Очередной видеопакет камеры (заголовок RTP — в начале [packet]). */
+    @Synchronized fun add(packet: ByteArray, length: Int) {
+        if (frameEnded) { frameStart = size; frameWhole = skipGroups == 0; frameEnded = false }
+        when {
+            skipGroups > 0 -> frameWhole = false
+            size + PREFIX + length > data.size -> { reset(); skipGroups = SKIP_GROUPS }
+            else -> {
+                data[size] = (length ushr 8).toByte()
+                data[size + 1] = length.toByte()
+                System.arraycopy(packet, 0, data, size + PREFIX, length)
+                size += PREFIX + length
+            }
+        }
+        if (length > 1 && (packet[1].toInt() and MARKER) != 0) frameEnded = true
+    }
+
+    /** Кадр из только что принятых пакетов разобран; [key] — ключевой: с него начинается новая группа. */
+    @Synchronized fun frame(key: Boolean) {
+        if (!key) return
+        if (skipGroups > 0) { skipGroups--; return }
+        // Кадр закрыт не битом marker или лежит не целиком — начать с него нельзя.
+        if (!frameEnded || !frameWhole) { reset(); return }
+        System.arraycopy(data, frameStart, data, 0, size - frameStart)
+        size -= frameStart
+        frameStart = 0
+        valid = true
+    }
+
+    /** Сохранённые пакеты по порядку: буфер, смещение, длина. Ничего — если ключевого кадра в буфере нет. */
+    @Synchronized fun replay(each: (ByteArray, Int, Int) -> Unit) {
+        if (!valid) return
+        var at = 0
+        while (at < size) {
+            val length = ((data[at].toInt() and 0xFF) shl 8) or (data[at + 1].toInt() and 0xFF)
+            each(data, at + PREFIX, length)
+            at += PREFIX + length
+        }
+    }
+
+    @Synchronized fun clear() {
+        reset()
+        frameEnded = true
+        skipGroups = 0
+    }
+
+    /** Буфер пуст; кадр, который сейчас идёт, уже не целый. */
+    private fun reset() {
+        size = 0
+        frameStart = 0
+        valid = false
+        frameWhole = false
+    }
+
+    private companion object {
+        /** Группа кадров субпотока: 4 с × 0,4 Мбит/с ≈ 200 КБ; с запасом. Основной поток сюда не помещается. */
+        const val CAPACITY = 512 * 1024
+        const val PREFIX = 2
+        const val MARKER = 0x80
+        /** ≈ минута основного потока (ключевой кадр раз в 2 с): столько не копим после неудачи, потом пробуем снова. */
+        const val SKIP_GROUPS = 30
     }
 }
 
