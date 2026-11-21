@@ -238,6 +238,15 @@ internal class RtspSession(
         }
     }
 
+    /**
+     * Оборвать без прощания с камерой: запись в сокет застряла (связь молча пропала), и TEARDOWN ждал бы её вместе с
+     * тем, кто закрывает сессию. Можно из любого потока.
+     */
+    fun abort() {
+        closed = true
+        try { socket?.close() } catch (_: Exception) {}
+    }
+
     override fun close() {
         if (closed) return
         closed = true

@@ -35,8 +35,10 @@ internal class BaichuanTalkSession(
     private val user: String,
     private val password: String,
     private val port: Int = PORT,
-    private val connectTimeoutMs: Int = 4_000
+    private val connectTimeoutMs: Int = 4_000,
+    stallMs: Long = SendWatch.STALL_MS
 ) : TalkChannel {
+    private val watch = SendWatch(stallMs)
     private lateinit var socket: Socket
     private lateinit var input: DataInputStream
     private lateinit var output: OutputStream
@@ -66,7 +68,7 @@ internal class BaichuanTalkSession(
         private set
 
     override val queued get() = fifo.size / 320
-    override val alive get() = open && reader?.isAlive == true
+    override val alive get() = open && reader?.isAlive == true && !watch.stuck
 
     internal class Reply(val code: Int, val payload: ByteArray)
 
@@ -144,6 +146,7 @@ internal class BaichuanTalkSession(
         var next = System.nanoTime()
         var silentRun = 0
         var quietRun = 0
+        watch.sent()
         try {
             while (open) {
                 var voice = 0
@@ -177,6 +180,7 @@ internal class BaichuanTalkSession(
                 val encoded = encoder.encode(block)
                 sentTap?.let { sink -> ImaAdpcm.decode(encoded, heard); sink(heard, samples) }
                 sendBlock(wrap(encoded))
+                watch.sent()
                 sentPackets++
                 if (voice > 0) {
                     sentVoice++
@@ -210,8 +214,12 @@ internal class BaichuanTalkSession(
         val wasOpen = open
         open = false
         if (::socket.isInitialized) {
-            if (wasOpen) try { send(MSG_TALK_RESET, ext = extension()) } catch (_: Exception) {}
-            try { socket.close() } catch (_: Exception) {}
+            val abort = { try { socket.close() } catch (_: Exception) {} }
+            // Прощальный сброс разговора шлём, только если запись в сокет не застряла; и в любом случае не дольше секунды.
+            SendWatch.closeWithin(CLOSE_MS, abort) {
+                if (wasOpen && !watch.stuck) try { send(MSG_TALK_RESET, ext = extension()) } catch (_: Exception) {}
+                abort()
+            }
         }
         reader = null
     }
@@ -350,6 +358,7 @@ internal class BaichuanTalkSession(
         private const val MSG_TALK = 202
         private const val MSG_KEEPALIVE = 234
         private const val REPLY_TIMEOUT_MS = 5_000L
+        private const val CLOSE_MS = 1_000L
         private const val MAX_BODY = 1 shl 20
         private const val MAX_FIFO = 8_000 // 0,5 с при 16 кГц
         /** Тише −47 дБ от шкалы — не речь (речь после усиления идёт около −18 дБ). */

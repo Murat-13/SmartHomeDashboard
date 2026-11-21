@@ -358,4 +358,24 @@ class ReolinkTalkTest {
         auth = false
         assertTrue("пароль исправлен — канал быстрый", TalkChannels.open(doorbell, "admin", "x", 2_000).wideband)
     }
+
+    /**
+     * Отправитель голоса застрял (как при записи в сеть, которая молча пропала): сеанс перестаёт считаться живым, и
+     * разговор откроет канал заново. Сокет при этом ошибки не даёт — раньше сеанс числился живым сколько угодно.
+     */
+    @Test fun sessionWithStuckSenderIsNotAlive() {
+        FakeCamera().use { cam ->
+            val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort, stallMs = 400)
+            talk.open()
+            Thread.sleep(600)
+            assertTrue("блоки тишины идут — сеанс жив", talk.alive)
+            val release = java.util.concurrent.CountDownLatch(1)
+            talk.tap { _, _ -> release.await(10, java.util.concurrent.TimeUnit.SECONDS) } // поток отправки встаёт
+            Thread.sleep(900)
+            assertFalse("блоки не уходят дольше порога — сеанс не жив", talk.alive)
+            talk.tap(null)
+            release.countDown()
+            talk.close()
+        }
+    }
 }

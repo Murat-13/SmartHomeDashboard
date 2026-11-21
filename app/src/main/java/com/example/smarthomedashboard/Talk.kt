@@ -85,6 +85,35 @@ internal interface TalkChannel : java.io.Closeable {
 }
 
 /**
+ * Отправитель голоса жив, пока блоки уходят. Поток идёт непрерывно (тишина или голос), поэтому запись в сокет, не
+ * вернувшаяся за [stallMs], значит одно: связь молча пропала, буфер отправки полон. Сам сокет об этом не сообщит
+ * минутами; канал считается оборванным, и разговор открывает его заново ([DoorbellTalk]).
+ */
+internal class SendWatch(private val stallMs: Long = STALL_MS) {
+    @Volatile private var lastAt = 0L
+
+    /** Блок ушёл (или отправитель только что запущен). */
+    fun sent() { lastAt = System.nanoTime() }
+
+    val stuck get() = lastAt != 0L && System.nanoTime() - lastAt > stallMs * 1_000_000
+
+    companion object {
+        const val STALL_MS = 3_000L
+
+        /**
+         * Закрыть канал с прощальным сообщением камере ([close]), но не дольше [ms]: если запись в сокет застряла,
+         * прощание ждало бы её вместе с потоком, который закрывает канал. Тогда сокет рвётся без прощания ([abort]).
+         */
+        fun closeWithin(ms: Long, abort: () -> Unit, close: () -> Unit) {
+            val killer = Thread({
+                try { Thread.sleep(ms); abort() } catch (_: InterruptedException) { /* закрылось само */ }
+            }, "talk-close").apply { isDaemon = true; start() }
+            try { close() } finally { killer.interrupt() }
+        }
+    }
+}
+
+/**
  * Выбор пути голоса: у камер Reolink — сначала их протокол (порт 9000; до динамика ~0,5 с вместо 2,2–2,4 с по ONVIF, и
  * только с ним разговор одновременный), не вышло — ONVIF, как раньше.
  *
@@ -172,6 +201,7 @@ internal class TalkSession(private val session: RtspSession) : TalkChannel {
         private set
     @Volatile override var sentVoice = 0
         private set
+    private val watch = SendWatch()
 
     /** Подключиться (блокирует; фоновый поток) и начать непрерывный поток. Кодек — «PCMU»/«PCMA». */
     override fun open(): String {
@@ -214,13 +244,14 @@ internal class TalkSession(private val session: RtspSession) : TalkChannel {
     /** Отправленное ещё не ушло (для «Проверить звук»: дождаться очереди перед закрытием). */
     override val queued get() = queue.size
 
-    override val alive get() = open && reader?.isAlive == true
+    override val alive get() = open && reader?.isAlive == true && !watch.stuck
 
     /** Каждые 20 мс по часам: кадр голоса из очереди или тишина. */
     private fun stream() {
         val silence = ByteArray(FRAME) { if (aLaw) 0xD5.toByte() else 0xFF.toByte() }
         val packet = ByteArray(12 + FRAME)
         var next = System.nanoTime()
+        watch.sent()
         try {
             while (open) {
                 val voice = queue.poll()
@@ -234,6 +265,7 @@ internal class TalkSession(private val session: RtspSession) : TalkChannel {
                 packet[8] = (ssrc shr 24).toByte(); packet[9] = (ssrc shr 16).toByte(); packet[10] = (ssrc shr 8).toByte(); packet[11] = ssrc.toByte()
                 System.arraycopy(voice ?: silence, 0, packet, 12, FRAME)
                 session.sendRtp(setup.rtpChannel, packet, packet.size)
+                watch.sent()
                 sentPackets++
                 if (voice != null) sentVoice++
                 seq = (seq + 1) and 0xFFFF
@@ -252,10 +284,11 @@ internal class TalkSession(private val session: RtspSession) : TalkChannel {
     override fun close() {
         open = false
         reader = null
-        session.close()
+        SendWatch.closeWithin(CLOSE_MS, abort = session::abort) { if (watch.stuck) session.abort() else session.close() }
     }
 
     companion object {
+        private const val CLOSE_MS = 1_000L
         const val BACKCHANNEL = "www.onvif.org/ver20/backchannel"
         const val FRAME = 160
         private const val FRAME_NS = 20_000_000L
@@ -489,9 +522,31 @@ internal class DoorbellTalk(
             when {
                 now - lastVoiceAt > CALL_SILENCE_MS -> { Log.i(TAG, "Разговор завершён: 2 мин тишины"); endCall() }
                 now - callStarted > CALL_MAX_MS -> { Log.i(TAG, "Разговор завершён: 10 мин"); endCall() }
-                else -> main.postDelayed(this, 1_000)
+                else -> { watchChannel(now); main.postDelayed(this, 1_000) }
             }
         }
+    }
+
+    /**
+     * Канал «планшет → домофон» оборвался посреди разговора: с какого момента ([clock]; 0 — канал в порядке) и сколько
+     * попыток открыть его заново не удалось. Раньше за каналом в разговоре никто не следил — очередь отправки молча
+     * принимала голос дальше: на экране «Идёт разговор — говорите», а гость нас не слышит до «Завершить» (аудит 21.11.2026).
+     */
+    private var channelLostAt = 0L
+    private var channelRetries = 0
+    /** Разговор идёт, но канал голоса оборван и открывается заново: гость нас сейчас не слышит (кнопка — «Нет связи…»). */
+    val reconnecting get() = inCall && channelLostAt != 0L
+
+    /** Раз в секунду, пока идёт разговор: канал оборвался (или запись в сеть застряла) — открыть заново в этом же разговоре. */
+    private fun watchChannel(now: Long) {
+        val s = session ?: return // канал ещё открывается — или уже открывается заново
+        if (s.alive) return
+        Log.w(TAG, "Канал голоса оборвался посреди разговора — открываю заново")
+        channelLostAt = now
+        channelRetries = 0
+        stopDuplex() // опора эхоподавления — то, что уходило в оборванный канал
+        closeSession()
+        connect(RECONNECT_TEXT)
     }
 
     /** «Ответить». false — нужно разрешение на микрофон (запрошено). */
@@ -506,6 +561,7 @@ internal class DoorbellTalk(
         playing = false
         callStarted = clock()
         lastVoiceAt = callStarted
+        channelLostAt = 0
         Log.i(TAG, "Разговор начат")
         communication(true)
         onCall?.invoke(true)
@@ -519,6 +575,7 @@ internal class DoorbellTalk(
     fun endCall() {
         if (!inCall) return
         inCall = false
+        channelLostAt = 0
         main.removeCallbacks(callWatch)
         mic.stop()
         stopStreet()
@@ -642,9 +699,15 @@ internal class DoorbellTalk(
     }
 
     private fun startCallAudio(s: TalkChannel) {
+        // Канал открыт заново посреди разговора: микрофон и звук улицы уже работают, проверочная запись продолжается.
+        val resumed = channelLostAt != 0L
+        if (resumed) {
+            Log.i(TAG, "Канал голоса восстановлен через ${clock() - channelLostAt} мс")
+            channelLostAt = 0
+            channelRetries = 0
+        }
         s.beginTalkspurt()
-        gatedFrames = 0
-        TalkDebug.begin(context)
+        if (!resumed) { gatedFrames = 0; TalkDebug.begin(context) }
         startDuplex(s)
         // Микрофон без «телефонной» обработки Android: на Galaxy Tab A9+ (SM-X21x) встроенное подавление эха вырезает
         // и сам голос (у калитки «слышно отвратительно», 20.11.2026; то же у разработчиков на форуме Samsung). Эхо
@@ -672,7 +735,7 @@ internal class DoorbellTalk(
     @Volatile private var session: TalkChannel? = null
     private var url = ""
     private var user = ""
-    private var disposed = false
+    @Volatile private var disposed = false
     private var pressed = false
     @Volatile private var gatedFrames = 0
     private val micRate get() = mic.rate
@@ -818,9 +881,10 @@ internal class DoorbellTalk(
         set(State.TALKING, "Говорите — вас слышно у калитки")
     }
 
-    private fun connect() {
+    /** Открыть канал голоса. [text] — подпись на время подключения; [delayMs] — пауза перед попыткой (повтор после неудачи). */
+    private fun connect(text: String = "Подключение к домофону…", delayMs: Long = 0) {
         if (url.isBlank()) { set(State.ERROR, "Нужен прямой поток (RTSP) домофона"); return }
-        set(State.CONNECTING, "Подключение к домофону…")
+        set(State.CONNECTING, text)
         Log.i(TAG, "Подключение обратного канала")
         val target = url; val login = user
         password(context) { password ->
@@ -828,11 +892,15 @@ internal class DoorbellTalk(
             io.execute {
                 var opened: TalkChannel? = null
                 try {
+                    if (delayMs > 0) Thread.sleep(delayMs)
+                    if (disposed) return@execute
                     val talk = TalkChannels.open(target, login, password.orEmpty(), readTimeoutMs = 30_000)
                     opened = talk
                     Log.i(TAG, "Обратный канал открыт")
                     main.post {
-                        if (disposed || target != url) { io.execute { talk.close() }; return@post }
+                        // Карточку закрыли (или сменили камеру), пока канал открывался: он лишний. Очередь фоновой работы
+                        // после закрытия карточки задач уже не берёт — раньше приложение на этом падало.
+                        if (disposed || target != url) { closeLater(talk); return@post }
                         session = talk
                         set(State.READY, READY_TEXT)
                         val clip = pendingClip
@@ -842,14 +910,31 @@ internal class DoorbellTalk(
                 } catch (e: Exception) {
                     opened?.close()
                     Log.w(TAG, "Обратный канал не открыт: ${e.javaClass.simpleName} ${e.message}")
-                    main.post { if (!disposed) failed(reason(e)) }
+                    main.post { if (!disposed) connectFailed(e) }
                 }
             }
         }
     }
 
+    /**
+     * Канал не открылся. Если он оборвался посреди разговора и время на восстановление ([CHANNEL_GIVE_UP_MS]) не вышло —
+     * ещё попытка после паузы, разговор продолжается (звук улицы и видео идут своим путём). Иначе — ошибка на экране:
+     * разговор не изображает связь, которой нет. Неверный пароль не повторяем.
+     */
+    private fun connectFailed(e: Exception) {
+        val auth = (e is BaichuanException && e.auth) || (e is RtspException && e.status == 401)
+        if (inCall && channelLostAt != 0L && !auth && clock() - channelLostAt < CHANNEL_GIVE_UP_MS) {
+            val pause = STREET_RETRY_MS[minOf(channelRetries, STREET_RETRY_MS.lastIndex)]
+            channelRetries++
+            connect(RECONNECT_TEXT, pause)
+            return
+        }
+        failed(reason(e))
+    }
+
     private fun failed(text: String) {
         failedAt = System.currentTimeMillis()
+        channelLostAt = 0
         pendingClip = null
         playing = false
         if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
@@ -865,7 +950,13 @@ internal class DoorbellTalk(
     private fun closeSession() {
         val s = session ?: return
         session = null
-        try { io.execute { s.close() } } catch (_: Exception) { s.close() }
+        closeLater(s)
+    }
+
+    /** Закрыть канал не на главном потоке (прощание с камерой — запись в сеть); карточка уже закрыта — своим потоком. */
+    private fun closeLater(s: TalkChannel) {
+        try { io.execute { s.close() } }
+        catch (_: java.util.concurrent.RejectedExecutionException) { Thread({ s.close() }, "talk-close").apply { isDaemon = true; start() } }
     }
 
     private fun set(next: State, text: String) {
@@ -893,8 +984,11 @@ internal class DoorbellTalk(
         /** Уровень микрофона (0–1), выше которого считается, что говорят (не тишина). */
         private const val VOICE_LEVEL = 0.04f
         private const val RETRY_MS = 15_000L
+        /** Сколько канал голоса, оборвавшийся посреди разговора, открывается заново, прежде чем разговор завершится с ошибкой. */
+        const val CHANNEL_GIVE_UP_MS = 20_000L
         private const val TAG = "Talk"
         private const val READY_TEXT = "Удерживайте и говорите"
+        private const val RECONNECT_TEXT = "Связь с домофоном прервалась — восстанавливаю…"
     }
 }
 
@@ -972,6 +1066,9 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
 
     private fun label(state: DoorbellTalk.State) {
         text = when {
+            // Подписи состояния на экране нет — о том, что гость нас сейчас не слышит, говорит сама кнопка
+            // (нажатие по-прежнему завершает разговор).
+            callMode && talk.reconnecting -> "Нет связи…"
             callMode && talk.inCall -> "Завершить"
             callMode && state == DoorbellTalk.State.CONNECTING -> "Подключение…"
             callMode -> "Ответить"

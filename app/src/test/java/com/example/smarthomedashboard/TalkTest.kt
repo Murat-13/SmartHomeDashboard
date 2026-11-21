@@ -804,4 +804,181 @@ class TalkTest {
             TalkChannels.forget()
         }
     }
+
+    /** Канал голоса, которым управляет тест: жив, пока его не «оборвали»; считает кадры, дошедшие до домофона. */
+    private class ScriptedChannel(private val error: Exception? = null, private val gate: CountDownLatch? = null) : TalkChannel {
+        @Volatile override var alive = true
+        val frames = java.util.concurrent.atomic.AtomicInteger()
+        @Volatile var closed = false
+        override fun open(): String {
+            gate?.await(10, TimeUnit.SECONDS)
+            error?.let { alive = false; throw it }
+            return "тест 16 кГц"
+        }
+        override fun beginTalkspurt() {}
+        override fun send(pcm: ShortArray, count: Int) { if (alive) frames.incrementAndGet() }
+        override val wideband get() = true
+        override val queued = 0
+        override val sentPackets = 0
+        override val sentVoice get() = frames.get()
+        override fun close() { closed = true; alive = false }
+    }
+
+    private val doorbellUrl = "rtsp://127.0.0.1:1/h264Preview_01_sub"
+    private val realOnvif = TalkChannels.onvif
+
+    /** Подменить оба пути голоса на время теста: [next] — очередной быстрый канал; ONVIF недоступен. */
+    private fun withChannels(next: () -> ScriptedChannel, test: () -> Unit) {
+        TalkChannels.forget()
+        TalkChannels.reolink = { _, _, _ -> next() }
+        TalkChannels.onvif = { _, _, _, _ -> ScriptedChannel(java.net.SocketTimeoutException("connect timed out")) }
+        try { test() } finally {
+            TalkChannels.reolink = { h, u, p -> BaichuanTalkSession(h, u, p) }
+            TalkChannels.onvif = realOnvif
+            TalkChannels.forget()
+        }
+    }
+
+    /**
+     * Канал «планшет → домофон» оборвался посреди разговора (камера закрыла соединение, сбой Wi-Fi): он открывается
+     * заново в том же разговоре, и голос идёт в новый канал. Раньше за каналом в разговоре никто не следил: на экране
+     * «Идёт разговор — говорите», а гость нас не слышит до «Завершить» (аудит 21.11.2026).
+     */
+    @Test fun voiceChannelLostMidCallIsReopenedInSameCall() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel().also { channels += it } }) {
+            val texts = CopyOnWriteArrayList<String>()
+            val labels = CopyOnWriteArrayList<String>()
+            val talk = call(doorbellUrl) {
+                it.street = ScriptedStreet()
+                // Кнопка разговора — единственное, что видит человек: её надпись записывается при каждой смене состояния.
+                val button = TalkButton(org.robolectric.RuntimeEnvironment.getApplication(), it)
+                button.onStatus = { text -> texts += text; labels += button.text.toString() }
+            }
+            val looper = shadowOf(Looper.getMainLooper())
+            talk.startCall()
+            looper.idle()
+            assertEquals(1, channels.size)
+            await("голос идёт в канал") { channels[0].frames.get() > 5 }
+            channels[0].alive = false // камера закрыла соединение
+            looper.idleFor(1_100, TimeUnit.MILLISECONDS) // за каналом следят раз в секунду
+            await("канал открыт заново") { looper.idle(); channels.size == 2 && talk.state == DoorbellTalk.State.TALKING }
+            assertTrue("разговор продолжается", talk.inCall)
+            await("оборванный канал закрыт") { channels[0].closed }
+            val before = channels[1].frames.get()
+            await("голос идёт в новый канал") { channels[1].frames.get() > before + 5 }
+            assertTrue("состояние — восстановление: $texts", texts.any { "восстанавлива" in it })
+            assertTrue("кнопка показывала, что связи нет: $labels", "Нет связи…" in labels)
+            assertEquals("в конце — снова обычный разговор", "Идёт разговор — говорите", texts.last())
+            assertEquals("Завершить", labels.last())
+            talk.endCall()
+            talk.dispose()
+        }
+    }
+
+    /**
+     * Канал оборвался, а открыть его заново не удаётся: разговор не изображает связь — он завершается с понятной
+     * подписью. Раньше разговор «шёл» дальше, пока его не завершали вручную.
+     */
+    @Test fun voiceChannelThatCannotBeReopenedEndsCallWithMessage() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        var down = false
+        withChannels({ ScriptedChannel(if (down) java.net.ConnectException("refused") else null).also { channels += it } }) {
+            var now = 50_000L
+            val calls = mutableListOf<Boolean>()
+            val texts = CopyOnWriteArrayList<String>()
+            val talk = call(doorbellUrl) {
+                it.street = ScriptedStreet(); it.clock = { now }
+                it.onCall = { on -> calls += on }; it.onState = { _, text -> texts += text }
+            }
+            val looper = shadowOf(Looper.getMainLooper())
+            talk.startCall()
+            looper.idle()
+            await("голос идёт в канал") { channels[0].frames.get() > 5 }
+            down = true
+            channels[0].alive = false
+            looper.idleFor(1_100, TimeUnit.MILLISECONDS)
+            // Попытки идут, пока не выйдет время на восстановление; здесь оно выходит сразу.
+            now += 60_000
+            await("разговор завершён с ошибкой: ${talk.state} $texts") { looper.idle(); talk.state == DoorbellTalk.State.ERROR }
+            assertFalse("разговор не изображает связь", talk.inCall)
+            assertEquals("владелец карточки узнал о начале и конце разговора", listOf(true, false), calls)
+            assertTrue("подпись объясняет, что случилось: $texts", texts.last().contains("Домофон не отвечает"))
+            talk.dispose()
+        }
+    }
+
+    /** Карточку закрыли, пока канал ещё открывался: запоздалый ответ подключения ничего не ломает. */
+    @Test fun cardClosedWhileConnectingDoesNotCrashWhenChannelOpensLater() {
+        val gate = CountDownLatch(1)
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel(gate = gate).also { channels += it } }) {
+            val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+            val talk = DoorbellTalk(activity) { _, result -> result(null) }
+            talk.prepare(doorbellUrl, "")
+            val looper = shadowOf(Looper.getMainLooper())
+            looper.idle()
+            await("подключение начато") { channels.size == 1 }
+            talk.dispose()
+            gate.countDown()
+            await("лишний канал закрыт") { looper.idle(); channels[0].closed }
+        }
+    }
+
+    /**
+     * «Завершить» и сразу «Ответить», пока оборванный канал ещё открывается заново: второго подключения нет, новый
+     * разговор получает тот же канал, как только он откроется.
+     */
+    @Test fun endAndAnswerWhileChannelReopensUsesTheSameAttempt() {
+        val gate = CountDownLatch(1)
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel(gate = if (channels.isEmpty()) null else gate).also { channels += it } }) {
+            val talk = call(doorbellUrl) { it.street = ScriptedStreet() }
+            val looper = shadowOf(Looper.getMainLooper())
+            talk.startCall()
+            looper.idle()
+            await("голос идёт в канал") { channels[0].frames.get() > 5 }
+            channels[0].alive = false
+            looper.idleFor(1_100, TimeUnit.MILLISECONDS)
+            await("канал открывается заново") { channels.size == 2 }
+            assertTrue(talk.reconnecting)
+            talk.endCall()
+            assertFalse(talk.reconnecting)
+            talk.startCall()
+            looper.idle()
+            assertTrue(talk.inCall)
+            gate.countDown()
+            await("новый разговор говорит в открывшийся канал") {
+                looper.idle(); talk.state == DoorbellTalk.State.TALKING && channels[1].frames.get() > 5
+            }
+            assertEquals("второго подключения не было", 2, channels.size)
+            assertFalse(talk.reconnecting)
+            talk.endCall()
+            talk.dispose()
+        }
+    }
+
+    /** Блоки перестали уходить (запись в сеть застряла) — отправитель считается оборванным, хотя сокет ошибки не дал. */
+    @Test fun sendWatchReportsStuckSenderAndCloseDoesNotHang() {
+        val watch = SendWatch(stallMs = 150)
+        assertFalse("ещё не запущен — не застрял", watch.stuck)
+        watch.sent()
+        assertFalse(watch.stuck)
+        Thread.sleep(80)
+        watch.sent()
+        Thread.sleep(100)
+        assertFalse("блоки идут — жив", watch.stuck)
+        Thread.sleep(200)
+        assertTrue("блоков нет дольше порога — застрял", watch.stuck)
+        // Прощание с камерой повисло на застрявшей записи — канал всё равно закрывается: сокет рвётся без прощания.
+        val hung = CountDownLatch(1)
+        val started = System.nanoTime()
+        SendWatch.closeWithin(200, abort = { hung.countDown() }) { hung.await(10, TimeUnit.SECONDS) }
+        assertTrue("закрытие не ждёт застрявшую запись", System.nanoTime() - started < 2_000_000_000L)
+        // Обычное закрытие проходит сразу и обрыва «по времени» не вызывает.
+        var aborted = false
+        SendWatch.closeWithin(100, abort = { aborted = true }) {}
+        Thread.sleep(250)
+        assertFalse(aborted)
+    }
 }
