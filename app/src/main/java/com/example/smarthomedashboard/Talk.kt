@@ -537,6 +537,11 @@ internal class DoorbellTalk(
     /** Разговор идёт, но канал голоса оборван и открывается заново: гость нас сейчас не слышит (кнопка — «Нет связи…»). */
     val reconnecting get() = inCall && channelLostAt != 0L
 
+    /** Проверка восстановления (файл `talk_debug/drop_talk`): один раз оборвать канал голоса через 8 с разговора. */
+    private val testBreak = Runnable {
+        if (inCall) session?.let { s -> Log.i(TAG, "Канал голоса: проверочный обрыв"); closeLater(s) }
+    }
+
     /** Раз в секунду, пока идёт разговор: канал оборвался (или запись в сеть застряла) — открыть заново в этом же разговоре. */
     private fun watchChannel(now: Long) {
         val s = session ?: return // канал ещё открывается — или уже открывается заново
@@ -577,6 +582,7 @@ internal class DoorbellTalk(
         inCall = false
         channelLostAt = 0
         main.removeCallbacks(callWatch)
+        main.removeCallbacks(testBreak)
         mic.stop()
         stopStreet()
         stopDuplex()
@@ -707,7 +713,11 @@ internal class DoorbellTalk(
             channelRetries = 0
         }
         s.beginTalkspurt()
-        if (!resumed) { gatedFrames = 0; TalkDebug.begin(context) }
+        if (!resumed) {
+            gatedFrames = 0
+            TalkDebug.begin(context)
+            if (TalkDebug.flag(context, "drop_talk")) main.postDelayed(testBreak, STREET_TEST_BREAK_MS)
+        }
         startDuplex(s)
         // Микрофон без «телефонной» обработки Android: на Galaxy Tab A9+ (SM-X21x) встроенное подавление эха вырезает
         // и сам голос (у калитки «слышно отвратительно», 20.11.2026; то же у разработчиков на форуме Samsung). Эхо
@@ -938,6 +948,7 @@ internal class DoorbellTalk(
         pendingClip = null
         playing = false
         if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
+        main.removeCallbacks(testBreak)
         stopStreet()
         stopDuplex()
         mic.stop()
