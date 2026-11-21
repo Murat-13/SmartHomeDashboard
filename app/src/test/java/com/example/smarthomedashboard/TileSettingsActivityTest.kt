@@ -357,6 +357,58 @@ class TileSettingsActivityTest {
         }
     }
 
+    /** Раскладка как на планшете 21.11.2026: новая «Камера» 480×360 не помещалась и вставала под нижний ряд кнопок. */
+    @Test fun newCameraOnCrowdedPageIsCreatedSmallerInFreeSpaceNotUnderBottomButtons() {
+        val page = listOf(
+            tile().copy(id = "top", x = 0, y = 0, config = """{"button_size":1920,"widget_height":360}"""),
+            tile().copy(id = "door", x = 615, y = 369, config = """{"button_size":596,"widget_height":447}"""),
+            tile().copy(id = "inverter", x = 1402, y = 375, config = """{"button_size":500,"widget_height":480}"""),
+            tile().copy(id = "camera1", x = 20, y = 380, config = """{"button_size":228,"widget_height":171}""")
+        ) + (0 until 8).map {
+            TileEntity("button$it", "button", "bottom_panel", "B$it", 15 + it * 203, 915, 1, 1, config = """{"button_size":187}""")
+        }
+        manager.saveTiles(page)
+        val activity = open(tileId = null)
+        activity.resources.displayMetrics.widthPixels = 1920
+        activity.resources.displayMetrics.heightPixels = 1200
+        set(activity, "spinnerType", Spinner(activity).apply {
+            adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_item, (0..12).map { "type $it" })
+            setSelection(12)
+        })
+        get<EditText>(activity, "etTitle").setText("Двор")
+        invoke(activity, "saveTile")
+        shadowOf(Looper.getMainLooper()).idle()
+        val camera = manager.loadTiles().single { it.title == "Двор" }
+        assertEquals(DoorbellConfig.CAMERA_TYPE, camera.type)
+        val size = TilePlacement.size(camera.container, camera.config)
+        assertTrue("Плитка создана меньше полного размера: $size", size.width in 240 until DoorbellConfig.DEFAULT_WIDTH)
+        assertEquals("Пропорция 4:3 сохранена", size.width * 3, size.height * 4)
+        for (other in page) {
+            val b = TilePlacement.size(other.container, other.config)
+            assertFalse("Камера перекрывает ${other.id}", camera.x < other.x + b.width && camera.x + size.width > other.x &&
+                camera.y < other.y + b.height && camera.y + size.height > other.y)
+        }
+        assertEquals("Остальные настройки новой камеры на месте", DoorbellConfig(talk = false), DoorbellConfig.from(camera.config))
+        assertEquals("Сохранено", org.robolectric.shadows.ShadowToast.getTextOfLatestToast())
+        assertEquals(page, manager.loadTiles().filter { it.title != "Двор" })
+    }
+
+    @Test fun fullPageTellsThatNewTileLiesOverOthers() {
+        val page = (0 until 6).flatMap { row -> (0 until 10).map { col ->
+            TileEntity("b$row-$col", "button", "bottom_panel", "B", col * 200, row * 200, 1, 1, config = """{"button_size":200}""")
+        } }
+        manager.saveTiles(page)
+        val activity = open(tileId = null)
+        activity.resources.displayMetrics.widthPixels = 1920
+        activity.resources.displayMetrics.heightPixels = 1200
+        get<EditText>(activity, "etTitle").setText("Лишняя")
+        invoke(activity, "saveTile")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNotNull(manager.loadTiles().singleOrNull { it.title == "Лишняя" })
+        assertTrue(org.robolectric.shadows.ShadowToast.getTextOfLatestToast(),
+            org.robolectric.shadows.ShadowToast.getTextOfLatestToast().startsWith("На этой странице нет свободного места"))
+    }
+
     @Test fun newTilesArePlacedInFreePanelPixelsInsteadOfStackingInCorner() {
         manager.saveTiles(listOf(tile().copy(id = "other", x = 20, y = 40, config = "{}")))
         val created = mutableListOf<TileEntity>()

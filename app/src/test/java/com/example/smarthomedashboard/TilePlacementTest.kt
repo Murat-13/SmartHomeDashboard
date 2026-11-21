@@ -80,18 +80,84 @@ class TilePlacementTest {
         (legacy + big).forEach { assertFalse(overlaps(x, y, 220, 180, it)) }
     }
 
-    @Test fun avoidsEditModeControlButtons() {
-        // Свободен только правый нижний участок (x ≥ 1520, y ≥ 840). Любая кнопка 160×160
-        // там задела бы «Настройки» (1740, 960) или «+» (1560, 960), поэтому нужен запасной ряд.
+    @Test fun reservedCornerOfFormerControlButtonsIsUsedOnlyWhenNothingElseIsFree() {
+        // Свободен только правый нижний участок (x ≥ 1520, y ≥ 840) — место прежних кнопок «Настройки» и «+».
+        // Пока есть другое свободное место, оно не занимается (тесты выше); другого нет — плитка встаёт сюда, а не
+        // поверх соседей: самих кнопок на экране давно нет.
         val top = sensor(0, 0, """{"button_size":1920,"widget_height":840}""")
         val left = sensor(0, 840, """{"button_size":1520,"widget_height":360}""")
-        assertEquals(20 to h - 160 - 80, TilePlacement.findFreeSpot(listOf(top, left), 160, 160, w, h))
+        assertEquals(1520 to 840, TilePlacement.findFreeSpot(listOf(top, left), 160, 160, w, h))
+        assertEquals(0L, TilePlacement.place(listOf(top, left), "bottom_panel", 160, 160, w, h).overlap)
     }
 
-    @Test fun fullPanelFallsBackToVisibleBottomRow() {
+    /** Площадь, которую прямоугольник закрывает у плиток (как их рисует панель). */
+    private fun covered(x: Int, y: Int, width: Int, height: Int, tiles: List<TileEntity>): Long = tiles.sumOf { tile ->
+        val size = TilePlacement.displaySize(tile.container, tile.config, w, h)
+        val (tx, ty) = TilePlacement.position(tile.x.toFloat(), tile.y.toFloat(), size.width, size.height, w, h)
+        val dx = minOf(x + width, tx.toInt() + size.width) - maxOf(x, tx.toInt())
+        val dy = minOf(y + height, ty.toInt() + size.height) - maxOf(y, ty.toInt())
+        if (dx > 0 && dy > 0) dx.toLong() * dy else 0L
+    }
+
+    @Test fun fullPanelPicksPlaceWithLeastOverlap() {
         val tiles = mutableListOf<TileEntity>()
         var y = 0
         while (y < h) { var x = 0; while (x < w) { tiles += button(x, y, 200); x += 200 }; y += 200 }
-        assertEquals(20 to h - 180 - 80, TilePlacement.findFreeSpot(tiles, 220, 180, w, h))
+        val spot = TilePlacement.place(tiles, "grid", 220, 180, w, h)
+        assertTrue("Свободного места нет — наложение честно сообщается", spot.overlap > 0)
+        assertTrue("В пределах панели", spot.x >= 0 && spot.y >= 0 && spot.x + 220 <= w && spot.y + 180 <= h - 60)
+        assertTrue("Не хуже прежнего левого нижнего угла",
+            covered(spot.x, spot.y, 220, 180, tiles) <= covered(20, h - 180 - 80, 220, 180, tiles))
+        assertEquals("Выбор один и тот же при повторе", spot, TilePlacement.place(tiles, "grid", 220, 180, w, h))
+    }
+
+    /** Раскладка как на планшете 21.11.2026: сверху ряд карточек, домофон, инвертор, маленькая камера, снизу кнопки. */
+    private fun crowdedPage(): List<TileEntity> = listOf(
+        sensor(0, 0, """{"button_size":1920,"widget_height":360}"""),
+        sensor(615, 369, """{"button_size":596,"widget_height":447}"""),
+        sensor(1402, 375, """{"button_size":500,"widget_height":480}"""),
+        sensor(20, 380, """{"button_size":228,"widget_height":171}""")
+    ) + (0 until 8).map { button(15 + it * 203, 915, 187) }
+
+    @Test fun crowdedPageDoesNotPutTileUnderBottomButtons() {
+        val tiles = crowdedPage()
+        val buttons = tiles.filter { it.container == "bottom_panel" }
+        // Плитке 480×360 не хватает нескольких пикселей над рядом кнопок: раньше она вставала в левый нижний угол,
+        // под кнопки (на 205 px в высоту), теперь — туда, где наложение наименьшее.
+        val spot = TilePlacement.place(tiles, "grid", 480, 360, w, h)
+        assertTrue(spot.overlap > 0)
+        val before = covered(20, h - 360 - 80, 480, 360, buttons)
+        val now = covered(spot.x, spot.y, 480, 360, buttons)
+        assertTrue("Под кнопками было $before px², стало $now", now * 20 < before)
+        assertTrue("Сосед задет не больше чем полоской в 12 px", covered(spot.x, spot.y, 480, 360, tiles) <= 480L * 12)
+    }
+
+    @Test fun videoTileShrinksToFitInsteadOfOverlapping() {
+        val tiles = crowdedPage()
+        val spot = TilePlacement.place(tiles, "grid", 480, 360, w, h, TilePlacement.VIDEO_SCALES)
+        assertEquals("Нашлось свободное место под меньший размер", 0L, spot.overlap)
+        assertEquals("Наибольший из помещающихся размеров, пропорция 4:3", 408 to 306, spot.width to spot.height)
+        assertEquals(0L, covered(spot.x, spot.y, spot.width, spot.height, tiles))
+        // На свободной странице размер полный.
+        assertEquals(480 to 360, TilePlacement.place(emptyList(), "grid", 480, 360, w, h, TilePlacement.VIDEO_SCALES)
+            .let { it.width to it.height })
+    }
+
+    @Test fun gridTilePrefersCoveringGridNeighbourToHidingUnderButtons() {
+        // Свободного места нет: слева кнопки нижнего ряда (рисуются поверх плиток сетки), справа плитка сетки.
+        val buttons = (0 until 5).flatMap { row -> (0 until 5).map { button(it * 200, row * 220, 220) } }
+        val grid = sensor(1000, 0, """{"button_size":920,"widget_height":1140}""")
+        val spot = TilePlacement.place(buttons + grid, "grid", 220, 180, w, h)
+        assertEquals("Плитка не уходит под кнопки", 0L, covered(spot.x, spot.y, 220, 180, buttons))
+        // Новой кнопке всё равно: она рисуется поверх и тех, и других — берётся первое место с наименьшим наложением.
+        assertTrue(TilePlacement.place(buttons + grid, "bottom_panel", 220, 180, w, h).overlap > 0)
+    }
+
+    @Test fun newSizeKeepsOtherSettingsOfTile() {
+        val json = org.json.JSONObject(TilePlacement.withSize("""{"button_size":480,"widget_height":360,"doorbell":{"talk":true}}""", 336, 252))
+        assertEquals(336, json.getInt("button_size"))
+        assertEquals(252, json.getInt("widget_height"))
+        assertTrue(json.getJSONObject("doorbell").getBoolean("talk"))
+        assertEquals(TilePlacement.Size(336, 252), TilePlacement.size("grid", json.toString()))
     }
 }

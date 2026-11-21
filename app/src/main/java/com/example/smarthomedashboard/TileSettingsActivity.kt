@@ -435,25 +435,33 @@ class TileSettingsActivity : PinProtectedActivity() {
         else -> "sensor"
     }
 
+    /** Новой плитке не нашлось свободного места на странице: она легла поверх соседей (сообщение после сохранения). */
+    private var newTileOverlaps = false
+
     private fun newTile(type: String, container: String, title: String, config: String): TileEntity {
         // x/y — пиксели панели, а не номер ячейки: иначе все новые плитки ложатся в угол.
         val size = TilePlacement.size(container, config)
         val (windowW, windowH) = SystemBarInsets.legacyWindowSize(this)
         // Новая плитка — на ту страницу, с которой её добавили; место ищется только среди её плиток.
         val page = intent.getIntExtra(EXTRA_PAGE, 0).coerceAtLeast(0)
-        val (x, y) = TilePlacement.findFreeSpot(
-            tileManager.getAllTiles().filter { it.page == page }, size.width, size.height, windowW, windowH
+        // Плитка с видео (4:3, полэкрана в высоту) при нехватке места создаётся меньше, а не поверх соседей.
+        val video = type == DoorbellConfig.TYPE || type == DoorbellConfig.CAMERA_TYPE
+        val spot = TilePlacement.place(
+            tileManager.getAllTiles().filter { it.page == page }, container, size.width, size.height, windowW, windowH,
+            if (video) TilePlacement.VIDEO_SCALES else listOf(1f)
         )
+        newTileOverlaps = spot.overlap > 0
+        val resized = spot.width != size.width || spot.height != size.height
         return TileEntity(
             id = tileId ?: UUID.randomUUID().toString(),
             type = type,
             container = container,
             title = title,
-            x = x,
-            y = y,
+            x = spot.x,
+            y = spot.y,
             width = 1,
             height = 1,
-            config = config,
+            config = if (resized) TilePlacement.withSize(config, spot.width, spot.height) else config,
             page = page
         )
     }
@@ -461,8 +469,13 @@ class TileSettingsActivity : PinProtectedActivity() {
     private fun saveTile() {
         if (!requireAdmin()) return
         // При ошибке остаёмся на экране: введённые данные не должны пропадать молча.
+        val creating = tileId == null
+        newTileOverlaps = false
         if (!saveTileWithoutFinish()) return
-        Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+        if (creating && newTileOverlaps) {
+            Toast.makeText(this, "На этой странице нет свободного места: плитка легла поверх других. Перенесите её " +
+                "в режиме редактирования или добавьте на новую страницу.", Toast.LENGTH_LONG).show()
+        } else Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
         setResult(Activity.RESULT_OK)
         finish()
     }

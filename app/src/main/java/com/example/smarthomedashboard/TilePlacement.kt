@@ -57,31 +57,74 @@ internal object TilePlacement {
         return (panelHeight - rowTop.toInt() + gap).coerceIn(minMargin, maxOf(minMargin, panelHeight / 2))
     }
 
-    /** Первое место сверху слева, не перекрывающее плитки и кнопки режима редактирования. */
-    fun findFreeSpot(tiles: List<TileEntity>, width: Int, height: Int, screenW: Int, screenH: Int): Pair<Int, Int> {
+    /** Место новой плитки. [overlap] — цена наложения на соседей (0 — место свободно). */
+    data class Spot(val x: Int, val y: Int, val width: Int, val height: Int, val overlap: Long)
+
+    /** Меньшие размеры для плитки с видео, если полный не помещается: пропорция та же, видео просто мельче. */
+    val VIDEO_SCALES = listOf(1f, 0.85f, 0.7f, 0.6f, 0.5f)
+
+    /** Первое место сверху слева, не перекрывающее плитки; свободного нет — место с наименьшим наложением. */
+    fun findFreeSpot(tiles: List<TileEntity>, width: Int, height: Int, screenW: Int, screenH: Int): Pair<Int, Int> =
+        place(tiles, "grid", width, height, screenW, screenH).let { it.x to it.y }
+
+    /**
+     * Место новой плитки [width]×[height] в контейнере [container]: первое свободное сверху слева. Свободного нет —
+     * пробуются размеры меньше ([scales]: только для плиток, которые умеют уменьшаться), затем берётся место, где
+     * плитка меньше всего накладывается на соседей.
+     *
+     * Наложение плитки сетки на кнопки нижнего ряда считается вчетверо дороже: кнопки рисуются поверх, и плитка
+     * оказалась бы под ними. Раньше при нехватке места плитка всегда вставала в левый нижний угол — на планшете
+     * новая «Камера» легла под ряд кнопок (21.11.2026, docs/camera-stand.md).
+     */
+    fun place(tiles: List<TileEntity>, container: String, width: Int, height: Int, screenW: Int, screenH: Int,
+              scales: List<Float> = listOf(1f)): Spot {
+        // Занято именно отображаемое место, как при восстановлении панели: x, y, ширина, высота, цена наложения.
         val occupied = tiles.map { tile ->
-            // Занято именно отображаемое место, как при восстановлении панели.
             val size = displaySize(tile.container, tile.config, screenW, screenH)
             val (x, y) = position(tile.x.toFloat(), tile.y.toFloat(), size.width, size.height, screenW, screenH)
-            intArrayOf(x.toInt(), y.toInt(), size.width, size.height)
+            val above = container != "bottom_panel" && tile.container == "bottom_panel"
+            intArrayOf(x.toInt(), y.toInt(), size.width, size.height, if (above) HIDDEN_COST else 1)
         } + listOf(
-            // Кнопки «Настройки» и «+», которые видны, пока пользователь добавляет плитки.
-            intArrayOf(screenW - BUTTON_SIZE - 20, screenH - BUTTON_SIZE - 80, BUTTON_SIZE, BUTTON_SIZE),
-            intArrayOf(screenW - BUTTON_SIZE * 2 - 40, screenH - BUTTON_SIZE - 80, BUTTON_SIZE, BUTTON_SIZE)
+            // Место прежних кнопок «Настройки» и «+»: пока есть другое свободное, оно не занимается; само по себе
+            // наложением не считается (кнопок на экране давно нет).
+            intArrayOf(screenW - BUTTON_SIZE - 20, screenH - BUTTON_SIZE - 80, BUTTON_SIZE, BUTTON_SIZE, 0),
+            intArrayOf(screenW - BUTTON_SIZE * 2 - 40, screenH - BUTTON_SIZE - 80, BUTTON_SIZE, BUTTON_SIZE, 0)
         )
-        fun free(x: Int, y: Int) = occupied.none { (ox, oy, ow, oh) ->
-            x < ox + ow && x + width > ox && y < oy + oh && y + height > oy
-        }
         val step = 20
-        var y = 40
-        while (y + height < screenH - 100) {
-            var x = 20
-            while (x + width < screenW - 20) {
-                if (free(x, y)) return Pair(x, y)
-                x += step
+        var least: Spot? = null
+        for (scale in scales.ifEmpty { listOf(1f) }) {
+            val w = (width * scale).toInt().coerceAtLeast(1)
+            val h = (height * scale).toInt().coerceAtLeast(1)
+            var leastHere: Spot? = null
+            var y = 40
+            while (y + h < screenH - 100) {
+                var x = 20
+                while (x + w < screenW - 20) {
+                    var cost = 0L
+                    var touching = false
+                    for ((ox, oy, ow, oh, weight) in occupied) {
+                        val dx = minOf(x + w, ox + ow) - maxOf(x, ox)
+                        val dy = minOf(y + h, oy + oh) - maxOf(y, oy)
+                        if (dx > 0 && dy > 0) { touching = true; cost += dx.toLong() * dy * weight }
+                    }
+                    if (!touching) return Spot(x, y, w, h, 0)
+                    if (leastHere == null || cost < leastHere.overlap) leastHere = Spot(x, y, w, h, cost)
+                    x += step
+                }
+                y += step
             }
-            y += step
+            // Задето только место прежних кнопок — оно на деле свободно.
+            if (leastHere?.overlap == 0L) return leastHere
+            if (leastHere != null) least = leastHere
         }
-        return Pair(20, (screenH - height - 80).coerceAtLeast(0))
+        return least ?: Spot(20, (screenH - height - 80).coerceAtLeast(0), width, height, Long.MAX_VALUE)
     }
+
+    /** Те же настройки плитки с другим размером (остальные ключи не трогаются). */
+    fun withSize(config: String, width: Int, height: Int): String {
+        val json = try { JSONObject(config) } catch (_: Exception) { JSONObject() }
+        return json.put("button_size", width).put("widget_height", height).toString()
+    }
+
+    private const val HIDDEN_COST = 4
 }
