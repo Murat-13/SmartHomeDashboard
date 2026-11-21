@@ -1079,6 +1079,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     internal val hasPlayer get() = player != null
+    /** Адрес RTSP, с которым плитка работает сейчас (пусто — прямого потока нет). */
+    internal val boundRtsp get() = source?.rtsp.orEmpty()
 
     companion object {
         private val all = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DoorbellVideoView, Boolean>())

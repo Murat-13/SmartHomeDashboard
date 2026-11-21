@@ -619,7 +619,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     // ---- Запись с камеры ----
 
     private fun buildRecording(side: LinearLayout) {
-        side.addView(header("Запись с домофона"))
+        side.addView(header(if (camera) "Запись с камеры" else "Запись с домофона"))
         side.addView(kit.label("Запись идёт прямо на планшет: круглосуточно — субпоток, события — основной поток в HD. " +
             "Нужен прямой поток (RTSP). События берутся из датчиков этой плитки в Home Assistant (звонок, человек, машина…), " +
             "а при включённых «Прямых событиях с камеры» — ещё и сразу с камеры, в том числе без Home Assistant.", 13f))
@@ -891,9 +891,23 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     private fun update(next: DoorbellConfig) {
         if (next == config) return
+        if (next.rtspMain != config.rtspMain || next.rtspSub != config.rtspSub || next.rtspUser != config.rtspUser) {
+            if (previewVideo == null) previewVideo = config
+            settle.removeCallbacks(settlePreview)
+            settle.postDelayed(settlePreview, PREVIEW_SETTLE_MS)
+        }
         config = next
         render()
     }
+
+    /**
+     * Адреса видео, на которых сейчас стоит предпросмотр, пока новые ещё вводят. Иначе плеер запускался на каждой
+     * букве: к недописанному адресу, к чужому узлу, к несуществующему пути — с ошибками в журнале и «Нет сигнала»
+     * в предпросмотре (стенд камер 21.11.2026). Новые адреса берутся через [PREVIEW_SETTLE_MS] после последней правки.
+     */
+    private var previewVideo: DoorbellConfig? = null
+    private val settle = android.os.Handler(android.os.Looper.getMainLooper())
+    private val settlePreview = Runnable { previewVideo = null; render() }
 
     internal val isDirty get() = title != original.title || config != DoorbellConfig.from(original.config) || password != null ||
         recording != RecordingConfig.from(original.config) || recordingDeviceDirty ||
@@ -906,7 +920,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         if (!::preview.isInitialized) return
         val readings = BatteryReadings.from(model)
         val snapshot = DoorbellModel.snapshot(config, readings)
-        preview.bind(title, config, snapshot, offline = false, missed = DoorbellHub.missed(original.id),
+        val shown = previewVideo?.let { config.copy(rtspMain = it.rtspMain, rtspSub = it.rtspSub, rtspUser = it.rtspUser) } ?: config
+        preview.bind(title, shown, snapshot, offline = false, missed = DoorbellHub.missed(original.id),
             lastRing = DoorbellHub.lastRing(original.id), now = System.currentTimeMillis(), animate = false)
         (preview.parent as? View)?.let { frame ->
             val lp = frame.layoutParams
@@ -931,6 +946,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     }
 
     override fun onDestroy() {
+        settle.removeCallbacks(settlePreview)
         RecordingStatus.unlisten(statusListener)
         DirectEvents.removeListener(directListener)
         kit.dispose()
@@ -1023,5 +1039,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     companion object {
         private const val STATE_DRAFT = "doorbell_draft"
+        /** Пауза во вводе адреса потока, после которой предпросмотр подключается к новому адресу. */
+        internal const val PREVIEW_SETTLE_MS = 900L
     }
 }

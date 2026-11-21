@@ -310,4 +310,14 @@ class DoorbellLogicTest {
         assertEquals("не измерено — как раньше", 0L, LiveCatchUp.shiftFor(LiveCatchUp.floorFor(0)))
         assertEquals("сбой связи — не неровность", 800L, LiveCatchUp.shiftFor(LiveCatchUp.floorFor(9_000)))
     }
+
+    @Test fun onlyCompleteRtspAddressGoesToPlayer() {
+        // Адрес вводят по букве: до узла плееру отдавать нечего (Media3 на таком адресе падает с ошибкой).
+        listOf("", "r", "rtsp", "rtsp:", "rtsp:/", "rtsp://", "rtsp:///stream", "rtsp://user:pass@", "rtsp://:554/x",
+            "http://10.0.0.5/x", "rtsp://bad host/x").forEach { assertEquals(it, "", DoorbellConfig.playableRtsp(it)) }
+        listOf("rtsp://10.0.0.5", "rtsp://10.0.0.5:554/h264Preview_01_sub", "RTSP://cam.local/stream1",
+            "rtsps://cam.local:322/s", "rtsp://user:p@ss@10.0.0.5:554/Streaming/Channels/101",
+            "rtsp://10.0.0.5:554/cam/realmonitor?channel=1&subtype=0", "rtsp://[fe80::1]:554/x")
+            .forEach { assertEquals(it, DoorbellConfig.playableRtsp(it)) }
+    }
 }

@@ -159,6 +159,23 @@ internal data class DoorbellConfig(
             )
         }
 
+        /**
+         * Адрес RTSP, к которому можно подключаться: `rtsp://` или `rtsps://` и узел. Недописанный адрес — пустая
+         * строка: на адресе без узла плеер Media3 падает с ошибкой, и плитка показывала «Нет сигнала» вместо «не
+         * настроено» (стенд камер 21.11.2026: редактор запускал плеер на каждой введённой букве).
+         */
+        fun playableRtsp(url: String): String {
+            val text = url.trim()
+            val rest = when {
+                text.startsWith("rtsp://", ignoreCase = true) -> text.substring(7)
+                text.startsWith("rtsps://", ignoreCase = true) -> text.substring(8)
+                else -> return ""
+            }
+            val hostPort = rest.takeWhile { it != '/' && it != '?' && it != '#' }.substringAfterLast('@')
+            val host = if (hostPort.startsWith("[")) hostPort.drop(1).substringBefore(']') else hostPort.substringBefore(':')
+            return if (host.isBlank() || host.any { it.isWhitespace() }) "" else url
+        }
+
         /** Новая плитка: 4:3, шаблон без источников; уже заданный размер и посторонние ключи сохраняются. */
         fun newTileConfig(existing: String = "{}", camera: Boolean = false): String {
             val json = try { JSONObject(existing) } catch (_: Exception) { JSONObject() }

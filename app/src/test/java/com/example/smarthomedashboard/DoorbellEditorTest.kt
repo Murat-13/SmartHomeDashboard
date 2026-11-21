@@ -96,4 +96,40 @@ class DoorbellEditorTest {
         assertFalse(activity.isFinishing)
         assertNotNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() as? AlertDialog)
     }
+
+    /** Пока адрес потока вводят, предпросмотр стоит на прежнем: плеер не запускается на каждой букве (стенд 21.11.2026). */
+    @Test fun previewTakesStreamAddressOnlyAfterTypingPauses() {
+        val activity = open()
+        val field = activity.findViewById<View>(android.R.id.content).findViewWithTag<EditText>("door_rtsp_sub")
+        val address = "rtsp://10.0.0.5:554/sub"
+        for (length in 1..address.length) { field.setText(address.take(length)); idle() }
+        assertEquals("В настройках адрес сразу", address, activity.config.rtspSub)
+        assertEquals("Предпросмотр ждёт паузы во вводе", "", activity.preview.video.boundRtsp)
+        val looper = shadowOf(Looper.getMainLooper())
+        looper.idleFor(DoorbellEditorActivity.PREVIEW_SETTLE_MS - 100, java.util.concurrent.TimeUnit.MILLISECONDS)
+        assertEquals("", activity.preview.video.boundRtsp)
+        looper.idleFor(200, java.util.concurrent.TimeUnit.MILLISECONDS)
+        assertEquals(address, activity.preview.video.boundRtsp)
+        // Недописанный адрес (без узла) плееру не отдаётся и после паузы; сохранить его по-прежнему можно.
+        field.setText("rtsp://")
+        looper.idleFor(DoorbellEditorActivity.PREVIEW_SETTLE_MS + 100, java.util.concurrent.TimeUnit.MILLISECONDS)
+        assertEquals("", activity.preview.video.boundRtsp)
+        assertEquals("rtsp://", activity.config.rtspSub)
+    }
+
+    @Test fun recordingSectionIsNamedAfterCameraInCameraEditor() {
+        manager.saveTiles(listOf(tile, TileEntity("cam", DoorbellConfig.CAMERA_TYPE, "grid", "Двор", 600, 20, 1, 1,
+            config = DoorbellConfig.newTileConfig(camera = true))))
+        fun texts(view: View, into: MutableList<String> = mutableListOf()): List<String> {
+            if (view is android.widget.TextView) into += view.text.toString()
+            if (view is android.view.ViewGroup) for (i in 0 until view.childCount) texts(view.getChildAt(i), into)
+            return into
+        }
+        fun editor(id: String) = Robolectric.buildActivity(DoorbellEditorActivity::class.java,
+            Intent(context, DoorbellEditorActivity::class.java).putExtra("tile_id", id)).create().get().also { idle() }
+        val camera = texts(editor("cam").findViewById(android.R.id.content))
+        assertTrue(camera.toString(), "Запись с камеры" in camera)
+        assertFalse("Запись с домофона" in camera)
+        assertTrue("Запись с домофона" in texts(editor("door").findViewById(android.R.id.content)))
+    }
 }

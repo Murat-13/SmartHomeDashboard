@@ -563,12 +563,15 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             v.visibility = if (on) VISIBLE else GONE
             v.setColorFilter(if (d == DoorbellConfig.Detection.PERSON) PERSON else Color.WHITE)
         }
+        // Недописанный адрес (нет узла) плееру не отдаётся: такая плитка — «не настроена», а не «нет сигнала».
+        val mainRtsp = DoorbellConfig.playableRtsp(config.rtspMain)
+        val subRtsp = DoorbellConfig.playableRtsp(config.rtspSub)
         video.bind(DoorbellVideoView.Source(
-            rtsp = if (expanded) config.rtspMain.ifBlank { config.rtspSub } else config.rtspSub.ifBlank { config.rtspMain },
+            rtsp = if (expanded) mainRtsp.ifBlank { subRtsp } else subRtsp.ifBlank { mainRtsp },
             user = config.rtspUser, camera = config.camera,
             snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT,
             // Основной поток не по силам декодеру планшета — раскрытие показывает субпоток.
-            fallbackRtsp = if (expanded) config.rtspSub else "",
+            fallbackRtsp = if (expanded) subRtsp else "",
             secretKey = if (camera) tileId.orEmpty() else ""
         ), snapshot.picture)
         // HA точно знает, что домофона нет: видео не подключается, пока он не вернётся (без лишних попыток).
