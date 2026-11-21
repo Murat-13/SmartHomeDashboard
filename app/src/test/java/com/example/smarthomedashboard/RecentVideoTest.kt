@@ -66,9 +66,27 @@ class RecentVideoTest {
         recent.frame(1, 2, key = true, marker = false)
         recent.frame(3, key = false, marker = false)
         assertEquals("границы кадров неизвестны — начать с ключевого нельзя", emptyList<Int>(), recent.ids())
-        recent.frame(4, key = false)
-        recent.frame(5, 6, key = true)
-        assertEquals(listOf(5, 6), recent.ids())
+        assertEquals("и ждать ключевой кадр из такого потока плееру незачем", false, recent.pending)
+        // Какое-то время такой поток не копится вовсе, потом — новая попытка (вдруг биты marker появились).
+        repeat(30) { recent.frame(10 + it, key = true); assertEquals(emptyList<Int>(), recent.ids()) }
+        recent.frame(50, key = false)
+        recent.frame(51, 52, key = true)
+        assertEquals(listOf(51, 52), recent.ids())
+    }
+
+    /** Поток только начался: ключевого кадра ещё не было — плееру стоит подождать его ([CameraHub.startingUp]). */
+    @Test fun pendingUntilFirstKeyFrame() {
+        val recent = RecentVideo(capacity = 1_000)
+        assertEquals(true, recent.pending)
+        recent.frame(1, key = false)
+        assertEquals(true, recent.pending)
+        recent.frame(2, key = true)
+        assertEquals(false, recent.pending)
+        recent.frame(3, key = false, size = 600)
+        recent.frame(4, key = false, size = 600)    // группа не поместилась: ждать нечего — такой поток не хранится
+        assertEquals(false, recent.pending)
+        recent.clear()
+        assertEquals("новая сессия камеры — снова ждём первый ключевой кадр", true, recent.pending)
     }
 
     @Test fun clearForgetsPreviousCameraSession() {

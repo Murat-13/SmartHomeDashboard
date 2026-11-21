@@ -72,6 +72,7 @@ class RecorderService : Service() {
         // После shutdown() поток дорабатывает уже поставленные задачи и завершается сам.
         control.execute { safe { stopAll() }; RecordingStatus.clear() }
         control.shutdown()
+        synced = false
         super.onDestroy()
     }
 
@@ -155,6 +156,8 @@ class RecorderService : Service() {
             Log.i(TAG, "Запись: включённых камер нет — сервис остановлен")
             main.post { stopSelf() }
         }
+        // Потоки записей открыты (или стало ясно, что их не будет): живому видео больше нечего ждать ([starting]).
+        synced = true
     }
 
     private fun retrySoon() {
@@ -297,6 +300,18 @@ class RecorderService : Service() {
         const val SD_MISSING_PHRASE = "Карта памяти не найдена, запись идёт в память планшета"
         /** Суффикс ключа записи событий в HD (и её состояния в [RecordingStatus]). */
         const val HD = "#hd"
+
+        /** Сервис уже сверил записи с настройками и открыл их потоки. */
+        @Volatile private var synced = false
+        private const val STARTING_MS = 15_000L
+
+        /**
+         * Запись на планшете включена, но сервис ещё не открыл потоки — первые секунды после запуска приложения. Живому
+         * видео стоит подождать общий поток ([CameraHub.startingUp]), а не подключаться к камере вторым соединением.
+         */
+        fun starting(context: Context): Boolean = !synced &&
+            android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime() < STARTING_MS &&
+            RecordingDevice(context.applicationContext).enabledTiles.isNotEmpty()
 
         /**
          * Привести запись в соответствие с настройками. Безопасно вызывать часто: сервис запускается, только

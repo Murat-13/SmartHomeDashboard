@@ -219,16 +219,29 @@ class DoorbellLogicTest {
     /** Живое видео догоняет накопленное отставание и не дёргает скорость на границе (гистерезис). */
     @Test fun liveVideoCatchesUpWithHysteresis() {
         assertEquals("малый буфер — обычная скорость", 1f, LiveCatchUp.speedFor(200, 1f))
-        assertEquals("на границе без ускорения — не ускоряемся", 1f, LiveCatchUp.speedFor(500, 1f))
+        assertEquals("на границе без ускорения — не ускоряемся", 1f, LiveCatchUp.speedFor(400, 1f))
+        assertEquals("полоса над целью — 0,1 с", LiveCatchUp.SPEED, LiveCatchUp.speedFor(450, 1f))
+        assertEquals("прежний порог (проверочный выключатель)", 1f, LiveCatchUp.speedFor(450, 1f, LiveCatchUp.WIDE_START_MS))
         assertEquals(LiveCatchUp.SPEED, LiveCatchUp.speedFor(800, 1f))
         assertEquals("большое отставание — быстрее", LiveCatchUp.FAR_SPEED, LiveCatchUp.speedFor(2_000, 1f))
         assertEquals("догоняем, пока не опустимся ниже цели", LiveCatchUp.SPEED, LiveCatchUp.speedFor(500, LiveCatchUp.FAR_SPEED))
         assertEquals("догнали — обычная скорость", 1f, LiveCatchUp.speedFor(250, LiveCatchUp.SPEED))
         // Плеер, который не опускается ниже 450 мс (ждёт кадры от декодера): пороги сдвигаются, цель — пол + 0,1 с.
         assertEquals(0L, LiveCatchUp.shiftFor(0)); assertEquals(0L, LiveCatchUp.shiftFor(150)); assertEquals(250L, LiveCatchUp.shiftFor(450))
-        assertEquals("у пола не ускоряемся", 1f, LiveCatchUp.speedFor(700 - LiveCatchUp.shiftFor(450), 1f))
+        assertEquals("у пола не ускоряемся", 1f, LiveCatchUp.speedFor(640 - LiveCatchUp.shiftFor(450), 1f))
         assertEquals(LiveCatchUp.SPEED, LiveCatchUp.speedFor(800 - LiveCatchUp.shiftFor(450), 1f))
         assertEquals("остановились выше пола", 1f, LiveCatchUp.speedFor(540 - LiveCatchUp.shiftFor(450), LiveCatchUp.SPEED))
+    }
+
+    /** Замер «звук против картинки»: картинка старше на 700 мс, звук — на 300, звук приходит раньше видео на 70 мс. */
+    @Test fun soundLeadIsVideoLagMinusSoundLagPlusEarlierArrival() {
+        val lead = SoundLead()
+        assertEquals("замеров мало", null, lead.summary())
+        lead.add(700, 300, 70); lead.add(720, 300, 70); lead.add(650, 320, 70)
+        assertEquals("раньше картинки на 470 мс (от 400 до 490; плюс — звук раньше)", lead.summary())
+        lead.reset()
+        lead.add(300, 500, null); lead.add(300, 520, null); lead.add(310, 500, null)
+        assertEquals("позже картинки на 200 мс (от -220 до -190; плюс — звук раньше; без поправки на приход)", lead.summary())
     }
 
     /** Задержка камеры по RTCP: отчёт отправителя связывает метку RTP с часами камеры. */

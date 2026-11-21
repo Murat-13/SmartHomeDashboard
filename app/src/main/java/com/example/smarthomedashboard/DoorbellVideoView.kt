@@ -164,11 +164,19 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, true).build()
         if (callAudio) applyAudio(exo)
         exo.addListener(object : Player.Listener {
+            private var played = false
+
             override fun onPlayerError(error: PlaybackException) {
                 if (soundPlayer !== exo) return
                 Log.w(TAG, "Звук домофона: ${error.errorCodeName}")
                 stopSound()
                 soundNotBefore = SystemClock.elapsedRealtime() + SOUND_RETRY_MS
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                if (soundPlayer !== exo) return
+                if (state == Player.STATE_READY) played = true
+                else if (state == Player.STATE_BUFFERING && played) soundStalls++
             }
         })
         exo.setMediaSource(RtspMediaSource.Factory()
@@ -339,7 +347,21 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 lastBuffered = buffered
                 syncSound()
                 paceSound()
-                shownFrame?.last?.let { screenDelay.add(ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, System.nanoTime())) }
+                // Неровность прихода измеряется раз в минуту. Плеер, запущенный раньше первого замера (старт
+                // приложения — плитка ждёт общий поток и стартует с его первым кадром) или до того, как неровность
+                // выросла (ночь → день), поднимает запас сам, а не после серии остановок (замер 21.11.2026).
+                if (jitterFloor) {
+                    val seed = LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, source?.user.orEmpty()))
+                    if (seed > seedFloor) { seedFloor = seed; if (catchUpFloor < seed) catchUpFloor = seed }
+                }
+                val videoLag = shownFrame?.last?.let { ScreenDelay.of(exo.bufferedPosition, it.ptsUs, it.atNs, System.nanoTime()) }
+                if (videoLag != null) {
+                    screenDelay.add(videoLag)
+                    // Звук отдельным плеером: на сколько он опережает картинку (только замер, в журнал при закрытии).
+                    soundPlayer?.takeIf { it.isPlaying }?.let { sound ->
+                        soundLead.add(videoLag, sound.totalBufferedDuration, CameraHub.audioAheadMs(playingRtsp, source?.user.orEmpty()))
+                    }
+                }
                 // Рывок идёт сам (его останавливает [endBurst]); большое отставание, которое держится, — повод для рывка.
                 backlogTicks = if (LiveCatchUp.burstMs(buffered, burstTo()) > 0) backlogTicks + 1 else 0
                 if (burstUntil != 0L || (backlogTicks >= LiveCatchUp.BURST_CONFIRM_TICKS && startBurst(exo))) {
@@ -351,7 +373,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 // ([LiveTuning]): часы плеера уходят вперёд, декодер догоняет в полную силу. В прежнем режиме
                 // (кадры придерживаются, опоздавшие не показываются) — только мягкое ускорение.
                 val cap = if (softwareHold && decoderInUse?.let(::isSoftwareDecoder) == true) LiveCatchUp.SPEED else LiveCatchUp.FAR_SPEED
-                var speed = minOf(LiveCatchUp.speedFor(buffered - LiveCatchUp.shiftFor(catchUpFloor), current), cap)
+                var speed = minOf(LiveCatchUp.speedFor(buffered - LiveCatchUp.shiftFor(catchUpFloor), current, catchUpStart), cap)
                 if (current > 1f) {
                     // Запас перестал убывать: ниже плеер не опускается (ждёт кадр от декодера) — это его пол.
                     if (buffered < catchUpBest - 50) { catchUpBest = buffered; catchUpStuck = 0 }
@@ -376,6 +398,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private var catchUpBest = Long.MAX_VALUE
     private var catchUpStuck = 0
     private var catchUpAbove = 0
+    /** Порог, с которого этот плеер начинает догонять ([LiveCatchUp.START_MS]; проверочный выключатель — прежний). */
+    private var catchUpStart = LiveCatchUp.START_MS
     private var catchUpNotBefore = 0L
     /** За время показа: запас плеера и число остановок (в журнал при закрытии). */
     private var bufferedMin = Long.MAX_VALUE
@@ -386,11 +410,16 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Проверочный выключатель [LiveTuning.softwareHold] у текущего плеера. */
     private var softwareHold = false
     private val screenDelay = ScreenDelay()
+    /** Звук отдельным плеером против картинки и сколько раз он прерывался за показ (в журнал при закрытии). */
+    private val soundLead = SoundLead()
+    private var soundStalls = 0
     /** Рендереры живого видео текущего плеера (счётчики выравнивания — в журнал при закрытии). */
     private var liveFactory: LiveRenderers? = null
 
     /** Запас, который потоку нужен по измеренной неровности прихода кадров ([LiveCatchUp.floorFor]); 0 — не измерено. */
     private var seedFloor = 0L
+    /** Запас этого плеера считается по измеренной неровности прихода (проверочный выключатель — нет). */
+    private var jitterFloor = false
     /** Рывок к живому: до какого времени идёт (0 — не идёт) и не раньше какого можно начать следующий. */
     private var burstUntil = 0L
     private var burstNotBefore = 0L
@@ -495,7 +524,50 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Ретранслятор только что подвёл — следующая попытка напрямую к камере. */
     private var skipRelay = false
 
+    /** С какого момента эта серия попыток ждёт общий поток записи (0 — не ждала); сбрасывается с первым кадром. */
+    private var relayWaitSince = 0L
+    /** Прямо сейчас ждём общий поток (подключение отложено). */
+    private var waitingRelay = false
+    private val relayWait = Runnable {
+        val src = source
+        if (!visible) { relayWaitSince = 0; waitingRelay = false }
+        else if (player == null && !retryPending && src != null && !useHa && src.rtsp.isNotBlank()) startRtsp(src)
+    }
+
+    /**
+     * Запись на планшете вот-вот даст общий поток этой камеры: ждём его недолго и смотрим через планшет — одно
+     * соединение с камерой, картинка сразу с ключевого кадра, звук отдельно. Без этого при запуске приложения плитка
+     * успевала подключиться к камере напрямую (два ожидания ключевого кадра подряд — 5–7 с до картинки) и оставалась
+     * на прямом соединении до следующего перезапуска плеера; то же — после переподключения записи к камере.
+     */
+    private fun awaitRelay(src: Source): Boolean {
+        main.removeCallbacks(relayWait)
+        val rtsp = rtspFor(src)
+        val now = SystemClock.elapsedRealtime()
+        if (!CameraHub.startingUp(rtsp, src.user, RecorderService.starting(context))) {
+            // Ждали — и общий поток готов: смотрим через планшет, даже если перед ожиданием ретранслятор оборвался.
+            if (waitingRelay) {
+                waitingRelay = false
+                skipRelay = false
+                Log.i(TAG, "Общий поток записи готов через ${now - relayWaitSince} мс ожидания")
+            }
+            return false
+        }
+        // Общий поток идёт (ждёт только ключевой кадр), а ретранслятор только что подвёл — напрямую, как раньше.
+        if (skipRelay && CameraHub.relayUrl(rtsp, src.user) != null) return false
+        if (relayWaitSince == 0L) relayWaitSince = now
+        if (now - relayWaitSince >= RELAY_WAIT_MS) {
+            if (waitingRelay) Log.i(TAG, "Общий поток записи не готов за ${now - relayWaitSince} мс — подключаюсь без ожидания")
+            waitingRelay = false
+            return false
+        }
+        waitingRelay = true
+        main.postDelayed(relayWait, RELAY_POLL_MS)
+        return true
+    }
+
     private fun startRtsp(src: Source) {
+        if (awaitRelay(src)) return
         val generation = ++attempt
         CameraPasswords.read(context, src.secretKey) { password ->
             if (generation != attempt || !visible || player != null) return@read
@@ -579,9 +651,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val renderers = (liveRenderers ?: DefaultRenderersFactory(context)).setEnableDecoderFallback(true)
         // Запас по измеренной неровности прихода кадров этого потока (известна, пока идёт запись): основному потоку
         // Reolink его нужно больше, чем субпотоку, — иначе плеер останавливается на каждом позднем ключевом кадре.
-        seedFloor = if (live && !LiveTuning.off(context, "no_jitter_floor")) {
-            LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, source?.user.orEmpty()))
-        } else 0
+        jitterFloor = live && !LiveTuning.off(context, "no_jitter_floor")
+        seedFloor = if (jitterFloor) LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, source?.user.orEmpty())) else 0
         catchUpFloor = seedFloor
         burstUntil = 0
         burstNotBefore = 0
@@ -590,6 +661,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         revealPending = false
         firstFrameAt = 0
         firstFrameDelayMs = -1
+        soundLead.reset()
+        soundStalls = 0
+        catchUpStart = if (LiveTuning.off(context, "wide_corridor")) LiveCatchUp.WIDE_START_MS else LiveCatchUp.START_MS
         liveAfterMs = -1
         stallAt = 0
         catchUpBest = Long.MAX_VALUE
@@ -654,6 +728,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 consecutiveFailures = 0
                 unreachable = false
                 skipRelay = false
+                relayWaitSince = 0
                 status = Status.PLAYING
                 updateQuality()
                 firstFrameAt = SystemClock.elapsedRealtime()
@@ -673,7 +748,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 if (player === exo && state == Player.STATE_BUFFERING && firstFrameRendered) {
                     stalls++
                     stallAt = SystemClock.elapsedRealtime()
-                    stallNote = "запас ${exo.totalBufferedDuration} мс (за секунду до неё $lastBuffered), скорость ${exo.playbackParameters.speed}, " +
+                    stallNote = "${exo.videoSize.height}p, запас ${exo.totalBufferedDuration} мс (за секунду до неё $lastBuffered), скорость ${exo.playbackParameters.speed}, " +
                         "${stallAt - firstFrameAt} мс после первого кадра" + if (burstUntil != 0L) ", во время рывка" else ""
                 }
                 if (player === exo && state == Player.STATE_READY && stallAt != 0L) {
@@ -728,6 +803,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private fun releasePlayer() {
         attempt++
         main.removeCallbacks(retry)
+        main.removeCallbacks(relayWait)
         main.removeCallbacks(firstFrameWatchdog)
         main.removeCallbacks(catchUp)
         main.removeCallbacks(endBurst)
@@ -762,7 +838,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
                 counters.renderedOutputBufferCount / seconds, seconds) +
             (if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс (нужен от $catchUpFloor), остановок $stalls" else "") +
-            (if (splitSound) "; звук отдельно" else "") +
+            (if (splitSound) "; звук отдельно" + (soundLead.summary()?.let { ": $it" } ?: "") +
+                (if (soundStalls > 0) ", прерывался $soundStalls раз" else "") else "") +
             (screenDelay.summary()?.let { "; от прихода до экрана: $it" } ?: "") +
             (if (firstFrameAt != 0L) "; первый кадр через $firstFrameDelayMs мс, у живого — через ${liveAfterMs.coerceAtLeast(0)} мс после него" else "") +
             (liveFactory?.retimer?.takeIf { it.moved > 0 }?.let { "; выровнено кадров ${it.moved} (сдвиг до ${it.maxShiftUs / 1000} мс)" } ?: "") +
@@ -1030,6 +1107,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         internal const val FIRST_FRAME_TIMEOUT_MS = 20_000L
         /** После ошибки отдельного плеера звука следующая попытка — не раньше. */
         private const val SOUND_RETRY_MS = 5_000L
+        /** Сколько живое видео ждёт общий поток записи (ключевой кадр субпотока — раз в 4 с) и как часто смотрит. */
+        private const val RELAY_WAIT_MS = 5_000L
+        private const val RELAY_POLL_MS = 150L
         /** Столько неудач подряд — адрес считается недоступным (≈ 15 с при паузах 2, 4, 8 с). */
         internal const val UNREACHABLE_AFTER = 3
         private const val STALE_ALPHA = 0.4f
@@ -1104,6 +1184,44 @@ internal class ConnectTimeoutSocketFactory(
     }
 }
 
+/**
+ * Звук отдельным плеером против картинки (docs/doorbell.md, «Звук и картинка: замер»). Раз в секунду: картинка на
+ * экране старше свежего пришедшего кадра на `videoLagMs`, звук в динамике старше свежего пришедшего звука на
+ * `soundLagMs`, а сам звук приходит на планшет раньше видео того же момента на `audioAheadMs`. Разница — на сколько
+ * звук опережает картинку (минус — отстаёт). Только замер: звук он не трогает.
+ */
+internal class SoundLead {
+    private val samples = IntArray(LIMIT)
+    private var total = 0
+    private var corrected = true
+
+    fun reset() { total = 0; corrected = true }
+
+    fun add(videoLagMs: Long, soundLagMs: Long, audioAheadMs: Long?) {
+        if (audioAheadMs == null) corrected = false
+        val lead = videoLagMs - soundLagMs + (audioAheadMs ?: 0)
+        if (lead < -MAX_MS || lead > MAX_MS) return
+        samples[total % LIMIT] = lead.toInt()
+        total++
+    }
+
+    /** «звук раньше картинки на N мс (от A до B)»; null — замеров мало. */
+    fun summary(): String? {
+        val count = minOf(total, LIMIT)
+        if (count < MIN_SAMPLES) return null
+        val sorted = samples.copyOf(count).also { it.sort() }
+        val middle = sorted[count / 2]
+        return (if (middle >= 0) "раньше картинки на $middle мс" else "позже картинки на ${-middle} мс") +
+            " (от ${sorted.first()} до ${sorted.last()}; плюс — звук раньше" + (if (corrected) "" else "; без поправки на приход") + ")"
+    }
+
+    private companion object {
+        const val LIMIT = 600
+        const val MIN_SAMPLES = 3
+        const val MAX_MS = 10_000L
+    }
+}
+
 /** Последний показанный кадр: время кадра в потоке и момент показа (пишет поток плеера, читает главный). */
 internal class ShownFrame {
     class At(val ptsUs: Long, val atNs: Long)
@@ -1165,7 +1283,12 @@ internal class ScreenDelay {
  */
 internal object LiveCatchUp {
     const val CHECK_MS = 1_000L
-    const val START_MS = 500L
+    /**
+     * 0,4 с: запас держится в полосе 0,1 с над целью. Раньше было 0,5 с ([WIDE_START_MS], выключатель
+     * `video_debug/wide_corridor`): от показа к показу задержка гуляла на 0,2 с (замер 21.11.2026).
+     */
+    const val START_MS = 400L
+    const val WIDE_START_MS = 500L
     const val TARGET_MS = 300L
     private const val FAR_MS = 1_500L
     const val SPEED = 1.2f
@@ -1223,9 +1346,9 @@ internal object LiveCatchUp {
     const val SOUND_STOP_MS = 100L
     const val SOUND_SPEED = 1.25f
 
-    fun speedFor(bufferedMs: Long, current: Float): Float = when {
+    fun speedFor(bufferedMs: Long, current: Float, startMs: Long = START_MS): Float = when {
         bufferedMs > FAR_MS -> FAR_SPEED
-        bufferedMs > START_MS -> SPEED
+        bufferedMs > startMs -> SPEED
         current > 1f && bufferedMs > TARGET_MS -> SPEED
         else -> 1f
     }

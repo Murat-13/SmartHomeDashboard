@@ -193,6 +193,27 @@ class RecordingHubTest {
         }
     }
 
+    /**
+     * Старт через общий поток: пока запись запускается, подключается к камере или ждёт первый ключевой кадр, живому
+     * видео стоит подождать; с ключевым кадром — смотреть через планшет.
+     */
+    @Test fun liveViewWaitsForSharedStreamUntilFirstKeyFrame() {
+        assertFalse("записи нет и не будет — ждать нечего", CameraHub.startingUp(url, "", recordingStarting = false))
+        assertTrue("запись на планшете запускается", CameraHub.startingUp(url, "", recordingStarting = true))
+        keyEvery = 10
+        val a = recorder(audio = false)
+        a.start()
+        try {
+            assertTrue("поток записи подключается к камере", CameraHub.startingUp(url, "", recordingStarting = false))
+            waitFor(5_000, "ключевой кадр прошёл") { !CameraHub.startingUp(url, "", recordingStarting = false) }
+            assertNotNull(CameraHub.relayUrl(url, ""))
+            assertFalse("другой логин — другой поток", CameraHub.startingUp(url, "other", recordingStarting = false))
+        } finally {
+            a.stop()
+        }
+        assertFalse(CameraHub.startingUp(url, "", recordingStarting = false))
+    }
+
     @Test fun relayRejectsUnknownAddress() {
         val a = recorder(audio = false)
         a.start()

@@ -64,6 +64,24 @@ internal object CameraHub {
     fun arrivalJitterMs(url: String, user: String): Long =
         streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.arrivalJitterMs ?: 0
 
+    /**
+     * Общий поток [url] вот-вот будет готов к показу — живому видео стоит недолго подождать его, а не открывать второе
+     * соединение с камерой (docs/doorbell.md, «Старт через общий поток»): запись на планшете только запускается
+     * ([recordingStarting]) либо поток записи подключается (переподключается) к камере, либо он уже идёт, но первого
+     * ключевого кадра в нём ещё не было — плеер всё равно ждал бы этот кадр, а из общего потока получит его сразу.
+     */
+    fun startingUp(url: String, user: String, recordingStarting: Boolean): Boolean {
+        val stream = streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user } ?: return recordingStarting
+        return !stream.live || stream.awaitingKeyFrame
+    }
+
+    /**
+     * На сколько звук потока [url] приходит на планшет раньше видео, снятого в тот же момент (по отчётам RTCP за
+     * последнюю минуту); null — ещё не измерено. Нужно, чтобы сравнить звук и картинку на планшете ([SoundLead]).
+     */
+    fun audioAheadMs(url: String, user: String): Long? =
+        streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.audioAheadMs
+
     internal fun byToken(token: String): SharedStream? = streams.values.firstOrNull { it.token == token }
 
     /** Для тестов: сколько общих потоков открыто. */
@@ -106,6 +124,12 @@ internal class SharedStream(
     private val recent = RecentVideo()
     /** Дорожка видео у ретранслятора в текущей сессии камеры. */
     @Volatile private var relayVideoTrack = -1
+    /** Поток идёт, но первого ключевого кадра в нём ещё не было ([CameraHub.startingUp]). */
+    val awaitingKeyFrame get() = live && recent.pending
+    /** Через сколько после съёмки приходят видео и звук (по часам камеры, за последнюю минуту); null — не измерено. */
+    @Volatile private var videoArrivalMs: Long? = null
+    @Volatile private var audioArrivalMs: Long? = null
+    val audioAheadMs: Long? get() { val video = videoArrivalMs; val audio = audioArrivalMs; return if (video != null && audio != null) video - audio else null }
     /** Параметры идущей сессии; пишется под замком потока, читается в [add] под ним же. */
     @Volatile private var current: SessionInfo? = null
 
@@ -235,6 +259,7 @@ internal class SharedStream(
                             if (rtp.marker) videoFrames++
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
                                 arrivalJitterMs = (probe.slowest - it).coerceIn(0, MAX_JITTER_MS)
+                                videoArrivalMs = it
                                 // Неровный приход — главный предел задержки живого видео (docs/doorbell.md): плееру нужен
                                 // запас не меньше самой длинной паузы. «Запись занимала поток» — наша доля в этих паузах.
                                 Log.i(TAG, "Камера → планшет (≈ ${videoBytes * 8 / ArrivalDelay.REPORT_MS} кбит/с, " +
@@ -260,7 +285,10 @@ internal class SharedStream(
                             }
                             busyMaxNs = maxOf(busyMaxNs, System.nanoTime() - started)
                         } else if (setup === audioSetup && aac != null) {
-                            audioProbe?.frame(rtp.timestamp)?.let { Log.i(TAG, "Камера → планшет: звук приходит через $it мс после записи (по часам камеры, RTCP)") }
+                            audioProbe?.frame(rtp.timestamp)?.let {
+                                audioArrivalMs = it
+                                Log.i(TAG, "Камера → планшет: звук приходит через $it мс после записи (по часам камеры, RTCP)")
+                            }
                             for (frame in aac.push(rtp)) each { a, sink -> if (a.recorder.wantsAudio) sink.audio(frame, aac.sampleRate) }
                         } else if (setup === audioSetup && g711 != null && enc != null && consumers.any { it.recorder.wantsAudio }) {
                             val pcm = g711.push(rtp)
@@ -285,6 +313,8 @@ internal class SharedStream(
                 // Новая сессия камеры — новые номера и метки RTP: клиенты ретранслятора переподключаются сами.
                 relaySdp = null
                 relayVideoTrack = -1
+                videoArrivalMs = null
+                audioArrivalMs = null
                 recent.clear()
                 relayClients.forEach { it.close() }
                 synchronized(this) {
@@ -581,13 +611,18 @@ internal class RecentVideo(capacity: Int = CAPACITY) {
     @Synchronized fun frame(key: Boolean) {
         if (!key) return
         if (skipGroups > 0) { skipGroups--; return }
-        // Кадр закрыт не битом marker или лежит не целиком — начать с него нельзя.
-        if (!frameEnded || !frameWhole) { reset(); return }
+        // Кадр закрыт не битом marker: границы кадров неизвестны — такой поток какое-то время не копим вовсе.
+        if (!frameEnded) { reset(); skipGroups = SKIP_GROUPS; return }
+        // Кадр лежит не целиком — начать с него нельзя; следующий ключевой подойдёт.
+        if (!frameWhole) { reset(); return }
         System.arraycopy(data, frameStart, data, 0, size - frameStart)
         size -= frameStart
         frameStart = 0
         valid = true
     }
+
+    /** Ключевого кадра в буфере ещё нет, но он ожидается (поток только начался): плееру стоит его подождать. */
+    val pending: Boolean @Synchronized get() = !valid && skipGroups == 0
 
     /** Сохранённые пакеты по порядку: буфер, смещение, длина. Ничего — если ключевого кадра в буфере нет. */
     @Synchronized fun replay(each: (ByteArray, Int, Int) -> Unit) {
