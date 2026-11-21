@@ -387,6 +387,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 // Нет свежего замера (звук или картинка стоят) — прежние не в счёт: по старым звук не ускоряется.
                 if (videoLag == null || sound == null) soundLate.reset()
                 paceSound()
+                // Раз в минуту — как идёт показ: по этим строкам видно, вернулась ли задержка после сбоя сети.
+                if (++minuteTicks >= MINUTE_TICKS) {
+                    minuteTicks = 0
+                    screenDelay.recent(MINUTE_TICKS / 2)?.let {
+                        Log.i(TAG, "Показ ${shownHeight}p: от прихода до экрана ≈ $it мс, запас плеера $buffered мс, нужен от $catchUpFloor мс")
+                    }
+                }
                 // Рывок идёт сам (его останавливает [endBurst]); большое отставание, которое держится, — повод для рывка.
                 backlogTicks = if (LiveCatchUp.burstMs(buffered, burstTo()) > 0) backlogTicks + 1 else 0
                 if (burstUntil != 0L || (backlogTicks >= LiveCatchUp.BURST_CONFIRM_TICKS && startBurst(exo))) {
@@ -447,6 +454,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     /** Запас, который потоку нужен по измеренной неровности прихода кадров ([LiveCatchUp.floorFor]); 0 — не измерено. */
     private var seedFloor = 0L
+    private var minuteTicks = 0
     /** Запас снижается, когда неровность прихода прошла (проверочный выключатель `video_debug/floor_grows` — как раньше, только рост). */
     private var floorFollows = true
     /** Запас этого плеера считается по измеренной неровности прихода (проверочный выключатель — нет). */
@@ -683,6 +691,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val renderers = (liveRenderers ?: DefaultRenderersFactory(context)).setEnableDecoderFallback(true)
         // Запас по измеренной неровности прихода кадров этого потока (известна, пока идёт запись): основному потоку
         // Reolink его нужно больше, чем субпотоку, — иначе плеер останавливается на каждом позднем ключевом кадре.
+        minuteTicks = 0
         jitterFloor = live && !LiveTuning.off(context, "no_jitter_floor")
         floorFollows = !LiveTuning.off(context, "floor_grows")
         seedFloor = if (!jitterFloor) 0 else LiveCatchUp.floorFor(source?.user.orEmpty().let { user ->
@@ -1147,6 +1156,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         internal const val FIRST_FRAME_TIMEOUT_MS = 20_000L
         /** После ошибки отдельного плеера звука следующая попытка — не раньше. */
         private const val SOUND_RETRY_MS = 5_000L
+        /** Раз во столько проверок (секунд) в журнал пишется строка о показе. */
+        private const val MINUTE_TICKS = 60
         /** Сколько живое видео ждёт общий поток записи (ключевой кадр субпотока — раз в 4 с) и как часто смотрит. */
         private const val RELAY_WAIT_MS = 5_000L
         private const val RELAY_POLL_MS = 150L
@@ -1342,6 +1353,12 @@ internal class ScreenDelay {
         if (total == samples.size && samples.size < LIMIT) samples = samples.copyOf(minOf(samples.size * 2, LIMIT))
         samples[total % LIMIT] = ms.coerceAtLeast(0).toInt()
         total++
+    }
+
+    /** Середина последних [last] замеров (≈ столько же секунд); null — их ещё нет. */
+    fun recent(last: Int): Long? {
+        if (count < last) return null
+        return IntArray(last) { samples[(total - 1 - it) % LIMIT] }.also { it.sort() }[last / 2].toLong()
     }
 
     /** Медиана и 90-й процентиль; null — замеров мало. */

@@ -363,6 +363,14 @@ class DoorbellLogicTest {
         assertNull("замер вне разумного — не замер", SoundLate().apply { add(60_000, 1f); add(60_000, 1f); add(60_000, 1f) }.value())
     }
 
+    @Test fun screenDelayReportsRecentMiddleForMinuteLog() {
+        val delay = ScreenDelay()
+        assertNull("замеров ещё нет", delay.recent(30))
+        repeat(60) { delay.add(900) }
+        repeat(30) { delay.add(350) }
+        assertEquals("только последние полминуты", 350L, delay.recent(30))
+    }
+
     @Test fun jitterMemoryForgetsBadMinuteAfterCalmOnes() {
         val memory = JitterMemory()
         assertEquals(0L, memory.max)
