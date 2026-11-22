@@ -75,10 +75,8 @@ class GateEditorActivity : PinProtectedActivity() {
 
         val name = ModernUi.input(this, draft.name, "Например: Калитка").apply { tag = "gate_name" }
         name.addTextChangedListener(kit.watcher { draft = draft.copy(name = it.trim()) })
-        column.addView(gap()); column.addView(ModernUi.section(this, "Название", name,
-            choice("gate_icon", Gate.Icon.entries.map { it.title }, Gate.Icon.entries.indexOf(draft.icon)) {
-                draft = draft.copy(icon = Gate.Icon.entries[it])
-            }))
+        // Значок прохода пока один на все (Gate.Icon) — выбора на экране нет, чтобы не обещать того, чего нет.
+        column.addView(gap()); column.addView(ModernUi.section(this, "Название", name))
 
         val kinds = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         Gate.Kind.entries.forEach { kind -> kinds.addView(kindCard(kind)) }
@@ -253,22 +251,6 @@ class GateEditorActivity : PinProtectedActivity() {
             GateHub.dismiss(draft.id)
             if (!GateHub.run(draft, Gate.Action.OPEN)) renderStatus()
         })
-    }
-
-    private fun choice(tag: String, items: List<String>, selected: Int, onPick: (Int) -> Unit): View {
-        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; this.tag = tag; setPadding(0, kit.dp(8), 0, 0) }
-        val buttons = items.mapIndexed { index, item -> kit.button(item, "${tag}_$index") {}.apply { isAllCaps = false } }
-        fun paint(active: Int) = buttons.forEachIndexed { i, b ->
-            b.background = BatteryModernCard.rounded(if (i == active) Color.argb(90, 95, 168, 211) else Color.argb(40, 30, 44, 56),
-                kit.dp(10).toFloat(), Color.argb(if (i == active) 220 else 70, 95, 168, 211))
-            b.setTextColor(Color.WHITE)
-        }
-        buttons.forEachIndexed { i, b ->
-            b.setOnClickListener { paint(i); onPick(i) }
-            line.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = kit.dp(6) })
-        }
-        paint(selected)
-        return line
     }
 
     private fun footer(): View = LinearLayout(this).apply {

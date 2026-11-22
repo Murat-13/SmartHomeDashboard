@@ -602,10 +602,13 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
     /** Подпись в покое (проходы меняют её: «Открыть калитку» / «Закрыть ворота»). */
     var label: String = label
         set(value) { if (field != value) { field = value; contentDescription = if (instant) value else "$value: удерживайте"; invalidate() } }
-    /** Подпись и подсказка состояния вместо стандартных («Открываю…», «нет подтверждения…»); null — стандартные. */
+    /** Подпись и подсказка состояния вместо стандартных («Открываю…», «нет подтверждения…»); null — стандартные, "" — без подсказки. */
     var stateCaption: String? = null
         set(value) { if (field != value) { field = value; invalidate() } }
     var stateHint: String? = null
+        set(value) { if (field != value) { field = value; invalidate() } }
+    /** Цвет кнопки в покое (у проходов: «Открыть» — зелёный, «Закрыть» — синий, «Стоп» — янтарный); null — зелёный. */
+    var idleAccent: Int? = null
         set(value) { if (field != value) { field = value; invalidate() } }
     /** Сразу по касанию, без удержания («Стоп» привода: останавливать надо немедленно). */
     var instant = false
@@ -639,7 +642,7 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
         DoorbellRingWindow.Gate.OPENED -> DoorbellFrame.RING
         DoorbellRingWindow.Gate.FAILED -> DoorbellFrame.OFFLINE
         DoorbellRingWindow.Gate.UNCONFIRMED -> DoorbellFrame.PERSON
-        else -> DoorbellFrame.RING
+        DoorbellRingWindow.Gate.IDLE, DoorbellRingWindow.Gate.SENDING, DoorbellRingWindow.Gate.WAITING -> idleAccent ?: DoorbellFrame.RING
     }
 
     private val caption get() = stateCaption ?: when (state) {
@@ -648,7 +651,7 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
         else -> label
     }
 
-    private val hint get() = if (holding && progress > 0f) "держите…" else stateHint ?: when (state) {
+    private val hint get() = if (holding && progress > 0f) "держите…" else stateHint?.ifBlank { null } ?: if (stateHint != null) null else when (state) {
         DoorbellRingWindow.Gate.IDLE, DoorbellRingWindow.Gate.FAILED -> if (instant) null else "удерживайте 1 секунду"
         DoorbellRingWindow.Gate.UNCONFIRMED -> "нет подтверждения · коснитесь, чтобы повторить"
         else -> null
@@ -755,21 +758,34 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
         stroke.color = Color.argb(230, Color.red(c), Color.green(c), Color.blue(c))
         rect.inset(stroke.strokeWidth / 2, stroke.strokeWidth / 2)
         canvas.drawRoundRect(rect, r, r, stroke)
+        // Надпись и подсказка всегда целиком внутри кнопки: длинное — мельче (до 60 %), не помещается и так — без значка,
+        // и только потом — с многоточием.
+        val room = w - 24 * density
         textPaint.textSize = textPx
-        val text = caption
-        val small = hint
+        val wanted = textPaint.measureText(caption) + textPx * 1.3f + 10 * density
+        if (wanted > room) textPaint.textSize = textPx * maxOf(0.6f, room / wanted)
+        val withIcon = textPaint.measureText(caption) + textPaint.textSize * 1.3f + 10 * density <= room
+        val iconSide = if (withIcon) (textPaint.textSize * 1.3f).toInt() else 0
+        val iconGap = if (withIcon) 10 * density else 0f
+        val text = fit(caption, room - iconSide - iconGap)
         val textW = textPaint.measureText(text)
-        val iconSide = (textPx * 1.3f).toInt()
-        val total = textW + iconSide + 10 * density
+        val total = textW + iconSide + iconGap
         val left = ((w - total) / 2f).coerceAtLeast(12 * density)
         val lineH = textPaint.descent() - textPaint.ascent()
-        val smallSize = textPx * 0.72f
+        val smallSize = textPaint.textSize * 0.72f
+        val small = hint?.let { h ->
+            val size = textPaint.textSize
+            textPaint.textSize = smallSize
+            fit(h, room).also { textPaint.textSize = size }
+        }
         val blockH = if (small != null) lineH + smallSize * 1.25f else lineH
         val top = (h - blockH) / 2f
-        iconDrawable?.setBounds(left.toInt(), (top + (lineH - iconSide) / 2).toInt(), left.toInt() + iconSide,
-            (top + (lineH + iconSide) / 2).toInt())
-        iconDrawable?.draw(canvas)
-        canvas.drawText(text, left + iconSide + 10 * density + textW / 2, top - textPaint.ascent(), textPaint)
+        if (withIcon) {
+            iconDrawable?.setBounds(left.toInt(), (top + (lineH - iconSide) / 2).toInt(), left.toInt() + iconSide,
+                (top + (lineH + iconSide) / 2).toInt())
+            iconDrawable?.draw(canvas)
+        }
+        canvas.drawText(text, left + iconSide + iconGap + textW / 2, top - textPaint.ascent(), textPaint)
         if (small != null) {
             val size = textPaint.textSize
             textPaint.textSize = smallSize
@@ -779,6 +795,10 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
             textPaint.textSize = size
         }
     }
+
+    private fun fit(text: String, room: Float): String =
+        if (textPaint.measureText(text) <= room) text
+        else android.text.TextUtils.ellipsize(text, android.text.TextPaint(textPaint), room.coerceAtLeast(0f), android.text.TextUtils.TruncateAt.END).toString()
 
     override fun onDetachedFromWindow() {
         holding = false

@@ -47,8 +47,9 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
         requestLayout()
     }
 
-    private fun params(index: Int) = if (vertical)
-        LayoutParams(LayoutParams.MATCH_PARENT, buttonHeight).apply { if (index > 0) topMargin = gap }
+    /** В окне звонка много кнопок (ворота: открыть, закрыть, пешеходный) — каждая чуть ниже, чтобы окно поместилось. */
+    private fun params(index: Int, count: Int = buttons.size) = if (vertical)
+        LayoutParams(LayoutParams.MATCH_PARENT, if (count > 2) buttonHeight * 3 / 4 else buttonHeight).apply { if (index > 0) topMargin = gap }
     else LayoutParams(if (buttonWidth > 0) buttonWidth else LayoutParams.WRAP_CONTENT, buttonHeight).apply { if (index > 0) leftMargin = gap }
 
     private fun rebuild() {
@@ -59,19 +60,46 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
             buttons.clear()
             wanted.forEachIndexed { i, key ->
                 val gate = gates.first { it.id == key.first }
-                val button = HoldButton(context, "", gate.icon.drawable).apply {
+                val button = HoldButton(context, "", icon(gate, key.second)).apply {
                     tag = "gate_${gate.id}_${key.second.name.lowercase()}"
                     instant = GateLogic.instant(key.second)
+                    idleAccent = accent(key.second)
                     textPx = this@GateButtons.textPx
                     onTouchStart = { onTouch?.invoke() }
                     onComplete = { press(key.first, key.second) }
                 }
                 buttons[key] = button
-                addView(button, params(i))
+                addView(button, params(i, wanted.size))
             }
             visibility = if (buttons.isEmpty()) GONE else VISIBLE
         }
         refresh()
+    }
+
+    /** Значок по действию: открыть — открытый замок, закрыть — закрытый, «Стоп» — стоп, пешеходный — человек. */
+    private fun icon(gate: Gate, action: Gate.Action) = when (action) {
+        Gate.Action.CLOSE -> R.drawable.ic_gate_lock
+        Gate.Action.STOP -> R.drawable.ic_gate_stop
+        Gate.Action.PEDESTRIAN -> R.drawable.ic_door_person
+        else -> gate.icon.drawable
+    }
+
+    /** Цвет в покое: открыть — зелёный (как звонок), закрыть — спокойный синий, «Стоп» — янтарный. */
+    private fun accent(action: Gate.Action) = when (action) {
+        Gate.Action.CLOSE -> DoorbellFrame.NEUTRAL
+        Gate.Action.STOP -> DoorbellFrame.PERSON
+        else -> null
+    }
+
+    /** Строка шире места: кнопки делят его поровну (у ворот бывает четыре кнопки). */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val available = MeasureSpec.getSize(widthMeasureSpec)
+        if (!vertical && buttonWidth > 0 && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED && buttons.isNotEmpty()) {
+            val n = buttons.size
+            val each = minOf(buttonWidth, (available - gap * (n - 1)) / n).coerceAtLeast(1)
+            buttons.values.forEach { b -> (b.layoutParams as LayoutParams).let { if (it.width != each) { it.width = each } } }
+        }
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 
     private fun press(gateId: String, action: Gate.Action) {
@@ -125,10 +153,16 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
         GateHub.Phase.UNCONFIRMED -> "команда принята · коснитесь, чтобы снять"
         GateHub.Phase.FAILED -> op.detail.ifBlank { "попробуйте ещё раз" } + if (GateLogic.instant(action)) "" else " · удерживайте, чтобы повторить"
         GateHub.Phase.SENDING, GateHub.Phase.WAITING, GateHub.Phase.DONE -> null
-        null -> {
-            val where = GateLogic.statusText(status).takeIf { primary && it.isNotBlank() }
-            val how = if (GateLogic.instant(action)) null else "удерживайте 1 секунду"
-            if (status.position == GateStatus.Position.OFFLINE) where else listOfNotNull(where, how).joinToString(" · ").ifBlank { null }
+        // Где проход и «удерживайте» — только на главной кнопке прохода: на каждой кнопке это лишний шум.
+        null -> if (!primary) "" else {
+            val where = GateLogic.statusText(status).takeIf { it.isNotBlank() }
+            when {
+                status.position == GateStatus.Position.OFFLINE -> where
+                where == null -> if (GateLogic.instant(action)) "" else "удерживайте 1 секунду"
+                // В строке раскрытой плитки места мало: только где проход («держите…» видно при нажатии).
+                !vertical || GateLogic.instant(action) -> where
+                else -> "$where · удерживайте"
+            }
         }
     }
 

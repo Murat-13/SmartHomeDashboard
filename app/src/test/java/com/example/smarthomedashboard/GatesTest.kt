@@ -78,7 +78,10 @@ class GatesTest {
         assertEquals("Привод не сообщает, что умеет «Стоп», — кнопки нет", listOf(Gate.Action.OPEN, Gate.Action.CLOSE, Gate.Action.PEDESTRIAN),
             GateLogic.actions(cover, readings))
         states["cover.gate"] = "closed"; attrs["cover.gate"] = JSONObject().put("supported_features", 1 or 2 or 8)
-        assertEquals(listOf(Gate.Action.OPEN, Gate.Action.CLOSE, Gate.Action.STOP, Gate.Action.PEDESTRIAN), GateLogic.actions(cover, readings))
+        assertEquals("В покое «Стоп» не нужен", listOf(Gate.Action.OPEN, Gate.Action.CLOSE, Gate.Action.PEDESTRIAN), GateLogic.actions(cover, readings))
+        states["cover.gate"] = "opening"
+        assertEquals("Ворота движутся — «Стоп»", listOf(Gate.Action.OPEN, Gate.Action.CLOSE, Gate.Action.STOP, Gate.Action.PEDESTRIAN),
+            GateLogic.actions(cover, readings))
         assertTrue(GateLogic.instant(Gate.Action.STOP))
         assertFalse(GateLogic.instant(Gate.Action.OPEN))
     }

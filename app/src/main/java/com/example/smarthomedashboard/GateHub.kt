@@ -88,7 +88,8 @@ internal object GateHub {
     fun status(gate: Gate): GateStatus = GateLogic.status(gate, readings)
 
     /** Кнопки прохода сейчас (например, «Стоп» — если привод его умеет). */
-    fun actions(gate: Gate): List<Gate.Action> = GateLogic.actions(gate, readings)
+    fun actions(gate: Gate): List<Gate.Action> = GateLogic.actions(gate, readings,
+        moving = GateLogic.status(gate, readings).moving || ops[gate.id]?.let { it.busy && it.action != Gate.Action.STOP } == true)
 
     fun op(gateId: String): Op? = ops[gateId]
 

@@ -183,13 +183,16 @@ internal object GateLogic {
         }
     }
 
-    /** Кнопки прохода по порядку: главная — первой. */
-    fun actions(gate: Gate, readings: BatteryReadings?): List<Gate.Action> = when (gate.kind) {
+    /**
+     * Кнопки прохода по порядку: главная — первой. «Стоп» — только пока привод движется ([moving]: по приводу или пока
+     * ждём подтверждения своей команды): тогда он и нужен, а в покое кнопок меньше.
+     */
+    fun actions(gate: Gate, readings: BatteryReadings?, moving: Boolean = status(gate, readings).moving): List<Gate.Action> = when (gate.kind) {
         Gate.Kind.RELAY -> listOf(Gate.Action.OPEN)
         Gate.Kind.STEP -> listOf(Gate.Action.STEP)
         Gate.Kind.LOCK -> listOfNotNull(Gate.Action.OPEN, Gate.Action.CLOSE.takeIf { gate.lockButton })
         Gate.Kind.COVER -> listOfNotNull(Gate.Action.OPEN, Gate.Action.CLOSE,
-            Gate.Action.STOP.takeIf { coverStops(readings, gate.open) },
+            Gate.Action.STOP.takeIf { moving && coverStops(readings, gate.open) },
             Gate.Action.PEDESTRIAN.takeIf { gate.pedestrian.isNotBlank() })
         Gate.Kind.SCRIPT -> listOfNotNull(Gate.Action.OPEN, Gate.Action.CLOSE.takeIf { gate.close.isNotBlank() })
     }.filter { command(gate, it, readings) != null }
