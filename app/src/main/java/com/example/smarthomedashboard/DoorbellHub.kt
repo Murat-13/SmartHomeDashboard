@@ -63,6 +63,11 @@ internal object DoorbellHub {
         // Охрана (docs/guard-tz.md): раз в секунду — стоит ли человек у входа.
         DoorbellGuard.attach(application)
         OnvifEvents.attach(application)
+        // Калитки и ворота (docs/gate-tz.md): открыли где угодно — звонок у плиток этого прохода отвечен.
+        GateHub.attach(application)
+        GateHub.onOpened = { gate ->
+            videoTiles.filter { DoorbellConfig.from(it.config).gateIds(it.id).contains(gate.id) }.forEach { RingUi.gateOpened(it.id) }
+        }
     }
 
     fun detach() {
@@ -70,6 +75,7 @@ internal object DoorbellHub {
         DoorbellAway.reset()
         DoorbellGuard.detach()
         OnvifEvents.detach()
+        GateHub.onOpened = null
         main.removeCallbacks(recheck)
         lightOffs.values.forEach(main::removeCallbacks)
         lightOffs.clear()
@@ -135,6 +141,8 @@ internal object DoorbellHub {
         readings = current
         // Запись событий в HD (docs/recording.md): какие датчики сработали — для потоков записи.
         RecordingEvents.update(videoTiles, current)
+        // Калитки и ворота: подтверждение команд и «открыли где угодно» (раньше — поле «Замок калитки» в мониторе).
+        GateHub.onState(app, current)
         val now = SystemClock.uptimeMillis()
         val events = monitor.evaluate(tileList, current, now)
         main.removeCallbacks(recheck)
@@ -190,7 +198,6 @@ internal object DoorbellHub {
                 PanelAlerts.external(Alert(AlertEvent.DOORBELL_OFFLINE, "Домофон не в сети"))
             }
             is DoorbellMonitor.Event.Online -> Unit
-            is DoorbellMonitor.Event.GateOpened -> RingUi.gateOpened(tile.id)
         }
     }
 

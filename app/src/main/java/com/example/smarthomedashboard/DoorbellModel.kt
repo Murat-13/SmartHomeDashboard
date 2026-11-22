@@ -131,7 +131,6 @@ internal class DoorbellMonitor {
         data class Ring(override val tileId: String, val source: String = SOURCE_HA) : Event(tileId)
         data class Offline(override val tileId: String) : Event(tileId)
         data class Online(override val tileId: String) : Event(tileId)
-        data class GateOpened(override val tileId: String) : Event(tileId)
     }
 
     private class State {
@@ -141,7 +140,6 @@ internal class DoorbellMonitor {
         var online: Boolean? = null
         var offlineSince: Long? = null
         var reportedOffline = false
-        var lock: String? = null
     }
 
     private val states = mutableMapOf<String, State>()
@@ -158,7 +156,6 @@ internal class DoorbellMonitor {
             val s = states.getOrPut(tile.id) { State() }
             visitor(tile.id, config, readings, s, now, out)
             online(tile.id, config, readings, s, now, out)?.let { nextCheckAt = minOf(nextCheckAt ?: it, it) }
-            lock(tile.id, config, readings, s, out)
         }
         return out
     }
@@ -221,22 +218,6 @@ internal class DoorbellMonitor {
             return null
         }
         return since + OFFLINE_CONFIRM_MS
-    }
-
-    private fun lock(id: String, config: DoorbellConfig, readings: BatteryReadings, s: State, out: MutableList<Event>) {
-        if (config.lock.isBlank()) return
-        val reading = readings.of(config.lock)
-        // Замок недоступен — прежнее состояние забываем: возврат сразу в «открыто» не значит, что калитку открыли.
-        if (reading is BatteryReading.Unavailable || reading == BatteryReading.Missing) { s.lock = null; return }
-        val raw = (reading as? BatteryReading.Value)?.raw ?: return
-        val before = s.lock
-        s.lock = raw
-        if (before == null || before == raw) return
-        val opened = when (config.lock.substringBefore('.')) {
-            "button", "input_button" -> true // новая отметка времени нажатия
-            else -> DoorbellModel.lockState(config.lock, readings) == DoorbellModel.Lock.OPEN
-        }
-        if (opened) out += Event.GateOpened(id)
     }
 
     /** Был ли домофон недоступен дольше порога (для рамки «Нет сигнала» без ожидания следующего события). */

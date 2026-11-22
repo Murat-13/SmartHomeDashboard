@@ -186,20 +186,7 @@ class DoorbellLogicTest {
             .evaluate(tiles, readings(normal, connected = false), 30_000).isEmpty())
     }
 
-    @Test fun gateOpenedFromLockAndButtonFacts() {
-        val m = DoorbellMonitor()
-        m.evaluate(listOf(tile()), readings(normal), 0)
-        assertEquals(listOf(DoorbellMonitor.Event.GateOpened("door")),
-            m.evaluate(listOf(tile()), readings(normal + ("lock.gate" to "unlocked")), 1_000))
-        assertTrue("Закрылась — не событие", m.evaluate(listOf(tile()), readings(normal), 2_000).isEmpty())
-        m.evaluate(listOf(tile()), readings(normal + ("lock.gate" to "unavailable")), 3_000)
-        assertTrue("Вернулся из «недоступен» сразу открытым — не событие",
-            m.evaluate(listOf(tile()), readings(normal + ("lock.gate" to "unlocked")), 4_000).isEmpty())
-        val button = tile(full.copy(lock = "button.gate"))
-        val b = DoorbellMonitor()
-        b.evaluate(listOf(button), readings(normal + ("button.gate" to "2026-11-06T01:00:00+00:00")), 0)
-        assertEquals(1, b.evaluate(listOf(button), readings(normal + ("button.gate" to "2026-11-06T02:00:00+00:00")), 1_000).size)
-    }
+    // «Калитку открыли» — теперь у проходов (GateHub, docs/gate-tz.md): GatesTest.openedElsewhereIsNoticedButNotOnFirstLook.
 
     @Test fun ringVolumeAndQuietHours() {
         val c = DoorbellConfig(ringVolume = 80, quietPercent = 25)

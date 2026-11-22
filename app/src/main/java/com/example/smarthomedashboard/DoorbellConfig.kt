@@ -54,7 +54,12 @@ internal data class DoorbellConfig(
     /** Плитка «Камера» (docs/camera-tz.md): адрес камеры и порт ONVIF (0 — найти самому), модель — для подписи. */
     val host: String = "",
     val onvifPort: Int = 0,
-    val model: String = ""
+    val model: String = "",
+    /**
+     * Проходы (калитки и ворота, docs/gate-tz.md), кнопки которых показывает эта плитка: id из общего списка [GateStore].
+     * null — ключа нет (плитка из 0.9.48 и раньше): тогда показывается проход из прежнего поля [lock] ([gateIds]).
+     */
+    val gates: List<String>? = null
 ) {
     enum class VideoMode(val key: String, val title: String) {
         LIVE("live", "Живое видео"), SNAPSHOT("snapshot", "Снимок раз в минуту");
@@ -67,6 +72,12 @@ internal data class DoorbellConfig(
     ).filter { it.first.isNotBlank() }
 
     enum class Detection(val title: String) { PERSON("Человек"), ANIMAL("Животное"), VEHICLE("Машина"), MOTION("Движение") }
+
+    /**
+     * Проходы этой плитки. Без своего списка (плитка из 0.9.48 и раньше) — проход, созданный из прежнего поля «Замок
+     * калитки» ([GateStore.legacyId]), если оно было заполнено.
+     */
+    fun gateIds(tileId: String): List<String> = gates ?: if (lock.isNotBlank()) listOf(GateStore.legacyId(tileId)) else emptyList()
 
     /** Сущности HA, от которых зависит плитка (подписки панели). `sun.sun` — для света после заката. */
     val entityIds: Set<String> get() = listOf(camera, visitor, person, animal, vehicle, motion, lock, light, quickReply,
@@ -105,6 +116,7 @@ internal data class DoorbellConfig(
         if (host.isNotBlank()) put("host", host)
         if (onvifPort > 0) put("onvif_port", onvifPort)
         if (model.isNotBlank()) put("model", model)
+        gates?.let { put("gates", org.json.JSONArray(it)) }
     }
 
     fun writeTo(config: String): String {
@@ -155,7 +167,8 @@ internal data class DoorbellConfig(
                 talkCall = j.optBoolean("talk_call", d.talkCall),
                 aspect = j.optDouble("aspect", DEFAULT_ASPECT.toDouble()).toFloat().takeIf { it.isFinite() && it in 0.3f..4f }
                     ?: DEFAULT_ASPECT,
-                host = str("host").take(253), onvifPort = int("onvif_port", 0, 0..65535), model = str("model").take(80)
+                host = str("host").take(253), onvifPort = int("onvif_port", 0, 0..65535), model = str("model").take(80),
+                gates = j.optJSONArray("gates")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).trim().ifBlank { null } }.distinct() }
             )
         }
 

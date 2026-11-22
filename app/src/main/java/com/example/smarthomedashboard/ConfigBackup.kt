@@ -15,6 +15,8 @@ internal object ConfigBackup {
     val STRING_DEFAULTS = linkedMapOf(
         "motion_sensor_id" to "", "app_theme" to "system", "temp_unit" to "C",
         "yandex_lat" to "", "yandex_lon" to "",
+        // Калитки и ворота (docs/gate-tz.md): список проходов и «PIN для открытия». Пустой список — как до 0.9.49.
+        GateStore.KEY to "", GateStore.KEY_PIN to GatePin.OFF.key,
     )
     val INT_DEFAULTS = linkedMapOf(
         "pin_session_minutes" to 60, "screen_timeout_minutes" to 5,
