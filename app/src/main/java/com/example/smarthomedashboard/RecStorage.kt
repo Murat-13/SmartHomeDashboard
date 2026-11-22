@@ -1,6 +1,9 @@
 package com.example.smarthomedashboard
 
 import android.content.Context
+import android.os.Environment
+import android.os.StatFs
+import androidx.annotation.VisibleForTesting
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -310,21 +313,14 @@ internal object RecRetention {
 
     const val GB = 1024L * 1024 * 1024
 
-    /**
-     * Средний объём круглосуточной записи камеры, байт в сутки, по отрезкам последних суток; null — записано
-     * меньше 30 минут (оценка была бы случайной).
-     */
-    fun bytesPerDay(files: List<RecFile>, camera: String, now: Long): Long? {
-        val recent = files.filter { it.camera == camera && it.kind == RecFile.Kind.CONTINUOUS && !it.open && it.startMs >= now - 86_400_000L }
-        val duration = recent.sumOf { it.durationMs }
-        if (duration < 30 * 60_000L) return null
-        return recent.sumOf { it.bytes } * 86_400_000L / duration
-    }
     const val AUTO_LIMIT = 20 * GB
 
-    /** Лимит: заданный или авто — меньшее из 20 ГБ и половины (свободного + уже занятого записями). */
-    fun limit(limitGb: Int, freeBytes: Long, usedBytes: Long): Long =
-        if (limitGb > 0) limitGb * GB else minOf(AUTO_LIMIT, (freeBytes + usedBytes) / 2)
+    /**
+     * Лимит: заданный или авто — меньшее из 20 ГБ и половины (свободного + уже занятого записями). [fallback] — выбрана
+     * SD-карта, а запись идёт в память планшета: лимит вдвое меньше (решение владельца 18.11).
+     */
+    fun limit(limitGb: Int, freeBytes: Long, usedBytes: Long, fallback: Boolean = false): Long =
+        (if (limitGb > 0) limitGb * GB else minOf(AUTO_LIMIT, (freeBytes + usedBytes) / 2)) / (if (fallback) 2 else 1)
 
     /**
      * Порядок: 1) старше срока своей дорожки; 2) самые старые отрезки 24/7, пока не уложимся в лимит и остаток;
@@ -352,5 +348,160 @@ internal object RecRetention {
             }
         }
         return Plan(delete.toList(), free < reserveBytes)
+    }
+
+    private const val DAY_MS = 86_400_000L
+
+    /**
+     * Место под записи — одна оценка для редактора камеры и архива (ревью 22.11.2026, docs/review-2026-11-22.md,
+     * пункт 5). Лимит общий для всех камер и для роликов событий, поэтому и объём в сутки — всех записей носителя, куда
+     * идёт запись, а не одной камеры и не одной круглосуточной.
+     */
+    data class Outlook(
+        val usedBytes: Long,
+        val limitBytes: Long,
+        /** Место заполнено (лимит или неприкосновенный остаток): старое уже удаляется по месту. */
+        val full: Boolean,
+        /** Заполнено не лимитом, а самим носителем: свободно меньше неприкосновенного остатка. */
+        val lowFree: Boolean,
+        /** Начало самой старой круглосуточной записи (★ не в счёт); null — её нет. */
+        val continuousSinceMs: Long?,
+        /** Пишется в сутки всего (24/7 и события) и из них событий; null — записано меньше получаса. */
+        val bytesPerDay: Long?,
+        val eventBytesPerDay: Long?,
+        /** Записано меньше суток: события за день неравномерны — оценка грубая. */
+        val preliminary: Boolean,
+        /** Лимит без роликов со ★ — они не удаляются и место под остальное уменьшают. */
+        val rotatingLimitBytes: Long,
+        val now: Long
+    ) {
+        /** Сколько дней хранится круглосуточная запись: место заполнено — по факту, иначе — прогноз при нынешнем объёме. */
+        val days: Double? get() = if (full) continuousSinceMs?.let { (now - it).toDouble() / DAY_MS }
+            else bytesPerDay?.takeIf { it > 0 }?.let { rotatingLimitBytes.toDouble() / it }
+    }
+
+    /**
+     * [files] — записи носителя, куда идёт запись. Объём в сутки — по последней неделе (или по всей истории, если она
+     * короче): так в него входят и дни с событиями, и дни без них.
+     */
+    fun outlook(files: List<RecFile>, limitBytes: Long, freeBytes: Long, reserveBytes: Long, now: Long): Outlook {
+        val used = files.sumOf { it.bytes }
+        val rotating = files.filter { !it.starred }
+        // Начало окна — самая старая запись за последнюю неделю (забытый старый файл окно не растягивает).
+        val from = rotating.filter { it.startMs >= now - 7 * DAY_MS }.minOfOrNull { it.startMs } ?: now
+        val window = now - from
+        fun perDay(kind: RecFile.Kind?): Long? = if (window < 30 * 60_000L) null
+            else rotating.filter { it.startMs >= from && (kind == null || it.kind == kind) }.sumOf { it.bytes } * DAY_MS / window
+        return Outlook(
+            usedBytes = used,
+            limitBytes = limitBytes,
+            full = used >= limitBytes / 100 * 95 || freeBytes < reserveBytes,
+            lowFree = freeBytes < reserveBytes,
+            continuousSinceMs = rotating.filter { it.kind == RecFile.Kind.CONTINUOUS }.minOfOrNull { it.startMs },
+            bytesPerDay = perDay(null),
+            eventBytesPerDay = perDay(RecFile.Kind.EVENT),
+            preliminary = window < DAY_MS,
+            rotatingLimitBytes = (limitBytes - files.filter { it.starred }.sumOf { it.bytes }).coerceAtLeast(0),
+            now = now
+        )
+    }
+
+    private val RU = Locale("ru")
+
+    /** «Записи: 3,2 из 20 ГБ» (единица один раз, если одна и та же). */
+    fun usedOfLimit(o: Outlook): String {
+        val used = size(o.usedBytes)
+        val limit = size(o.limitBytes)
+        return if (used.substringAfter(' ') == limit.substringAfter(' ')) "${used.substringBefore(' ')} из $limit" else "$used из $limit"
+    }
+
+    /** «20 ГБ», «3,2 ГБ», «512 МБ». */
+    fun size(bytes: Long): String = if (bytes >= GB) String.format(RU, "%.1f", bytes / GB.toDouble()).removeSuffix(",0") + " ГБ"
+        else "${bytes / (1024 * 1024)} МБ"
+
+    /** «5 ч», «2,8 дн.», «85 дн.». */
+    fun daysText(days: Double): String = when {
+        days < 1 -> "${(days * 24).toInt().coerceAtLeast(1)} ч"
+        days < 10 -> String.format(RU, "%.1f", days).removeSuffix(",0") + " дн."
+        else -> "${days.toInt()} дн."
+    }
+
+    /**
+     * Оценка словами — одна для редактора камеры и архива: место заполнено — сколько круглосуточной записи есть на деле,
+     * иначе — на сколько хватит места при нынешнем объёме; и сколько пишется в сутки, из них событий. Строка архива
+     * узкая (на Huawei 1000×600 dp — три строки текста), поэтому коротко. [keepDays] — срок хранения 24/7 камеры.
+     */
+    private fun outlookBody(o: Outlook, keepDays: Int): String {
+        val perDay = o.bytesPerDay
+        val rate = perDay?.let { p ->
+            val events = o.eventBytesPerDay?.takeIf { it > 0 }?.let { "из них события — ${size(it)}" } ?: "событий нет"
+            "В сутки ≈ ${size(p)}, $events"
+        }
+        val days = o.days
+        val short = if (days != null && days < keepDays) " — меньше срока $keepDays дн." else ""
+        return if (o.full) listOfNotNull(
+            o.continuousSinceMs?.let { "Круглосуточная запись есть за ${daysText(days ?: 0.0)}$short".withPeriod() },
+            rate?.let { "$it." }
+        ).joinToString(" ")
+        else if (rate == null || days == null) "Оценка появится после получаса записи."
+        else "$rate: места хватит примерно на ${daysText(days)}$short".withPeriod() +
+            if (o.preliminary) " Оценка грубая: записано меньше суток." else ""
+    }
+
+    private fun String.withPeriod() = if (endsWith(".")) this else "$this."
+
+    /** Для редактора камеры: «Место заполнено. Круглосуточная запись есть за 2,8 дн. …». */
+    fun outlookText(o: Outlook, keepDays: Int): String {
+        val state = when { o.lowFree -> "Свободного места на планшете мало, старое удаляется."; o.full -> "Место заполнено."; else -> "" }
+        return listOf(state, outlookBody(o, keepDays)).filter { it.isNotBlank() }.joinToString(" ")
+    }
+
+    /** Для строки внизу архива: «Записи: 20 из 20 ГБ, заполнено. Круглосуточная запись есть за 2,8 дн. …». */
+    fun archiveLine(o: Outlook, keepDays: Int): String {
+        val state = when { o.lowFree -> ", мало свободного места"; o.full -> ", заполнено"; else -> "" }
+        return "Записи: ${usedOfLimit(o)}$state. ${outlookBody(o, keepDays)}".trim()
+    }
+}
+
+/**
+ * Носители записей: память планшета и SD-карта. Куда идёт запись — одно правило для службы записи и экранов, чтобы
+ * оценка места считалась по тому же носителю и лимиту, по которым удаляет очистка.
+ */
+internal object RecVolumes {
+    /** Для тестов: папки приложения на носителях вместо `getExternalFilesDirs` (память планшета и SD-карта). */
+    @VisibleForTesting @Volatile var dirsOverride: ((Context) -> Array<File?>)? = null
+
+    /** Куда идёт запись; [fallback] — выбрана SD-карта, а её нет: пишем в память планшета. */
+    class Target(val root: File?, val fallback: Boolean)
+
+    /** Папки приложения на носителях: [0] — память планшета, [1] — SD-карта (null или нет — карты нет). */
+    fun dirs(context: Context): Array<File?> =
+        try { (dirsOverride ?: { c -> c.getExternalFilesDirs(null) })(context) } catch (_: Exception) { emptyArray() }
+
+    fun mounted(dir: File?): Boolean = dir != null && Environment.getExternalStorageState(dir) == Environment.MEDIA_MOUNTED
+
+    /** SD-карта, если выбрана и вставлена, иначе память планшета. */
+    fun target(context: Context, useSd: Boolean): Target {
+        val dirs = dirs(context)
+        val sd = dirs.getOrNull(1)
+        if (useSd && mounted(sd)) return Target(sd, fallback = false)
+        return Target(dirs.getOrNull(0) ?: context.filesDir, fallback = useSd)
+    }
+
+    fun freeBytes(root: File): Long = try { StatFs(root.path).availableBytes } catch (_: Exception) { 0L }
+
+    /** Записи и свободное место носителя, куда идёт запись (обход папок — не на главном потоке). */
+    class Snapshot(val files: List<RecFile>, val freeBytes: Long, val fallback: Boolean)
+
+    fun snapshot(context: Context, useSd: Boolean): Snapshot {
+        val target = target(context, useSd)
+        val root = target.root ?: return Snapshot(emptyList(), 0, target.fallback)
+        return Snapshot(RecLayout.scan(root), freeBytes(root), target.fallback)
+    }
+
+    /** Оценка места при лимите [limitGb] и остатке [reserveGb] (настройки этого планшета или ещё не сохранённые). */
+    fun outlook(s: Snapshot, limitGb: Int, reserveGb: Int, now: Long = System.currentTimeMillis()): RecRetention.Outlook {
+        val limit = RecRetention.limit(limitGb, s.freeBytes, s.files.sumOf { it.bytes }, s.fallback)
+        return RecRetention.outlook(s.files, limit, s.freeBytes, reserveGb * RecRetention.GB, now)
     }
 }

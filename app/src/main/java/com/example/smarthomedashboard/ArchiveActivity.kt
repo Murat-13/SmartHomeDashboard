@@ -248,8 +248,8 @@ class ArchiveActivity : AppCompatActivity() {
         storageJob = lifecycleScope.launch {
             val keep = TileManager(this@ArchiveActivity).loadTiles().firstOrNull { it.id == tileId }
                 ?.let { RecordingConfig.from(it.config).keepContinuousDays } ?: RecordingConfig().keepContinuousDays
-            val limit = RecordingDevice(this@ArchiveActivity).limitGb
-            val text = withContext(Dispatchers.IO) { try { RecArchive.storageText(archive.storage(limit, keep)) } catch (_: Exception) { null } }
+            val device = RecordingDevice(this@ArchiveActivity)
+            val text = withContext(Dispatchers.IO) { try { archive.storageText(device, keep) } catch (_: Exception) { null } }
             val copy = withContext(Dispatchers.IO) { ArchiveCopy.statusText(this@ArchiveActivity) }
             ui.value = ui.value.copy(storage = text, copyStatus = copy)
         }

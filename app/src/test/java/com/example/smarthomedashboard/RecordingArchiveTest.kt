@@ -363,9 +363,16 @@ class RecordingArchiveTest {
     }
 
     @Test fun storageTextAndCalendarDates() {
-        val text = RecArchive.storageText(RecArchive.Storage(3_435_973_837L, 20 * RecRetention.GB, 50 * RecRetention.GB, 5, 7))
-        assertEquals("Записи: 3,2 из 20 ГБ · места хватит примерно на 5 дн. · круглосуточная хранится 7 дн. — старое удалится раньше", text)
-        assertFalse(RecArchive.storageText(RecArchive.Storage(0, RecRetention.GB, 0, null, 7)).contains("хватит"))
+        // Строка о месте — общая с редактором (RecRetention.outlookText, RecordingStorageTest, RecordingSpaceOutlookTest).
+        assertEquals("3,2 ГБ", RecRetention.size(3_435_973_837L))
+        assertEquals("20 ГБ", RecRetention.size(20 * RecRetention.GB))
+        assertEquals("512 МБ", RecRetention.size(RecRetention.GB / 2))
+        assertEquals("2,8 дн.", RecRetention.daysText(2.8))
+        assertEquals("85 дн.", RecRetention.daysText(85.4))
+        assertEquals("5 ч", RecRetention.daysText(5.5 / 24))
+        fun used(u: Long, l: Long) = RecRetention.usedOfLimit(RecRetention.Outlook(u, l, false, false, null, null, null, false, l, 0))
+        assertEquals("3,2 из 20 ГБ", used(3_435_973_837L, 20 * RecRetention.GB))
+        assertEquals("700 МБ из 1 ГБ", used(700L * 1024 * 1024, RecRetention.GB))
         // DatePicker: местная полночь ↔ полночь UTC того же числа.
         assertEquals(day, utcDateToLocal(localToUtcDate(day)))
         assertEquals(0L, localToUtcDate(day) % 86_400_000L)

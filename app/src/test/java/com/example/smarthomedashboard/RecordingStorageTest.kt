@@ -124,15 +124,47 @@ class RecordingStorageTest {
         assertTrue(RecLocality.sameSubnet(ip("192.168.1.200"), ip("192.168.1.2"), 25) == false)
     }
 
-    @Test fun bytesPerDayFromLastDayOfContinuousRecording() {
-        val minute = 60_000L
-        fun seg(ageMin: Long, bytes: Long, camera: String = "door", kind: RecFile.Kind = RecFile.Kind.CONTINUOUS) =
-            RecFile(File("/x"), camera, kind, now - ageMin * minute, minute, bytes)
-        val hour = (1L..60L).map { seg(it, 3_000_000) }
-        // 3 МБ в минуту → ~4,3 ГБ в сутки; события, другие камеры и старше суток не считаются.
-        val noise = listOf(seg(5, 999_000_000, kind = RecFile.Kind.EVENT), seg(5, 999_000_000, camera = "gate"), seg(2_000, 999_000_000))
-        assertEquals(3_000_000L * 1440, RecRetention.bytesPerDay(hour + noise, "door", now))
-        assertNull("Меньше получаса — без оценки", RecRetention.bytesPerDay(hour.take(20), "door", now))
+    /** Оценка места (ревью 22.11.2026, пункт 5): все камеры и события, неделя истории, ★, заполненное место. */
+    @Test fun spaceOutlookCountsEverythingOnTheVolume() {
+        val hour = 3_600_000L
+        fun rec(ageH: Double, bytes: Long, camera: String = "door", kind: RecFile.Kind = RecFile.Kind.CONTINUOUS, star: Boolean = false) =
+            RecFile(File("/x"), camera, kind, now - (ageH * hour).toLong(), hour, bytes, starred = star)
+        val mb = 1024L * 1024
+        // Две камеры 24/7 по 1 МБ в час и событие 24 МБ за двое суток: 48 + 12 = 60 МБ в сутки.
+        val two = (1..48).flatMap { listOf(rec(it.toDouble(), mb), rec(it.toDouble(), mb, camera = "gate")) } +
+            rec(10.0, 24 * mb, kind = RecFile.Kind.EVENT) + rec(30.0, 999 * mb, star = true)
+        val o = RecRetention.outlook(two, limitBytes = 1_200 * mb + 999 * mb, freeBytes = 100 * RecRetention.GB, reserveBytes = RecRetention.GB, now = now)
+        assertFalse(o.full)
+        assertEquals("Ролик со ★ в окне и в объёме не участвует", 60 * mb, o.bytesPerDay)
+        assertEquals(12 * mb, o.eventBytesPerDay)
+        assertEquals("Место под ★ из лимита вычтено: 1200 МБ / 60 МБ", 20.0, o.days!!, 0.01)
+        assertFalse(o.preliminary)
+        assertEquals("В сутки ≈ 60 МБ, из них события — 12 МБ: места хватит примерно на 20 дн.", RecRetention.outlookText(o, keepDays = 7))
+        assertEquals("В сутки ≈ 60 МБ, из них события — 12 МБ: места хватит примерно на 20 дн. — меньше срока 30 дн.",
+            RecRetention.outlookText(o, keepDays = 30))
+        // Неделя истории: старше недели в объём не входит.
+        val longAgo = two + rec(24.0 * 9, 5_000 * mb)
+        assertEquals(60 * mb, RecRetention.outlook(longAgo, 10 * RecRetention.GB, 100 * RecRetention.GB, RecRetention.GB, now).bytesPerDay)
+
+        // Меньше получаса — без оценки; меньше суток — грубая.
+        val fresh = listOf(rec(0.2, mb))
+        assertEquals("Оценка появится после получаса записи.", RecRetention.outlookText(RecRetention.outlook(fresh, RecRetention.GB, 100 * RecRetention.GB, RecRetention.GB, now), 7))
+        val hours = (1..5).map { rec(it.toDouble(), mb) }
+        assertTrue(RecRetention.outlookText(RecRetention.outlook(hours, RecRetention.GB, 100 * RecRetention.GB, RecRetention.GB, now), 7)
+            .contains("Оценка грубая: записано меньше суток."))
+
+        // Заполнено: остаток не соблюдён или лимит достигнут — показывается то, что есть на деле.
+        val full = RecRetention.outlook(two, limitBytes = 120 * mb, freeBytes = 100 * RecRetention.GB, reserveBytes = RecRetention.GB, now = now)
+        assertTrue(full.full)
+        assertEquals("Самой старой 24/7 — 48 ч", 2.0, full.days!!, 0.01)
+        val text = RecRetention.outlookText(full, keepDays = 7)
+        assertEquals("Место заполнено. Круглосуточная запись есть за 2 дн. — меньше срока 7 дн. В сутки ≈ 60 МБ, из них события — 12 МБ.", text)
+        val noStar = RecRetention.outlook(two.filterNot { it.starred }, 120 * mb, 100 * RecRetention.GB, RecRetention.GB, now)
+        assertEquals("Записи: 120 из 120 МБ, заполнено. Круглосуточная запись есть за 2 дн. — меньше срока 7 дн. " +
+            "В сутки ≈ 60 МБ, из них события — 12 МБ.", RecRetention.archiveLine(noStar, keepDays = 7))
+        val lowFree = RecRetention.outlook(two, 10 * RecRetention.GB, freeBytes = mb, reserveBytes = RecRetention.GB, now = now)
+        assertTrue("Свободно меньше остатка — тоже заполнено", lowFree.full)
+        assertTrue(RecRetention.archiveLine(lowFree, 7).startsWith("Записи: 1,1 из 10 ГБ, мало свободного места. Круглосуточная запись есть за 2 дн."))
     }
 
     @Test fun g711DecodesStandardValuesAndAacConfig() {

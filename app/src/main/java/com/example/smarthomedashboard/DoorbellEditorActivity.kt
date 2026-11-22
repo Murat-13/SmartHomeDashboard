@@ -646,7 +646,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(number("rec_max_clip", "Ролик не длиннее, минут (1–30)", recording.maxClipMinutes, 1..30) {
             recording = recording.copy(maxClipMinutes = it) })
         side.addView(number("rec_keep_continuous", "Хранить круглосуточную запись, дней (1–90)", recording.keepContinuousDays, 1..90) {
-            recording = recording.copy(keepContinuousDays = it) })
+            recording = recording.copy(keepContinuousDays = it); refreshRecordingStatus() })
         side.addView(number("rec_keep_events", "Хранить события, дней (1–365)", recording.keepEventDays, 1..365) {
             recording = recording.copy(keepEventDays = it) })
         side.addView(switch("rec_voice", "Сказать голосом, если запись остановилась", recording.voiceProblems) {
@@ -654,9 +654,11 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(header("Место для записей — этот планшет"))
         side.addView(number("rec_limit", "Лимит записей, ГБ (0 — авто: до 20 ГБ, не больше половины места)", limitGb, 0..4096) {
             limitGb = it; refreshRecordingStatus() })
-        side.addView(number("rec_reserve", "Всегда оставлять свободными, ГБ (1–10)", reserveGb, 1..10) { reserveGb = it })
-        val hasSd = try { getExternalFilesDirs(null).size > 1 && getExternalFilesDirs(null)[1] != null } catch (_: Exception) { false }
-        side.addView(switch("rec_sd", if (hasSd) "Писать на SD-карту" else "Писать на SD-карту (карта не найдена)", useSd) { useSd = it })
+        side.addView(number("rec_reserve", "Всегда оставлять свободными, ГБ (1–10)", reserveGb, 1..10) {
+            reserveGb = it; refreshRecordingStatus() })
+        val hasSd = RecVolumes.dirs(this).getOrNull(1) != null
+        side.addView(switch("rec_sd", if (hasSd) "Писать на SD-карту" else "Писать на SD-карту (карта не найдена)", useSd) {
+            useSd = it; rescanSpace() })
         side.addView(choice("rec_archive_pin", "PIN для архива записей (тот же, что у настроек)",
             RecordingDevice.ArchivePin.entries.map { it.title }, RecordingDevice.ArchivePin.entries.indexOf(archivePin)) {
             archivePin = RecordingDevice.ArchivePin.entries[it] })
@@ -665,46 +667,38 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(kit.button("Открыть архив записей", "rec_open_archive") { ArchiveActivity.open(this, original.id) })
         refreshRecordingStatus()
         RecordingStatus.listen(statusListener)
-        // Занятое место, средний объём записи и где камера — на фоновом потоке (обход папок, разрешение имени).
-        val root = getExternalFilesDir(null)
-        val camera = RecLayout.cameraKey(original.id)
+        // Где камера — на фоновом потоке (разрешение имени); место под записи — тоже (обход папок).
         val url = config.rtspSub.ifBlank { config.rtspMain }
         Thread {
-            val files = root?.let { r -> RecLayout.scan(r) }.orEmpty()
-            val used = files.sumOf { it.bytes }
-            val free = root?.let { try { android.os.StatFs(it.path).availableBytes } catch (_: Exception) { 0L } } ?: 0L
-            val perDay = RecRetention.bytesPerDay(files, camera, System.currentTimeMillis())
             val local = if (url.isBlank()) null else RecLocality.isLocal(url)
-            runOnUiThread {
-                usedBytes = used; freeBytes = free; bytesPerDay = perDay; cameraLocal = local
-                refreshRecordingStatus()
-            }
+            runOnUiThread { cameraLocal = local; refreshRecordingStatus() }
         }.apply { isDaemon = true }.start()
+        rescanSpace()
     }
 
     private lateinit var localityLabel: TextView
-    private var usedBytes = -1L
-    private var freeBytes = 0L
-    private var bytesPerDay: Long? = null
     private var cameraLocal: Boolean? = null
+    /** Записи и свободное место носителя, куда пойдёт запись при выбранном «Писать на SD-карту». */
+    private var space: RecVolumes.Snapshot? = null
 
-    /** «≈ N дней» круглосуточной записи в текущий лимит при среднем объёме последних суток. */
-    internal fun estimateText(): String {
-        if (usedBytes < 0) return ""
-        val limit = RecRetention.limit(limitGb, freeBytes, usedBytes)
-        val head = "Занято записями: %.1f ГБ · свободно: %.1f ГБ · лимит: %.1f ГБ".format(usedBytes / 1e9, freeBytes / 1e9, limit / 1e9)
-        val perDay = bytesPerDay ?: return "$head\nОценка дней появится после получаса записи."
-        val days = limit.toDouble() / perDay
-        return "$head\nПри текущем объёме (~%.1f ГБ в сутки) круглосуточной записи хватит примерно на %s.".format(perDay / 1e9, daysText(days))
+    private fun rescanSpace() {
+        val sd = useSd
+        Thread {
+            val snapshot = try { RecVolumes.snapshot(applicationContext, sd) } catch (_: Exception) { null }
+            runOnUiThread { if (sd == useSd) { space = snapshot; refreshRecordingStatus() } }
+        }.apply { isDaemon = true }.start()
     }
 
-    private fun daysText(days: Double): String = when {
-        days < 1 -> "%.0f ч".format(days * 24)
-        else -> {
-            val n = kotlin.math.floor(days).toInt()
-            val word = when { n % 100 in 11..14 -> "дней"; n % 10 == 1 -> "день"; n % 10 in 2..4 -> "дня"; else -> "дней" }
-            "$n $word"
-        }
+    /**
+     * Занятое место и оценка — та же, что в архиве ([RecRetention.outlookText]): по всем камерам и роликам событий
+     * носителя, при лимите, остатке и сроке хранения из полей редактора (ещё не сохранённых).
+     */
+    internal fun estimateText(): String {
+        val s = space ?: return ""
+        val o = RecVolumes.outlook(s, limitGb, reserveGb)
+        val head = "Занято записями: ${RecRetention.size(o.usedBytes)} · свободно: ${RecRetention.size(s.freeBytes)} · " +
+            "лимит: ${RecRetention.size(o.limitBytes)}"
+        return "$head\n${RecRetention.outlookText(o, recording.keepContinuousDays)}"
     }
 
     private fun refreshRecordingStatus() {

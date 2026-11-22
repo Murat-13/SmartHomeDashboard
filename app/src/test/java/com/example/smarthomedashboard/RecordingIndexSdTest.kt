@@ -36,7 +36,7 @@ class RecordingIndexSdTest {
         // Два носителя: память планшета и SD-карта (Robolectric второй носитель не показывает — подменяем папки).
         internal = File(context.filesDir, "storage_internal").apply { deleteRecursively(); mkdirs() }
         sd = File(context.filesDir, "storage_sd").apply { deleteRecursively(); mkdirs() }
-        RecorderService.dirsOverride = { arrayOf(internal, sd) }
+        RecVolumes.dirsOverride = { arrayOf(internal, sd) }
         listOf(internal, sd).forEach {
             ShadowEnvironment.setExternalStorageState(it, Environment.MEDIA_MOUNTED)
             ShadowStatFs.registerStats(it, 1_000_000, 1_000_000, 1_000_000)
@@ -53,7 +53,7 @@ class RecordingIndexSdTest {
 
     @After fun tearDown() {
         stop()
-        RecorderService.dirsOverride = null
+        RecVolumes.dirsOverride = null
         listOf(internal, sd).forEach { it.deleteRecursively() }
         RecordingDevice(context).setEnabled("cam_sd", false)
         RecordingDevice(context).useSdCard = false

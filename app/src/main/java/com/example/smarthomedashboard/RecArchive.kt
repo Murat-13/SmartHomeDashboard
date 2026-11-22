@@ -107,35 +107,17 @@ internal class RecArchive(private val context: Context, private val roots: () ->
         return target
     }
 
-    /** Место под записи на этом планшете (для строки внизу архива). */
-    data class Storage(val usedBytes: Long, val limitBytes: Long, val freeBytes: Long, val daysFit: Int?, val keepDays: Int)
-
     /**
-     * Сколько занято, лимит и на сколько дней хватит места при нынешнем объёме круглосуточной записи всех камер.
-     * [keepDays] — сколько дней хранится круглосуточная запись этой камеры. Блокирующее.
+     * Строка о месте внизу архива: занято из лимита и оценка ([RecRetention.outlookText] — та же, что в редакторе
+     * камеры) по носителю, куда идёт запись. [keepDays] — срок хранения круглосуточной записи этой камеры. Блокирующее.
      */
-    fun storage(limitGb: Int, keepDays: Int, now: Long = System.currentTimeMillis()): Storage {
-        val roots = roots()
-        val files = roots.flatMap { RecLayout.scan(it) }
-        val used = files.sumOf { it.bytes }
-        val free = roots.maxOfOrNull { r -> try { (if (File(r, RecLayout.ROOT).isDirectory) File(r, RecLayout.ROOT) else r).usableSpace } catch (_: Exception) { 0L } } ?: 0L
-        val limit = RecRetention.limit(limitGb, free, used)
-        val perDay = files.map { it.camera }.distinct().mapNotNull { RecRetention.bytesPerDay(files, it, now) }.sum()
-        val days = if (perDay > 0) (limit / perDay).toInt() else null
-        return Storage(used, limit, free, days, keepDays)
+    fun storageText(device: RecordingDevice, keepDays: Int, now: Long = System.currentTimeMillis()): String {
+        val o = RecVolumes.outlook(RecVolumes.snapshot(context, device.useSdCard), device.limitGb, device.reserveGb, now)
+        return RecRetention.archiveLine(o, keepDays)
     }
 
     companion object {
         const val SHARE_DIR = "archive_share"
-
-        /** «Записи: 3,2 из 20 ГБ · места хватит примерно на 9 дн. · 24/7 хранится 7 дн.» */
-        fun storageText(s: Storage): String {
-            fun gb(b: Long) = String.format(Locale("ru"), "%.1f", b / RecRetention.GB.toDouble()).removeSuffix(",0")
-            val parts = mutableListOf("Записи: ${gb(s.usedBytes)} из ${gb(s.limitBytes)} ГБ")
-            s.daysFit?.let { parts += "места хватит примерно на $it дн." }
-            parts += "круглосуточная хранится ${s.keepDays} дн." + (if (s.daysFit != null && s.daysFit < s.keepDays) " — старое удалится раньше" else "")
-            return parts.joinToString(" · ")
-        }
 
         fun shareName(title: String, startMs: Long): String {
             val safe = title.ifBlank { DoorbellConfig.DEFAULT_TITLE }.replace(Regex("[\\\\/:*?\"<>|]"), " ").trim()

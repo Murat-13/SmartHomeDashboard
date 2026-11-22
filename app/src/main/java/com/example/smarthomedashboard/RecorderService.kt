@@ -8,13 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.StatFs
 import android.util.Log
-import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.example.smarthomedashboard.data.TileManager
@@ -187,28 +184,13 @@ class RecorderService : Service() {
         null
     }
 
-    /** Папки приложения на носителях: [0] — память планшета, [1] — SD-карта (null или нет — карты нет). */
-    private fun storageDirs(): Array<File?> =
-        try { (dirsOverride ?: { c -> c.getExternalFilesDirs(null) })(this) } catch (_: Exception) { emptyArray() }
-
-    /** Папка записей: SD-карта, если выбрана и вставлена, иначе память планшета. */
-    private fun storageRoot(): File? {
-        val dirs = storageDirs()
-        if (RecordingDevice(this).useSdCard) {
-            val sd = dirs.getOrNull(1)
-            if (sd != null && Environment.getExternalStorageState(sd) == Environment.MEDIA_MOUNTED) return sd
-        }
-        return dirs.getOrNull(0) ?: filesDir
-    }
+    /** Папка записей: SD-карта, если выбрана и вставлена, иначе память планшета ([RecVolumes]). */
+    private fun storageRoot(): File? = RecVolumes.target(this, RecordingDevice(this).useSdCard).root
 
     /** SD-карта выбрана, но пишем в память планшета — лимит вдвое меньше (решение владельца 18.11). */
-    private fun onFallback(): Boolean {
-        if (!RecordingDevice(this).useSdCard) return false
-        val sd = storageDirs().getOrNull(1)
-        return sd == null || Environment.getExternalStorageState(sd) != Environment.MEDIA_MOUNTED
-    }
+    private fun onFallback(): Boolean = RecVolumes.target(this, RecordingDevice(this).useSdCard).fallback
 
-    private fun freeBytes(root: File): Long = try { StatFs(root.path).availableBytes } catch (_: Exception) { 0L }
+    private fun freeBytes(root: File): Long = RecVolumes.freeBytes(root)
 
     /** Можно ли открыть новый отрезок: место сверх неприкосновенного остатка. Дёшево: кэш 5 с. */
     private fun canWrite(): Boolean {
@@ -263,8 +245,7 @@ class RecorderService : Service() {
         val device = RecordingDevice(this)
         val free = freeBytes(root)
         val used = files.sumOf { it.bytes }
-        var limit = RecRetention.limit(device.limitGb, free, used)
-        if (onFallback()) limit /= 2
+        val limit = RecRetention.limit(device.limitGb, free, used, onFallback())
         val rules = keepRules
         val plan = RecRetention.plan(files, { camera ->
             val c = rules[camera] ?: RecordingConfig()
@@ -288,8 +269,8 @@ class RecorderService : Service() {
      * пока какого-то носителя нет. Удаления самим приложением (очистка, архив) убирают свои строки сразу.
      */
     private fun reconcileIndex(root: File) {
-        val dirs = storageDirs()
-        if (onFallback() || dirs.any { it == null || Environment.getExternalStorageState(it) != Environment.MEDIA_MOUNTED }) {
+        val dirs = RecVolumes.dirs(this)
+        if (onFallback() || dirs.any { !RecVolumes.mounted(it) }) {
             Log.i(TAG, "Запись: не все носители доступны — сверка индекса меток отложена")
             return
         }
@@ -328,9 +309,6 @@ class RecorderService : Service() {
         const val SD_MISSING_PHRASE = "Карта памяти не найдена, запись идёт в память планшета"
         /** Суффикс ключа записи событий в HD (и её состояния в [RecordingStatus]). */
         const val HD = "#hd"
-
-        /** Для тестов: папки приложения на носителях вместо `getExternalFilesDirs` (память планшета и SD-карта). */
-        @VisibleForTesting @Volatile internal var dirsOverride: ((Context) -> Array<File?>)? = null
 
         /** Сервис уже сверил записи с настройками и открыл их потоки. */
         @Volatile private var synced = false
