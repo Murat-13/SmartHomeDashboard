@@ -32,8 +32,71 @@ internal data class Gate(
     val lockButton: Boolean = false,
     /** Сколько ждать подтверждения после команды, с. У привода — с запасом на ход ворот. */
     val confirmSeconds: Int = DEFAULT_CONFIRM,
-    val icon: Icon = Icon.WICKET
+    val icon: Icon = Icon.WICKET,
+    /** Способ связи (решение владельца 6): Home Assistant или напрямую ([direct]). */
+    val link: Link = Link.HA,
+    /**
+     * Связь напрямую, без Home Assistant: основная ([Link.DIRECT]) или запасная — когда Home Assistant недоступен
+     * ([Link.HA] и заполнено). null — нет.
+     */
+    val direct: Direct? = null
 ) {
+    enum class Link(val key: String, val title: String) {
+        HA("ha", "Home Assistant"), DIRECT("direct", "Напрямую (Shelly или HTTP)");
+        companion object { fun of(key: String?) = entries.firstOrNull { it.key == key } ?: HA }
+    }
+
+    /**
+     * Связь напрямую по домашней сети. Shelly Gen2 (Plus 1, Plus 2PM в режиме ворот и др.): реле — импульс, который
+     * выключает само реле ([pulseSeconds], `toggle_after`), привод — `Cover.Open/Close/Stop`, вход — датчик двери;
+     * пароль — как у Shelly (пользователь admin), хранится зашифрованно ([GateSecrets]). Свой HTTP-запрос — адреса
+     * «открыть» и «закрыть»; состояния у него нет.
+     */
+    data class Direct(
+        val protocol: Protocol = Protocol.SHELLY,
+        val host: String = "",
+        val channel: Int = 0,
+        /** Вход Shelly с датчиком двери или ворот («вкл» — открыто); -1 — нет. */
+        val input: Int = -1,
+        val pulseSeconds: Int = DEFAULT_PULSE,
+        val openUrl: String = "",
+        val closeUrl: String = "",
+        val post: Boolean = false
+    ) {
+        enum class Protocol(val key: String, val title: String) {
+            SHELLY("shelly", "Shelly"), HTTP("http", "Свой HTTP-запрос");
+            companion object { fun of(key: String?) = entries.firstOrNull { it.key == key } ?: SHELLY }
+        }
+
+        /** Чем открыть есть: адрес Shelly или адрес запроса «открыть». */
+        val configured get() = if (protocol == Protocol.SHELLY) host.isNotBlank() else openUrl.startsWith("http://") || openUrl.startsWith("https://")
+
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("protocol", protocol.key); put("host", host); put("channel", channel); put("input", input)
+            put("pulse_seconds", pulseSeconds); put("open_url", openUrl); put("close_url", closeUrl); put("post", post)
+        }
+
+        companion object {
+            const val DEFAULT_PULSE = 3
+            val PULSE_RANGE = 1..60
+
+            fun fromJson(j: JSONObject?): Direct? = j?.let {
+                Direct(Protocol.of(it.optString("protocol")), it.optString("host").trim(),
+                    it.optInt("channel", 0).coerceIn(0, 7), it.optInt("input", -1).coerceIn(-1, 7),
+                    it.optInt("pulse_seconds", DEFAULT_PULSE).takeIf { p -> p in PULSE_RANGE } ?: DEFAULT_PULSE,
+                    it.optString("open_url").trim(), it.optString("close_url").trim(), it.optBoolean("post", false))
+            }
+        }
+    }
+
+    /** Связь напрямую поддерживается этим типом: у умного замка — только Home Assistant. */
+    val directPossible get() = kind != Kind.LOCK
+
+    /** Основная связь — напрямую. */
+    val directOnly get() = link == Link.DIRECT && directPossible
+
+    /** Есть рабочая связь напрямую — основная или запасная. */
+    val hasDirect get() = directPossible && direct?.configured == true
     enum class Kind(val key: String, val title: String, val hint: String) {
         RELAY("relay", "Замок или защёлка через реле",
             "Электрозамок, защёлка или магнит через реле (например, Shelly). Одна кнопка «Открыть». Выключить реле " +
@@ -69,12 +132,13 @@ internal data class Gate(
     val entities: List<String> get() = listOf(open, close, pedestrian, sensor).filter { it.isNotBlank() }
 
     /** Настроен настолько, что кнопкой можно пользоваться. */
-    val ready: Boolean get() = name.isNotBlank() && GateLogic.fits(kind, ROLE_OPEN, open)
+    val ready: Boolean get() = name.isNotBlank() && if (directOnly) hasDirect else GateLogic.fits(kind, ROLE_OPEN, open)
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("name", name); put("kind", kind.key)
         put("open", open); put("close", close); put("pedestrian", pedestrian); put("sensor", sensor)
         put("lock_button", lockButton); put("confirm_seconds", confirmSeconds); put("icon", icon.key)
+        put("link", link.key); direct?.let { put("direct", it.toJson()) }
     }
 
     companion object {
@@ -96,7 +160,9 @@ internal data class Gate(
                 open = str("open"), close = str("close"), pedestrian = str("pedestrian"), sensor = str("sensor"),
                 lockButton = j.optBoolean("lock_button", false),
                 confirmSeconds = j.optInt("confirm_seconds", DEFAULT_CONFIRM).takeIf { it in CONFIRM_RANGE } ?: DEFAULT_CONFIRM,
-                icon = Icon.of(j.optString("icon"))
+                icon = Icon.of(j.optString("icon")),
+                link = Link.of(j.optString("link")),
+                direct = Direct.fromJson(j.optJSONObject("direct"))
             )
         }
     }
@@ -104,18 +170,25 @@ internal data class Gate(
 
 /** Где сейчас проход и откуда это известно. */
 internal data class GateStatus(val position: Position, val source: Source, val percent: Int? = null) {
-    enum class Position { UNKNOWN, CLOSED, OPEN, OPENING, CLOSING, JAMMED, OFFLINE }
+    /** [OFFLINE] — нет связи с Home Assistant; [UNREACHABLE] — устройство напрямую не отвечает. */
+    enum class Position { UNKNOWN, CLOSED, OPEN, OPENING, CLOSING, JAMMED, OFFLINE, UNREACHABLE }
     /** Датчик положения — надёжнее всего; состояние замка или привода; без источника — только «команда принята». */
     enum class Source { SENSOR, DEVICE, NONE }
 
     val moving get() = position == Position.OPENING || position == Position.CLOSING
     val open get() = position == Position.OPEN || position == Position.OPENING
+    /** Команду отправить некуда — кнопка приглушена. */
+    val noLink get() = position == Position.OFFLINE || position == Position.UNREACHABLE
 
     companion object {
         val UNKNOWN = GateStatus(Position.UNKNOWN, Source.NONE)
         val OFFLINE = GateStatus(Position.OFFLINE, Source.NONE)
     }
 }
+
+/** Что ответило устройство напрямую (опрос Shelly). null — не знаем. */
+internal data class DirectState(val reachable: Boolean, val switchOn: Boolean? = null, val cover: String? = null,
+                                val percent: Int? = null, val input: Boolean? = null)
 
 /** Чистая логика проходов: команды, кнопки, положение и подтверждение. */
 internal object GateLogic {
@@ -192,10 +265,53 @@ internal object GateLogic {
         Gate.Kind.STEP -> listOf(Gate.Action.STEP)
         Gate.Kind.LOCK -> listOfNotNull(Gate.Action.OPEN, Gate.Action.CLOSE.takeIf { gate.lockButton })
         Gate.Kind.COVER -> listOfNotNull(Gate.Action.OPEN, Gate.Action.CLOSE,
-            Gate.Action.STOP.takeIf { moving && coverStops(readings, gate.open) },
-            Gate.Action.PEDESTRIAN.takeIf { gate.pedestrian.isNotBlank() })
-        Gate.Kind.SCRIPT -> listOfNotNull(Gate.Action.OPEN, Gate.Action.CLOSE.takeIf { gate.close.isNotBlank() })
-    }.filter { command(gate, it, readings) != null }
+            Gate.Action.STOP.takeIf { moving && (coverStops(readings, gate.open) || shellyCover(gate)) },
+            Gate.Action.PEDESTRIAN.takeIf { gate.pedestrian.isNotBlank() && !gate.directOnly })
+        Gate.Kind.SCRIPT -> listOfNotNull(Gate.Action.OPEN,
+            Gate.Action.CLOSE.takeIf { gate.close.isNotBlank() || (gate.hasDirect && gate.direct?.closeUrl?.isNotBlank() == true) })
+    }.filter { action ->
+        val ha = !gate.directOnly && command(gate, action, readings) != null
+        ha || (gate.hasDirect && directSupports(gate, action))
+    }
+
+    private fun shellyCover(gate: Gate) = gate.hasDirect && gate.direct?.protocol == Gate.Direct.Protocol.SHELLY
+
+    /**
+     * Что умеет связь напрямую. Shelly: реле — «Открыть» (импульс) или «шаг», привод — «Открыть / Закрыть / Стоп»;
+     * свой HTTP-запрос — «открыть» и, если задан адрес, «закрыть».
+     */
+    fun directSupports(gate: Gate, action: Gate.Action): Boolean {
+        val d = gate.direct?.takeIf { it.configured && gate.directPossible } ?: return false
+        return when (d.protocol) {
+            Gate.Direct.Protocol.SHELLY -> when (gate.kind) {
+                Gate.Kind.RELAY -> action == Gate.Action.OPEN
+                Gate.Kind.STEP -> action == Gate.Action.STEP
+                Gate.Kind.COVER -> action == Gate.Action.OPEN || action == Gate.Action.CLOSE || action == Gate.Action.STOP
+                else -> false
+            }
+            Gate.Direct.Protocol.HTTP -> when (action) {
+                Gate.Action.OPEN -> gate.kind != Gate.Kind.STEP
+                Gate.Action.STEP -> gate.kind == Gate.Kind.STEP
+                Gate.Action.CLOSE -> d.closeUrl.isNotBlank() && (gate.kind == Gate.Kind.COVER || gate.kind == Gate.Kind.SCRIPT)
+                else -> false
+            }
+        }
+    }
+
+    /** Home Assistant недоступен (нет связи или ещё не синхронизирован). */
+    fun haDown(readings: BatteryReadings?) = readings == null || readings.of(DoorbellConfig.SUN).let {
+        it == BatteryReading.Disconnected || it == BatteryReading.Syncing
+    }
+
+    /** Подтвердит ли что-то результат команды напрямую: датчик Shelly, привод Shelly или датчик Home Assistant (если он на связи). */
+    fun directConfirmable(gate: Gate, readings: BatteryReadings?): Boolean {
+        val d = gate.direct ?: return false
+        return (d.protocol == Gate.Direct.Protocol.SHELLY && (d.input >= 0 || gate.kind == Gate.Kind.COVER)) ||
+            (gate.sensor.isNotBlank() && !haDown(readings))
+    }
+
+    /** Идёт ли команда напрямую: основная связь или Home Assistant недоступен, а запасной путь есть. */
+    fun useDirect(gate: Gate, readings: BatteryReadings?) = gate.directOnly || (gate.hasDirect && haDown(readings))
 
     /** «Стоп» — сразу по касанию; остальное — удержанием 1 с (случайное касание калитку не откроет). */
     fun instant(action: Gate.Action) = action == Gate.Action.STOP
@@ -204,7 +320,8 @@ internal object GateLogic {
      * Положение прохода. Движение привода — по приводу (датчик «открыто» его не покажет); иначе датчик положения;
      * иначе состояние замка, привода или реле.
      */
-    fun status(gate: Gate, readings: BatteryReadings?): GateStatus {
+    fun status(gate: Gate, readings: BatteryReadings?, direct: DirectState? = null): GateStatus {
+        if (useDirect(gate, readings)) return directStatus(gate, readings, direct)
         readings ?: return GateStatus.UNKNOWN
         val device = readings.of(gate.open)
         if (device == BatteryReading.Disconnected) return GateStatus.OFFLINE
@@ -244,6 +361,32 @@ internal object GateLogic {
             Gate.Kind.STEP, Gate.Kind.SCRIPT -> null
         } ?: return GateStatus(GateStatus.Position.UNKNOWN, GateStatus.Source.NONE, percent)
         return GateStatus(position, GateStatus.Source.DEVICE, percent)
+    }
+
+    /** Положение по устройству напрямую; датчик Home Assistant (если есть связь) — как обычно, важнее. */
+    private fun directStatus(gate: Gate, readings: BatteryReadings?, direct: DirectState?): GateStatus {
+        val d = gate.direct ?: return GateStatus.UNKNOWN
+        if (direct != null && !direct.reachable) return GateStatus(GateStatus.Position.UNREACHABLE, GateStatus.Source.NONE)
+        val moving = direct?.cover?.takeIf { it == "opening" || it == "closing" }
+        if (moving != null) return GateStatus(if (moving == "opening") GateStatus.Position.OPENING else GateStatus.Position.CLOSING,
+            GateStatus.Source.DEVICE, direct.percent)
+        val haSensor = if (gate.sensor.isNotBlank() && !haDown(readings)) (readings?.of(gate.sensor) as? BatteryReading.Value)?.raw else null
+        when (haSensor) {
+            "on" -> return GateStatus(GateStatus.Position.OPEN, GateStatus.Source.SENSOR, direct?.percent)
+            "off" -> return GateStatus(GateStatus.Position.CLOSED, GateStatus.Source.SENSOR, direct?.percent)
+        }
+        direct?.input?.let { return GateStatus(if (it) GateStatus.Position.OPEN else GateStatus.Position.CLOSED, GateStatus.Source.SENSOR, direct.percent) }
+        if (d.protocol == Gate.Direct.Protocol.HTTP || direct == null) return GateStatus.UNKNOWN
+        val position = when {
+            gate.kind == Gate.Kind.COVER -> when (direct.cover) {
+                "closed" -> GateStatus.Position.CLOSED
+                "open", "stopped" -> GateStatus.Position.OPEN
+                else -> null
+            }
+            // Включённое реле — не открытая дверь: без датчика положение реле не знаем (как и с Home Assistant).
+            else -> null
+        } ?: return GateStatus(GateStatus.Position.UNKNOWN, GateStatus.Source.NONE, direct.percent)
+        return GateStatus(position, GateStatus.Source.DEVICE, direct.percent)
     }
 
     /**
@@ -295,6 +438,7 @@ internal object GateLogic {
         GateStatus.Position.CLOSING -> "закрывается…" + (status.percent?.let { " $it %" } ?: "")
         GateStatus.Position.JAMMED -> "заклинило"
         GateStatus.Position.OFFLINE -> "нет связи с Home Assistant"
+        GateStatus.Position.UNREACHABLE -> "устройство не отвечает"
         GateStatus.Position.UNKNOWN -> ""
     } + if (status.source == GateStatus.Source.SENSOR && !status.moving) " (датчик)" else ""
 }

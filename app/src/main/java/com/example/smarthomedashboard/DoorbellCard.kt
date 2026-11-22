@@ -533,7 +533,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         (autoReplyButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (calls.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         for (i in 0 until phraseRow.childCount) styleChip(phraseRow.getChildAt(i) as TextView, next)
-        gateRow?.applySize((300 * next).toInt(), (72 * next).toInt(), 22 * next, (12 * next).toInt())
+        gateRow?.applySize((300 * next).toInt(), (72 * next).toInt(), (12 * next).toInt())
         (gateRow?.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         talkButton?.let { b ->
             b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 24 * next)

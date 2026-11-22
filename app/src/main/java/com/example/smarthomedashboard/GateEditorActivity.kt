@@ -28,6 +28,12 @@ class GateEditorActivity : PinProtectedActivity() {
     private lateinit var statusLine: TextView
     private lateinit var testResult: TextView
     private val kindCards = LinkedHashMap<Gate.Kind, LinearLayout>()
+    private lateinit var link: LinearLayout
+    /** Поля связи напрямую сохраняются, даже если на время выбрать «только Home Assistant». */
+    private var directDraft = Gate.Direct()
+    /** Новый пароль устройства (null — не меняли). Пишется в зашифрованное хранилище только по «Сохранить». */
+    private var newPassword: String? = null
+    private var probeResult: TextView? = null
     private val listener: () -> Unit = { renderStatus() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,6 +44,9 @@ class GateEditorActivity : PinProtectedActivity() {
         draft = savedInstanceState?.getString(STATE_DRAFT)?.let { json -> Gate.fromJson(org.json.JSONObject(json)) }
             ?: original ?: Gate(GateStore.newId(all), if (all.any { it.name == "Калитка" }) "Ворота" else "Калитка", Gate.Kind.RELAY,
                 icon = if (all.any { it.name == "Калитка" }) Gate.Icon.GATE else Gate.Icon.WICKET)
+        directDraft = draft.direct ?: Gate.Direct()
+        newPassword = savedInstanceState?.getString(STATE_PASSWORD)
+        newPassword?.let { GateHub.passwordOverride[draft.id] = it }
         setContentView(build())
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = leave()
@@ -48,6 +57,7 @@ class GateEditorActivity : PinProtectedActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_DRAFT, draft.toJson().toString())
+        newPassword?.let { outState.putString(STATE_PASSWORD, it) }
     }
 
     override fun onResume() {
@@ -62,6 +72,7 @@ class GateEditorActivity : PinProtectedActivity() {
     }
 
     override fun onDestroy() {
+        if (isFinishing) GateHub.passwordOverride.remove(draft.id)
         kit.dispose()
         super.onDestroy()
     }
@@ -84,6 +95,9 @@ class GateEditorActivity : PinProtectedActivity() {
 
         devices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         column.addView(gap()); column.addView(ModernUi.section(this, "Устройства", devices))
+
+        link = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "gate_link" }
+        column.addView(gap()); column.addView(ModernUi.section(this, "Связь", link))
 
         val confirm = ModernUi.input(this, draft.confirmSeconds.toString(), "15").apply {
             tag = "gate_confirm"
@@ -151,6 +165,8 @@ class GateEditorActivity : PinProtectedActivity() {
             card.isSelected = on
         }
         devices.removeAllViews()
+        if (draft.directOnly) devices.addView(ModernUi.secondary(this, "Связь — напрямую: устройства Home Assistant необязательны " +
+            "(датчик положения из Home Assistant пригодится, когда он на связи)."))
         when (draft.kind) {
             Gate.Kind.RELAY -> devices.addView(entityRow(Gate.ROLE_OPEN, "Реле или кнопка «Открыть»", "switch, button или script") { draft.open })
             Gate.Kind.LOCK -> {
@@ -169,7 +185,157 @@ class GateEditorActivity : PinProtectedActivity() {
                 devices.addView(entityRow(Gate.ROLE_CLOSE, "Сценарий «Закрыть» (необязательно)", "script, automation или button") { draft.close })
             }
         }
+        renderLink()
         renderStatus()
+    }
+
+    // ---- Связь: Home Assistant, напрямую или Home Assistant с запасным путём (этап 4) ----
+
+    private enum class LinkMode(val key: String, val title: String, val hint: String) {
+        HA("ha", "Через Home Assistant", "как другие устройства панели"),
+        FALLBACK("fallback", "Home Assistant, без него — напрямую", "если Home Assistant недоступен, панель откроет сама"),
+        DIRECT("direct", "Только напрямую", "Shelly или свой HTTP-запрос в домашней сети, без Home Assistant")
+    }
+
+    private val linkMode get() = when {
+        draft.link == Gate.Link.DIRECT -> LinkMode.DIRECT
+        draft.direct != null -> LinkMode.FALLBACK
+        else -> LinkMode.HA
+    }
+
+    private fun setLinkMode(mode: LinkMode) {
+        draft = when (mode) {
+            LinkMode.HA -> draft.copy(link = Gate.Link.HA, direct = null)
+            LinkMode.FALLBACK -> draft.copy(link = Gate.Link.HA, direct = directDraft)
+            LinkMode.DIRECT -> draft.copy(link = Gate.Link.DIRECT, direct = directDraft)
+        }
+        renderKind()
+    }
+
+    private fun setDirect(change: (Gate.Direct) -> Gate.Direct) {
+        directDraft = change(directDraft)
+        if (draft.direct != null) draft = draft.copy(direct = directDraft)
+        renderStatus()
+    }
+
+    private fun choice(title: String, hint: String, on: Boolean, tag: String, onClick: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(kit.dp(14), kit.dp(10), kit.dp(14), kit.dp(10))
+        this.tag = tag
+        isClickable = true
+        isSelected = on
+        contentDescription = title
+        setOnClickListener { onClick() }
+        addView(kit.label(title, 15f, bold = true))
+        if (hint.isNotBlank()) addView(kit.label(hint, 13f))
+        background = BatteryModernCard.rounded(if (on) Color.argb(90, 95, 168, 211) else Color.argb(40, 30, 44, 56),
+            kit.dp(12).toFloat(), Color.argb(if (on) 220 else 70, 95, 168, 211))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = kit.dp(6) }
+    }
+
+    private fun field(label: String, value: String, hint: String, tag: String, number: Boolean = false, password: Boolean = false,
+                      onChange: (String) -> Unit): View {
+        val input = ModernUi.input(this, value, hint, password).apply {
+            this.tag = tag
+            if (number) inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+        input.addTextChangedListener(kit.watcher(onChange))
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, kit.dp(8), 0, 0)
+            addView(ModernUi.body(this@GateEditorActivity, label))
+            addView(input)
+        }
+    }
+
+    private fun renderLink() {
+        link.removeAllViews()
+        probeResult = null
+        if (!draft.directPossible) {
+            link.addView(ModernUi.secondary(this, "Замок — только через Home Assistant: у умных замков нет общего способа связи напрямую."))
+            return
+        }
+        LinkMode.entries.forEach { mode ->
+            link.addView(choice(mode.title, mode.hint, mode == linkMode, "gate_link_${mode.key}") { if (mode != linkMode) setLinkMode(mode) })
+        }
+        if (linkMode == LinkMode.HA) return
+        val d = directDraft
+        val protocols = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        Gate.Direct.Protocol.entries.forEach { p ->
+            protocols.addView(choice(p.title, "", p == d.protocol, "gate_proto_${p.key}") {
+                if (p != directDraft.protocol) { setDirect { it.copy(protocol = p) }; renderKind() }
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    topMargin = kit.dp(10); if (p.ordinal > 0) marginStart = kit.dp(8)
+                }
+            })
+        }
+        link.addView(protocols)
+        when (d.protocol) {
+            Gate.Direct.Protocol.SHELLY -> {
+                link.addView(field("Адрес устройства в домашней сети", d.host, "например 192.168.1.50", "gate_direct_host") { v ->
+                    setDirect { it.copy(host = v.trim()) }
+                })
+                val two = draft.kind == Gate.Kind.COVER
+                link.addView(field(if (two) "Номер привода (обычно 0)" else "Номер реле (0 — первое, 1 — второе)", d.channel.toString(), "0",
+                    "gate_direct_channel", number = true) { v -> v.toIntOrNull()?.takeIf { it in 0..3 }?.let { c -> setDirect { it.copy(channel = c) } } })
+                link.addView(field("Датчик положения на входе Shelly (номер входа; пусто — нет)", d.input.takeIf { it >= 0 }?.toString().orEmpty(),
+                    "нет", "gate_direct_input", number = true) { v ->
+                    setDirect { it.copy(input = v.toIntOrNull()?.takeIf { n -> n in 0..3 } ?: -1) }
+                })
+                if (!two) link.addView(field("Импульс, с (${Gate.Direct.PULSE_RANGE.first}–${Gate.Direct.PULSE_RANGE.last}; " +
+                    "реле выключится само, даже если панель пропадёт)", d.pulseSeconds.toString(), Gate.Direct.DEFAULT_PULSE.toString(),
+                    "gate_direct_pulse", number = true) { v ->
+                    v.toIntOrNull()?.takeIf { it in Gate.Direct.PULSE_RANGE }?.let { p -> setDirect { it.copy(pulseSeconds = p) } }
+                })
+                link.addView(passwordField("Пароль устройства (пользователь admin; пусто — без пароля)"))
+                val result = ModernUi.caption(this, "").apply { tag = "gate_probe_result" }
+                probeResult = result
+                link.addView(ModernUi.secondaryButton(this, "Найти устройство") { probe() }.apply { tag = "gate_probe" })
+                link.addView(result)
+            }
+            Gate.Direct.Protocol.HTTP -> {
+                link.addView(ModernUi.secondary(this, "Адрес, который открывает калитку: его даёт инструкция контроллера. Логин и пароль, " +
+                    "если нужны, — в адресе (http://логин:пароль@…) или полем ниже."))
+                link.addView(field("Адрес «Открыть»", d.openUrl, "http://…", "gate_direct_open") { v -> setDirect { it.copy(openUrl = v.trim()) } })
+                if (draft.kind == Gate.Kind.COVER || draft.kind == Gate.Kind.SCRIPT) {
+                    link.addView(field("Адрес «Закрыть» (необязательно)", d.closeUrl, "http://…", "gate_direct_close") { v ->
+                        setDirect { it.copy(closeUrl = v.trim()) }
+                    })
+                }
+                link.addView(ModernUi.switch(this, "Отправлять POST (иначе GET)", d.post) { on -> setDirect { it.copy(post = on) } }
+                    .apply { tag = "gate_direct_post" })
+                link.addView(passwordField("Пароль (необязательно)"))
+            }
+        }
+    }
+
+    private fun passwordField(label: String) = field(label, newPassword.orEmpty(),
+        if (newPassword == null && original != null) "не меняется" else "", "gate_direct_password", password = true) { v ->
+        newPassword = v
+        GateHub.passwordOverride[draft.id] = v
+    }
+
+    /** «Найти устройство»: что за Shelly по этому адресу и подходит ли пароль. Только чтение — ничего не переключает. */
+    private fun probe() {
+        val host = directDraft.host
+        val result = probeResult ?: return
+        if (host.isBlank()) { result.text = "Введите адрес устройства."; return }
+        result.text = "Ищу…"
+        val id = draft.id
+        Thread {
+            val password = GateHub.passwordOverride[id] ?: CameraPasswords.blocking(applicationContext, GateDirect.secretKey(id))
+            val info = GateDirect.probe(host, password)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                probeResult?.text = when {
+                    info == null -> "Не нашлось: по этому адресу не отвечает Shelly второго поколения (Plus, Pro). Проверьте адрес и сеть."
+                    info.gen < 2 -> "Это Shelly первого поколения — пока не поддерживается."
+                    !info.authOk -> "Найдено: ${info.model}. Пароль не подходит."
+                    else -> "Найдено: ${info.model}" + if (info.authNeeded) " · пароль подходит." else " · без пароля."
+                }
+            }
+        }.apply { isDaemon = true; name = "gate-probe" }.start()
     }
 
     private val rowTexts = HashMap<String, TextView>()
@@ -226,7 +392,10 @@ class GateEditorActivity : PinProtectedActivity() {
         if (!::statusLine.isInitialized) return
         val status = GateHub.status(draft)
         statusLine.text = when {
-            !GateLogic.fits(draft.kind, Gate.ROLE_OPEN, draft.open) -> "Выберите устройство — без него кнопок не будет."
+            draft.directOnly && !draft.hasDirect -> if (directDraft.protocol == Gate.Direct.Protocol.SHELLY)
+                "Введите адрес устройства — без него кнопок не будет." else "Введите адрес «Открыть» (http://…) — без него кнопок не будет."
+            !draft.directOnly && !GateLogic.fits(draft.kind, Gate.ROLE_OPEN, draft.open) -> "Выберите устройство — без него кнопок не будет."
+            status.position == GateStatus.Position.UNREACHABLE -> "Сейчас: устройство не отвечает."
             status.position == GateStatus.Position.UNKNOWN -> "Сейчас: положение неизвестно" +
                 if (draft.sensor.isBlank()) " — без датчика будет только «команда принята» или «сработало»." else "."
             else -> "Сейчас: " + GateLogic.statusText(status)
@@ -244,7 +413,8 @@ class GateEditorActivity : PinProtectedActivity() {
     }
 
     private fun test() {
-        if (!draft.ready) { Toast.makeText(this, "Сначала выберите устройство «Открыть»", Toast.LENGTH_SHORT).show(); return }
+        if (!draft.ready) { Toast.makeText(this, if (draft.directOnly) "Сначала заполните связь напрямую" else
+            "Сначала выберите устройство «Открыть»", Toast.LENGTH_SHORT).show(); return }
         kit.show(ModernUi.dangerDialog(this, "Открыть «${draft.name}» по-настоящему?",
             "Команда уйдёт на устройство. Убедитесь, что это безопасно.", "Открыть") {
             if (!requireAdmin()) return@dangerDialog
@@ -265,12 +435,14 @@ class GateEditorActivity : PinProtectedActivity() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = kit.dp(12) })
     }
 
-    internal val isDirty get() = draft != (original ?: Gate(draft.id, "", draft.kind))
+    internal val isDirty get() = newPassword != null || draft != (original ?: Gate(draft.id, "", draft.kind))
 
     internal fun save(): Boolean {
         if (draft.name.isBlank()) { Toast.makeText(this, "Введите название", Toast.LENGTH_SHORT).show(); return false }
-        if (!draft.ready) { Toast.makeText(this, "Выберите устройство «Открыть» для этого типа", Toast.LENGTH_SHORT).show(); return false }
+        if (!draft.ready) { Toast.makeText(this, if (draft.directOnly) "Заполните связь напрямую" else
+            "Выберите устройство «Открыть» для этого типа", Toast.LENGTH_SHORT).show(); return false }
         if (!requireAdmin()) return false
+        newPassword?.let { CameraPasswords.save(applicationContext, GateDirect.secretKey(draft.id), it) { } }
         val all = GateHub.gates(this)
         if (original == null && all.size >= Gate.MAX) { Toast.makeText(this, "Не больше ${Gate.MAX} проходов", Toast.LENGTH_SHORT).show(); return false }
         GateStore.save(this, if (all.any { it.id == draft.id }) all.map { if (it.id == draft.id) draft else it } else all + draft)
@@ -286,6 +458,7 @@ class GateEditorActivity : PinProtectedActivity() {
             "Кнопки этого прохода исчезнут со всех плиток. Устройства в Home Assistant не изменятся.", "Удалить") {
             if (!requireAdmin()) return@dangerDialog
             GateStore.save(this, GateHub.gates(this).filter { it.id != gate.id })
+            CameraPasswords.save(applicationContext, GateDirect.secretKey(gate.id), "") { }
             setResult(RESULT_OK)
             finish()
         })
@@ -304,5 +477,6 @@ class GateEditorActivity : PinProtectedActivity() {
     companion object {
         const val EXTRA_GATE = "gate_id"
         private const val STATE_DRAFT = "gate_draft"
+        private const val STATE_PASSWORD = "gate_password"
     }
 }

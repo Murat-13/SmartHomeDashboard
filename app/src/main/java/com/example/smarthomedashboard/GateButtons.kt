@@ -23,7 +23,6 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
     private var buttonWidth = 0
     private var buttonHeight = (64 * resources.displayMetrics.density).toInt()
     private var gap = (10 * resources.displayMetrics.density).toInt()
-    private var textPx = 23f * resources.displayMetrics.density / 1.5f
     private val listener: () -> Unit = { rebuild() }
 
     init {
@@ -40,10 +39,13 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
 
     val shown get() = buttons.values.toList()
 
-    /** Размеры (раскрытая карточка масштабируется; в окне звонка — по ширине панели). [width] 0 — во всю ширину. */
-    fun applySize(width: Int, height: Int, text: Float, spacing: Int) {
-        buttonWidth = width; buttonHeight = height; textPx = text; gap = spacing
-        buttons.values.forEachIndexed { i, b -> b.layoutParams = params(i); b.textPx = text }
+    /**
+     * Размеры (раскрытая карточка масштабируется; в окне звонка — по ширине панели). [width] 0 — во всю ширину. Надпись,
+     * подсказка и значок кнопок считаются сами от её размера ([HoldButton.autoSize]).
+     */
+    fun applySize(width: Int, height: Int, spacing: Int) {
+        buttonWidth = width; buttonHeight = height; gap = spacing
+        buttons.values.forEachIndexed { i, b -> b.layoutParams = params(i) }
         requestLayout()
     }
 
@@ -64,7 +66,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
                     tag = "gate_${gate.id}_${key.second.name.lowercase()}"
                     instant = GateLogic.instant(key.second)
                     idleAccent = accent(key.second)
-                    textPx = this@GateButtons.textPx
+                    autoSize = true
                     onTouchStart = { onTouch?.invoke() }
                     onComplete = { press(key.first, key.second) }
                 }
@@ -117,7 +119,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
             val status = GateHub.status(gate)
             val op = GateHub.op(gate.id)?.takeIf { it.action == action }
             button.label = GateLogic.label(gate, action, status)
-            button.isEnabled = status.position != GateStatus.Position.OFFLINE
+            button.isEnabled = !status.noLink
             button.state = when (op?.phase) {
                 GateHub.Phase.SENDING -> DoorbellRingWindow.Gate.SENDING
                 GateHub.Phase.WAITING -> DoorbellRingWindow.Gate.WAITING
@@ -149,7 +151,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
     }
 
     private fun hint(action: Gate.Action, op: GateHub.Op?, status: GateStatus, primary: Boolean): String? = when (op?.phase) {
-        GateHub.Phase.REACTED -> "реле сработало, положение неизвестно — проверьте"
+        GateHub.Phase.REACTED -> op.detail.ifBlank { "реле сработало, положение неизвестно — проверьте" }
         GateHub.Phase.UNCONFIRMED -> "команда принята · коснитесь, чтобы снять"
         GateHub.Phase.FAILED -> op.detail.ifBlank { "попробуйте ещё раз" } + if (GateLogic.instant(action)) "" else " · удерживайте, чтобы повторить"
         GateHub.Phase.SENDING, GateHub.Phase.WAITING, GateHub.Phase.DONE -> null
@@ -157,7 +159,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
         null -> if (!primary) "" else {
             val where = GateLogic.statusText(status).takeIf { it.isNotBlank() }
             when {
-                status.position == GateStatus.Position.OFFLINE -> where
+                status.noLink -> where
                 where == null -> if (GateLogic.instant(action)) "" else "удерживайте 1 секунду"
                 // В строке раскрытой плитки места мало: только где проход («держите…» видно при нажатии).
                 !vertical || GateLogic.instant(action) -> where

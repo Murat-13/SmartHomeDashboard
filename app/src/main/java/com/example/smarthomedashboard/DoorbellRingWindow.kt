@@ -176,7 +176,7 @@ internal class DoorbellRingWindow private constructor(
         }
         // Главное действие — крупнее: удерживать удобно и с первого взгляда понятно, где оно.
         val primary = (72 * unit * density / 1.5f).toInt().coerceAtLeast((56 * density).toInt())
-        gateButtons.applySize(0, (primary * 1.4f).toInt(), 23f * unit * density / 1.5f, (12 * unit * density / 1.5f).toInt())
+        gateButtons.applySize(0, (primary * 1.4f).toInt(), (12 * unit * density / 1.5f).toInt())
     }
 
     private fun applyText(unit: Float) {
@@ -629,6 +629,17 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
     var onTouchStart: (() -> Unit)? = null
     var textPx = 23f * density / 1.5f
         set(value) { field = value; invalidate() }
+    /**
+     * Размер надписи, подсказки и значка — от высоты самой кнопки (у проходов: одно правило на все экраны, от
+     * телефона до планшета 13"); по ширине надпись затем ужимается ([onDraw]).
+     */
+    var autoSize = false
+        set(value) { field = value; if (value && height > 0) textPx = height * AUTO_TEXT }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (autoSize && h > 0) textPx = h * AUTO_TEXT
+    }
     var state = DoorbellRingWindow.Gate.IDLE
         set(value) { if (field != value) { field = value; if (value != DoorbellRingWindow.Gate.IDLE && value != DoorbellRingWindow.Gate.FAILED) progress = 1f else if (progress >= 1f) progress = 0f; invalidate() } }
 
@@ -812,6 +823,8 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
     companion object {
         const val HOLD_MS = 1_000L
         private const val RELEASE_MS = 220L
+        /** Надпись — 30 % высоты кнопки: с подсказкой под ней (72 %) блок занимает ~2/3 высоты. */
+        private const val AUTO_TEXT = 0.3f
     }
 }
 

@@ -6,6 +6,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Исполнение проходов (калитки и ворота, docs/gate-tz.md) — одно на панель, для всех кнопок: раскрытой плитки, окна
@@ -35,6 +37,38 @@ internal object GateHub {
         internal set
 
     fun resetDriver() { driver = haDriver }
+
+    /** Связь напрямую (этап 4): команда и опрос устройства; блокирующие, зовутся с фонового потока. Подменяется в тестах. */
+    interface DirectLink {
+        fun send(gate: Gate, action: Gate.Action): GateDirect.Result
+        fun poll(gate: Gate): DirectState?
+    }
+
+    private val shellyLink = object : DirectLink {
+        private fun password(gate: Gate) = passwordOverride[gate.id] ?: app?.let { CameraPasswords.blocking(it, GateDirect.secretKey(gate.id)) }
+        override fun send(gate: Gate, action: Gate.Action) = GateDirect.send(gate, action, password(gate))
+        override fun poll(gate: Gate) = GateDirect.poll(gate, password(gate))
+    }
+    /** Пароль, который вводят в редакторе прохода прямо сейчас (для «Проверить» до «Сохранить»). */
+    internal val passwordOverride = java.util.concurrent.ConcurrentHashMap<String, String>()
+    @Volatile var direct: DirectLink = shellyLink
+        internal set
+
+    /** Свой поток для сети: команды и опрос не ждут друг друга с главным потоком. */
+    private var io: ExecutorService? = null
+    private fun io(): ExecutorService = io ?: Executors.newSingleThreadExecutor { r -> Thread(r, "gates-direct").apply { isDaemon = true } }.also { io = it }
+    /** Последний ответ устройства по проходу; два промаха подряд — «не отвечает». */
+    private val directStates = HashMap<String, DirectState>()
+    private val directMisses = HashMap<String, Int>()
+    private val polling = HashSet<String>()
+    private val lastPoll = HashMap<String, Long>()
+    private var pollerOn = false
+    private val poller = object : Runnable {
+        override fun run() {
+            pollTick()
+            if (pollerOn) main.postDelayed(this, POLL_TICK_MS)
+        }
+    }
 
     enum class Phase { SENDING, WAITING, DONE, REACTED, UNCONFIRMED, FAILED }
 
@@ -85,11 +119,13 @@ internal object GateHub {
         notifyListeners()
     }
 
-    fun status(gate: Gate): GateStatus = GateLogic.status(gate, readings)
+    fun status(gate: Gate): GateStatus = status(gate, readings)
+
+    private fun status(gate: Gate, readings: BatteryReadings?) = GateLogic.status(gate, readings, directStates[gate.id])
 
     /** Кнопки прохода сейчас (например, «Стоп» — если привод его умеет). */
     fun actions(gate: Gate): List<Gate.Action> = GateLogic.actions(gate, readings,
-        moving = GateLogic.status(gate, readings).moving || ops[gate.id]?.let { it.busy && it.action != Gate.Action.STOP } == true)
+        moving = status(gate).moving || ops[gate.id]?.let { it.busy && it.action != Gate.Action.STOP } == true)
 
     fun op(gateId: String): Op? = ops[gateId]
 
@@ -115,9 +151,10 @@ internal object GateHub {
         if (ops[gateId]?.busy == true && action != Gate.Action.STOP) return false
         deadlines.remove(gateId)?.let(main::removeCallbacks)
         val readings = readings
-        val command = GateLogic.command(gate, action, readings) ?: return false
-        val before = GateLogic.status(gate, readings)
         val started = SystemClock.uptimeMillis()
+        if (GateLogic.useDirect(gate, readings)) return runDirect(gate, action, started)
+        val command = GateLogic.command(gate, action, readings) ?: return false
+        val before = status(gate, readings)
         if (before.position == GateStatus.Position.OFFLINE) {
             finish(gate, Op(action, Phase.FAILED, started, before, null, "нет связи с Home Assistant"))
             return false
@@ -135,6 +172,96 @@ internal object GateHub {
         deadlines[gate.id] = deadline
         main.postDelayed(deadline, gate.confirmSeconds * 1000L)
         return true
+    }
+
+    /** Без Home Assistant: команда устройству напрямую с фонового потока, итог — на главном. */
+    private fun runDirect(gate: Gate, action: Gate.Action, started: Long): Boolean {
+        if (!GateLogic.directSupports(gate, action)) return false
+        val op = Op(action, Phase.SENDING, started, status(gate), null)
+        opGates[gate.id] = gate
+        set(gate.id, op)
+        Log.i(TAG, "${gate.name}: ${action.name.lowercase()} → напрямую (${gate.direct?.protocol?.key})")
+        val link = direct
+        io().execute {
+            val result = link.send(gate, action)
+            main.post { onDirectResult(gate, op, result) }
+        }
+        val deadline = Runnable { onDeadline(gate.id, op) }
+        deadlines[gate.id] = deadline
+        main.postDelayed(deadline, gate.confirmSeconds * 1000L)
+        startPoller()
+        return true
+    }
+
+    private fun onDirectResult(gate: Gate, op: Op, result: GateDirect.Result) {
+        if (!same(gate.id, op)) return
+        val current = ops.getValue(gate.id)
+        if (!current.busy) return
+        if (!result.ok) { finish(gate, current.copy(phase = Phase.FAILED, detail = result.detail)); return }
+        if (current.action == Gate.Action.STOP) { finish(gate, current.copy(phase = Phase.DONE)); return }
+        // Положение узнать неоткуда (реле без датчика, свой запрос) — честно: «сработало», проверьте глазами.
+        if (!GateLogic.directConfirmable(gate, readings)) {
+            finish(gate, current.copy(phase = Phase.REACTED, detail = if (gate.direct?.protocol == Gate.Direct.Protocol.HTTP)
+                "устройство приняло команду, положение неизвестно — проверьте" else ""))
+            return
+        }
+        set(gate.id, current.copy(phase = Phase.WAITING))
+        pollNow(gate)
+    }
+
+    // ---- Опрос устройств напрямую ----
+
+    private fun directGates(): List<Gate> {
+        val r = readings
+        return (gates() + opGates.values).distinctBy { it.id }.filter { it.hasDirect && GateLogic.useDirect(it, r) }
+    }
+
+    /** Опрос нужен, пока есть проход на связи напрямую; иначе останавливается сам. */
+    fun startPoller() {
+        if (pollerOn || app == null) return
+        pollerOn = true
+        main.post(poller)
+    }
+
+    private fun pollTick() {
+        val list = directGates()
+        if (list.isEmpty()) { pollerOn = false; return }
+        val now = SystemClock.uptimeMillis()
+        for (gate in list) {
+            // Идёт действие — раз в секунду; кнопки на экране — раз в 5 с; никто не смотрит — раз в 15 с.
+            val every = when {
+                ops[gate.id]?.busy == true -> POLL_BUSY_MS
+                listeners.isNotEmpty() -> POLL_SHOWN_MS
+                else -> POLL_IDLE_MS
+            }
+            if (now - (lastPoll[gate.id] ?: 0L) >= every) pollNow(gate)
+        }
+    }
+
+    private fun pollNow(gate: Gate) {
+        if (!polling.add(gate.id)) return
+        lastPoll[gate.id] = SystemClock.uptimeMillis()
+        val link = direct
+        io().execute {
+            val state = runCatching { link.poll(gate) }.getOrNull()
+            main.post { onPolled(gate, state) }
+        }
+    }
+
+    private fun onPolled(gate: Gate, state: DirectState?) {
+        polling.remove(gate.id)
+        if (state != null) {
+            directMisses.remove(gate.id)
+            directStates[gate.id] = state
+        } else {
+            val misses = (directMisses[gate.id] ?: 0) + 1
+            directMisses[gate.id] = misses
+            if (misses >= 2) directStates[gate.id] = DirectState(reachable = false)
+        }
+        val r = readings
+        val live = gates().firstOrNull { it.id == gate.id } ?: opGates[gate.id] ?: return
+        check(live, r)
+        if (evaluate(live, r)) notifyListeners()
     }
 
     /** «Подтверждения нет» снимается осознанно — касанием; следующее удержание уже отправит команду. */
@@ -168,18 +295,18 @@ internal object GateHub {
         val gate = opGates[gateId] ?: gate(gateId) ?: return
         val current = ops.getValue(gateId)
         if (!current.busy) return
-        val reacted = GateLogic.reacted(current.beforeRaw, raw(gate.open))
+        val reacted = !GateLogic.useDirect(gate, readings) && GateLogic.reacted(current.beforeRaw, raw(gate.open))
         finish(gate, current.copy(phase = when {
             current.phase == Phase.SENDING -> Phase.FAILED
             reacted -> Phase.REACTED
             else -> Phase.UNCONFIRMED
-        }, detail = if (current.phase == Phase.SENDING) "Home Assistant не ответил" else ""))
+        }, detail = if (current.phase != Phase.SENDING) "" else if (GateLogic.useDirect(gate, readings)) "устройство не ответило" else "Home Assistant не ответил"))
     }
 
     /** Ждём факта: новое положение — готово. */
     private fun check(gate: Gate, readings: BatteryReadings? = this.readings) {
         val op = ops[gate.id]?.takeIf { it.phase == Phase.WAITING } ?: return
-        val now = GateLogic.status(gate, readings)
+        val now = status(gate, readings)
         if (GateLogic.confirmed(op.action, op.before, now)) finish(gate, op.copy(phase = Phase.DONE))
     }
 
@@ -213,27 +340,36 @@ internal object GateHub {
         var changed = false
         for (gate in gates) {
             check(gate, readings)
-            val status = GateLogic.status(gate, readings)
-            val raw = (readings.of(gate.open) as? BatteryReading.Value)?.raw
-            val reading = readings.of(gate.open)
-            val before = lastPosition.put(gate.id, status.position)
-            val rawBefore = lastRaw.put(gate.id, raw)
-            if (before != status.position) changed = true
-            // Недоступно — прежнее забываем: возврат сразу в «открыто» не значит, что открыли.
-            if (reading is BatteryReading.Unavailable || reading == BatteryReading.Missing) { lastRaw.remove(gate.id); continue }
-            val opened = when {
-                before == null -> false
-                status.open && before != GateStatus.Position.OPEN && before != GateStatus.Position.OPENING &&
-                    before != GateStatus.Position.OFFLINE && before != GateStatus.Position.UNKNOWN -> true
-                // Кнопка и сценарий без положения: новая отметка нажатия — факт срабатывания (как в 0.9.48).
-                status.source == GateStatus.Source.NONE && gate.kind != Gate.Kind.COVER && rawBefore != null && raw != rawBefore &&
-                    gate.open.substringBefore('.') in setOf("button", "input_button") -> true
-                else -> false
-            }
-            if (opened) onOpened?.invoke(gate)
+            if (evaluate(gate, readings)) changed = true
         }
         lastPosition.keys.retainAll(gates.mapTo(HashSet()) { it.id })
+        if (gates.any { it.hasDirect }) startPoller()
         if (changed) notifyListeners()
+    }
+
+    /** Положение прохода изменилось? Заодно — «проход открыли» ([onOpened]), откуда бы ни открыли. */
+    private fun evaluate(gate: Gate, readings: BatteryReadings?): Boolean {
+        val status = status(gate, readings)
+        val direct = GateLogic.useDirect(gate, readings)
+        val reading = if (direct) null else readings?.of(gate.open)
+        val raw = (reading as? BatteryReading.Value)?.raw
+        val before = lastPosition.put(gate.id, status.position)
+        val rawBefore = lastRaw.put(gate.id, raw)
+        val changed = before != status.position
+        // Недоступно — прежнее забываем: возврат сразу в «открыто» не значит, что открыли.
+        if (!direct && (reading is BatteryReading.Unavailable || reading == BatteryReading.Missing)) { lastRaw.remove(gate.id); return changed }
+        val opened = when {
+            before == null -> false
+            status.open && before != GateStatus.Position.OPEN && before != GateStatus.Position.OPENING &&
+                before != GateStatus.Position.OFFLINE && before != GateStatus.Position.UNKNOWN &&
+                before != GateStatus.Position.UNREACHABLE -> true
+            // Кнопка и сценарий без положения: новая отметка нажатия — факт срабатывания (как в 0.9.48).
+            !direct && status.source == GateStatus.Source.NONE && gate.kind != Gate.Kind.COVER && rawBefore != null && raw != rawBefore &&
+                gate.open.substringBefore('.') in setOf("button", "input_button") -> true
+            else -> false
+            }
+        if (opened) onOpened?.invoke(gate)
+        return changed
     }
 
     /** Для тестов: всё забыть. */
@@ -241,12 +377,20 @@ internal object GateHub {
         deadlines.values.forEach(main::removeCallbacks); deadlines.clear()
         clears.values.forEach(main::removeCallbacks); clears.clear()
         ops.clear(); opGates.clear(); lastPosition.clear(); lastRaw.clear(); listeners.clear()
+        pollerOn = false; main.removeCallbacks(poller)
+        directStates.clear(); directMisses.clear(); polling.clear(); lastPoll.clear()
+        direct = shellyLink
+        passwordOverride.clear()
         latest = null
         cached = null
         onOpened = null
         driver = haDriver
     }
 
+    const val POLL_TICK_MS = 500L
+    const val POLL_BUSY_MS = 1_000L
+    const val POLL_SHOWN_MS = 5_000L
+    const val POLL_IDLE_MS = 15_000L
     const val DONE_SHOW_MS = 5_000L
     const val FAILED_SHOW_MS = 8_000L
 }
