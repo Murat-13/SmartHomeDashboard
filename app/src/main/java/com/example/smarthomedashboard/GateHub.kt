@@ -45,7 +45,12 @@ internal object GateHub {
     }
 
     private val shellyLink = object : DirectLink {
-        private fun password(gate: Gate) = passwordOverride[gate.id] ?: app?.let { CameraPasswords.blocking(it, GateDirect.secretKey(gate.id)) }
+        /** Пароль не прочитался (хранилище ключей) — пробуем без него: устройство без пароля всё равно ответит. */
+        private fun password(gate: Gate) = passwordOverride[gate.id] ?: try {
+            app?.let { CameraPasswords.blocking(it, GateDirect.secretKey(gate.id)) }
+        } catch (e: Exception) {
+            Log.w(TAG, "${gate.name}: пароль устройства не прочитан (${e.javaClass.simpleName})"); null
+        }
         override fun send(gate: Gate, action: Gate.Action) = GateDirect.send(gate, action, password(gate))
         override fun poll(gate: Gate) = GateDirect.poll(gate, password(gate))
     }
@@ -253,7 +258,9 @@ internal object GateHub {
         lastPoll[gate.id] = SystemClock.uptimeMillis()
         val link = direct
         io().execute {
-            val state = runCatching { link.poll(gate) }.getOrNull()
+            val state = try { link.poll(gate) } catch (e: Exception) {
+                Log.w(TAG, "${gate.name}: опрос не удался (${e.javaClass.simpleName})"); null
+            }
             main.post { onPolled(gate, state) }
         }
     }
@@ -266,6 +273,7 @@ internal object GateHub {
         } else {
             val misses = (directMisses[gate.id] ?: 0) + 1
             directMisses[gate.id] = misses
+            if (misses == 2) Log.i(TAG, "${gate.name}: устройство не отвечает")
             if (misses >= 2) directStates[gate.id] = DirectState(reachable = false)
         }
         val r = readings
@@ -392,9 +400,9 @@ internal object GateHub {
         if (!direct && (reading is BatteryReading.Unavailable || reading == BatteryReading.Missing)) { lastRaw.remove(gate.id); return changed }
         val opened = when {
             before == null -> false
-            status.open && before != GateStatus.Position.OPEN && before != GateStatus.Position.OPENING &&
-                before != GateStatus.Position.OFFLINE && before != GateStatus.Position.UNKNOWN &&
-                before != GateStatus.Position.UNREACHABLE -> true
+            // Открыли — только из закрытого: остановленные на полпути при закрытии ворота «открытыми» не считаются
+            // (найдено на планшете 22.11: «Стоп» при закрытии попадал в журнал как «открыли без команды»).
+            status.open && (before == GateStatus.Position.CLOSED || before == GateStatus.Position.JAMMED) -> true
             // Кнопка и сценарий без положения: новая отметка нажатия — факт срабатывания (как в 0.9.48).
             !direct && status.source == GateStatus.Source.NONE && gate.kind != Gate.Kind.COVER && rawBefore != null && raw != rawBefore &&
                 gate.open.substringBefore('.') in setOf("button", "input_button") -> true

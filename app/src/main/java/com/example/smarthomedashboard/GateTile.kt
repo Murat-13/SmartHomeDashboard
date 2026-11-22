@@ -98,14 +98,21 @@ internal class GateTileCard(context: Context, val expanded: Boolean) : FrameLayo
         render()
     }
 
-    /** Размер текста и кнопок — от размера карточки (на всех экранах одно правило). */
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        if (!expanded || w <= 0) return
-        val unit = minOf(w, h * 2) / 600f
-        title.textSize = (30 * unit).coerceIn(18f, 40f)
-        status.textSize = (20 * unit).coerceIn(13f, 26f)
-        buttons.applySize(0, (h * 0.16f).toInt().coerceAtLeast((56 * density).toInt()), (12 * density).toInt())
+    private var sizedFor = 0
+
+    /**
+     * Размер текста и кнопок — от ширины карточки (на всех экранах одно правило). До разметки: заданный после неё
+     * размер текста обрезал заголовок (найдено на планшете 22.11).
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        if (expanded && w > 0 && w != sizedFor) {
+            sizedFor = w
+            title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.06f)
+            status.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, w * 0.035f)
+            buttons.applySize(0, (w * BUTTON_SHARE).toInt().coerceAtLeast((56 * density).toInt()), (w * 0.02f).toInt())
+        }
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 
     fun render() {
@@ -126,9 +133,12 @@ internal class GateTileCard(context: Context, val expanded: Boolean) : FrameLayo
         if (expanded) return
         val action = primary(gate) ?: Gate.Action.OPEN
         GateButtons.paint(button, gate, action, primary = true, roomy = true)
-        // Плитка — кнопка со статусом: крупно имя прохода, под ним — где он сейчас («Закрыта», «Открываются…»).
+        // Плитка — кнопка со статусом: крупно имя прохода, под ним — где он сейчас («Закрыто», «Открываются…»). На
+        // маленькой плитке — без «(датчик)»: откуда известно, видно в раскрытой.
         if (button.stateCaption == null) button.label = gate.name
-        if (button.state == DoorbellRingWindow.Gate.IDLE) button.stateHint = statusLine(gate, now, left).ifBlank { "удерживайте — открыть" }
+        button.stateCaption = button.stateCaption?.let(::short)
+        if (button.state == DoorbellRingWindow.Gate.IDLE) button.stateHint = if (now.noLink) "Нет связи" else
+            short(statusLine(gate, now, left)).ifBlank { "удерживайте — открыть" }
         button.idleAccent = when {
             left -> DoorbellFrame.OFFLINE
             now.open -> DoorbellFrame.RING
@@ -157,7 +167,16 @@ internal class GateTileCard(context: Context, val expanded: Boolean) : FrameLayo
         super.onDetachedFromWindow()
     }
 
+    private fun short(text: String) = text.substringBefore(" (")
+
     companion object {
+        /** Высота кнопки раскрытой плитки — доля её ширины. */
+        const val BUTTON_SHARE = 0.11f
+
+        /** Высота раскрытой плитки по ширине и числу кнопок: без пустого места под одной кнопкой. */
+        fun expandedHeight(width: Int, buttons: Int): Int =
+            (width * (0.26f + buttons.coerceAtLeast(1) * (BUTTON_SHARE + 0.02f))).toInt()
+
         fun createTile(context: Context, tileId: String, width: Int, height: Int, isEditMode: Boolean): Pair<FrameLayout, ImageView> {
             val tile = FrameLayout(context).apply {
                 layoutParams = LayoutParams(width, height)

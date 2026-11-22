@@ -27,6 +27,10 @@ internal object GateDirect {
             .writeTimeout(4, TimeUnit.SECONDS)
             .callTimeout(6, TimeUnit.SECONDS)
             .retryOnConnectionFailure(false)
+            // Каждое обращение — новое соединение: простые устройства (и стенд) закрывают его после ответа, а
+            // повторное использование закрытого давало IOException на каждом опросе (найдено на планшете 22.11).
+            // Повтор запроса не включаем: команда («импульс») не должна уйти дважды.
+            .connectionPool(okhttp3.ConnectionPool(0, 1, TimeUnit.SECONDS))
             .build()
     }
 
@@ -113,9 +117,9 @@ internal object GateDirect {
             }
             state
         } catch (e: IOException) {
-            null
+            android.util.Log.d("Gates", "Опрос: ${e.javaClass.simpleName}"); null
         } catch (e: IllegalArgumentException) {
-            null
+            android.util.Log.d("Gates", "Опрос: неверный адрес"); null
         }
     }
 
@@ -147,7 +151,8 @@ internal object GateDirect {
     }
 
     private fun json(response: Response): JSONObject? = response.use { r ->
-        if (!r.isSuccessful) null else r.body?.string()?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+        if (!r.isSuccessful) { android.util.Log.d("Gates", "Опрос: ответ ${r.code}"); return@use null }
+        r.body?.string()?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
     }
 
     private fun rpc(host: String, method: String, params: Map<String, String>, password: String?): Response {

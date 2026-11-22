@@ -157,6 +157,17 @@ class GateDirectTest {
         assertFalse(GateDirect.probe(host, "не тот")!!.authOk)
     }
 
+    /** Устройство закрывает соединение после каждого ответа (HTTP/1.0, простые контроллеры): опрос подряд не падает. */
+    @Test fun deviceClosingEveryConnectionStillAnswersPolls() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                calls += request.path.orEmpty()
+                return shelly.dispatch(request).setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END)
+            }
+        }
+        repeat(5) { assertNotNull("опрос ${it + 1}", GateDirect.poll(relay(input = 0), null)) }
+    }
+
     @Test fun deviceGoneIsUnreachableNotCrash() {
         val gate = relay().copy(direct = Gate.Direct(host = "127.0.0.1:1"))
         assertEquals(GateDirect.Result(false, "устройство не отвечает"), GateDirect.send(gate, Gate.Action.OPEN, null))

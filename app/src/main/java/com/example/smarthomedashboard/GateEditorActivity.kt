@@ -453,7 +453,7 @@ class GateEditorActivity : PinProtectedActivity() {
             !draft.directOnly && !GateLogic.fits(draft.kind, Gate.ROLE_OPEN, draft.open) -> "Выберите устройство — без него кнопок не будет."
             status.position == GateStatus.Position.UNREACHABLE -> "Сейчас: устройство не отвечает."
             status.position == GateStatus.Position.UNKNOWN -> "Сейчас: положение неизвестно" +
-                if (draft.sensor.isBlank()) " — без датчика будет только «команда принята» или «сработало»." else "."
+                if (!draft.hasPositionSensor) " — без датчика будет только «команда принята» или «сработало»." else "."
             else -> "Сейчас: " + GateLogic.statusText(status)
         }
         val op = GateHub.op(draft.id)

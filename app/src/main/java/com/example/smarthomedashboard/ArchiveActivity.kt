@@ -1431,14 +1431,15 @@ private fun OpeningsList(ui: ArchiveUi, thumbs: Map<String, Bitmap?>, actions: A
                     thumbs[key]?.let { Image(it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                         ?: Text(if (entry.photo == null) "нет снимка" else "", color = ArchiveColors.hint, fontSize = 13.sp, modifier = Modifier.align(Alignment.Center))
                 }
+                // В три строки: на узкой колонке архива имя прохода и откуда не обрезаются (планшет 22.11).
                 Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                     Text(timeFormat.format(Date(entry.atMs)) + " · " + entry.gateName, color = ArchiveColors.text, fontSize = 20.sp,
                         fontWeight = FontWeight.Bold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     Text(dayTitle(RecArchive.dayStart(entry.atMs)) + " · " + GateLog.actionText(entry.action) + " · " + entry.origin.title,
                         color = ArchiveColors.secondary, fontSize = 15.sp, maxLines = 2)
+                    Text(entry.result, color = if (entry.result.startsWith("не удалось")) ArchiveColors.danger else ArchiveColors.label("visitor"),
+                        fontSize = 15.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
-                Text(entry.result, color = if (entry.result.startsWith("не удалось")) ArchiveColors.danger else ArchiveColors.label("visitor"),
-                    fontSize = 15.sp, maxLines = 2, modifier = Modifier.padding(end = 8.dp).widthIn(max = 220.dp))
             }
         }
     }

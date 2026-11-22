@@ -1563,8 +1563,12 @@ internal class DashboardPanelController(
         }
         if (tile.type == GateTileConfig.TYPE) {
             // Все кнопки прохода и положение; размер — от экрана, кнопки и надписи подстраиваются сами.
-            val width = minOf((screenW * 0.6f).toInt(), (screenH * 1.1f).toInt())
-            val height = minOf((screenH * 0.8f).toInt(), (width * 0.8f).toInt())
+            val width = minOf((screenW * 0.5f).toInt(), (screenH * 0.9f).toInt())
+            // У ворот кнопок до четырёх («Стоп» появляется во время хода) — место на все.
+            val count = GateHub.gate(GateTileConfig.gateId(tile.config), activity)?.let { g ->
+                if (g.kind == Gate.Kind.COVER) 3 + if (g.pedestrian.isNotBlank()) 1 else 0 else GateHub.actions(g).size
+            } ?: 1
+            val height = minOf((screenH * 0.9f).toInt(), GateTileCard.expandedHeight(width, count))
             val card = GateTileCard(activity, expanded = true)
             card.bind(GateTileConfig.gateId(tile.config))
             card.onAction = { gate, action -> runGate(gate, action, inRingWindow = false) }
