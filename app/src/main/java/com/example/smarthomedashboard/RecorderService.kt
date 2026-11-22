@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.StatFs
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.example.smarthomedashboard.data.TileManager
@@ -186,9 +187,13 @@ class RecorderService : Service() {
         null
     }
 
+    /** Папки приложения на носителях: [0] — память планшета, [1] — SD-карта (null или нет — карты нет). */
+    private fun storageDirs(): Array<File?> =
+        try { (dirsOverride ?: { c -> c.getExternalFilesDirs(null) })(this) } catch (_: Exception) { emptyArray() }
+
     /** Папка записей: SD-карта, если выбрана и вставлена, иначе память планшета. */
     private fun storageRoot(): File? {
-        val dirs = try { getExternalFilesDirs(null) } catch (_: Exception) { emptyArray<File?>() }
+        val dirs = storageDirs()
         if (RecordingDevice(this).useSdCard) {
             val sd = dirs.getOrNull(1)
             if (sd != null && Environment.getExternalStorageState(sd) == Environment.MEDIA_MOUNTED) return sd
@@ -199,7 +204,7 @@ class RecorderService : Service() {
     /** SD-карта выбрана, но пишем в память планшета — лимит вдвое меньше (решение владельца 18.11). */
     private fun onFallback(): Boolean {
         if (!RecordingDevice(this).useSdCard) return false
-        val sd = try { getExternalFilesDirs(null).getOrNull(1) } catch (_: Exception) { null }
+        val sd = storageDirs().getOrNull(1)
         return sd == null || Environment.getExternalStorageState(sd) != Environment.MEDIA_MOUNTED
     }
 
@@ -253,8 +258,7 @@ class RecorderService : Service() {
             files.clear()
             files += RecLayout.scan(root)
             lastScan = now
-            // Файлы — источник правды: строки удалённых роликов убираются из индекса.
-            try { index.reconcile(files) } catch (e: Exception) { Log.w(TAG, "Запись: сверка индекса: ${e.javaClass.simpleName}") }
+            try { reconcileIndex(root) } catch (e: Exception) { Log.w(TAG, "Запись: сверка индекса: ${e.javaClass.simpleName}") }
         }
         val device = RecordingDevice(this)
         val free = freeBytes(root)
@@ -275,6 +279,22 @@ class RecorderService : Service() {
             plan.delete.mapNotNull { it.path.parentFile }.toSet().forEach { dir -> if (dir.list()?.isEmpty() == true) dir.delete() }
         }
         paused = plan.pause
+    }
+
+    /**
+     * Файлы — источник правды: строки индекса меток, чьих роликов нет ни на одном носителе, убираются. Только когда
+     * видны все носители: ролик на вынутой карте не удалён, а недоступен (ревью 22.11.2026). Поэтому сверка — по всем
+     * носителям сразу (после возврата карты в памяти планшета остаются ролики, записанные без неё) и пропускается,
+     * пока какого-то носителя нет. Удаления самим приложением (очистка, архив) убирают свои строки сразу.
+     */
+    private fun reconcileIndex(root: File) {
+        val dirs = storageDirs()
+        if (onFallback() || dirs.any { it == null || Environment.getExternalStorageState(it) != Environment.MEDIA_MOUNTED }) {
+            Log.i(TAG, "Запись: не все носители доступны — сверка индекса меток отложена")
+            return
+        }
+        val others = dirs.filterNotNull().filter { it.absolutePath != root.absolutePath }.flatMap { RecLayout.scan(it) }
+        index.reconcile(files + others)
     }
 
     /** [key] — ключ записи: id плитки (круглосуточная) или id + [HD] (события). */
@@ -308,6 +328,9 @@ class RecorderService : Service() {
         const val SD_MISSING_PHRASE = "Карта памяти не найдена, запись идёт в память планшета"
         /** Суффикс ключа записи событий в HD (и её состояния в [RecordingStatus]). */
         const val HD = "#hd"
+
+        /** Для тестов: папки приложения на носителях вместо `getExternalFilesDirs` (память планшета и SD-карта). */
+        @VisibleForTesting @Volatile internal var dirsOverride: ((Context) -> Array<File?>)? = null
 
         /** Сервис уже сверил записи с настройками и открыл их потоки. */
         @Volatile private var synced = false
