@@ -44,7 +44,10 @@ class GatesDeepTest {
         shelly?.shutdown()
     }
 
-    /** Удержание пальцем по центру кнопки — как на стене: касание, [ms] мс, отпускание. */
+    /**
+     * Удержание пальцем по центру кнопки — как на стене: касание, [ms] мс, отпускание. С запасом: на медленном эмуляторе
+     * CI касание обрабатывается с опозданием до полсекунды, и 1,3 с «удержания» оказывались меньше секунды.
+     */
     private fun hold(view: View, ms: Long) {
         val location = IntArray(2)
         onMain { view.getLocationOnScreen(location) }
@@ -84,7 +87,7 @@ class GatesDeepTest {
         hold(button!!, 400)
         SystemClock.sleep(500)
         assertEquals("Отпустили раньше — команды нет", 0, ha.commands.count { it.optString("domain") == "switch" })
-        hold(button!!, 1_300)
+        hold(button!!, 2_500)
         waitFor(10_000, "команда реле калитки в HA") {
             ha.commands.any { it.optString("service") == "turn_on" &&
                 it.optJSONObject("service_data")?.optString("entity_id") == "switch.deep_wicket" }
@@ -140,7 +143,7 @@ class GatesDeepTest {
             button?.isShown == true
         }
         waitFor(10_000, "опрос Shelly: закрыто по датчику") { onMain { button!!.stateHint.orEmpty() }.startsWith("Закрыт") }
-        hold(button!!, 1_300)
+        hold(button!!, 2_500)
         waitFor(10_000, "импульс реле Shelly") { calls.any { it.startsWith("/rpc/Switch.Set") } }
         assertEquals("/rpc/Switch.Set?id=0&on=true&toggle_after=3", calls.first { it.startsWith("/rpc/Switch.Set") })
         door.set(true)

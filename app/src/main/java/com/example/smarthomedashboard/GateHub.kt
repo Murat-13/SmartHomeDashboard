@@ -228,7 +228,10 @@ internal object GateHub {
 
     private fun directGates(): List<Gate> {
         val r = readings
-        return (gates() + opGates.values).distinctBy { it.id }.filter { it.hasDirect && GateLogic.useDirect(it, r) }
+        // Не сохранённый проход («Проверить» в редакторе) — только пока его действие идёт: удалённый или брошенный
+        // черновик не опрашивается до перезапуска приложения (найдено в Deep tests 22.11).
+        val drafts = opGates.values.filter { ops[it.id]?.busy == true }
+        return (gates() + drafts).distinctBy { it.id }.filter { it.hasDirect && GateLogic.useDirect(it, r) }
     }
 
     /** Опрос нужен, пока есть проход на связи напрямую; иначе останавливается сам. */
@@ -285,6 +288,7 @@ internal object GateHub {
     /** «Подтверждения нет» снимается осознанно — касанием; следующее удержание уже отправит команду. */
     fun dismiss(gateId: String) {
         if (ops[gateId]?.busy == true) return
+        opGates.remove(gateId)
         if (ops.remove(gateId) != null) notifyListeners()
     }
 
@@ -346,7 +350,7 @@ internal object GateHub {
             Phase.FAILED -> FAILED_SHOW_MS
             else -> return
         }
-        val clear = Runnable { if (same(gate.id, op)) { ops.remove(gate.id); notifyListeners() } }
+        val clear = Runnable { if (same(gate.id, op)) { ops.remove(gate.id); opGates.remove(gate.id); notifyListeners() } }
         clears[gate.id] = clear
         main.postDelayed(clear, keep)
     }

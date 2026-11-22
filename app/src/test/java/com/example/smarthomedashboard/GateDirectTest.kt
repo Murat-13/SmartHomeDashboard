@@ -235,6 +235,29 @@ class GateDirectTest {
         assertTrue("В Home Assistant ничего не ушло", sentToHa.isEmpty())
     }
 
+    /** Черновик из редактора («Проверить») опрашивается, только пока его действие идёт, — потом нет (Deep tests 22.11). */
+    @Test fun draftGateIsNotPolledAfterItsAction() {
+        val polls = java.util.concurrent.atomic.AtomicInteger()
+        GateHub.direct = object : GateHub.DirectLink {
+            override fun send(gate: Gate, action: Gate.Action) = GateDirect.Result(true)
+            override fun poll(gate: Gate): DirectState? { polls.incrementAndGet(); return DirectState(true, switchOn = false, input = false) }
+        }
+        val draft = relay(input = 0)
+        GateHub.listen {}
+        assertTrue("Проверка черновика", GateHub.run(draft, Gate.Action.OPEN))
+        await("опрос во время действия") { polls.get() > 0 }
+        // Подтверждения нет (дверь «не открылась») — действие заканчивается; черновик больше не опрашивается.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(draft.confirmSeconds + 10L))
+        GateHub.dismiss(draft.id)
+        Thread.sleep(200)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+        val after = polls.get()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        Thread.sleep(300)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Брошенный черновик не опрашивается", after, polls.get())
+    }
+
     @Test fun ownHttpRequestWithBasicPassword() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
