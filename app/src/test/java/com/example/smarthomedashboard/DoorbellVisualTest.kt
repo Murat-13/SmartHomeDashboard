@@ -46,6 +46,7 @@ class DoorbellVisualTest {
     @After fun cleanup() {
         DoorbellHub.actions = null
         DoorbellHub.detach()
+        GateHub.reset()
     }
 
     /** Условная «картинка с камеры»: небо, забор, дорожка — чтобы видеть подписи поверх кадра. */
@@ -141,20 +142,26 @@ class DoorbellVisualTest {
             override fun tileBounds(tileId: String) = null
         }
         val tile = TileEntity("door", DoorbellConfig.TYPE, "grid", "Калитка", 0, 0, 1, 1, config = config.writeTo("{}"))
+        // Плитка сохранена, как на панели: из её поля «Замок калитки» получается проход «Калитка» (docs/gate-tz.md) —
+        // в окне звонка его кнопка «Открыть калитку».
+        com.example.smarthomedashboard.data.TileManager(app).saveTiles(listOf(tile))
+        GateHub.reset()
+        GateHub.attach(app)
         DoorbellHub.onState(listOf(tile), readings())
         val root = activity.findViewById<ViewGroup>(android.R.id.content)
         val window = DoorbellRingWindow.show(activity, "door", null) {}
         window.card.findViewWithTag<ImageView>("door_snapshot").setImageBitmap(fakeFrame())
         values["binary_sensor.v"] = "on"; values["binary_sensor.p"] = "on"
         DoorbellHub.onState(listOf(tile), readings())
-        root.rootView.let { save(it, 1920, 1200, "ring_window", 700) }
+        soft { root.rootView.let { save(it, 1920, 1200, "ring_window", 700) } }
         window.findViewWithTag<View>("door_reply").performClick()
-        root.rootView.let { save(it, 1920, 1200, "ring_window_replies", 300) }
+        soft { root.rootView.let { save(it, 1920, 1200, "ring_window_replies", 300) } }
         window.closeNow()
         activity.resources.displayMetrics.widthPixels = 1200
         val portrait = DoorbellRingWindow.show(activity, "door", null) {}
         portrait.card.findViewWithTag<ImageView>("door_snapshot").setImageBitmap(fakeFrame())
-        root.rootView.let { save(it, 1200, 1920, "ring_window_portrait", 700) }
+        soft { root.rootView.let { save(it, 1200, 1920, "ring_window_portrait", 700) } }
         portrait.closeNow()
+        if (mismatches.isNotEmpty()) fail(mismatches.joinToString("\n"))
     }
 }
