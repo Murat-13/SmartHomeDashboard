@@ -65,26 +65,12 @@ internal object DoorbellModel {
         }
     }
 
-    /** Команда «Открыть калитку» для домена сущности: сервис и ожидаемый факт (null — смена отметки кнопки). */
-    data class OpenCommand(val domain: String, val service: String, val expected: String?)
-
-    fun openCommand(entityId: String): OpenCommand? = when (entityId.substringBefore('.')) {
-        "lock" -> OpenCommand("lock", "unlock", "unlocked")
-        "switch" -> OpenCommand("switch", "turn_on", "on")
-        "input_boolean" -> OpenCommand("input_boolean", "turn_on", "on")
-        "cover" -> OpenCommand("cover", "open_cover", "open")
-        "button" -> OpenCommand("button", "press", null)
-        "input_button" -> OpenCommand("input_button", "press", null)
-        else -> null
-    }
-
     /** Подходит ли сущность для роли (фильтры выбора в редакторе). */
     fun fits(role: String, entityId: String): Boolean {
         val domain = entityId.substringBefore('.')
         return when (role) {
             "camera" -> domain == "camera"
             "visitor", "person", "animal", "vehicle", "motion" -> domain == "binary_sensor"
-            "lock" -> domain in setOf("lock", "switch", "button", "input_button", "cover", "input_boolean")
             "light" -> domain == "light" || domain == "switch"
             "quick_reply" -> domain == "select"
             else -> true

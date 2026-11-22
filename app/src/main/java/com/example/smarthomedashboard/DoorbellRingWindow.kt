@@ -30,10 +30,12 @@ import android.widget.TextView
 
 /**
  * Окно звонка (docs/doorbell.md, решения владельца): слой поверх текущего экрана, растёт из плитки (или баннера),
- * остальное приглушается. Видео со звуком (после мелодии и голоса), кнопки: «Открыть калитку» (удержание 1 с,
- * без PIN; ожидание → факт HA), «Свет у входа», «Ответить» (готовые фразы домофона), «Закрыть».
- * Закрывается само через [RING_MS]; повторный звонок продлевает. Калитку открыли (здесь или на другом планшете) —
- * 2,5 с «Калитку открыли» и закрытие. В тихие часы яркость окна снижается до заданной.
+ * остальное приглушается. Видео со звуком (после мелодии и голоса), кнопки: проходы плитки (калитки и ворота,
+ * docs/gate-tz.md: удержание 1 с, «Стоп» — сразу; ожидание → факт HA), «Свет у входа», «Ответить» (готовые фразы
+ * домофона), «Закрыть». Закрывается само через [RING_MS]; повторный звонок продлевает. Калитку открыли (здесь или на
+ * другом планшете) — звонок отвечен, но окно остаётся, пока гость проходит (решение владельца 10): видно, что вошёл,
+ * можно «Стоп» или «Закрыть»; закрывается, когда проход снова закрыт (без датчика — через [PASS_UNKNOWN_MS]).
+ * В тихие часы яркость окна снижается до заданной.
  */
 @SuppressLint("ViewConstructor")
 internal class DoorbellRingWindow private constructor(
@@ -52,7 +54,8 @@ internal class DoorbellRingWindow private constructor(
     private val sub = label(19f, DoorbellFrame.SECONDARY).apply { tag = "door_ring_sub" }
     private val buttons = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL }
     private val spacer = View(host)
-    val openButton = HoldButton(host, "Открыть калитку", R.drawable.ic_door_unlock).apply { tag = "door_open" }
+    /** Проходы плитки (калитки и ворота); PIN — только если выбран «Всегда» ([GatePin]). */
+    val gateButtons = GateButtons(host, vertical = true)
     /** Разговор (docs/talk-tz.md): удержание — голос в домофон; сессия открывается вместе с окном. */
     private val talk = DoorbellTalk(host)
     private val talkButton = TalkButton(host, talk).apply {
@@ -70,11 +73,13 @@ internal class DoorbellRingWindow private constructor(
         private set
     private var openedAt = 0L
     private var savedBrightness: Float? = null
-    private var gate = Gate.IDLE
-    private var gateDeadline: Runnable? = null
     private var interacted = false
+    /** Проход этой плитки открыли (здесь или где угодно): звонок отвечен, ждём, пока гость пройдёт. */
+    private var passedAt: Long? = null
+    private var passedGate: com.example.smarthomedashboard.Gate? = null
+    private val gateListener: () -> Unit = { onGateChanged() }
 
-    /** UNCONFIRMED — HA принял команду, но факта открытия панель не увидела: повтор не предлагаем (импульсное реле). */
+    /** Состояние кнопки с удержанием. UNCONFIRMED — HA принял команду, но факта панель не увидела: повтор не предлагаем. */
     enum class Gate { IDLE, SENDING, WAITING, OPENED, FAILED, UNCONFIRMED }
 
     private val autoClose = Runnable { close() }
@@ -99,7 +104,7 @@ internal class DoorbellRingWindow private constructor(
         controls.addView(sub)
         // Кнопки — внизу панели, на уровне руки и рядом с нижним краем видео (как у Ring/Nest).
         controls.addView(spacer, LinearLayout.LayoutParams(1, 0, 1f))
-        buttons.addView(openButton)
+        buttons.addView(gateButtons)
         buttons.addView(talkButton)
         buttons.addView(lightButton)
         buttons.addView(replyButton)
@@ -111,8 +116,8 @@ internal class DoorbellRingWindow private constructor(
         addView(panel, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
         scrim.setOnClickListener { touched() }
 
-        openButton.onComplete = { openGate() }
-        openButton.onTouchStart = { touched() }
+        gateButtons.onAction = { gate, action -> touched(); runGate(gate, action) }
+        gateButtons.onTouch = { touched() }
         lightButton.setOnClickListener { touched(); toggleLight() }
         talkButton.onActivity = { touched() }
         talk.onDuck = { card.video.ducked = it }
@@ -161,10 +166,17 @@ internal class DoorbellRingWindow private constructor(
                 width = LinearLayout.LayoutParams.MATCH_PARENT
                 val base = (72 * unit * density / 1.5f).toInt().coerceAtLeast((56 * density).toInt())
                 // Главное действие — крупнее: удерживать удобно и с первого взгляда понятно, где оно.
-                height = if (buttons.getChildAt(i) === openButton || buttons.getChildAt(i) === talkButton) (base * 1.4f).toInt() else base
+                height = when {
+                    buttons.getChildAt(i) === gateButtons -> LinearLayout.LayoutParams.WRAP_CONTENT
+                    buttons.getChildAt(i) === talkButton -> (base * 1.4f).toInt()
+                    else -> base
+                }
                 topMargin = (12 * unit * density / 1.5f).toInt()
             }
         }
+        // Главное действие — крупнее: удерживать удобно и с первого взгляда понятно, где оно.
+        val primary = (72 * unit * density / 1.5f).toInt().coerceAtLeast((56 * density).toInt())
+        gateButtons.applySize(0, (primary * 1.4f).toInt(), 23f * unit * density / 1.5f, (12 * unit * density / 1.5f).toInt())
     }
 
     private fun applyText(unit: Float) {
@@ -172,7 +184,6 @@ internal class DoorbellRingWindow private constructor(
         heading.setTextSize(TypedValue.COMPLEX_UNIT_PX, 30f * k)
         sub.setTextSize(TypedValue.COMPLEX_UNIT_PX, 19f * k)
         listOf(lightButton, replyButton, closeButton, talkButton).forEach { it.setTextSize(TypedValue.COMPLEX_UNIT_PX, 22f * k) }
-        openButton.textPx = 23f * k
         for (i in 0 until replies.childCount) (replies.getChildAt(i) as? TextView)?.setTextSize(TypedValue.COMPLEX_UNIT_PX, 20f * k)
     }
 
@@ -202,6 +213,7 @@ internal class DoorbellRingWindow private constructor(
 
     private fun open() {
         isShowing = true
+        GateHub.listen(gateListener)
         openedAt = SystemClock.uptimeMillis()
         render()
         // Плитка видна на панели — окно сразу показывает её живой субпоток, пока подключается основной.
@@ -246,9 +258,12 @@ internal class DoorbellRingWindow private constructor(
     /** Повторный звонок: окно остаётся, отсчёт начинается заново. */
     fun extend() {
         if (!isShowing || closing) return
-        // Звонят снова после «Калитку открыли»: окно остаётся, кнопка снова доступна.
+        // Звонят снова после «Калитку открыли»: окно остаётся, звонок снова не отвечен.
         main.removeCallbacks(closeAfterOpened)
-        if (gate == Gate.OPENED || gate == Gate.UNCONFIRMED || gate == Gate.FAILED) gate = Gate.IDLE
+        main.removeCallbacks(closeAfterShut)
+        shutPending = false
+        passedAt = null
+        passedGate = null
         main.removeCallbacks(autoClose)
         main.postDelayed(autoClose, RING_MS)
         card.video.muted = true
@@ -287,6 +302,7 @@ internal class DoorbellRingWindow private constructor(
         if (!isShowing && parent == null) return
         val wasShowing = isShowing
         isShowing = false
+        GateHub.unlisten(gateListener)
         closing = true
         main.removeCallbacksAndMessages(null)
         animator?.let { animator = null; it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
@@ -323,9 +339,9 @@ internal class DoorbellRingWindow private constructor(
         val readings = DoorbellHub.readings ?: return
         val snapshot = DoorbellModel.snapshot(config, readings)
         val now = System.currentTimeMillis()
-        card.bind(tile.title, config, snapshot.copy(ringing = snapshot.ringing || gate != Gate.OPENED),
+        card.bind(tile.title, config, snapshot.copy(ringing = snapshot.ringing || passedAt == null),
             DoorbellHub.offline(tileId), 0, DoorbellHub.lastRing(tileId), now)
-        openButton.visibility = if (config.lock.isNotBlank() && DoorbellModel.openCommand(config.lock) != null) VISIBLE else GONE
+        gateButtons.bind(GateHub.forTile(host, tileId, config))
         lightButton.visibility = if (config.light.isNotBlank()) VISIBLE else GONE
         talkButton.visibility = if (config.canTalk) VISIBLE else GONE
         talkButton.callMode = config.talkCall
@@ -336,21 +352,10 @@ internal class DoorbellRingWindow private constructor(
         val phrases = if (config.canTalk) DoorbellPhrases.ready(host, tileId) else emptyList()
         replyButton.visibility = if (snapshot.quickReplies.isNotEmpty() || phrases.isNotEmpty()) VISIBLE else GONE
         if (replies.visibility == VISIBLE) fillReplies(config, snapshot.quickReplies, phrases)
-        sub.text = when (gate) {
-            Gate.SENDING -> "Отправляю команду…"
-            Gate.WAITING -> "Открываю калитку…"
-            Gate.OPENED -> "Калитку открыли"
-            Gate.FAILED -> "Не удалось открыть — попробуйте ещё раз"
-            Gate.UNCONFIRMED -> "Команда принята, подтверждения нет — проверьте калитку"
-            Gate.IDLE -> DoorbellHub.lastRing(tileId)?.let { "Звонок " + DoorbellModel.ago(it, now) } ?: ""
-        }
-        sub.setTextColor(when (gate) {
-            Gate.OPENED -> DoorbellFrame.RING
-            Gate.FAILED -> DoorbellFrame.OFFLINE
-            Gate.UNCONFIRMED -> DoorbellFrame.PERSON
-            else -> DoorbellFrame.SECONDARY
-        })
-        openButton.state = gate
+        val passed = passedGate
+        sub.text = if (passedAt != null) passed?.let { GateLogic.verb("Открыли", it.name) } ?: "Открыли"
+            else DoorbellHub.lastRing(tileId)?.let { "Звонок " + DoorbellModel.ago(it, now) } ?: ""
+        sub.setTextColor(if (passedAt != null) DoorbellFrame.RING else DoorbellFrame.SECONDARY)
     }
 
     private fun touched() {
@@ -365,50 +370,48 @@ internal class DoorbellRingWindow private constructor(
         main.postDelayed(autoClose, RING_MS)
     }
 
-    private fun openGate() {
-        val config = DoorbellHub.config(tileId) ?: return
-        val command = DoorbellModel.openCommand(config.lock) ?: return
-        if (gate == Gate.SENDING || gate == Gate.WAITING || gate == Gate.OPENED) return
-        // После «подтверждения нет» повтор — только осознанный: второе удержание (первое лишь снимает предупреждение).
-        if (gate == Gate.UNCONFIRMED) { gate = Gate.IDLE; render(); return }
-        val actions = DoorbellHub.actions
-        gate = Gate.SENDING
-        render()
-        val sent = actions?.call(command.domain, command.service, config.lock, emptyMap()) { result ->
-            if (gate != Gate.SENDING && gate != Gate.WAITING) return@call
-            if (result == ServiceCommandResult.ACKNOWLEDGED) { if (gate == Gate.SENDING) gate = Gate.WAITING }
-            else gate = Gate.FAILED
-            render()
-        } == true
-        if (!sent) { gate = Gate.FAILED; render(); return }
-        // Факт открытия — событие HA (DoorbellMonitor.GateOpened). Нет факта — честно «не удалось».
-        val deadline = Runnable {
-            when (gate) {
-                Gate.SENDING -> gate = Gate.FAILED
-                Gate.WAITING -> gate = Gate.UNCONFIRMED
-                else -> return@Runnable
-            }
-            render()
-        }
-        gateDeadline = deadline
-        main.postDelayed(deadline, GATE_TIMEOUT_MS)
+    private fun runGate(gate: com.example.smarthomedashboard.Gate, action: com.example.smarthomedashboard.Gate.Action) {
+        if (!GateStore.pin(host).required(inRingWindow = true)) { GateHub.run(gate.id, action); return }
+        val owner = host as? androidx.appcompat.app.AppCompatActivity ?: return
+        PinSecurityUi.authorize(owner, { GateHub.run(gate.id, action) })
     }
 
-    /** Калитку открыли (здесь или на другом планшете): короткое подтверждение и закрытие. */
-    fun gateOpened() {
+    /** Калитку открыли (здесь или на другом планшете): звонок отвечен; окно остаётся, пока гость проходит. */
+    fun gateOpened(gate: com.example.smarthomedashboard.Gate? = null) {
         if (!isShowing || closing) return
-        gateDeadline?.let(main::removeCallbacks)
-        gate = Gate.OPENED
         DoorbellHub.acknowledge(tileId)
         DoorbellHub.lastRingAt?.takeIf { it.first == tileId }?.let { RingLog.markAnswered(host, tileId, it.second) }
         PanelAlerts.cancel(DoorbellHub.ringTag(tileId))
+        passedAt = SystemClock.uptimeMillis()
+        passedGate = gate ?: GateHub.forTile(host, tileId, DoorbellHub.config(tileId) ?: DoorbellConfig()).firstOrNull()
         render()
         card.applyAccent(DoorbellFrame.RING, pulse = false, animate = true)
-        main.removeCallbacks(autoClose)
-        main.postDelayed(closeAfterOpened, OPENED_SHOW_MS)
+        main.removeCallbacks(closeAfterOpened)
+        // Где проход, неизвестно (кнопка без датчика) — закрыть позже; иначе — когда снова закрыт ([onGateChanged]).
+        if (passedGate?.let { GateHub.status(it).source == GateStatus.Source.NONE } != false) main.postDelayed(closeAfterOpened, PASS_UNKNOWN_MS)
+        onGateChanged()
+    }
+
+    /** Гость прошёл: проходы плитки с известным положением снова закрыты — окно закрывается. */
+    private fun onGateChanged() {
+        if (!isShowing || closing || passedAt == null) return
+        val gates = GateHub.forTile(host, tileId, DoorbellHub.config(tileId) ?: return)
+        val known = gates.map { GateHub.status(it) }.filter { it.source != GateStatus.Source.NONE }
+        val shut = known.isNotEmpty() && known.all { it.position == GateStatus.Position.CLOSED }
+        if (shut && !shutPending) {
+            shutPending = true
+            main.removeCallbacks(closeAfterOpened)
+            main.postDelayed(closeAfterShut, OPENED_SHOW_MS)
+        } else if (!shut && shutPending) {
+            shutPending = false
+            main.removeCallbacks(closeAfterShut)
+        }
     }
 
     private val closeAfterOpened = Runnable { close() }
+    /** Проход снова закрыт: окно закрывается один раз через [OPENED_SHOW_MS]; снова открыли — отсчёт отменён. */
+    private val closeAfterShut = Runnable { close() }
+    private var shutPending = false
 
     private val inCallKeep = object : Runnable {
         override fun run() {
@@ -572,8 +575,10 @@ internal class DoorbellRingWindow private constructor(
         const val RING_MS = 60_000L
         const val OPEN_MS = 340L
         const val CLOSE_MS = 260L
+        /** Проход снова закрыт после «Открыли» — окно закрывается через столько. */
         const val OPENED_SHOW_MS = 2_500L
-        const val GATE_TIMEOUT_MS = 15_000L
+        /** Где проход, неизвестно (кнопка без датчика): окно после «Открыли» закрывается через столько (решение 10). */
+        const val PASS_UNKNOWN_MS = 30_000L
         private const val KEEP_AWAKE_MS = 20_000L
         private const val PHOTO_CHECK_MS = 1_000L
         private const val PHOTO_TRIES = 12
@@ -593,7 +598,18 @@ internal class DoorbellRingWindow private constructor(
  * Кнопка с удержанием: заполнение слева направо за [HOLD_MS]; отпустили раньше — откат без действия.
  * Готово — короткая вибрация и [onComplete]. Состояние калитки меняет подпись и цвет.
  */
-internal class HoldButton(context: Context, private val label: String, icon: Int) : View(context) {
+internal class HoldButton(context: Context, label: String, icon: Int) : View(context) {
+    /** Подпись в покое (проходы меняют её: «Открыть калитку» / «Закрыть ворота»). */
+    var label: String = label
+        set(value) { if (field != value) { field = value; contentDescription = if (instant) value else "$value: удерживайте"; invalidate() } }
+    /** Подпись и подсказка состояния вместо стандартных («Открываю…», «нет подтверждения…»); null — стандартные. */
+    var stateCaption: String? = null
+        set(value) { if (field != value) { field = value; invalidate() } }
+    var stateHint: String? = null
+        set(value) { if (field != value) { field = value; invalidate() } }
+    /** Сразу по касанию, без удержания («Стоп» привода: останавливать надо немедленно). */
+    var instant = false
+        set(value) { field = value; contentDescription = if (value) label else "$label: удерживайте"; invalidate() }
     private val density = resources.displayMetrics.density
     private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -626,14 +642,14 @@ internal class HoldButton(context: Context, private val label: String, icon: Int
         else -> DoorbellFrame.RING
     }
 
-    private val caption get() = when (state) {
+    private val caption get() = stateCaption ?: when (state) {
         DoorbellRingWindow.Gate.SENDING, DoorbellRingWindow.Gate.WAITING -> "Открываю…"
         DoorbellRingWindow.Gate.OPENED -> "Калитка открыта"
         else -> label
     }
 
-    private val hint get() = when (state) {
-        DoorbellRingWindow.Gate.IDLE, DoorbellRingWindow.Gate.FAILED -> if (progress > 0f) "держите…" else "удерживайте 1 секунду"
+    private val hint get() = if (holding && progress > 0f) "держите…" else stateHint ?: when (state) {
+        DoorbellRingWindow.Gate.IDLE, DoorbellRingWindow.Gate.FAILED -> if (instant) null else "удерживайте 1 секунду"
         DoorbellRingWindow.Gate.UNCONFIRMED -> "нет подтверждения · коснитесь, чтобы повторить"
         else -> null
     }
@@ -673,6 +689,20 @@ internal class HoldButton(context: Context, private val label: String, icon: Int
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
         val busy = state == DoorbellRingWindow.Gate.SENDING || state == DoorbellRingWindow.Gate.WAITING || state == DoorbellRingWindow.Gate.OPENED
+        if (instant) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { onTouchStart?.invoke(); isPressed = true }
+                MotionEvent.ACTION_UP -> {
+                    isPressed = false
+                    if (!busy && event.x in 0f..width.toFloat() && event.y in 0f..height.toFloat()) {
+                        performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        onComplete?.invoke()
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> isPressed = false
+            }
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 onTouchStart?.invoke()
@@ -699,6 +729,12 @@ internal class HoldButton(context: Context, private val label: String, icon: Int
             }
         }
         return true
+    }
+
+    /** Недоступна (нет связи) — приглушена, касания не принимает. */
+    override fun setEnabled(enabled: Boolean) {
+        super.setEnabled(enabled)
+        alpha = if (enabled) 1f else 0.45f
     }
 
     override fun onDraw(canvas: Canvas) {

@@ -48,6 +48,9 @@ class DoorbellUiTest {
         org.robolectric.shadows.ShadowChoreographer.setFrameDelay(java.time.Duration.ofMillis(16))
         val app = org.robolectric.RuntimeEnvironment.getApplication()
         app.getSharedPreferences("dashboard_prefs", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+        // Плитка в хранилище: прежнее поле «Замок калитки» становится проходом «Калитка» (docs/gate-tz.md), как на планшете.
+        com.example.smarthomedashboard.data.TileManager(app).saveTiles(listOf(tile))
+        GateHub.reset()
         DoorbellHub.attach(app)
         DoorbellHub.actions = object : DoorbellHub.Actions {
             override fun call(domain: String, service: String, entityId: String, data: Map<String, Any>,
@@ -69,7 +72,12 @@ class DoorbellUiTest {
     @After fun tearDown() {
         DoorbellHub.actions = null
         DoorbellHub.detach()
+        GateHub.reset()
     }
+
+    /** Кнопка прохода «Калитка», созданного из прежнего поля «Замок калитки». */
+    private fun openButton(window: DoorbellRingWindow) =
+        window.gateButtons.findViewWithTag<HoldButton>("gate_${GateStore.legacyId("door")}_open")!!
 
     private fun state(connected: Boolean = true) = DoorbellHub.onState(listOf(tile), readings(connected))
 
@@ -196,47 +204,55 @@ class DoorbellUiTest {
         assertNotNull(DoorbellHub.lastRing("door"))
     }
 
-    @Test fun holdOneSecondOpensGateAndFactClosesWindow() {
+    /** Решение владельца 10 (docs/gate-tz.md): после «Открыть» окно остаётся, пока гость проходит. */
+    @Test fun holdOneSecondOpensGateWindowStaysUntilClosedAgain() {
         val window = openFromBanner()
         calls.clear()
-        hold(window.openButton, 400)
+        val open = openButton(window)
+        assertEquals("Открыть калитку", open.label)
+        hold(open, 400)
         advance(300)
         assertTrue("Отпустили раньше — команды нет: $calls", calls.isEmpty())
-        hold(window.openButton, 1_100)
+        hold(open, 1_100)
         assertEquals(listOf("lock.unlock lock.gate"), calls)
-        assertEquals(DoorbellRingWindow.Gate.WAITING, window.openButton.state)
+        assertEquals(DoorbellRingWindow.Gate.WAITING, open.state)
         values["lock.gate"] = "unlocked"; state()
-        assertEquals("Калитку открыли", window.findViewWithTag<TextView>("door_ring_sub").text.toString())
+        assertEquals("Открыли калитку", window.findViewWithTag<TextView>("door_ring_sub").text.toString())
+        assertEquals(DoorbellRingWindow.Gate.OPENED, open.state)
         advance(DoorbellRingWindow.OPENED_SHOW_MS + DoorbellRingWindow.CLOSE_MS + 100)
-        assertNull(window())
+        assertTrue("Калитка открыта — окно остаётся: видно, что гость вошёл", window.isShowing)
+        values["lock.gate"] = "locked"; state()
+        advance(DoorbellRingWindow.OPENED_SHOW_MS + DoorbellRingWindow.CLOSE_MS + 100)
+        assertNull("Калитка снова закрыта — окно закрылось", window())
         assertFalse(window.isShowing)
     }
 
     @Test fun acceptedWithoutFactDoesNotInviteImmediateRepeat() {
         val window = openFromBanner()
         calls.clear()
-        hold(window.openButton, 1_100)
-        advance(DoorbellRingWindow.GATE_TIMEOUT_MS + 100)
-        assertEquals(DoorbellRingWindow.Gate.UNCONFIRMED, window.openButton.state)
+        val open = openButton(window)
+        hold(open, 1_100)
+        advance(Gate.DEFAULT_CONFIRM * 1000L + 100)
+        assertEquals(DoorbellRingWindow.Gate.UNCONFIRMED, open.state)
         assertTrue(window.isShowing)
-        hold(window.openButton, 100)
+        hold(open, 100)
         assertEquals("Касание лишь снимает предупреждение", 1, calls.size)
-        assertEquals(DoorbellRingWindow.Gate.IDLE, window.openButton.state)
-        hold(window.openButton, 1_100)
+        assertEquals(DoorbellRingWindow.Gate.IDLE, open.state)
+        hold(open, 1_100)
         assertEquals("Повтор — новым удержанием", 2, calls.size)
     }
 
-    @Test fun repeatedRingAfterOpenedKeepsWindowAndUnlocksButton() {
+    @Test fun repeatedRingAfterOpenedKeepsWindow() {
         val window = openFromBanner()
         advance(3_500)
         values["lock.gate"] = "unlocked"; state()
-        assertEquals(DoorbellRingWindow.Gate.OPENED, window.openButton.state)
+        assertEquals("Открыли калитку", window.findViewWithTag<TextView>("door_ring_sub").text.toString())
         values["lock.gate"] = "locked"; state()
         advance(500)
         ring()
         advance(3_000)
-        assertTrue("Новый звонок отменил закрытие после «Калитку открыли»", window.isShowing)
-        assertEquals(DoorbellRingWindow.Gate.IDLE, window.openButton.state)
+        assertTrue("Новый звонок отменил закрытие после «Открыли калитку»", window.isShowing)
+        assertTrue(window.findViewWithTag<TextView>("door_ring_sub").text.toString().startsWith("Звонок"))
     }
 
     @Test fun autoCloseAfterMinuteAndRepeatedRingExtends() {

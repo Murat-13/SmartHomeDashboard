@@ -424,12 +424,27 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
     /** Касание кнопок карточки — для таймера автосворачивания владельца. */
     var onActivity: (() -> Unit)? = null
 
+    /**
+     * Калитки и ворота (docs/gate-tz.md) — кнопки проходов этой плитки, и без звонка. Только у раскрытой карточки на
+     * панели: у окна звонка свои, крупнее.
+     */
+    private val gateRow: GateButtons? = if (expanded) GateButtons(context, vertical = false).apply {
+        onTouch = { this@DoorbellCard.onActivity?.invoke() }
+    } else null
+    /** Нажали кнопку прохода (PIN и исполнение — у панели). */
+    var onGate: ((Gate, Gate.Action) -> Unit)?
+        get() = gateRow?.onAction
+        set(value) { gateRow?.onAction = value }
+
+    /** Проходы этой плитки: только настроенные; в окне звонка — нет. */
+    fun gates(list: List<Gate>) { gateRow?.bind(if (ringMode) emptyList() else list) }
+
     /** Карточка в окне звонка: без подсказки «касание — свернуть» и без счётчика пропущенных. */
     var ringMode = false
         set(value) {
             field = value
             sound.visibility = if (expanded && !value) VISIBLE else GONE
-            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; autoReplyButton.visibility = GONE; guardButton.visibility = GONE; zoom?.reset() }
+            if (value) { talkButton?.visibility = GONE; calls.visibility = GONE; phraseRow.visibility = GONE; autoReplyButton.visibility = GONE; guardButton.visibility = GONE; gateRow?.bind(emptyList()); zoom?.reset() }
         }
 
     /** Увеличение пальцами — только у раскрытой карточки на панели (решение владельца: не в окне звонка). */
@@ -472,6 +487,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         left.addView(last)
         if (expanded) { left.addView(phraseRow); left.addView(sound) }
         footer.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        gateRow?.let { footer.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
         talkButton?.let { footer.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
         content.addView(footer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
@@ -517,6 +533,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         (autoReplyButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (calls.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         for (i in 0 until phraseRow.childCount) styleChip(phraseRow.getChildAt(i) as TextView, next)
+        gateRow?.applySize((300 * next).toInt(), (72 * next).toInt(), 22 * next, (12 * next).toInt())
+        (gateRow?.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         talkButton?.let { b ->
             b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 24 * next)
             b.minHeight = (56 * next).toInt(); b.setPadding((22 * next).toInt(), (10 * next).toInt(), (22 * next).toInt(), (10 * next).toInt())
@@ -726,7 +744,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             rawY >= hitLocation[1] && rawY < hitLocation[1] + v.height * scaleY
     }
 
-    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, guardButton, lightButton, talkButton) + (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) }
+    private fun buttons(): List<View> = listOfNotNull(archive, calls, autoReplyButton, guardButton, lightButton, talkButton) +
+        (0 until phraseRow.childCount).map { phraseRow.getChildAt(it) } + gateRow?.shown.orEmpty()
 
     private fun hit(v: View, windowX: Float, windowY: Float): Boolean {
         if (!v.isShown) return false

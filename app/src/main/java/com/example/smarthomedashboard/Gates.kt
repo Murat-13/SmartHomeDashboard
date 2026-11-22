@@ -1,6 +1,7 @@
 package com.example.smarthomedashboard
 
 import android.content.Context
+import androidx.core.content.edit
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import org.json.JSONArray
@@ -340,14 +341,14 @@ internal object GateStore {
 
     fun save(context: Context, gates: List<Gate>) {
         val json = JSONArray().apply { gates.take(Gate.MAX).forEach { put(it.toJson()) } }.toString()
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, json).apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY, json) }
         GateHub.invalidate()
     }
 
     fun pin(context: Context): GatePin = GatePin.of(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PIN, null))
 
     fun setPin(context: Context, pin: GatePin) =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_PIN, pin.key).apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_PIN, pin.key) }
 
     /** Проходы из прежнего поля «Замок калитки» у плиток домофона. */
     fun migrate(tiles: List<TileEntity>): List<Gate> {

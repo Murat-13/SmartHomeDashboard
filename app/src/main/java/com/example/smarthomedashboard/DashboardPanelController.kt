@@ -1189,6 +1189,8 @@ internal class DashboardPanelController(
             (modernExpansion.card as? DoorbellCard)?.let {
                 it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard)
                 if (tile.type == DoorbellConfig.CAMERA_TYPE && config.light.isNotBlank()) it.floodlight(CameraLight.haState(config))
+                // Калитки и ворота (docs/gate-tz.md): кнопки проходов этой плитки — и без звонка.
+                it.gates(GateHub.forTile(activity, tile.id, config))
             }
         }
         handler.removeCallbacks(doorbellTick)
@@ -1196,6 +1198,14 @@ internal class DashboardPanelController(
     }
 
     private val doorbellTick = Runnable { renderDoorbells() }
+
+    /** Кнопка прохода: при выбранном PIN — сначала PIN (тот же, что у настроек и архива), потом команда. */
+    private fun runGate(gate: Gate, action: Gate.Action, inRingWindow: Boolean) {
+        modernExpansion.touch()
+        if (!GateStore.pin(activity).required(inRingWindow)) { GateHub.run(gate.id, action); return }
+        val owner = activity as? androidx.appcompat.app.AppCompatActivity ?: return
+        PinSecurityUi.authorize(owner, { GateHub.run(gate.id, action) })
+    }
 
     /** Звонок, пропущенные, окно звонка открылось/закрылось: перерисовать плитки домофона текущей страницы. */
     fun renderDoorbells() {
@@ -1502,6 +1512,8 @@ internal class DashboardPanelController(
             }
             // Охрана — и у камер (docs/camera-tz.md, часть 2).
             expanded.onGuard = { DoorbellGuard.toggle(activity, tile.id) }
+            // Калитки и ворота (docs/gate-tz.md): PIN — по выбору владельца («Вне окна звонка» и «Всегда»).
+            expanded.onGate = { gate, action -> runGate(gate, action, inRingWindow = false) }
             // Прожектор камеры (часть 3): состояние с камеры или из HA; кнопка — только если прожектор есть.
             if (camera) {
                 CameraLight.query(activity, tile.id, config) { state -> expanded.floodlight(state) }

@@ -117,13 +117,9 @@ class DoorbellLogicTest {
         } finally { DoorbellHub.detach() }
     }
 
-    @Test fun openCommandPerDomain() {
-        assertEquals(DoorbellModel.OpenCommand("lock", "unlock", "unlocked"), DoorbellModel.openCommand("lock.gate"))
-        assertEquals("press", DoorbellModel.openCommand("button.gate")!!.service)
-        assertEquals("turn_on", DoorbellModel.openCommand("switch.gate_relay")!!.service)
-        assertEquals("open_cover", DoorbellModel.openCommand("cover.gate")!!.service)
-        assertNull(DoorbellModel.openCommand("sensor.x"))
-        assertTrue(DoorbellModel.fits("lock", "button.gate")); assertFalse(DoorbellModel.fits("camera", "sensor.x"))
+    // Команды калитки — у проходов (GateLogic.command): GatesTest.commandsByKindAndEntity.
+    @Test fun rolesFitTheirDomains() {
+        assertTrue(DoorbellModel.fits("visitor", "binary_sensor.door_visitor")); assertFalse(DoorbellModel.fits("camera", "sensor.x"))
     }
 
     @Test fun ringOnlyOnOffToOnWithDebounceAndNotOnStartup() {

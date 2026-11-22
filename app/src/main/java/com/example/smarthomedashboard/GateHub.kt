@@ -17,6 +17,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * - Состояние — из общего потока Home Assistant ([DoorbellHub.readings], там все сущности); новая подписка не нужна.
  * - Проход открыли где угодно (здесь, другая панель, пульт) — [onOpened]: окно звонка отмечает звонок отвеченным.
  */
+// Хранится только applicationContext (attach), не экран: утечки нет.
+@android.annotation.SuppressLint("StaticFieldLeak")
 internal object GateHub {
     private const val TAG = "Gates"
 
@@ -46,6 +48,8 @@ internal object GateHub {
     private var app: Context? = null
     private var cached: List<Gate>? = null
     private val ops = HashMap<String, Op>()
+    /** Проход, которым исполняется действие: может быть ещё не сохранён («Проверить» в редакторе). */
+    private val opGates = HashMap<String, Gate>()
     private val deadlines = HashMap<String, Runnable>()
     private val clears = HashMap<String, Runnable>()
     private val lastPosition = HashMap<String, GateStatus.Position>()
@@ -101,9 +105,14 @@ internal object GateHub {
      * Действие кнопки. false — не отправлено (уже идёт, нет такого действия, нет связи); причина видна на кнопке ([op]).
      * PIN проверяет вызывающий ([GatePin]) — здесь только исполнение.
      */
-    fun run(gateId: String, action: Gate.Action): Boolean {
-        val gate = gate(gateId) ?: return false
-        if (ops[gateId]?.busy == true) return false
+    fun run(gateId: String, action: Gate.Action): Boolean = gate(gateId)?.let { run(it, action) } ?: false
+
+    /** То же для прохода, которого может ещё не быть в списке («Проверить» в редакторе прохода). */
+    fun run(gate: Gate, action: Gate.Action): Boolean {
+        val gateId = gate.id
+        // Пока ждём подтверждения, повтор не уходит; «Стоп» — всегда: остановить ход ворот важнее ожидания.
+        if (ops[gateId]?.busy == true && action != Gate.Action.STOP) return false
+        deadlines.remove(gateId)?.let(main::removeCallbacks)
         val readings = readings
         val command = GateLogic.command(gate, action, readings) ?: return false
         val before = GateLogic.status(gate, readings)
@@ -113,6 +122,7 @@ internal object GateHub {
             return false
         }
         val op = Op(action, Phase.SENDING, started, before, raw(gate.open))
+        opGates[gate.id] = gate
         set(gate.id, op)
         Log.i(TAG, "${gate.name}: ${action.name.lowercase()} → ${command.domain}.${command.service}")
         val sent = driver.send(command) { result -> main.post { onResult(gate, op, result) } }
@@ -154,7 +164,7 @@ internal object GateHub {
 
     private fun onDeadline(gateId: String, op: Op) {
         if (!same(gateId, op)) return
-        val gate = gate(gateId) ?: return
+        val gate = opGates[gateId] ?: gate(gateId) ?: return
         val current = ops.getValue(gateId)
         if (!current.busy) return
         val reacted = GateLogic.reacted(current.beforeRaw, raw(gate.open))
@@ -197,6 +207,8 @@ internal object GateHub {
     fun onState(context: Context?, readings: BatteryReadings) {
         latest = readings
         val gates = gates(context)
+        // Проверка ещё не сохранённого прохода: ждём его подтверждения так же.
+        opGates.values.filter { draft -> gates.none { it.id == draft.id } }.forEach { check(it, readings) }
         var changed = false
         for (gate in gates) {
             check(gate, readings)
@@ -227,7 +239,7 @@ internal object GateHub {
     fun reset() {
         deadlines.values.forEach(main::removeCallbacks); deadlines.clear()
         clears.values.forEach(main::removeCallbacks); clears.clear()
-        ops.clear(); lastPosition.clear(); lastRaw.clear(); listeners.clear()
+        ops.clear(); opGates.clear(); lastPosition.clear(); lastRaw.clear(); listeners.clear()
         latest = null
         cached = null
         onOpened = null

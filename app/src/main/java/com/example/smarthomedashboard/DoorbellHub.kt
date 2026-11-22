@@ -66,7 +66,7 @@ internal object DoorbellHub {
         // Калитки и ворота (docs/gate-tz.md): открыли где угодно — звонок у плиток этого прохода отвечен.
         GateHub.attach(application)
         GateHub.onOpened = { gate ->
-            videoTiles.filter { DoorbellConfig.from(it.config).gateIds(it.id).contains(gate.id) }.forEach { RingUi.gateOpened(it.id) }
+            videoTiles.filter { DoorbellConfig.from(it.config).gateIds(it.id).contains(gate.id) }.forEach { RingUi.gateOpened(it.id, gate) }
         }
     }
 
@@ -430,12 +430,12 @@ internal object DoorbellHub {
             }
         }
 
-        fun gateOpened(tileId: String) {
+        fun gateOpened(tileId: String, gate: Gate? = null) {
             // Калитку открыли (здесь или на другом планшете) — звонок обработан, не пропущен.
             acknowledge(tileId)
             if (pending?.first == tileId) pending = null
             banner?.takeIf { it.tileId == tileId }?.dismiss()
-            window?.takeIf { it.tileId == tileId }?.gateOpened()
+            window?.takeIf { it.tileId == tileId }?.gateOpened(gate)
         }
 
         fun render() { window?.render() }
