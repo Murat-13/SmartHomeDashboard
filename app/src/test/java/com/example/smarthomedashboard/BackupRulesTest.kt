@@ -35,7 +35,7 @@ class BackupRulesTest {
         }
         assertTrue("files/backups/ исключена: $excludes", ("file" to "backups/") in excludes)
         // Кроме копий — только снимки посетителей и фразы голосом владельца (домофон): остальные файлы — в backup.
-        val allowed = setOf("backups/", "doorbell_rings/", "doorbell_phrases/")
+        val allowed = setOf("backups/", "doorbell_rings/", "doorbell_phrases/", "gate_log/")
         assertTrue("других файлов приложения исключение не касается", excludes.none { it.first == "file" && it.second !in allowed })
     }
     @Test fun legacyBackupExcludesOnlySensitivePrefsAndKeepsTiles() {
@@ -67,6 +67,7 @@ class BackupRulesTest {
             assertTrue(("external" to "records/") in excludes)
             assertTrue("Индекс роликов — про файлы этого планшета", ("database" to "recording_index.db") in excludes)
             assertTrue("Снимки посетителей — не в облако", ("file" to "doorbell_rings/") in excludes)
+            assertTrue("Снимки журнала открытий — не в облако", ("file" to "gate_log/") in excludes)
             assertTrue("Голос владельца — не в облако", ("file" to "doorbell_phrases/") in excludes)
             assertFalse("Уведомление и автоответ — только этого планшета", rulesPermit(root, "doorbell_away.xml"))
             assertFalse("Пароли камер — не в облако", rulesPermit(root, "camera_secrets.xml"))

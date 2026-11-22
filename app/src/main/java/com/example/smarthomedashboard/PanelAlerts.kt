@@ -23,7 +23,8 @@ internal enum class AlertEvent(
     RECORDING_STOPPED("recording_stopped", "Проблемы записи с камер (нет места, нет карты)", true, 10 * 60_000L),
     BATTERY_LOW("battery_low", "Низкий заряд АКБ", false, 30 * 60_000L),
     INVERTER_OVERLOAD("inverter_overload", "Перегрузка инвертора", false, 5 * 60_000L),
-    INVERTER_FAULT("inverter_fault", "Авария инвертора", false, 5 * 60_000L);
+    INVERTER_FAULT("inverter_fault", "Авария инвертора", false, 5 * 60_000L),
+    GATE_LEFT_OPEN("gate_left_open", "Калитку или ворота оставили открытыми", true, 60_000L);
 
     companion object {
         fun of(key: String) = entries.firstOrNull { it.key == key }

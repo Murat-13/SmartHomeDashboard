@@ -69,6 +69,7 @@ class HomeAssistantWebSocket(
     private var failures = 0
     private var messageId = 1
     private var stateSubscriptionSent = false
+    private var actionSubscriptionSent = false
     private var statesRequested = false
     private var entitiesRequested = false
     private companion object {
@@ -172,6 +173,7 @@ class HomeAssistantWebSocket(
         authenticated = false
         authSent = false
         stateSubscriptionSent = false
+        actionSubscriptionSent = false
         forecastSubscriptions.clear()
         // ID не сбрасываются: HA требует лишь рост в пределах соединения, а сквозная нумерация
         // исключает совпадение ID запроса прошлого соединения с ответом нового.
@@ -394,6 +396,10 @@ class HomeAssistantWebSocket(
             }
             "event" -> if (authenticated) {
                 val event = json.optJSONObject("event") ?: return
+                if (event.optString("event_type") == HaEvents.NOTIFICATION_ACTION) {
+                    event.optJSONObject("data")?.optString("action")?.takeIf { it.isNotBlank() }?.let { HaEvents.notificationAction(it) }
+                    return
+                }
                 if (event.optString("event_type") == "state_changed") {
                     val data = event.optJSONObject("data")
                     val state = data?.optJSONObject("new_state")
@@ -465,6 +471,12 @@ class HomeAssistantWebSocket(
         if (!stateSubscriptionSent) {
             stateSubscriptionSent = true
             command("subscribe_events").put("event_type", "state_changed").let { sendMessage(it) }
+        }
+        // Кнопки в уведомлении на телефоне (docs/gate-tz.md, решение 5): нажатие приходит событием. Подписка — только
+        // если хоть у одного прохода включена кнопка на телефоне; включили позже — при следующей пересинхронизации.
+        if (!actionSubscriptionSent && HaEvents.wanted()) {
+            actionSubscriptionSent = true
+            command("subscribe_events").put("event_type", HaEvents.NOTIFICATION_ACTION).let { sendMessage(it) }
         }
         stateRequest?.timeout?.let { handler.removeCallbacks(it) }
         val message = command("get_states")
@@ -838,6 +850,7 @@ class HomeAssistantWebSocket(
         authSent = true
         authenticated = true
         stateSubscriptionSent = false
+        actionSubscriptionSent = false
         switchedAt = SystemClock.elapsedRealtime()
         // То же, что после auth_ok обычного подключения: подписки, снимок, прогнозы, список сущностей.
         if (!resubscribe()) return
@@ -904,3 +917,18 @@ data class HaEntity(
     val domain: String,
     val selected: Boolean = false
 )
+
+/** События Home Assistant, кроме состояний, — для тех, кто их ждёт (кнопки в уведомлении на телефоне). */
+internal object HaEvents {
+    const val NOTIFICATION_ACTION = "mobile_app_notification_action"
+    private val main = Handler(Looper.getMainLooper())
+    /** Нужна ли подписка на нажатия (есть проход с кнопкой на телефоне). */
+    @Volatile var wanted: () -> Boolean = { false }
+    /** Нажали кнопку в уведомлении: её `action`. Главный поток. */
+    @Volatile var onNotificationAction: ((String) -> Unit)? = null
+
+    fun notificationAction(action: String) {
+        val listener = onNotificationAction ?: return
+        if (Looper.myLooper() == Looper.getMainLooper()) listener(action) else main.post { listener(action) }
+    }
+}

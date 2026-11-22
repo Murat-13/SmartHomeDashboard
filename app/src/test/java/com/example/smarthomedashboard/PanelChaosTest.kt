@@ -290,7 +290,7 @@ class PanelChaosTest(private val shard: Int) {
 /** Плитки всех типов: исходные настройки — как создают редакторы, затем случайная порча полей и значений. */
 internal object ChaosTiles {
     private val types = listOf("button", "group", "sensor", "battery", "weather", "clock", BatteryModernConfig.TYPE,
-        PowerModernConfig.TYPE, InverterModernConfig.TYPE, HomeClimateConfig.TYPE, DoorbellConfig.TYPE, "unknown_type")
+        PowerModernConfig.TYPE, InverterModernConfig.TYPE, HomeClimateConfig.TYPE, DoorbellConfig.TYPE, GateTileConfig.TYPE, "unknown_type")
 
     fun generate(rnd: Random): List<TileEntity> = (0 until rnd.nextInt(1, 9)).map { i ->
         val type = types[rnd.nextInt(types.size)]
@@ -375,6 +375,8 @@ internal object ChaosTiles {
                 person = id("binary_sensor", i + 1, rnd), motion = id("binary_sensor", i + 2, rnd), lock = id("lock", i, rnd),
                 light = id("light", i, rnd), quickReply = id("select", i, rnd), autoLight = rnd.nextBoolean())
                 .writeTo(DoorbellConfig.newTileConfig(size.toString()))
+            // Проход может быть не выбран, удалён или испорчен — плитка не должна падать.
+            GateTileConfig.TYPE -> GateTileConfig.newTileConfig(size.toString(), listOf("gate_1", "", "missing")[rnd.nextInt(3)])
             else -> size.put("entity_id", id("sensor", i, rnd)).toString()
         }
     }

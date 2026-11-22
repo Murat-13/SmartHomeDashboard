@@ -116,7 +116,11 @@ internal object DoorbellAway {
         if (s.notifyService.isNotEmpty()) {
             val domain = s.notifyService.substringBefore('.')
             val service = s.notifyService.substringAfter('.')
-            sender(domain, service, notification(title, config.camera, atMs, tileId)) { ok ->
+            val message = notification(title, config.camera, atMs, tileId)
+            // Кнопки «Открыть» проходов, которым разрешён телефон (docs/gate-tz.md, решение 5).
+            val gates = GatePhone.actions(tileId, config, s.notifyService)
+            if (gates.length() > 0) (message["data"] as? JSONObject)?.put("actions", gates)
+            sender(domain, service, message) { ok ->
                 Log.i(TAG, if (ok) "Уведомление о звонке отправлено" else "Уведомление о звонке не отправлено")
             }
         }

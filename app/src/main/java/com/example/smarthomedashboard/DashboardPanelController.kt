@@ -1069,7 +1069,7 @@ internal class DashboardPanelController(
     /** Modern-плитки (АКБ, Электропитание, Часы · Погода · Климат): общие раскрытие, resize, перемещение и редактирование. */
     private fun isModern(type: String) =
         type == BatteryModernConfig.TYPE || type == PowerModernConfig.TYPE || type == HomeClimateConfig.TYPE ||
-            type == InverterModernConfig.TYPE || DoorbellConfig.isVideo(type)
+            type == InverterModernConfig.TYPE || DoorbellConfig.isVideo(type) || type == GateTileConfig.TYPE
 
     private fun createModernBatteryView(tile: TileEntity, savedWidth: Int, savedHeight: Int): View {
         // «Часы · Погода · Климат» — всегда 2:1 внутри сохранённого прямоугольника; config не переписывается.
@@ -1086,7 +1086,17 @@ internal class DashboardPanelController(
             InverterModernConfig.TYPE -> InverterModernCard.createTile(activity, tile.id, width, height, isEditMode)
             DoorbellConfig.TYPE -> DoorbellCard.createTile(activity, tile.id, width, height, isEditMode)
             DoorbellConfig.CAMERA_TYPE -> DoorbellCard.createTile(activity, tile.id, width, height, isEditMode, camera = true)
+            GateTileConfig.TYPE -> GateTileCard.createTile(activity, tile.id, width, height, isEditMode)
             else -> BatteryModernCard.createTile(activity, tile.id, width, height, isEditMode)
+        }
+        // «Калитка или ворота» (docs/gate-tz.md, решение 3): удержание — открыть (PIN по выбору), касание — раскрыть.
+        card.findViewWithTag<GateTileCard>("gate_compact")?.let { gateCard ->
+            gateCard.bind(GateTileConfig.gateId(tile.config), editMode = isEditMode)
+            gateCard.onAction = { gate, action -> runGate(gate, action, inRingWindow = false) }
+            gateCard.onTap = {
+                if (expandedSensorView != null) collapseSensor()
+                else tileManager.getAllTiles().find { it.id == tile.id }?.let { expandModernBattery(it, card) }
+            }
         }
         // Новая View сразу получает уже подтверждённое оформление (без повторной анимации).
         renderModern(tile, card, animate = false)
@@ -1121,6 +1131,11 @@ internal class DashboardPanelController(
         }
         if (DoorbellConfig.isVideo(tile.type)) {
             renderDoorbell(tile, view, readings, animate)
+            return
+        }
+        if (tile.type == GateTileConfig.TYPE) {
+            // Плитка сама слушает проходы (GateHub); здесь — только после изменения настроек плитки.
+            view?.findViewWithTag<GateTileCard>("gate_compact")?.render()
             return
         }
         val config = batteryConfigs.of(tile)
@@ -1184,7 +1199,10 @@ internal class DashboardPanelController(
         val last = DoorbellHub.lastRing(tile.id)
         // Охрана (docs/guard-tz.md): null — на этом планшете не включена в редакторе.
         val guard = DoorbellGuard.settings(activity, tile.id).let { g -> if (g.enabled) DoorbellGuard.armed(g, now) else null }
-        view?.findViewWithTag<DoorbellCard>("door_compact")?.let { it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard) }
+        view?.findViewWithTag<DoorbellCard>("door_compact")?.let {
+            it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard)
+            it.gateMark(config.gateIds(tile.id))
+        }
         if (modernExpansion.isOpen && modernExpansion.tileId == tile.id) {
             (modernExpansion.card as? DoorbellCard)?.let {
                 it.bind(tile.title, config, snapshot, offline, missed, last, now, animate); it.guard(guard)
@@ -1541,6 +1559,18 @@ internal class DashboardPanelController(
                 expanded.video.partner = compact
                 compact.lendTo(expanded.video)
             }
+            return
+        }
+        if (tile.type == GateTileConfig.TYPE) {
+            // Все кнопки прохода и положение; размер — от экрана, кнопки и надписи подстраиваются сами.
+            val width = minOf((screenW * 0.6f).toInt(), (screenH * 1.1f).toInt())
+            val height = minOf((screenH * 0.8f).toInt(), (width * 0.8f).toInt())
+            val card = GateTileCard(activity, expanded = true)
+            card.bind(GateTileConfig.gateId(tile.config))
+            card.onAction = { gate, action -> runGate(gate, action, inRingWindow = false) }
+            card.onTouch = { modernExpansion.touch() }
+            modernExpansion.expand(tile.id, source, card,
+                BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height))
             return
         }
         if (tile.type == InverterModernConfig.TYPE) {

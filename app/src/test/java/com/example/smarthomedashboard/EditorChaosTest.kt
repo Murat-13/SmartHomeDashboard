@@ -37,6 +37,7 @@ class EditorChaosTest {
         PowerModernConfig.TYPE to PowerModernEditorActivity::class.java,
         InverterModernConfig.TYPE to InverterModernEditorActivity::class.java,
         HomeClimateConfig.TYPE to HomeClimateEditorActivity::class.java,
+        GateTileConfig.TYPE to GateTileEditorActivity::class.java,
     )
 
     @Test fun damagedTilesOpenInEveryEditorAndSurviveRecreation() {

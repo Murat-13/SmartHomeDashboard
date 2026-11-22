@@ -89,6 +89,29 @@ class HomeAssistantWebSocketTest {
         assertEquals("wss://ha.example.invalid/api/websocket", HomeAssistantAddress.webSocketUrl("https://ha.example.invalid/"))
     }
 
+    /** Кнопки в уведомлении на телефоне (docs/gate-tz.md, решение 5): подписка — только когда нужна, нажатие доходит. */
+    @Test fun notificationActionsSubscribedOnlyWhenWantedAndDelivered() {
+        val pressed = mutableListOf<String>()
+        try {
+            HaEvents.onNotificationAction = { pressed += it }
+            val quiet = Peer()
+            client(server(quiet).url("/").toString()).apply { connect(); subscribeEntities(listOf("light.test")) }
+            await { quiet.received.any { it.optString("type") == "get_states" } }
+            assertTrue("Кнопок на телефоне нет — подписки нет", quiet.received.none { it.optString("event_type") == HaEvents.NOTIFICATION_ACTION })
+            HaEvents.wanted = { true }
+            val peer = Peer()
+            client(server(peer).url("/").toString()).apply { connect(); subscribeEntities(listOf("light.test")) }
+            await { peer.received.any { it.optString("event_type") == HaEvents.NOTIFICATION_ACTION } }
+            val id = peer.received.first { it.optString("event_type") == HaEvents.NOTIFICATION_ACTION }.getInt("id")
+            peer.socket!!.send(JSONObject().put("id", id).put("type", "event").put("event", JSONObject()
+                .put("event_type", HaEvents.NOTIFICATION_ACTION).put("data", JSONObject().put("action", "SHD_GATE_abc"))).toString())
+            await { pressed == listOf("SHD_GATE_abc") }
+        } finally {
+            HaEvents.wanted = { false }
+            HaEvents.onNotificationAction = null
+        }
+    }
+
     @Test fun retryDelayIsBoundedAndIncreasing() {
         assertEquals(listOf(2000L, 4000L, 8000L, 16000L, 32000L, 60000L, 60000L),
             (0..6).map { HomeAssistantAddress.retryDelay(it) })

@@ -7,6 +7,14 @@ import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.smarthomedashboard.DoorbellConfig
+import com.example.smarthomedashboard.GateTileConfig
+import com.example.smarthomedashboard.data.TileEntity
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONObject
+import java.util.Collections
 import com.example.smarthomedashboard.DoorbellRingWindow
 import com.example.smarthomedashboard.Gate
 import com.example.smarthomedashboard.GateStore
@@ -28,9 +36,12 @@ class GatesDeepTest {
     private lateinit var ha: FakeHomeAssistant
     private var scenario: ActivityScenario<MainActivity>? = null
 
+    private var shelly: MockWebServer? = null
+
     @After fun stop() {
         scenario?.close()
         if (::ha.isInitialized) ha.close()
+        shelly?.shutdown()
     }
 
     /** Удержание пальцем по центру кнопки — как на стене: касание, [ms] мс, отпускание. */
@@ -83,5 +94,65 @@ class GatesDeepTest {
         waitFor(10_000, "подтверждение по датчику двери") { onMain { button!!.state } == DoorbellRingWindow.Gate.OPENED }
         log("Калитка из раскрытой плитки без звонка: команда ушла, датчик подтвердил")
         assertEquals("Одно удержание — одна команда", 1, ha.commands.count { it.optString("domain") == "switch" })
+    }
+
+    /**
+     * Этапы 2 и 4: плитка «Калитка или ворота» открывает калитку напрямую через Shelly (поддельный — на самом устройстве),
+     * без Home Assistant; итог — по датчику на входе Shelly; касание раскрывает кнопки.
+     */
+    @Test fun gateTileOpensShellyDirectly() {
+        assumeTrue("Только эмулятор: тест заменяет данные приложения", isEmulator())
+        val calls = Collections.synchronizedList(mutableListOf<String>())
+        val door = java.util.concurrent.atomic.AtomicBoolean(false)
+        shelly = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val path = request.path.orEmpty()
+                    calls += path
+                    val body = when {
+                        path.startsWith("/rpc/Switch.Set") -> JSONObject().put("was_on", false)
+                        path.startsWith("/rpc/Switch.GetStatus") -> JSONObject().put("id", 0).put("output", false)
+                        path.startsWith("/rpc/Input.GetStatus") -> JSONObject().put("id", 0).put("state", door.get())
+                        else -> return MockResponse().setResponseCode(404)
+                    }
+                    return MockResponse().setBody(body.toString())
+                }
+            }
+            start()
+        }
+        ha = FakeHomeAssistant()
+        val tiles = allTiles() + TileEntity("deep_gate", GateTileConfig.TYPE, "grid", "Калитка", 20, 600, 1, 1,
+            config = GateTileConfig.newTileConfig("{}", "gate_shelly"))
+        seedStates(ha, tiles)
+        prepareApp(ha, tiles)
+        val wicket = Gate("gate_shelly", "Калитка", Gate.Kind.RELAY, link = Gate.Link.DIRECT,
+            direct = Gate.Direct(host = "127.0.0.1:${shelly!!.port}", input = 0))
+        appContext.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE).edit()
+            .putString(GateStore.KEY, JSONArray().put(wicket.toJson()).toString()).commit()
+
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
+        var activity: MainActivity? = null
+        scenario!!.onActivity { activity = it }
+        var button: HoldButton? = null
+        waitFor(10_000, "плитка «Калитка» с кнопкой") {
+            button = onMain { activity!!.window.decorView.findViewWithTag<View>("deep_gate")?.findViewWithTag("gate_tile_button") }
+            button?.isShown == true
+        }
+        waitFor(10_000, "опрос Shelly: закрыто по датчику") { onMain { button!!.stateHint.orEmpty() }.startsWith("Закрыт") }
+        hold(button!!, 1_300)
+        waitFor(10_000, "импульс реле Shelly") { calls.any { it.startsWith("/rpc/Switch.Set") } }
+        assertEquals("/rpc/Switch.Set?id=0&on=true&toggle_after=3", calls.first { it.startsWith("/rpc/Switch.Set") })
+        door.set(true)
+        waitFor(10_000, "подтверждение по входу Shelly") { onMain { button!!.state } == DoorbellRingWindow.Gate.OPENED }
+        assertEquals("Одно удержание — одна команда", 1, calls.count { it.startsWith("/rpc/Switch.Set") })
+        assertEquals("В Home Assistant ничего не ушло", 0, ha.commands.size)
+        // Касание — раскрыть: все кнопки прохода.
+        door.set(false)
+        hold(button!!, 80)
+        waitFor(10_000, "раскрытая плитка прохода") {
+            onMain { activity!!.window.decorView.findViewWithTag<View>("gate_expanded")?.isShown == true }
+        }
+        log("Плитка «Калитка»: Shelly напрямую — импульс ушёл, вход подтвердил, касание раскрыло")
     }
 }

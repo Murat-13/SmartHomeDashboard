@@ -39,7 +39,14 @@ internal data class Gate(
      * Связь напрямую, без Home Assistant: основная ([Link.DIRECT]) или запасная — когда Home Assistant недоступен
      * ([Link.HA] и заполнено). null — нет.
      */
-    val direct: Direct? = null
+    val direct: Direct? = null,
+    /** «Оставили открытым» (решение 8): напомнить, если открыто дольше, мин; 0 — не напоминать. Нужен датчик положения. */
+    val remindMinutes: Int = DEFAULT_REMIND,
+    /** «Закрыть само» (решение 8): выключено по умолчанию, только где есть чем закрыть и чем проверить ([GateLogic.autoCloseKind]). */
+    val autoClose: Boolean = false,
+    val autoCloseMinutes: Int = DEFAULT_REMIND,
+    /** Кнопка «Открыть» в уведомлении о звонке на телефоне (решение 5); выключено по умолчанию. */
+    val phone: Boolean = false
 ) {
     enum class Link(val key: String, val title: String) {
         HA("ha", "Home Assistant"), DIRECT("direct", "Напрямую (Shelly или HTTP)");
@@ -139,7 +146,12 @@ internal data class Gate(
         put("open", open); put("close", close); put("pedestrian", pedestrian); put("sensor", sensor)
         put("lock_button", lockButton); put("confirm_seconds", confirmSeconds); put("icon", icon.key)
         put("link", link.key); direct?.let { put("direct", it.toJson()) }
+        put("remind_minutes", remindMinutes); put("auto_close", autoClose); put("auto_close_minutes", autoCloseMinutes)
+        put("phone", phone)
     }
+
+    /** Есть датчик положения: свой (Home Assistant) или вход Shelly. */
+    val hasPositionSensor get() = sensor.isNotBlank() || (hasDirect && direct?.protocol == Direct.Protocol.SHELLY && (direct.input >= 0))
 
     companion object {
         const val DEFAULT_CONFIRM = 15
@@ -149,6 +161,8 @@ internal data class Gate(
         const val ROLE_PEDESTRIAN = "pedestrian"
         const val ROLE_SENSOR = "sensor"
         const val MAX = 8
+        const val DEFAULT_REMIND = 3
+        val MINUTES_RANGE = 1..120
 
         /** null — запись повреждена (нет id, имени или известного типа): пропускается, остальные проходы целы. */
         fun fromJson(j: JSONObject): Gate? {
@@ -162,7 +176,11 @@ internal data class Gate(
                 confirmSeconds = j.optInt("confirm_seconds", DEFAULT_CONFIRM).takeIf { it in CONFIRM_RANGE } ?: DEFAULT_CONFIRM,
                 icon = Icon.of(j.optString("icon")),
                 link = Link.of(j.optString("link")),
-                direct = Direct.fromJson(j.optJSONObject("direct"))
+                direct = Direct.fromJson(j.optJSONObject("direct")),
+                remindMinutes = j.optInt("remind_minutes", DEFAULT_REMIND).takeIf { it == 0 || it in MINUTES_RANGE } ?: DEFAULT_REMIND,
+                autoClose = j.optBoolean("auto_close", false),
+                autoCloseMinutes = j.optInt("auto_close_minutes", DEFAULT_REMIND).takeIf { it in MINUTES_RANGE } ?: DEFAULT_REMIND,
+                phone = j.optBoolean("phone", false)
             )
         }
     }
@@ -239,7 +257,8 @@ internal object GateLogic {
         Gate.Kind.STEP -> if (action == Gate.Action.STEP) pulse(gate.open)?.takeIf { gate.open.substringBefore('.') in PULSE } else null
         Gate.Kind.LOCK -> when (action) {
             Gate.Action.OPEN -> Command("lock", if (lockOpens(readings, gate.open)) "open" else "unlock", gate.open)
-            Gate.Action.CLOSE -> if (gate.lockButton) Command("lock", "lock", gate.open) else null
+            // Запереть умеет любой замок; кнопка — только если владелец её включил ([actions]), «Закрыть само» — по выбору.
+            Gate.Action.CLOSE -> Command("lock", "lock", gate.open)
             else -> null
         }.takeIf { gate.open.startsWith("lock.") }
         Gate.Kind.COVER -> when (action) {
@@ -308,6 +327,19 @@ internal object GateLogic {
         val d = gate.direct ?: return false
         return (d.protocol == Gate.Direct.Protocol.SHELLY && (d.input >= 0 || gate.kind == Gate.Kind.COVER)) ||
             (gate.sensor.isNotBlank() && !haDown(readings))
+    }
+
+    /**
+     * Что «Закрыть само» может сделать у этого прохода (решение 8); null — нечего закрывать или нечем проверить:
+     * умный замок — «Запереть»; привод и свой сценарий с «Закрыть» — только с датчиком положения. Защёлка через реле и
+     * «шаг» — нет (дверь закрывает доводчик; «шаг» вслепую может открыть вместо закрытия).
+     */
+    fun autoCloseKind(gate: Gate): Gate.Action? = when (gate.kind) {
+        Gate.Kind.LOCK -> Gate.Action.CLOSE.takeIf { !gate.directOnly && gate.open.startsWith("lock.") }
+        Gate.Kind.COVER -> Gate.Action.CLOSE.takeIf { gate.hasPositionSensor }
+        Gate.Kind.SCRIPT -> Gate.Action.CLOSE.takeIf { gate.hasPositionSensor &&
+            (gate.close.isNotBlank() || gate.direct?.closeUrl?.isNotBlank() == true) }
+        Gate.Kind.RELAY, Gate.Kind.STEP -> null
     }
 
     /** Идёт ли команда напрямую: основная связь или Home Assistant недоступен, а запасной путь есть. */

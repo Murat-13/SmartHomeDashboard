@@ -108,6 +108,12 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <!-- Плитка «Калитка или ворота» (docs/gate-tz.md, решение 3): какой проход она показывает. -->
+        <activity
+            android:name=".GateTileEditorActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
         <!-- Архив записей (docs/recording.md, этап 3): Compose, тема Modern. -->
         <activity
             android:name=".ArchiveActivity"

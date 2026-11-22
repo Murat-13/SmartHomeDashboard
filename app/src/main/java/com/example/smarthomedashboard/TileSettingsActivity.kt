@@ -108,7 +108,7 @@ class TileSettingsActivity : PinProtectedActivity() {
                 // Источники «АКБ Modern» выбираются по каждому показателю в её редакторе.
                 val isModern = typeAt(position) == BatteryModernConfig.TYPE || typeAt(position) == PowerModernConfig.TYPE ||
                     typeAt(position) == HomeClimateConfig.TYPE || typeAt(position) == InverterModernConfig.TYPE ||
-                    DoorbellConfig.isVideo(typeAt(position))
+                    DoorbellConfig.isVideo(typeAt(position)) || typeAt(position) == GateTileConfig.TYPE
                 btnEditChildren.visibility = if (isGroup) View.VISIBLE else View.GONE
                 btnSelectSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
                 btnClearSensors.visibility = if (isGroup || isModern) View.GONE else View.VISIBLE
@@ -126,6 +126,9 @@ class TileSettingsActivity : PinProtectedActivity() {
                 }
                 if (tileId == null && typeAt(position) == DoorbellConfig.TYPE && etTitle.text.isBlank()) {
                     etTitle.setText(DoorbellConfig.DEFAULT_TITLE)
+                }
+                if (tileId == null && typeAt(position) == GateTileConfig.TYPE && etTitle.text.isBlank()) {
+                    etTitle.setText(GateStore.load(this@TileSettingsActivity).firstOrNull { it.ready }?.name ?: "Калитка")
                 }
                 if (tileId == null && typeAt(position) == DoorbellConfig.CAMERA_TYPE && etTitle.text.isBlank()) {
                     etTitle.setText(DoorbellConfig.CAMERA_TITLE)
@@ -262,6 +265,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             InverterModernConfig.TYPE -> 10
             DoorbellConfig.TYPE -> 11
             DoorbellConfig.CAMERA_TYPE -> 12
+            GateTileConfig.TYPE -> 13
             else -> 0
         }
         spinnerType.setSelection(typeIndex)
@@ -319,7 +323,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         val container = when (type) {
             "button", "group" -> "bottom_panel"
             "clock", "sensor", "battery", "weather", BatteryModernConfig.TYPE, PowerModernConfig.TYPE, HomeClimateConfig.TYPE,
-            InverterModernConfig.TYPE, DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE -> "grid"
+            InverterModernConfig.TYPE, DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE, GateTileConfig.TYPE -> "grid"
             else -> "grid"
         }
 
@@ -401,6 +405,8 @@ class TileSettingsActivity : PinProtectedActivity() {
             // «Домофон»: 4:3 и пустой шаблон; сохранённые настройки не сбрасываются.
             DoorbellConfig.TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString())
             DoorbellConfig.CAMERA_TYPE -> DoorbellConfig.newTileConfig(existingConfig.toString(), camera = true)
+            // «Калитка или ворота»: кнопка 2:1 и первый проход из списка «Калитки и ворота».
+            GateTileConfig.TYPE -> GateTileConfig.newTileConfig(existingConfig.toString(), GateStore.load(this).firstOrNull { it.ready }?.id)
             else -> existingConfig.toString()
         }
 
@@ -432,6 +438,7 @@ class TileSettingsActivity : PinProtectedActivity() {
         10 -> InverterModernConfig.TYPE
         11 -> DoorbellConfig.TYPE
         12 -> DoorbellConfig.CAMERA_TYPE
+        13 -> GateTileConfig.TYPE
         else -> "sensor"
     }
 
@@ -501,6 +508,8 @@ class TileSettingsActivity : PinProtectedActivity() {
                 "Камера, звонок, калитка и звук настраиваются в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == DoorbellConfig.CAMERA_TYPE ->
                 "Адрес, логин и пароль камеры — в редакторе плитки: в режиме редактирования нажмите на плитку."
+            typeAt(spinnerType.selectedItemPosition) == GateTileConfig.TYPE ->
+                "Какой проход показывать — в редакторе плитки; сами проходы — в Настройках, «Калитки и ворота»."
             typeAt(spinnerType.selectedItemPosition) == InverterModernConfig.TYPE ->
                 "Датчики инвертора выбираются в редакторе плитки: в режиме редактирования нажмите на плитку."
             typeAt(spinnerType.selectedItemPosition) == HomeClimateConfig.TYPE ->
@@ -604,6 +613,7 @@ class TileSettingsActivity : PinProtectedActivity() {
             else if (original.type == InverterModernConfig.TYPE) 10
             else if (original.type == DoorbellConfig.TYPE) 11
             else if (original.type == DoorbellConfig.CAMERA_TYPE) 12
+            else if (original.type == GateTileConfig.TYPE) 13
             else listOf("sensor", "button", "group", "battery", "clock", "weather", BatteryModernConfig.TYPE).indexOf(original.type).coerceAtLeast(0)
         val draft = try {
             saved?.getString("sensor_draft")?.let(SensorTileDraft::restore) ?: SensorTileDraft(original)

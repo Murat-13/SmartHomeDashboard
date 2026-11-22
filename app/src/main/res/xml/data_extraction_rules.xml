@@ -15,6 +15,8 @@
         <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
         <exclude domain="file" path="doorbell_rings/" />
+        <!-- Журнал открытий калиток и ворот: снимки с камеры прохода. -->
+        <exclude domain="file" path="gate_log/" />
         <exclude domain="sharedpref" path="doorbell_away.xml" />
         <exclude domain="sharedpref" path="camera_secrets.xml" />
         <exclude domain="file" path="doorbell_phrases/" />
@@ -30,6 +32,8 @@
         <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
         <exclude domain="file" path="doorbell_rings/" />
+        <!-- Журнал открытий калиток и ворот: снимки с камеры прохода. -->
+        <exclude domain="file" path="gate_log/" />
         <exclude domain="sharedpref" path="doorbell_away.xml" />
         <exclude domain="sharedpref" path="camera_secrets.xml" />
         <exclude domain="file" path="doorbell_phrases/" />

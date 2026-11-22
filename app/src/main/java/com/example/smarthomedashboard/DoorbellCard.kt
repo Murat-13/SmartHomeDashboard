@@ -354,6 +354,38 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
     }
     private val guardMark = text(if (expanded) 18f else 13f, Color.WHITE).apply { tag = "door_guard_mark"; visibility = GONE; contentDescription = "Охрана включена" }
 
+    /**
+     * Значок «проход открыт» (docs/gate-tz.md): зелёный — открыт, красный — открыт дольше порога («оставили открытым»).
+     * Только по положению (датчик, замок, привод); слушает проходы сам — без перерисовки всей плитки.
+     */
+    private val gateMark = android.widget.ImageView(context).apply {
+        setImageResource(R.drawable.ic_door_unlock)
+        tag = "door_gate_mark"
+        visibility = GONE
+    }
+    private var markGates: List<String> = emptyList()
+    private val gateListener: () -> Unit = { renderGateMark() }
+
+    /** Проходы плитки — для значка (у раскрытой — ещё и кнопки). */
+    fun gateMark(ids: List<String>) {
+        if (markGates == ids) return
+        markGates = ids
+        renderGateMark()
+    }
+
+    private fun renderGateMark() {
+        val gates = markGates.mapNotNull { GateHub.gate(it, context) }
+        val left = gates.any { GateWatch.isLeftOpen(it.id) }
+        val open = left || gates.any { GateHub.status(it).let { s -> s.open && s.source != GateStatus.Source.NONE } }
+        gateMark.visibility = if (open) VISIBLE else GONE
+        gateMark.setColorFilter(if (left) DoorbellFrame.OFFLINE else DoorbellFrame.RING)
+        gateMark.contentDescription = when {
+            left -> "Проход открыт слишком долго"
+            open -> "Проход открыт"
+            else -> null
+        }
+    }
+
     /** Показать кнопку автоответа с состоянием [on]; null — скрыть. */
     fun autoReply(on: Boolean?) {
         if (on == null || !expanded || ringMode) { autoReplyButton.visibility = GONE; return }
@@ -475,6 +507,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         header.addView(hd, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(lightButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(guardMark, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        header.addView(gateMark, LinearLayout.LayoutParams(1, 1))
         header.addView(guardButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(autoReplyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(calls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -530,6 +563,9 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         (lightButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (guardButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         guardMark.setPadding((8 * next).toInt(), 0, (4 * next).toInt(), 0)
+        gateMark.layoutParams = (gateMark.layoutParams as LinearLayout.LayoutParams).apply {
+            width = iconSide; height = iconSide; leftMargin = (8 * next).toInt()
+        }
         (autoReplyButton.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         (calls.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = (12 * next).toInt()
         for (i in 0 until phraseRow.childCount) styleChip(phraseRow.getChildAt(i) as TextView, next)
@@ -706,10 +742,13 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         super.onAttachedToWindow()
         RecordingStatus.listen(recordingListener)
         renderRecording()
+        GateHub.listen(gateListener)
+        renderGateMark()
     }
 
     override fun onDetachedFromWindow() {
         RecordingStatus.unlisten(recordingListener)
+        GateHub.unlisten(gateListener)
         super.onDetachedFromWindow()
     }
 

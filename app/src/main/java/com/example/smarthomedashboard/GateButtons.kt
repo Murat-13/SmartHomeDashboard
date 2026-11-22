@@ -78,21 +78,6 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
         refresh()
     }
 
-    /** Значок по действию: открыть — открытый замок, закрыть — закрытый, «Стоп» — стоп, пешеходный — человек. */
-    private fun icon(gate: Gate, action: Gate.Action) = when (action) {
-        Gate.Action.CLOSE -> R.drawable.ic_gate_lock
-        Gate.Action.STOP -> R.drawable.ic_gate_stop
-        Gate.Action.PEDESTRIAN -> R.drawable.ic_door_person
-        else -> gate.icon.drawable
-    }
-
-    /** Цвет в покое: открыть — зелёный (как звонок), закрыть — спокойный синий, «Стоп» — янтарный. */
-    private fun accent(action: Gate.Action) = when (action) {
-        Gate.Action.CLOSE -> DoorbellFrame.NEUTRAL
-        Gate.Action.STOP -> DoorbellFrame.PERSON
-        else -> null
-    }
-
     /** Строка шире места: кнопки делят его поровну (у ворот бывает четыре кнопки). */
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val available = MeasureSpec.getSize(widthMeasureSpec)
@@ -116,21 +101,27 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
         for ((key, button) in buttons) {
             val gate = gates.firstOrNull { it.id == key.first } ?: continue
             val action = key.second
-            val status = GateHub.status(gate)
-            val op = GateHub.op(gate.id)?.takeIf { it.action == action }
-            button.label = GateLogic.label(gate, action, status)
-            button.isEnabled = !status.noLink
-            button.state = when (op?.phase) {
-                GateHub.Phase.SENDING -> DoorbellRingWindow.Gate.SENDING
-                GateHub.Phase.WAITING -> DoorbellRingWindow.Gate.WAITING
-                GateHub.Phase.DONE, GateHub.Phase.REACTED -> DoorbellRingWindow.Gate.OPENED
-                GateHub.Phase.UNCONFIRMED -> DoorbellRingWindow.Gate.UNCONFIRMED
-                GateHub.Phase.FAILED -> DoorbellRingWindow.Gate.FAILED
-                null -> DoorbellRingWindow.Gate.IDLE
-            }
-            button.stateCaption = op?.let { caption(gate, it, status) }
-            button.stateHint = hint(action, op, status, primary = GateHub.actions(gate).firstOrNull() == action)
+            paint(button, gate, action, primary = GateHub.actions(gate).firstOrNull() == action, roomy = vertical)
         }
+    }
+
+    companion object {
+    /** Кнопка прохода по его состоянию и идущему действию — одно правило для строки кнопок и для плитки «Проход». */
+    internal fun paint(button: HoldButton, gate: Gate, action: Gate.Action, primary: Boolean, roomy: Boolean) {
+        val status = GateHub.status(gate)
+        val op = GateHub.op(gate.id)?.takeIf { it.action == action }
+        button.label = GateLogic.label(gate, action, status)
+        button.isEnabled = !status.noLink
+        button.state = when (op?.phase) {
+            GateHub.Phase.SENDING -> DoorbellRingWindow.Gate.SENDING
+            GateHub.Phase.WAITING -> DoorbellRingWindow.Gate.WAITING
+            GateHub.Phase.DONE, GateHub.Phase.REACTED -> DoorbellRingWindow.Gate.OPENED
+            GateHub.Phase.UNCONFIRMED -> DoorbellRingWindow.Gate.UNCONFIRMED
+            GateHub.Phase.FAILED -> DoorbellRingWindow.Gate.FAILED
+            null -> DoorbellRingWindow.Gate.IDLE
+        }
+        button.stateCaption = op?.let { caption(gate, it, status) }
+        button.stateHint = hint(action, op, status, primary, roomy)
     }
 
     private fun caption(gate: Gate, op: GateHub.Op, status: GateStatus): String = when (op.phase) {
@@ -150,7 +141,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
         GateHub.Phase.FAILED -> "Не удалось"
     }
 
-    private fun hint(action: Gate.Action, op: GateHub.Op?, status: GateStatus, primary: Boolean): String? = when (op?.phase) {
+    private fun hint(action: Gate.Action, op: GateHub.Op?, status: GateStatus, primary: Boolean, roomy: Boolean): String? = when (op?.phase) {
         GateHub.Phase.REACTED -> op.detail.ifBlank { "реле сработало, положение неизвестно — проверьте" }
         GateHub.Phase.UNCONFIRMED -> "команда принята · коснитесь, чтобы снять"
         GateHub.Phase.FAILED -> op.detail.ifBlank { "попробуйте ещё раз" } + if (GateLogic.instant(action)) "" else " · удерживайте, чтобы повторить"
@@ -162,10 +153,27 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
                 status.noLink -> where
                 where == null -> if (GateLogic.instant(action)) "" else "удерживайте 1 секунду"
                 // В строке раскрытой плитки места мало: только где проход («держите…» видно при нажатии).
-                !vertical || GateLogic.instant(action) -> where
+                !roomy || GateLogic.instant(action) -> where
                 else -> "$where · удерживайте"
             }
         }
+    }
+
+    /** Значок по действию: открыть — открытый замок, закрыть — закрытый, «Стоп» — стоп, пешеходный — человек. */
+    internal fun icon(gate: Gate, action: Gate.Action) = when (action) {
+        Gate.Action.CLOSE -> R.drawable.ic_gate_lock
+        Gate.Action.STOP -> R.drawable.ic_gate_stop
+        Gate.Action.PEDESTRIAN -> R.drawable.ic_door_person
+        else -> gate.icon.drawable
+    }
+
+    /** Цвет в покое: открыть — зелёный (как звонок), закрыть — спокойный синий, «Стоп» — янтарный. */
+    internal fun accent(action: Gate.Action) = when (action) {
+        Gate.Action.CLOSE -> DoorbellFrame.NEUTRAL
+        Gate.Action.STOP -> DoorbellFrame.PERSON
+        else -> null
+    }
+
     }
 
     override fun onAttachedToWindow() {

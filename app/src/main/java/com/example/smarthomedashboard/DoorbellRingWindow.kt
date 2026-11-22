@@ -627,6 +627,10 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
     private var progress = 0f
     var onComplete: (() -> Unit)? = null
     var onTouchStart: (() -> Unit)? = null
+    /** Короткое касание (отпустили сразу, на месте) — у плитки «Проход»: раскрыть. null — касание ничего не делает. */
+    var onTap: (() -> Unit)? = null
+    /** Касания не принимает — их получает родитель (режим редактирования панели: перенос и размер плитки). */
+    var passThrough = false
     var textPx = 23f * density / 1.5f
         set(value) { field = value; invalidate() }
     /**
@@ -701,7 +705,12 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!isEnabled) return false
+        if (passThrough) return false
+        // Нет связи — удержание не принимается, но плитку «Проход» можно раскрыть (там видно почему).
+        if (!isEnabled) {
+            if (onTap != null && event.actionMasked == MotionEvent.ACTION_UP && event.eventTime - event.downTime < TAP_MS) onTap?.invoke()
+            return onTap != null
+        }
         val busy = state == DoorbellRingWindow.Gate.SENDING || state == DoorbellRingWindow.Gate.WAITING || state == DoorbellRingWindow.Gate.OPENED
         if (instant) {
             when (event.actionMasked) {
@@ -732,8 +741,15 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (busy && event.actionMasked == MotionEvent.ACTION_UP && event.eventTime - event.downTime < TAP_MS) onTap?.invoke()
                 if (!holding) return true
                 holding = false
+                val tap = event.actionMasked == MotionEvent.ACTION_UP && event.eventTime - event.downTime < TAP_MS &&
+                    event.x in 0f..width.toFloat() && event.y in 0f..height.toFloat()
+                if (tap && onTap != null) {
+                    // Касание, а не удержание: полоса не заполняется, плитка раскрывается.
+                    removeCallbacks(complete); progress = 0f; invalidate(); onTap?.invoke(); return true
+                }
                 removeCallbacks(complete)
                 releaseFrom = progress
                 releaseStart = SystemClock.uptimeMillis()
@@ -822,6 +838,7 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
 
     companion object {
         const val HOLD_MS = 1_000L
+        const val TAP_MS = 300L
         private const val RELEASE_MS = 220L
         /** Надпись — 30 % высоты кнопки: с подсказкой под ней (72 %) блок занимает ~2/3 высоты. */
         private const val AUTO_TEXT = 0.3f

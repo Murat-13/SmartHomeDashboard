@@ -74,7 +74,7 @@ internal object GateHub {
 
     /** Идущее или только что закончившееся действие прохода. */
     data class Op(val action: Gate.Action, val phase: Phase, val startedAt: Long, val before: GateStatus,
-                  val beforeRaw: String?, val detail: String = "") {
+                  val beforeRaw: String?, val detail: String = "", val origin: GateLog.Origin = GateLog.Origin.PANEL) {
         val busy get() = phase == Phase.SENDING || phase == Phase.WAITING
     }
 
@@ -96,7 +96,16 @@ internal object GateHub {
     /** Проход открыли (по датчику, замку, приводу или новой отметке кнопки) — здесь или где угодно. */
     @Volatile var onOpened: ((Gate) -> Unit)? = null
 
-    fun attach(context: Context) { app = context.applicationContext }
+    fun attach(context: Context) {
+        app = context.applicationContext
+        HaEvents.onNotificationAction = { GatePhone.onAction(it) }
+        HaEvents.wanted = { gates().any { it.phone } }
+    }
+
+    val context: Context? get() = app
+    val currentReadings: BatteryReadings? get() = readings
+    /** Перерисовать кнопки и плитки (например, «оставили открытым»). */
+    fun changed() = notifyListeners()
 
     fun gates(context: Context? = app): List<Gate> {
         cached?.let { return it }
@@ -142,24 +151,25 @@ internal object GateHub {
      * Действие кнопки. false — не отправлено (уже идёт, нет такого действия, нет связи); причина видна на кнопке ([op]).
      * PIN проверяет вызывающий ([GatePin]) — здесь только исполнение.
      */
-    fun run(gateId: String, action: Gate.Action): Boolean = gate(gateId)?.let { run(it, action) } ?: false
+    fun run(gateId: String, action: Gate.Action, origin: GateLog.Origin = GateLog.Origin.PANEL): Boolean =
+        gate(gateId)?.let { run(it, action, origin) } ?: false
 
     /** То же для прохода, которого может ещё не быть в списке («Проверить» в редакторе прохода). */
-    fun run(gate: Gate, action: Gate.Action): Boolean {
+    fun run(gate: Gate, action: Gate.Action, origin: GateLog.Origin = GateLog.Origin.PANEL): Boolean {
         val gateId = gate.id
         // Пока ждём подтверждения, повтор не уходит; «Стоп» — всегда: остановить ход ворот важнее ожидания.
         if (ops[gateId]?.busy == true && action != Gate.Action.STOP) return false
         deadlines.remove(gateId)?.let(main::removeCallbacks)
         val readings = readings
         val started = SystemClock.uptimeMillis()
-        if (GateLogic.useDirect(gate, readings)) return runDirect(gate, action, started)
+        if (GateLogic.useDirect(gate, readings)) return runDirect(gate, action, started, origin)
         val command = GateLogic.command(gate, action, readings) ?: return false
         val before = status(gate, readings)
         if (before.position == GateStatus.Position.OFFLINE) {
-            finish(gate, Op(action, Phase.FAILED, started, before, null, "нет связи с Home Assistant"))
+            finish(gate, Op(action, Phase.FAILED, started, before, null, "нет связи с Home Assistant", origin))
             return false
         }
-        val op = Op(action, Phase.SENDING, started, before, raw(gate.open))
+        val op = Op(action, Phase.SENDING, started, before, raw(gate.open), origin = origin)
         opGates[gate.id] = gate
         set(gate.id, op)
         Log.i(TAG, "${gate.name}: ${action.name.lowercase()} → ${command.domain}.${command.service}")
@@ -175,9 +185,9 @@ internal object GateHub {
     }
 
     /** Без Home Assistant: команда устройству напрямую с фонового потока, итог — на главном. */
-    private fun runDirect(gate: Gate, action: Gate.Action, started: Long): Boolean {
+    private fun runDirect(gate: Gate, action: Gate.Action, started: Long, origin: GateLog.Origin): Boolean {
         if (!GateLogic.directSupports(gate, action)) return false
-        val op = Op(action, Phase.SENDING, started, status(gate), null)
+        val op = Op(action, Phase.SENDING, started, status(gate), null, origin = origin)
         opGates[gate.id] = gate
         set(gate.id, op)
         Log.i(TAG, "${gate.name}: ${action.name.lowercase()} → напрямую (${gate.direct?.protocol?.key})")
@@ -320,6 +330,8 @@ internal object GateHub {
         clears.remove(gate.id)?.let(main::removeCallbacks)
         Log.i(TAG, "${gate.name}: ${op.action.name.lowercase()} — ${op.phase.name.lowercase()}${op.detail.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}")
         set(gate.id, op)
+        journal(gate, op)
+        if (op.origin == GateLog.Origin.AUTO && op.phase != Phase.DONE) GateWatch.autoCloseFailed(gate)
         // Итог виден на кнопке какое-то время; «подтверждения нет» — пока не коснутся (повтор — только осознанный).
         val keep = when (op.phase) {
             Phase.DONE, Phase.REACTED -> DONE_SHOW_MS
@@ -329,6 +341,24 @@ internal object GateHub {
         val clear = Runnable { if (same(gate.id, op)) { ops.remove(gate.id); notifyListeners() } }
         clears[gate.id] = clear
         main.postDelayed(clear, keep)
+    }
+
+    /** Запись в журнал открытий: итог действия кнопки (или «Закрыть само», телефона). Снимок — с камеры прохода. */
+    private fun journal(gate: Gate, op: Op) {
+        val context = app ?: return
+        val result = when (op.phase) {
+            Phase.DONE -> if (op.action == Gate.Action.STOP) "остановлено" else GateLogic.statusText(status(gate)).ifBlank { "готово" }
+            Phase.REACTED -> "сработало, положение неизвестно"
+            Phase.UNCONFIRMED -> "команда принята, подтверждения нет"
+            Phase.FAILED -> "не удалось" + op.detail.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+            Phase.SENDING, Phase.WAITING -> return
+        }
+        GateLog.add(context, GateLog.Entry(System.currentTimeMillis(), gate.id, gate.name, op.action, op.origin, result), video(gate))
+        if (op.origin == GateLog.Origin.PHONE) GatePhone.report(gate, result)
+    }
+
+    private fun video(gate: Gate): () -> DoorbellVideoView? = {
+        GateWatch.tilesOf(gate.id).firstNotNullOfOrNull { DoorbellHub.actions?.tileVideo(it.id) }
     }
 
     /** Новое состояние Home Assistant (из [DoorbellHub.onState]). */
@@ -343,6 +373,7 @@ internal object GateHub {
             if (evaluate(gate, readings)) changed = true
         }
         lastPosition.keys.retainAll(gates.mapTo(HashSet()) { it.id })
+        GateWatch.forget(gates.mapTo(HashSet()) { it.id })
         if (gates.any { it.hasDirect }) startPoller()
         if (changed) notifyListeners()
     }
@@ -355,7 +386,8 @@ internal object GateHub {
         val raw = (reading as? BatteryReading.Value)?.raw
         val before = lastPosition.put(gate.id, status.position)
         val rawBefore = lastRaw.put(gate.id, raw)
-        val changed = before != status.position
+        var changed = before != status.position
+        if (GateWatch.onStatus(gate, status, readings)) changed = true
         // Недоступно — прежнее забываем: возврат сразу в «открыто» не значит, что открыли.
         if (!direct && (reading is BatteryReading.Unavailable || reading == BatteryReading.Missing)) { lastRaw.remove(gate.id); return changed }
         val opened = when {
@@ -368,7 +400,14 @@ internal object GateHub {
                 gate.open.substringBefore('.') in setOf("button", "input_button") -> true
             else -> false
             }
-        if (opened) onOpened?.invoke(gate)
+        if (opened) {
+            // Открыли не нашей кнопкой (пульт, ключ, автоматика, другая панель) — тоже в журнал.
+            val own = ops[gate.id]?.let { it.action != Gate.Action.CLOSE && it.action != Gate.Action.STOP &&
+                SystemClock.uptimeMillis() - it.startedAt < gate.confirmSeconds * 1000L + DONE_SHOW_MS } == true
+            if (!own) app?.let { GateLog.add(it, GateLog.Entry(System.currentTimeMillis(), gate.id, gate.name, Gate.Action.OPEN,
+                GateLog.Origin.OUTSIDE, GateLogic.statusText(status).ifBlank { "открыто" }), video(gate)) }
+            onOpened?.invoke(gate)
+        }
         return changed
     }
 
@@ -381,6 +420,10 @@ internal object GateHub {
         directStates.clear(); directMisses.clear(); polling.clear(); lastPoll.clear()
         direct = shellyLink
         passwordOverride.clear()
+        GateWatch.reset()
+        GatePhone.reset()
+        HaEvents.wanted = { false }
+        HaEvents.onNotificationAction = null
         latest = null
         cached = null
         onOpened = null

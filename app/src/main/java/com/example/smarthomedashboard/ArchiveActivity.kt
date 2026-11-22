@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -135,6 +136,8 @@ class ArchiveActivity : AppCompatActivity() {
     private var snapshot = RecArchive.Snapshot(emptyList(), emptyList())
     private var texture: TextureView? = null
     private val ringListener: () -> Unit = { loadRings() }
+    /** Проходы каждой камеры (docs/gate-tz.md): вкладка «Открытия» — у камер, где отмечен проход. */
+    private var gatesOf: Map<String, List<String>> = emptyMap()
     private var cameras: List<Pair<String, String>> = emptyList()
     private var doorbellIds: Set<String> = emptySet()
     /**
@@ -163,7 +166,8 @@ class ArchiveActivity : AppCompatActivity() {
         loadedDay = null
         thumbs.clear()
         previewCache.clear()
-        ui.value = ArchiveUi(title = title, cameras = cameras, camera = id, doorbell = id in doorbellIds, spanMs = ui.value.spanMs)
+        ui.value = ArchiveUi(title = title, cameras = cameras, camera = id, doorbell = id in doorbellIds, spanMs = ui.value.spanMs,
+            gates = gatesOf[id].orEmpty().isNotEmpty())
         reload(keepDay = null)
     }
 
@@ -176,9 +180,12 @@ class ArchiveActivity : AppCompatActivity() {
         // Камеры этого планшета для переключения (docs/camera-tz.md): домофон и плитки «Камера».
         cameras = tiles.filter { it.type in CameraSource.TYPES }.map { it.id to titleOf(it) }
         doorbellIds = tiles.filter { it.type == DoorbellConfig.TYPE }.map { it.id }.toSet()
+        gatesOf = tiles.filter { it.type in CameraSource.TYPES }.associate { it.id to DoorbellConfig.from(it.config).gateIds(it.id) }
         index = try { RecIndex(this) } catch (_: Exception) { null }
         archive = RecArchive(this, index = { index })
-        ui.value = ui.value.copy(title = title, cameras = cameras, camera = tileId, doorbell = tileId in doorbellIds, tab = if (intent.getBooleanExtra(EXTRA_CALLS, false)) ArchiveUi.Tab.CALLS else ArchiveUi.Tab.RECORDS)
+        ui.value = ui.value.copy(title = title, cameras = cameras, camera = tileId, doorbell = tileId in doorbellIds,
+            gates = gatesOf[tileId].orEmpty().isNotEmpty(),
+            tab = if (intent.getBooleanExtra(EXTRA_CALLS, false)) ArchiveUi.Tab.CALLS else ArchiveUi.Tab.RECORDS)
         // HD-ролики событий (Reolink 2560×1920) аппаратный декодер Samsung SM-X216B не принимает — следующий декодер
         // (программный) берётся сам, как у живого видео домофона.
         player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true)).build().also { p ->
@@ -194,6 +201,7 @@ class ArchiveActivity : AppCompatActivity() {
             ArchiveScreen(ui.value, thumbs, actions, video = { VideoSurface() })
         }
         DoorbellHub.addRingListener(ringListener)
+        GateLog.listen(ringListener)
         val at = intent.getLongExtra(EXTRA_AT, 0L).takeIf { it > 0 }
         // PIN архива «весь архив»: без PIN экран закрывается (тот же PIN, что у настроек).
         if (RecordingDevice(this).archivePin == RecordingDevice.ArchivePin.ALL) {
@@ -211,6 +219,7 @@ class ArchiveActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         DoorbellHub.removeRingListener(ringListener)
+        GateLog.unlisten(ringListener)
         previewThread.shutdownNow()
         player?.release()
         player = null
@@ -260,7 +269,10 @@ class ArchiveActivity : AppCompatActivity() {
         ringsJob = lifecycleScope.launch {
             val rings = withContext(Dispatchers.IO) { RingLog.list(this@ArchiveActivity, tileId) }
             rings.forEach { thumbs.remove(ringKey(it)) }
-            ui.value = ui.value.copy(rings = rings)
+            val gateIds = gatesOf[tileId].orEmpty()
+            val openings = if (gateIds.isEmpty()) emptyList() else withContext(Dispatchers.IO) { GateLog.list(this@ArchiveActivity, gateIds) }
+            openings.forEach { thumbs.remove(openingKey(it)) }
+            ui.value = ui.value.copy(rings = rings, openings = openings)
         }
     }
 
@@ -680,6 +692,16 @@ class ArchiveActivity : AppCompatActivity() {
             ui.value = ui.value.copy(ringPhoto = null, tab = ArchiveUi.Tab.RECORDS)
             openMoment(ring.atMs)
         }
+        override fun openingThumb(entry: GateLog.Entry) {
+            val key = openingKey(entry)
+            if (key in thumbs) return
+            thumbs[key] = null
+            lifecycleScope.launch { thumbs[key] = withContext(Dispatchers.IO) { RingLog.photo(entry.photo, 320) } }
+        }
+        override fun openOpening(entry: GateLog.Entry) {
+            ui.value = ui.value.copy(tab = ArchiveUi.Tab.RECORDS)
+            openMoment(entry.atMs)
+        }
     }
 
     /** Видео: TextureView (в отличие от SurfaceView, её можно увеличивать пальцами). */
@@ -705,6 +727,7 @@ class ArchiveActivity : AppCompatActivity() {
         internal var loadHook: ((camera: String, load: () -> RecArchive.Snapshot) -> RecArchive.Snapshot)? = null
 
         internal fun ringKey(ring: RingLog.Ring) = "ring_${ring.atMs}_${ring.photo?.lastModified() ?: 0}"
+        internal fun openingKey(entry: GateLog.Entry) = "gate_${entry.key}_${entry.photo?.lastModified() ?: 0}"
 
         fun open(context: Context, tileId: String, latest: Boolean = false, calls: Boolean = false, atMs: Long? = null) {
             context.startActivity(Intent(context, ArchiveActivity::class.java)
@@ -759,9 +782,12 @@ internal data class ArchiveUi(
     val cameras: List<Pair<String, String>> = emptyList(),
     val camera: String? = null,
     /** Текущая камера — домофон (есть вкладка «Звонки»). */
-    val doorbell: Boolean = true
+    val doorbell: Boolean = true,
+    /** У камеры отмечен проход — вкладка «Открытия» (docs/gate-tz.md, решение 7). */
+    val gates: Boolean = false,
+    val openings: List<GateLog.Entry> = emptyList()
 ) {
-    enum class Tab { RECORDS, CALLS }
+    enum class Tab { RECORDS, CALLS, OPENINGS }
     /** Участки круглосуточной записи и ролики событий — время на стене, все дни. */
     data class Timeline(val coverage: List<LongRange>, val events: List<Mark>)
     data class Mark(val start: Long, val end: Long, val label: String)
@@ -809,6 +835,9 @@ internal interface ArchiveActions {
     fun selectWeek()
     /** Другая камера (плитка). */
     fun camera(tileId: String) {}
+    /** Журнал открытий: снимок строки и видео этого момента. */
+    fun openingThumb(entry: GateLog.Entry) {}
+    fun openOpening(entry: GateLog.Entry) {}
 }
 
 // ---- Оформление: палитра Modern (res/values/modern_colors.xml) ----
@@ -1290,9 +1319,13 @@ private fun androidx.compose.foundation.layout.ColumnScope.ListPane(ui: ArchiveU
             modifier = Modifier.heightIn(min = 48.dp).testTag("archive_tab_calls").semantics {
                 contentDescription = "Звонки, пропущенных $missed"
             })
+        if (ui.gates) FilterChip(selected = ui.tab == ArchiveUi.Tab.OPENINGS, onClick = { actions.tab(ArchiveUi.Tab.OPENINGS) },
+            label = { Text("Открытия" + if (ui.openings.isNotEmpty()) " (${ui.openings.size})" else "", fontSize = 18.sp) },
+            modifier = Modifier.heightIn(min = 48.dp).testTag("archive_tab_openings"))
     }
     Spacer(Modifier.height(4.dp))
     if (ui.tab == ArchiveUi.Tab.CALLS && ui.doorbell) { CallsList(ui, thumbs, actions); return }
+    if (ui.tab == ArchiveUi.Tab.OPENINGS && ui.gates) { OpeningsList(ui, thumbs, actions); return }
     Row(verticalAlignment = Alignment.CenterVertically) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
             item {
@@ -1375,6 +1408,37 @@ private fun CallsList(ui: ArchiveUi, thumbs: Map<String, Bitmap?>, actions: Arch
                 }
                 Text(if (ring.answered) "Ответили" else "Пропущен", color = if (ring.answered) ArchiveColors.label("visitor") else ArchiveColors.danger,
                     fontSize = 15.sp, modifier = Modifier.padding(end = 8.dp))
+            }
+        }
+    }
+}
+
+/** Журнал открытий (docs/gate-tz.md, решение 7): когда, какой проход, что сделали, откуда, итог, снимок. */
+@Composable
+private fun OpeningsList(ui: ArchiveUi, thumbs: Map<String, Bitmap?>, actions: ArchiveActions) {
+    if (ui.openings.isEmpty()) {
+        Text("Открытий пока не было", color = ArchiveColors.hint, fontSize = 18.sp, modifier = Modifier.padding(top = 24.dp).testTag("archive_openings_empty"))
+        return
+    }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize().testTag("archive_openings")) {
+        items(ui.openings, key = { it.key }) { entry ->
+            val key = ArchiveActivity.openingKey(entry)
+            LaunchedEffect(key) { actions.openingThumb(entry) }
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(ArchiveColors.surface)
+                .clickable { actions.openOpening(entry) }.padding(8.dp).testTag("archive_opening_${entry.key}"),
+                verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(128.dp).aspectRatio(4f / 3f).clip(RoundedCornerShape(8.dp)).background(Color.Black)) {
+                    thumbs[key]?.let { Image(it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                        ?: Text(if (entry.photo == null) "нет снимка" else "", color = ArchiveColors.hint, fontSize = 13.sp, modifier = Modifier.align(Alignment.Center))
+                }
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text(timeFormat.format(Date(entry.atMs)) + " · " + entry.gateName, color = ArchiveColors.text, fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text(dayTitle(RecArchive.dayStart(entry.atMs)) + " · " + GateLog.actionText(entry.action) + " · " + entry.origin.title,
+                        color = ArchiveColors.secondary, fontSize = 15.sp, maxLines = 2)
+                }
+                Text(entry.result, color = if (entry.result.startsWith("не удалось")) ArchiveColors.danger else ArchiveColors.label("visitor"),
+                    fontSize = 15.sp, maxLines = 2, modifier = Modifier.padding(end = 8.dp).widthIn(max = 220.dp))
             }
         }
     }

@@ -29,6 +29,8 @@ class GateEditorActivity : PinProtectedActivity() {
     private lateinit var testResult: TextView
     private val kindCards = LinkedHashMap<Gate.Kind, LinearLayout>()
     private lateinit var link: LinearLayout
+    private lateinit var open: LinearLayout
+    private lateinit var phone: LinearLayout
     /** Поля связи напрямую сохраняются, даже если на время выбрать «только Home Assistant». */
     private var directDraft = Gate.Direct()
     /** Новый пароль устройства (null — не меняли). Пишется в зашифрованное хранилище только по «Сохранить». */
@@ -113,6 +115,11 @@ class GateEditorActivity : PinProtectedActivity() {
             ModernUi.body(this, "Ждать подтверждения, с (${Gate.CONFIRM_RANGE.first}–${Gate.CONFIRM_RANGE.last}; у ворот — время хода)"), confirm,
             statusLine))
 
+        open = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "gate_open_section" }
+        column.addView(gap()); column.addView(ModernUi.section(this, "Если оставили открытым", open))
+        phone = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(gap()); column.addView(ModernUi.section(this, "Телефон", phone))
+
         testResult = ModernUi.caption(this, "").apply { tag = "gate_test_result" }
         column.addView(gap()); column.addView(ModernUi.section(this, "Проверка",
             ModernUi.secondary(this, "Отправит команду «Открыть» — калитка откроется по-настоящему."),
@@ -186,7 +193,56 @@ class GateEditorActivity : PinProtectedActivity() {
             }
         }
         renderLink()
+        renderOpen()
         renderStatus()
+    }
+
+    // ---- «Оставили открытым», «Закрыть само» и кнопка в уведомлении (решения 5 и 8) ----
+
+    private fun renderOpen() {
+        if (!::open.isInitialized) return
+        open.removeAllViews()
+        open.addView(field("Напомнить, если открыто дольше, мин (0 — не напоминать)", draft.remindMinutes.toString(),
+            Gate.DEFAULT_REMIND.toString(), "gate_remind", number = true) { v ->
+            v.toIntOrNull()?.takeIf { it == 0 || it in Gate.MINUTES_RANGE }?.let { m -> draft = draft.copy(remindMinutes = m) }
+        })
+        open.addView(ModernUi.secondary(this, "Голосом на панели и красным на плитке; уведомлением — на телефон, выбранный для " +
+            "уведомлений о звонке. Нужен датчик положения (или замок, привод, вход Shelly), иначе неизвестно, открыто ли."))
+        val kind = GateLogic.autoCloseKind(draft)
+        if (kind == null) {
+            open.addView(ModernUi.secondary(this, when (draft.kind) {
+                Gate.Kind.RELAY -> "«Закрыть само» не нужно: защёлку закрывает доводчик двери."
+                Gate.Kind.STEP -> "«Закрыть само» у привода «шаг» нет: одна кнопка вслепую может открыть вместо закрытия."
+                else -> "«Закрыть само» — только с датчиком положения: иначе не проверить, закрылось ли."
+            }).apply { tag = "gate_auto_close_unavailable" })
+            if (draft.autoClose) draft = draft.copy(autoClose = false)
+        } else {
+            open.addView(ModernUi.switch(this, if (draft.kind == Gate.Kind.LOCK) "Запереть само" else "Закрыть само", draft.autoClose) { on ->
+                if (!on) { draft = draft.copy(autoClose = false); renderOpen(); return@switch }
+                // Включение — только с предупреждением: приложение не устройство безопасности (решение 8, EN 12453).
+                kit.show(ModernUi.dangerDialog(this, if (draft.kind == Gate.Kind.LOCK) "Запирать само?" else "Закрывать ворота само?",
+                    if (draft.kind == Gate.Kind.LOCK) "Замок запрётся, когда открыт дольше заданного времени и дверь закрыта." else
+                        "Ворота закроются, если открыты дольше заданного времени и камера прохода 30 секунд никого не видит. " +
+                        "Это допустимо только с фотоэлементами и ограничением усилия на самом приводе (EN 12453) — " +
+                        "приложение не устройство безопасности. Надёжнее — автозакрытие в самом приводе. Без камеры, где " +
+                        "отмечен этот проход, ворота само не закроются.", "Включить") {
+                    draft = draft.copy(autoClose = true); renderOpen()
+                }.apply { setOnCancelListener { renderOpen() } })
+                renderOpen()
+            }.apply { tag = "gate_auto_close" })
+            if (draft.autoClose) {
+                open.addView(field("Через, мин", draft.autoCloseMinutes.toString(), Gate.DEFAULT_REMIND.toString(), "gate_auto_close_minutes",
+                    number = true) { v -> v.toIntOrNull()?.takeIf { it in Gate.MINUTES_RANGE }?.let { m -> draft = draft.copy(autoCloseMinutes = m) } })
+                open.addView(ModernUi.secondary(this, "Одна попытка; не закрылось — напоминание «не удалось закрыть». Исполняет " +
+                    "планшет, на котором выбран телефон для уведомлений о звонке."))
+            }
+        }
+        phone.removeAllViews()
+        phone.addView(ModernUi.switch(this, "Кнопка «Открыть» в уведомлении о звонке", draft.phone) { on -> draft = draft.copy(phone = on) }
+            .apply { tag = "gate_phone" })
+        phone.addView(ModernUi.secondary(this, "На телефоне, выбранном у плитки домофона («Когда никто не подошёл»). Кнопка " +
+            "работает, пока окно звонка открыто, и один раз." + if (draft.kind == Gate.Kind.COVER || draft.kind == Gate.Kind.STEP)
+            " Ворот с телефона не видно — открывайте, только если уверены, что проезд свободен." else ""))
     }
 
     // ---- Связь: Home Assistant, напрямую или Home Assistant с запасным путём (этап 4) ----

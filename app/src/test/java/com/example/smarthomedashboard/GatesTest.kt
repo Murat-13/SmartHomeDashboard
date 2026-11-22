@@ -58,7 +58,9 @@ class GatesTest {
         attrs["lock.wicket"] = JSONObject().put("supported_features", 1); states["lock.wicket"] = "locked"
         assertEquals("open", cmd(lock, Gate.Action.OPEN)?.service)
         assertEquals("lock", cmd(lock, Gate.Action.CLOSE)?.service)
-        assertNull(cmd(lock.copy(lockButton = false), Gate.Action.CLOSE))
+        // «Запереть» есть у любого замка («Закрыть само»), но кнопка — только если её включили.
+        assertEquals("lock", cmd(lock.copy(lockButton = false), Gate.Action.CLOSE)?.service)
+        assertEquals(listOf(Gate.Action.OPEN), GateLogic.actions(lock.copy(lockButton = false), readings))
         // Привод.
         assertEquals("open_cover", cmd(cover, Gate.Action.OPEN)?.service)
         assertEquals("close_cover", cmd(cover, Gate.Action.CLOSE)?.service)

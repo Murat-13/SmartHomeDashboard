@@ -124,7 +124,8 @@ class PanelAlertsTest {
             .getSharedPreferences("t", android.content.Context.MODE_PRIVATE)
         // Остановка записи с камер — тоже по умолчанию (решение владельца 18.11.2026, docs/recording.md).
         assertEquals("По умолчанию включены сеть, домофон и запись", setOf(AlertEvent.GRID_LOST, AlertEvent.GRID_RESTORED,
-            AlertEvent.DOORBELL_RING, AlertEvent.DOORBELL_OFFLINE, AlertEvent.RECORDING_STOPPED), VoiceAlertSettings.load(prefs).enabled)
+            AlertEvent.DOORBELL_RING, AlertEvent.DOORBELL_OFFLINE, AlertEvent.RECORDING_STOPPED, AlertEvent.GATE_LEFT_OPEN),
+            VoiceAlertSettings.load(prefs).enabled)
         val custom = VoiceAlertSettings(enabled = setOf(AlertEvent.BATTERY_LOW), volumePercent = 33, quietStartMin = 22 * 60,
             quietEndMin = 6 * 60, quietPercent = 10, batteryLowPercent = 15)
         custom.save(prefs)

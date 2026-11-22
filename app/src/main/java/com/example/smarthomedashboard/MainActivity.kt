@@ -747,6 +747,7 @@ class MainActivity : AppCompatActivity() {
                 InverterModernConfig.TYPE -> InverterModernEditorActivity::class.java
                 DoorbellConfig.TYPE, DoorbellConfig.CAMERA_TYPE -> DoorbellEditorActivity::class.java
                 HomeClimateConfig.TYPE -> HomeClimateEditorActivity::class.java
+                GateTileConfig.TYPE -> GateTileEditorActivity::class.java
                 else -> TileSettingsActivity::class.java
             }
             startActivityForResult(Intent(this, screen).putExtra("tile_id", id), REQUEST_TILE_SETTINGS)
