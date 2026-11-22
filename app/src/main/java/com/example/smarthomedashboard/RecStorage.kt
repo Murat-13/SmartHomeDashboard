@@ -323,8 +323,10 @@ internal object RecRetention {
         (if (limitGb > 0) limitGb * GB else minOf(AUTO_LIMIT, (freeBytes + usedBytes) / 2)) / (if (fallback) 2 else 1)
 
     /**
-     * Порядок: 1) старше срока своей дорожки; 2) самые старые отрезки 24/7, пока не уложимся в лимит и остаток;
-     * 3) самые старые события, кроме помеченных; 4) места всё ещё меньше остатка — пауза.
+     * Порядок: 1) старше срока своей дорожки (24/7 и события — каждая по своему); 2) самые старые по времени —
+     * круглосуточная запись и события вместе, кроме помеченных ★, — пока не уложимся в лимит и остаток (решение
+     * владельца 22.11.2026: раньше сначала уходила вся круглосуточная запись, а события держались до своего срока, и
+     * при частых событиях круглосуточной записи оставалось всё меньше); 3) места всё ещё меньше остатка — пауза.
      * Открытые (идущие) файлы не трогаются, но учитываются в объёме.
      */
     fun plan(files: List<RecFile>, rules: (String) -> Rules, now: Long, freeBytes: Long, limitBytes: Long, reserveBytes: Long): Plan {
@@ -338,14 +340,12 @@ internal object RecRetention {
         var used = files.sumOf { it.bytes } - delete.sumOf { it.bytes }
         var free = freeBytes + delete.sumOf { it.bytes }
         fun over() = used > limitBytes || free < reserveBytes
-        for (kind in listOf(RecFile.Kind.CONTINUOUS, RecFile.Kind.EVENT)) {
+        // Одного времени начала у отрезка 24/7 и ролика события — сначала отрезок (ролик подробнее).
+        for (f in files.filter { !it.open && !it.starred && it !in delete }.sortedWith(compareBy({ it.startMs }, { it.kind != RecFile.Kind.CONTINUOUS }))) {
             if (!over()) break
-            for (f in files.filter { it.kind == kind && !it.open && !it.starred && it !in delete }.sortedBy { it.startMs }) {
-                if (!over()) break
-                delete += f
-                used -= f.bytes
-                free += f.bytes
-            }
+            delete += f
+            used -= f.bytes
+            free += f.bytes
         }
         return Plan(delete.toList(), free < reserveBytes)
     }

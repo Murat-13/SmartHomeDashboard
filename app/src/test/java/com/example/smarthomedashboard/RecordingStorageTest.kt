@@ -34,15 +34,21 @@ class RecordingStorageTest {
         assertFalse(plan.pause)
     }
 
-    @Test fun overLimitDeletesOldestContinuousBeforeEvents() {
-        val c = (1..10).map { file(RecFile.Kind.CONTINUOUS, it / 10.0, gb) } // 10 ГБ
-        val e = (1..5).map { file(RecFile.Kind.EVENT, it / 10.0 + 2, gb) }   // 5 ГБ
-        val plan = RecRetention.plan(c + e, rules, now, 100 * gb, 12 * gb, 2 * gb)
-        // 15 ГБ при лимите 12: удаляются 3 самых старых отрезка 24/7, события целы.
-        assertEquals(c.sortedBy { it.startMs }.take(3).toSet(), plan.delete.toSet())
+    /**
+     * Нехватка места: удаляется самое старое по времени — круглосуточная запись и события вместе, кроме ★ (решение
+     * владельца 22.11.2026). Раньше сначала уходила вся круглосуточная запись, а события держались до своего срока.
+     */
+    @Test fun overLimitDeletesOldestFirstWhateverTheKind() {
+        val c = (1..6).map { file(RecFile.Kind.CONTINUOUS, it.toDouble(), gb) }   // 1…6 дней назад
+        val e = (1..6).map { file(RecFile.Kind.EVENT, it + 0.5, gb) }             // 1,5…6,5 дней назад
+        val starred = file(RecFile.Kind.EVENT, 6.9, gb, starred = true)
+        // 13 ГБ при лимите 10: три самых старых, кроме ★, — событие 6,5 дн., 24/7 6 дн., событие 5,5 дн.
+        val plan = RecRetention.plan(c + e + starred, rules, now, 100 * gb, 10 * gb, 2 * gb)
+        assertEquals(setOf(e[5], c[5], e[4]), plan.delete.toSet())
+        assertFalse(plan.pause)
     }
 
-    @Test fun eventsGoOnlyAfterAllContinuousAndStarredStay() {
+    @Test fun starredStayWhenEverythingElseGoes() {
         val c = listOf(file(RecFile.Kind.CONTINUOUS, 0.5, gb))
         val starred = file(RecFile.Kind.EVENT, 5.0, gb, starred = true)
         val e = listOf(file(RecFile.Kind.EVENT, 4.0, gb), file(RecFile.Kind.EVENT, 3.0, gb), starred)
