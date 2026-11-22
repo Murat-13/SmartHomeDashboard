@@ -11,6 +11,7 @@ import android.view.TextureView
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
+import androidx.annotation.VisibleForTesting
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -104,6 +105,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -135,14 +137,27 @@ class ArchiveActivity : AppCompatActivity() {
     private val ringListener: () -> Unit = { loadRings() }
     private var cameras: List<Pair<String, String>> = emptyList()
     private var doorbellIds: Set<String> = emptySet()
+    /**
+     * Чтения диска идут на фоновых потоках и могут закончиться не в том порядке, в каком начались: при быстрой смене
+     * камер опоздавшее чтение прежней камеры заменяло список выбранной (ревью 22.11.2026). Новое чтение отменяет
+     * прежнее — результат отменённого до экрана не доходит. [cameraGen] — то же для превью над риской.
+     */
+    private var loadJob: Job? = null
+    private var ringsJob: Job? = null
+    private var storageJob: Job? = null
+    private var cameraGen = 0
 
     private fun titleOf(tile: com.example.smarthomedashboard.data.TileEntity?): String = tile?.title?.ifBlank { null }
         ?: if (tile?.type == DoorbellConfig.CAMERA_TYPE) DoorbellConfig.CAMERA_TITLE else DoorbellConfig.DEFAULT_TITLE
 
+    /** Состояние экрана — для тестов. */
+    @VisibleForTesting internal val shown: ArchiveUi get() = ui.value
+
     /** Другая камера: тот же экран, её записи (плеер останавливается, шкала и списки — заново). */
-    private fun switchCamera(id: String) {
+    internal fun switchCamera(id: String) {
         if (id == tileId) return
         tileId = id
+        cameraGen++
         title = cameras.firstOrNull { it.first == id }?.second ?: title
         player?.stop()
         loadedDay = null
@@ -207,9 +222,11 @@ class ArchiveActivity : AppCompatActivity() {
     private fun reload(latest: Boolean = false, keepDay: Long? = ui.value.day, at: Long? = null) {
         ui.value = ui.value.copy(loading = true)
         loadRings()
-        lifecycleScope.launch {
+        loadJob?.cancel()
+        storageJob?.cancel()
+        loadJob = lifecycleScope.launch {
             val camera = RecLayout.cameraKey(tileId)
-            snapshot = withContext(Dispatchers.IO) { archive.load(camera) }
+            snapshot = withContext(Dispatchers.IO) { loadHook?.invoke(camera) { archive.load(camera) } ?: archive.load(camera) }
             val days = snapshot.days
             val selected = (at?.let(RecArchive::dayStart) ?: keepDay)?.takeIf { it in days } ?: days.firstOrNull()
             ui.value = ui.value.copy(timeline = timelineOf(ui.value.filter))
@@ -227,7 +244,8 @@ class ArchiveActivity : AppCompatActivity() {
     }
 
     private fun loadStorage() {
-        lifecycleScope.launch {
+        storageJob?.cancel()
+        storageJob = lifecycleScope.launch {
             val keep = TileManager(this@ArchiveActivity).loadTiles().firstOrNull { it.id == tileId }
                 ?.let { RecordingConfig.from(it.config).keepContinuousDays } ?: RecordingConfig().keepContinuousDays
             val limit = RecordingDevice(this@ArchiveActivity).limitGb
@@ -238,7 +256,8 @@ class ArchiveActivity : AppCompatActivity() {
     }
 
     private fun loadRings() {
-        lifecycleScope.launch {
+        ringsJob?.cancel()
+        ringsJob = lifecycleScope.launch {
             val rings = withContext(Dispatchers.IO) { RingLog.list(this@ArchiveActivity, tileId) }
             rings.forEach { thumbs.remove(ringKey(it)) }
             ui.value = ui.value.copy(rings = rings)
@@ -575,6 +594,7 @@ class ArchiveActivity : AppCompatActivity() {
         val key = atMs / PREVIEW_STEP_MS * PREVIEW_STEP_MS
         previewCache[key]?.let { ui.value = ui.value.copy(preview = key to it); return }
         previewWanted = key
+        val gen = cameraGen
         val segment = snapshot.continuous.firstOrNull { key >= it.startMs && key < it.endMs }
             ?: snapshot.events.firstOrNull { key >= it.file.startMs && key < it.file.endMs }?.file ?: return
         previewThread.execute {
@@ -584,6 +604,7 @@ class ArchiveActivity : AppCompatActivity() {
             if (frame == null) { android.util.Log.w("Archive", "Превью: кадр не получен"); return@execute }
             if (previewLogged++ < 3) android.util.Log.i("Archive", "Превью: ${frame.width}×${frame.height} за ${android.os.SystemClock.uptimeMillis() - started} мс")
             runOnUiThread {
+                if (gen != cameraGen) return@runOnUiThread // кадр прежней камеры
                 previewCache[key] = frame
                 if (previewWanted == key) ui.value = ui.value.copy(preview = key to frame)
             }
@@ -678,6 +699,10 @@ class ArchiveActivity : AppCompatActivity() {
         private const val MAX_SEGMENT_MS = 15 * 60_000L
         private const val PREVIEW_STEP_MS = 5_000L
         private const val PREVIEW_CACHE = 120
+
+        /** Для тестов: обёртка чтения диска камеры на фоновом потоке (задать порядок завершения чтений). */
+        @VisibleForTesting @Volatile
+        internal var loadHook: ((camera: String, load: () -> RecArchive.Snapshot) -> RecArchive.Snapshot)? = null
 
         internal fun ringKey(ring: RingLog.Ring) = "ring_${ring.atMs}_${ring.photo?.lastModified() ?: 0}"
 
