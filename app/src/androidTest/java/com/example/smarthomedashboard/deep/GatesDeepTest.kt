@@ -65,8 +65,8 @@ class GatesDeepTest {
         ha.set("binary_sensor.deep_wicket_door", "off")
         prepareApp(ha, tiles)
         val wicket = Gate("gate_deep", "Калитка", Gate.Kind.RELAY, open = "switch.deep_wicket", sensor = "binary_sensor.deep_wicket_door")
-        appContext.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE).edit()
-            .putString(GateStore.KEY, JSONArray().put(wicket.toJson()).toString()).commit()
+        // Через GateStore: список проходов в памяти процесса (от прошлого теста) сбрасывается.
+        GateStore.save(appContext, listOf(wicket))
 
         scenario = ActivityScenario.launch(MainActivity::class.java)
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
@@ -121,14 +121,14 @@ class GatesDeepTest {
             start()
         }
         ha = FakeHomeAssistant()
-        val tiles = allTiles() + TileEntity("deep_gate", GateTileConfig.TYPE, "grid", "Калитка", 20, 600, 1, 1,
+        val tiles = allTiles() + TileEntity("deep_gate", GateTileConfig.TYPE, "grid", "Калитка", 1300, 520, 1, 1,
             config = GateTileConfig.newTileConfig("{}", "gate_shelly"))
         seedStates(ha, tiles)
         prepareApp(ha, tiles)
         val wicket = Gate("gate_shelly", "Калитка", Gate.Kind.RELAY, link = Gate.Link.DIRECT,
             direct = Gate.Direct(host = "127.0.0.1:${shelly!!.port}", input = 0))
-        appContext.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE).edit()
-            .putString(GateStore.KEY, JSONArray().put(wicket.toJson()).toString()).commit()
+        // Через GateStore: список проходов в памяти процесса (от прошлого теста) сбрасывается.
+        GateStore.save(appContext, listOf(wicket))
 
         scenario = ActivityScenario.launch(MainActivity::class.java)
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
