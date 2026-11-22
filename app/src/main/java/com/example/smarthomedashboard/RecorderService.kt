@@ -46,6 +46,13 @@ class RecorderService : Service() {
     private var retryScheduled = false
     /** Пишем в память планшета, хотя выбрана SD-карта (карту вынули или она сломалась). */
     private var sdMissing = false
+    /**
+     * Сроки хранения по камерам (ключ папки камеры) — из сохранённых плиток, у всех камер, а не только у идущих
+     * записей (поток управления). Первая очистка после запуска идёт раньше, чем записи открыты, а камера, у которой
+     * запись сейчас не идёт (выключена на этом планшете, видна только издалека), тоже хранит архив по своему сроку.
+     * Срок по умолчанию — только у папок камер, чьих плиток уже нет (ревью 22.11.2026).
+     */
+    private var keepRules: Map<String, RecordingConfig> = emptyMap()
 
     /** Изменилось что-то из ключа — запись перезапускается. Для HD сюда же предзапись, дозапись и предел ролика. */
     private data class Key(val url: String, val user: String, val passwordHash: Int, val audio: Boolean, val clip: List<Int> = emptyList())
@@ -84,6 +91,7 @@ class RecorderService : Service() {
     private fun sync() {
         val device = RecordingDevice(this)
         val tiles = TileManager(this).loadTiles().filter { it.type in CameraSource.TYPES }
+        keepRules = tiles.associate { RecLayout.cameraKey(it.id) to RecordingConfig.from(it.config) }
         // Ключ записи: id плитки — круглосуточная (субпоток), id + [HD] — события (основной поток).
         val wanted = HashMap<String, Pair<Key, RecordingConfig>>()
         // Пароль — свой у каждой камеры (docs/camera-tz.md); у домофона — прежний слот.
@@ -253,9 +261,9 @@ class RecorderService : Service() {
         val used = files.sumOf { it.bytes }
         var limit = RecRetention.limit(device.limitGb, free, used)
         if (onFallback()) limit /= 2
-        val configs = recorders.mapKeys { RecLayout.cameraKey(it.key.removeSuffix(HD)) }.mapValues { it.value.config }
+        val rules = keepRules
         val plan = RecRetention.plan(files, { camera ->
-            val c = configs[camera] ?: RecordingConfig()
+            val c = rules[camera] ?: RecordingConfig()
             RecRetention.Rules(c.keepContinuousDays * 86_400_000L, c.keepEventDays * 86_400_000L)
         }, now, free, limit, device.reserveGb * RecRetention.GB)
         val deleted = plan.delete.filter { f -> (f.path.delete() || !f.path.exists()).also { if (it) files.remove(f) } }
