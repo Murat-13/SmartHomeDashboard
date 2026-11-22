@@ -502,6 +502,14 @@ class SettingsActivity : PinProtectedActivity() {
                 }.apply { tag = "btnVoiceAlerts" }, 2)
             }
         }
+        // Калитки и ворота (docs/gate-tz.md) — общий список проходов панели, вход из раздела «Устройство».
+        findViewById<android.widget.LinearLayout?>(R.id.sectionDevice)?.let { section ->
+            if (section.findViewWithTag<View>("btnGates") == null) {
+                section.addView(ModernUi.secondaryButton(this, "Калитки и ворота…") {
+                    startActivity(android.content.Intent(this, GatesActivity::class.java))
+                }.apply { tag = "btnGates" }, minOf(1, section.childCount))
+            }
+        }
         findViewById<CompoundButton?>(R.id.cbModernHaptics)?.setOnCheckedChangeListener { _, checked ->
             apply { putBoolean(ModernHaptics.PREF, checked) }
         }

@@ -97,10 +97,11 @@ class SettingsConfigTransferTest {
         val oldTiles = tiles.all.toMap()
         val text = export()
         val json = JSONObject(text)
-        // Состав расширен несекретными полями (этап 08); токен, ключ Яндекса и PIN по-прежнему не входят.
+        // Состав расширен несекретными полями (этап 08; 0.9.49 — калитки и ворота: список проходов и выбор «PIN для
+        // открытия», не сам PIN); токен, ключ Яндекса и PIN по-прежнему не входят.
         assertEquals(setOf("pin_session_minutes", "screen_timeout_minutes", "motion_sensor_id", "app_theme", "kiosk_mode",
             "tiles_json", "temp_unit", "yandex_lat", "yandex_lon", "use_yandex_weather", "page_count", "page_home_seconds",
-            "modern_haptics", "motion_enabled", "ha_local_host", "ha_remote_host"), json.keys().asSequence().toSet())
+            "modern_haptics", "motion_enabled", "ha_local_host", "ha_remote_host", "gates_json", "gate_pin"), json.keys().asSequence().toSet())
         assertEquals("http://ha.example.invalid", json.getString("ha_local_host"))
         for (key in forbidden) assertFalse(key, json.has(key))
         assertFalse(text.contains("FAKE-"))

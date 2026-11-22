@@ -98,6 +98,16 @@
         <activity android:name=".HomeClimateEditorActivity" android:exported="false" />
         <activity android:name=".InverterModernEditorActivity" android:exported="false" />
         <activity android:name=".DoorbellEditorActivity" android:exported="false" />
+        <!-- Калитки и ворота (docs/gate-tz.md): список проходов и редактор одного прохода, тема Modern. -->
+        <activity
+            android:name=".GatesActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <activity
+            android:name=".GateEditorActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
         <!-- Архив записей (docs/recording.md, этап 3): Compose, тема Modern. -->
         <activity
             android:name=".ArchiveActivity"

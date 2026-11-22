@@ -200,6 +200,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(entityRow("motion", "Движение", "значок") { config.motion })
 
         if (!camera) buildDoorbellOnly(side)
+        buildGates(side)
         side.addView(header("Раскрытие по касанию"))
         side.addView(switch("door_auto_collapse", "Сворачивать автоматически", config.autoCollapse) { update(config.copy(autoCollapse = it)) })
         side.addView(number("door_collapse_seconds", "Через, секунд", config.collapseSeconds, 5..3600) { update(config.copy(collapseSeconds = it)) })
@@ -224,8 +225,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     /** Только у домофона: калитка, свет, готовые ответы, звук звонка. */
     private fun buildDoorbellOnly(side: LinearLayout) {
-        side.addView(header("Калитка, свет, ответы"))
-        side.addView(entityRow("lock", "Замок калитки", "кнопки «Открыть» нет, пока не выбран") { config.lock })
+        side.addView(header("Свет, ответы"))
         side.addView(entityRow("light", "Свет у входа", "light или switch") { config.light })
         side.addView(switch("door_auto_light", "Включать свет при звонке после заката", config.autoLight) { update(config.copy(autoLight = it)) })
         side.addView(number("door_light_off", "Гасить через, мин после закрытия окна (0 — не гасить)", config.lightOffMinutes, 0..120) {
@@ -737,6 +737,57 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     // ---- Строки редактора ----
 
     private fun header(text: String) = kit.label(text, 18f, bold = true).apply { setPadding(0, kit.dp(16), 0, kit.dp(4)) }
+
+    // ---- Калитки и ворота (docs/gate-tz.md): какие проходы показывает эта плитка ----
+
+    private lateinit var gatesBox: LinearLayout
+    /** Проходы до перехода в «Управление замком»: созданные там новые сразу отмечаются у этой плитки. */
+    private var gatesBefore: Set<String>? = null
+
+    override fun onResume() {
+        super.onResume()
+        // Вернулись из «Управление замком»: список проходов мог измениться.
+        renderGates()
+    }
+
+    private fun buildGates(side: LinearLayout) {
+        side.addView(header("Калитки и ворота"))
+        side.addView(kit.label("Кнопки отмеченных проходов — в раскрытой плитке (и без звонка)" +
+            (if (camera) "." else " и в окне звонка.") + " Сами проходы настраиваются в «Управление замком».", 13f))
+        gatesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "door_gates" }
+        side.addView(gatesBox)
+        side.addView(kit.button("Управление замком…", "door_gates_manage") {
+            gatesBefore = GateHub.gates(this).map { it.id }.toSet()
+            startActivity(Intent(this, GatesActivity::class.java))
+        })
+        renderGates()
+    }
+
+    private fun renderGates() {
+        if (!::gatesBox.isInitialized) return
+        val all = GateHub.gates(this)
+        // Созданные только что в «Управление замком» — сразу у этой плитки (за тем туда и ходили).
+        gatesBefore?.let { before ->
+            val created = all.map { it.id }.filter { it !in before }
+            if (created.isNotEmpty()) update(config.copy(gates = (config.gateIds(original.id) + created).distinct()))
+            gatesBefore = null
+        }
+        gatesBox.removeAllViews()
+        if (all.isEmpty()) {
+            gatesBox.addView(kit.label("Проходов пока нет. «Управление замком…» — добавить калитку или ворота.", 13f))
+            return
+        }
+        val shown = config.gateIds(original.id)
+        all.forEach { gate ->
+            gatesBox.addView(switch("door_gate_${gate.id}", "${gate.name} · ${gate.kind.title}" +
+                if (gate.ready) "" else " (не настроен)", gate.id in shown) { on ->
+                val current = config.gateIds(original.id)
+                // Порядок кнопок — как в общем списке проходов.
+                val next = all.map { it.id }.filter { if (it == gate.id) on else it in current }
+                update(config.copy(gates = next))
+            })
+        }
+    }
 
     private fun entityRow(role: String, label: String, hint: String, value: () -> String): View {
         val row = LinearLayout(this).apply {
