@@ -32,12 +32,13 @@ class DoorbellStreamTest {
         if (::ha.isInitialized) ha.close()
     }
 
-    private fun open(main: String, sub: String) {
+    private fun open(main: String, sub: String, autoCollapse: Boolean = true) {
         assumeTrue("Нужен аргумент rtspHost (RTSP-стенд CI)", host != null)
         assumeTrue("Только эмулятор: тест заменяет данные приложения", isEmulator())
         ha = FakeHomeAssistant()
         // Без камеры HA: только прямой RTSP, как у владельца при первом тесте Hikvision.
-        val tiles = allTiles(DoorbellConfig(rtspMain = main, rtspSub = sub, visitor = "binary_sensor.deep_visitor"))
+        val tiles = allTiles(DoorbellConfig(rtspMain = main, rtspSub = sub, visitor = "binary_sensor.deep_visitor",
+            autoCollapse = autoCollapse))
         seedStates(ha, tiles)
         prepareApp(ha, tiles)
         scenario = ActivityScenario.launch(MainActivity::class.java)
@@ -87,7 +88,9 @@ class DoorbellStreamTest {
      */
     @Test fun rotationKeepsVideoWithoutReconnect() {
         val port = argument("rtspPort") ?: "8554"
-        open("rtsp://$host:$port/${argument("rtspMain") ?: "main1080"}", "rtsp://$host:$port/${argument("rtspSub") ?: "sub"}")
+        // Без автосворачивания: на медленном эмуляторе CI своё HD шло дольше 30 с, и карточка сворачивалась сама.
+        open("rtsp://$host:$port/${argument("rtspMain") ?: "main1080"}", "rtsp://$host:$port/${argument("rtspSub") ?: "sub"}",
+            autoCollapse = false)
         waitFor(40_000, "субпоток") { status() == DoorbellVideoView.Status.PLAYING }
         var activity: MainActivity? = null
         scenario!!.onActivity { activity = it }
@@ -97,7 +100,7 @@ class DoorbellStreamTest {
             onMain { expanded(activity!!)?.video?.let { it.status == DoorbellVideoView.Status.PLAYING && !it.hasGuest && it.framesShown > 5 } == true }
         }
         val compactBefore = card()!!
-        val expandedBefore = onMain { expanded(activity!!) }
+        val expandedBefore = onMain { expanded(activity!!) } ?: error("раскрытая карточка закрылась до поворота")
         val starts = onMain { compactBefore.video.playerStarts to expandedBefore.video.playerStarts }
         val framesBefore = onMain { expandedBefore.video.framesShown }
 
