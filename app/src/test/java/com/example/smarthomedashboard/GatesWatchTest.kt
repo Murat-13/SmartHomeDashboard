@@ -165,6 +165,29 @@ class GatesWatchTest {
         } finally { DoorbellAway.save(context, "bare", DoorbellAway.Settings()) }
     }
 
+    /**
+     * Панель закрыли («Назад»), процесс жив ради записи: состояние Home Assistant больше не приходит. Ворота не
+     * закрываются по последнему снимку, где «никого нет» (независимое ревью 24.11.2026).
+     */
+    @Test fun closedPanelDoesNotCloseOnFrozenState() {
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(1.0)
+        DoorbellHub.detach()
+        minutes(8.0)
+        assertTrue("Панели нет — по застывшему состоянию не закрываем", commands.isEmpty())
+    }
+
+    /** Датчик камеры не «on/off» («detected», «clear», число) — неизвестно, есть ли кто-то: не закрываем (ревью 24.11.2026). */
+    @Test fun nonBinaryDetectionStateIsNotAnEmptyPassage() {
+        states["binary_sensor.person"] = "detected"; push()
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(8.0)
+        assertTrue("«detected» — не «никого нет»", commands.isEmpty())
+        states["binary_sensor.person"] = "off"; push()
+        minutes(0.6)
+        assertEquals(listOf("cover.close_cover cover.drive"), commands)
+    }
+
     @Test fun positionSensorOfflineBlocksAutoClose() {
         states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
         minutes(1.0)
@@ -186,6 +209,10 @@ class GatesWatchTest {
         states["cover.drive"] = "closing"; push()
         minutes(0.1)
         states["cover.drive"] = "opening"; push()
+        minutes(0.1)
+        states["cover.drive"] = "open"; push()
+        // Привод сам пробует закрыть ещё раз и снова откатывается (ревью 24.11.2026) — второго «не удалось» нет.
+        states["cover.drive"] = "closing"; push()
         minutes(0.1)
         states["cover.drive"] = "open"; push()
         minutes(12.0)

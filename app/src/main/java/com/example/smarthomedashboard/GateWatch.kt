@@ -23,6 +23,8 @@ import android.util.Log
 internal object GateWatch {
     private const val TAG = "Gates"
     const val TICK_MS = 10_000L
+    /** Значения датчика «есть кто-то / нет никого», которым можно верить. */
+    private val BINARY = setOf("on", "off")
     const val CLEAR_MS = 30_000L
     const val DOOR_CLOSED_MS = 10_000L
 
@@ -46,6 +48,8 @@ internal object GateWatch {
     private val trustedSince = HashMap<String, Long>()
     /** После своей команды «Закрыть» ворота начали закрываться — если снова откроются, закрытие не удалось. */
     private val autoClosing = HashSet<String>()
+    /** «Не удалось закрыть» уже сказано за это открытие: привод сам пробует снова — второй раз не повторяем. */
+    private val autoFailed = HashSet<String>()
     /** Почему «Закрыть само» ждёт — в журнал один раз за открытие. */
     private val waitNoted = HashMap<String, String>()
     /** Последнее положение прохода: закрывать можно, только если оно — от датчика положения. */
@@ -87,10 +91,10 @@ internal object GateWatch {
             // «не открыто» — в том числе на «закрываются» от своей же команды и на сбое связи: если привод упирался в
             // препятствие и откатывал ворота, приложение закрывало их снова каждые N минут.
             if (status.position == GateStatus.Position.CLOSED && status.source != GateStatus.Source.NONE) {
-                autoTried.remove(gate.id); autoClosing.remove(gate.id)
+                autoTried.remove(gate.id); autoClosing.remove(gate.id); autoFailed.remove(gate.id)
             } else if (gate.id in autoTried) {
                 if (status.position == GateStatus.Position.CLOSING) autoClosing += gate.id
-                else if (status.open && autoClosing.remove(gate.id)) {
+                else if (status.open && autoClosing.remove(gate.id) && autoFailed.add(gate.id)) {
                     Log.i(TAG, "${gate.name}: после «Закрыть само» снова открыты")
                     autoCloseFailed(gate)
                 }
@@ -103,7 +107,7 @@ internal object GateWatch {
     /** Проход удалён из списка. */
     fun forget(keep: Set<String>) {
         listOf(openSince, unlockedSince, doorClosedSince, lastStatus, waitNoted).forEach { it.keys.retainAll(keep) }
-        reminded.retainAll(keep); autoTried.retainAll(keep); leftOpen.retainAll(keep); autoClosing.retainAll(keep)
+        reminded.retainAll(keep); autoTried.retainAll(keep); leftOpen.retainAll(keep); autoClosing.retainAll(keep); autoFailed.retainAll(keep)
     }
 
     private fun schedule() {
@@ -124,7 +128,9 @@ internal object GateWatch {
             val sensors = sensorsOf(config).map { readings?.of(it) }
             val direct = DirectEvents.activeDetections(tile.id).any { it != DoorbellConfig.Detection.MOTION }
             val ha = sensors.any { (it as? BatteryReading.Value)?.raw == "on" }
-            if (sensors.isNotEmpty() && sensors.all { it is BatteryReading.Value }) trustedSince.putIfAbsent(tile.id, now)
+            // Подтвердить «пусто» может только датчик «есть / нет» (on/off). Другое значение («detected», число,
+            // событие) — неизвестно, есть ли кто-то (независимое ревью 24.11.2026): раньше оно считалось «пусто».
+            if (sensors.isNotEmpty() && sensors.all { (it as? BatteryReading.Value)?.raw in BINARY }) trustedSince.putIfAbsent(tile.id, now)
             else trustedSince.remove(tile.id)
             if (direct || ha) { lastSeen[tile.id] = now; busyNow += tile.id }
             else if (busyNow.remove(tile.id)) lastSeen[tile.id] = now
@@ -239,7 +245,7 @@ internal object GateWatch {
         ticking = false
         openSince.clear(); unlockedSince.clear(); doorClosedSince.clear()
         reminded.clear(); autoTried.clear(); leftOpen.clear(); lastSeen.clear()
-        busyNow.clear(); trustedSince.clear(); autoClosing.clear(); waitNoted.clear(); lastStatus.clear()
+        busyNow.clear(); trustedSince.clear(); autoClosing.clear(); autoFailed.clear(); waitNoted.clear(); lastStatus.clear()
         clock = { SystemClock.uptimeMillis() }
         tiles = { DoorbellHub.doorbellTiles() }
     }

@@ -373,6 +373,15 @@ internal object GateHub {
         GateWatch.tilesOf(gate.id).firstNotNullOfOrNull { DoorbellHub.actions?.tileVideo(it.id) }
     }
 
+    /**
+     * Панель закрыта (её ViewModel очищен, соединение с Home Assistant закрыто): новое состояние больше не придёт.
+     * Последний снимок перестаёт считаться текущим — «Закрыть само» по нему не решает (независимое ревью 24.11.2026:
+     * процесс жив ради записи, а [GateWatch] закрыл бы ворота по застывшему «никого нет»).
+     */
+    fun panelGone() {
+        latest = null
+    }
+
     /** Новое состояние Home Assistant (из [DoorbellHub.onState]). */
     fun onState(context: Context?, readings: BatteryReadings) {
         latest = readings

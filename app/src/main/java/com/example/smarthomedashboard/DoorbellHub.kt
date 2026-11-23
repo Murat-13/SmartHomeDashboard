@@ -85,6 +85,8 @@ internal object DoorbellHub {
         (app as? Application)?.unregisterActivityLifecycleCallbacks(activityTracker)
         app = null
         readings = null
+        // Калитки и ворота тоже больше не видят Home Assistant: прежний снимок — не текущее состояние.
+        GateHub.panelGone()
         // Панели нет — о событиях ничего не известно: новый ролик не начнётся, идущий закроется по дозаписи.
         RecordingEvents.clear()
         // Новая панель начинает с чистого листа: первое состояние снова только запоминается.
