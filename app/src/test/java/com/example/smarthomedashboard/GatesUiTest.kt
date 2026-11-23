@@ -73,9 +73,27 @@ class GatesUiTest {
 
     // ---- Редактор прохода ----
 
-    private fun editor(gateId: String? = null) = Robolectric.buildActivity(GateEditorActivity::class.java,
-        Intent(context, GateEditorActivity::class.java).apply { gateId?.let { putExtra(GateEditorActivity.EXTRA_GATE, it) } })
-        .create().start().resume().get().also { idle() }
+    /**
+     * Экран под PIN: проверка PIN идёт в фоне и на этой среде (PIN не настроен по-настоящему) закрывает экран, если
+     * успела раньше касаний теста. Тест проходил или падал от скорости машины (GatesUiTest на CI 23.11.2026: окно
+     * «Удалить?» не появилось — экран уже закрывался). Здесь PIN заранее «выключен», и тест ждёт, пока экран откроется.
+     */
+    private fun <T : PinProtectedActivity> opened(controller: org.robolectric.android.controller.ActivityController<T>):
+        org.robolectric.android.controller.ActivityController<T> {
+        val a = controller.create().get()
+        org.robolectric.util.ReflectionHelpers.setField(a, "pinGateAccess", PinAccess(object : PinAccess.Storage {
+            override fun read() = PinAccess.State(null, null)
+            override fun write(state: PinAccess.State) = true
+        }, object : PinAccess.Legacy { override fun read(): String? = null; override fun remove() = true },
+            clock = object : PinAccess.Clock { override fun elapsed() = 0L; override fun boot() = "test" }, worker = {}))
+        controller.start().resume()
+        weatherAwait { org.robolectric.util.ReflectionHelpers.getField<Boolean>(a, "pinAuthorized") }
+        idle()
+        return controller
+    }
+
+    private fun editor(gateId: String? = null) = opened(Robolectric.buildActivity(GateEditorActivity::class.java,
+        Intent(context, GateEditorActivity::class.java).apply { gateId?.let { putExtra(GateEditorActivity.EXTRA_GATE, it) } })).get()
 
     @Test fun newGateIsSavedOnlyWhenDeviceChosen() {
         val e = editor()
@@ -123,7 +141,7 @@ class GatesUiTest {
     @Test fun listShowsWhereGateIsShownAndPinChoice() {
         GateStore.save(context, listOf(wicket, drive))
         manager.saveTiles(listOf(door.copy(config = DoorbellConfig.from(door.config).copy(gates = listOf("gate_2")).writeTo(door.config))))
-        val a = Robolectric.buildActivity(GatesActivity::class.java).create().start().resume().get()
+        val a = opened(Robolectric.buildActivity(GatesActivity::class.java)).get()
         idle()
         val root = a.findViewById<View>(android.R.id.content)
         val item = root.findViewWithTag<ViewGroup>("gates_item_gate_2")
@@ -138,8 +156,8 @@ class GatesUiTest {
 
     // ---- Редактор плитки: какие проходы у неё ----
 
-    private fun doorEditor() = Robolectric.buildActivity(DoorbellEditorActivity::class.java,
-        Intent(context, DoorbellEditorActivity::class.java).putExtra("tile_id", "door")).create().start().resume()
+    private fun doorEditor() = opened(Robolectric.buildActivity(DoorbellEditorActivity::class.java,
+        Intent(context, DoorbellEditorActivity::class.java).putExtra("tile_id", "door")))
 
     @Test fun tileEditorChecksGatesInListOrderAndNewOnesFromManageAreChecked() {
         GateStore.save(context, listOf(wicket, drive))
