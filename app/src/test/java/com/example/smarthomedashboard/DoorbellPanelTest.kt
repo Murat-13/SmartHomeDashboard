@@ -42,6 +42,7 @@ class DoorbellPanelTest {
     @Before fun noSession() = PinSecurityUi.session.revoke()
     @After fun cleanup() {
         PinSecurityUi.session.revoke()
+        DoorbellMove.clear()
         DoorbellHub.actions = null
         DoorbellHub.connection = null
         DoorbellHub.detach()
@@ -132,6 +133,54 @@ class DoorbellPanelTest {
         advance(400)
         assertTrue(controller.modernExpansion.isOpen)
         assertNull("«Сворачивать автоматически» выключено", controller.modernExpansion.collapseAt)
+    }
+
+    /**
+     * Поворот экрана (решение владельца 23.11.2026): плитка и раскрытая карточка домофона — те же объекты до и после,
+     * поэтому видео не подключается заново, а разговор не обрывается. Раньше старый экран закрывал обе карточки
+     * (плееры и разговор), новый создавал свои — «Подключение…» на секунду.
+     */
+    @Test fun rotationKeepsTileAndExpandedCardAlive() {
+        open()
+        tap(tile())
+        advance(400)
+        val compact = card()
+        val expanded = controller.modernExpansion.card as DoorbellCard
+        fun talkClosed(): Boolean =
+            ReflectionHelpers.getField(ReflectionHelpers.getField<DoorbellTalk>(expanded, "talk"), "disposed")
+
+        // Старый экран уходит ради поворота (то же делает MainActivity.onDestroy).
+        controller.rememberForRecreation(changingConfigurations = true)
+        controller.clearPanelInteractions()
+        assertEquals("плитка и раскрытая карточка ждут новый экран", 2, DoorbellMove.waiting)
+        assertTrue(expanded.video.moving && compact.video.moving)
+        assertFalse("разговор раскрытой карточки не закрыт", talkClosed())
+
+        // Новый экран строит панель и снова раскрывает карточку.
+        ArchitectureTestAccess.methods(activity).single { it.name == "refreshBottomPanel" && it.parameterTypes.isEmpty() }
+            .apply { isAccessible = true }.invoke(activity)
+        layout()
+        advance(100)
+        assertSame("плитка — та же карточка: её плеер не закрывался", compact, card())
+        // Панель после поворота раскрывает карточку сама, после первых кадров нового окна; в этом тесте панель не в
+        // окне, и отложенный вызов не выполнится — раскрываем тем же путём, касанием.
+        tap(tile())
+        advance(50)
+        assertTrue("карточка снова раскрыта", controller.modernExpansion.isOpen)
+        assertSame("раскрытая — та же карточка: видео, звук и разговор продолжаются", expanded, controller.modernExpansion.card)
+        assertEquals("встала на место сразу, без роста из плитки", 1f, expanded.scaleX, 0.001f)
+        assertEquals(1f, expanded.alpha, 0.001f)
+        assertFalse(talkClosed())
+        assertEquals(0, DoorbellMove.waiting)
+        assertNotNull("кнопки новый экран привязал заново", expanded.onArchive)
+        advance(DoorbellMove.HOLD_MS + 500)
+        assertFalse("срок ожидания забранные карточки не трогает", talkClosed())
+
+        // Обычное закрытие экрана (не поворот) — всё закрывается, как раньше.
+        controller.rememberForRecreation(changingConfigurations = false)
+        controller.clearPanelInteractions()
+        assertEquals(0, DoorbellMove.waiting)
+        assertTrue(talkClosed())
     }
 
     @Test fun ringOnPanelOpensWindowAndCountsMissedUntilSeen() {

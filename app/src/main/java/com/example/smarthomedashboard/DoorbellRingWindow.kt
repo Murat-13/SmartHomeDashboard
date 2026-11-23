@@ -39,26 +39,33 @@ import android.widget.TextView
  */
 @SuppressLint("ViewConstructor")
 internal class DoorbellRingWindow private constructor(
-    val host: Activity,
+    firstHost: Activity,
     val tileId: String,
-    private val origin: RectF?,
+    private var origin: RectF?,
     private val onClosed: (DoorbellRingWindow) -> Unit
-) : FrameLayout(host) {
+) : FrameLayout(Movable.context(firstHost)) {
+    /**
+     * Экран, на котором окно сейчас: после поворота — новый ([detachForMove], [attachTo]). Параметр конструктора назван
+     * иначе нарочно: одноимённый заслонил бы это свойство в блоках инициализации, и обработчики кнопок запомнили бы
+     * первый экран навсегда.
+     */
+    var host: Activity = firstHost
+        private set
     private val main = Handler(Looper.getMainLooper())
     private val density = resources.displayMetrics.density
-    private val scrim = View(host).apply { setBackgroundColor(Color.BLACK); alpha = 0f }
-    private val panel = LinearLayout(host).apply { tag = "door_ring_panel" }
-    val card = DoorbellCard(host, expanded = true).apply { ringMode = true; video.muted = true }
-    private val controls = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL; tag = "door_ring_controls" }
+    private val scrim = View(context).apply { setBackgroundColor(Color.BLACK); alpha = 0f }
+    private val panel = LinearLayout(context).apply { tag = "door_ring_panel" }
+    val card = DoorbellCard(context, expanded = true).apply { ringMode = true; video.muted = true }
+    private val controls = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; tag = "door_ring_controls" }
     private val heading = label(30f, Color.WHITE, bold = true).apply { text = DoorbellHub.RING_PHRASE; tag = "door_ring_heading" }
     private val sub = label(19f, DoorbellFrame.SECONDARY).apply { tag = "door_ring_sub" }
-    private val buttons = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL }
-    private val spacer = View(host)
+    private val buttons = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val spacer = View(context)
     /** Проходы плитки (калитки и ворота); PIN — только если выбран «Всегда» ([GatePin]). */
-    val gateButtons = GateButtons(host, vertical = true)
+    val gateButtons = GateButtons(context, vertical = true)
     /** Разговор (docs/talk-tz.md): удержание — голос в домофон; сессия открывается вместе с окном. */
-    private val talk = DoorbellTalk(host)
-    private val talkButton = TalkButton(host, talk).apply {
+    private val talk = DoorbellTalk(context)
+    private val talkButton = TalkButton(context, talk).apply {
         answering = { true } // окно звонка — всегда звонок
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         visibility = GONE
@@ -67,7 +74,7 @@ internal class DoorbellRingWindow private constructor(
     /** Фразы (свои и готовые HA). «Ответить» — теперь кнопка разговора (этап 2). */
     private val replyButton = pill("Фразы", R.drawable.ic_door_reply).apply { tag = "door_reply" }
     private val closeButton = pill("Закрыть", R.drawable.ic_close).apply { tag = "door_close" }
-    private val replies = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL; visibility = GONE; tag = "door_replies" }
+    private val replies = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; visibility = GONE; tag = "door_replies" }
     private var animator: ValueAnimator? = null
     private var closing = false
     var isShowing = false
@@ -257,7 +264,7 @@ internal class DoorbellRingWindow private constructor(
             panel.scaleX = sx + (1f - sx) * t
             panel.scaleY = sy + (1f - sy) * t
             panel.alpha = (0.4f + 0.6f * t * 1.6f).coerceAtMost(1f)
-            scrim.alpha = 0.72f * t
+            scrim.alpha = SCRIM_ALPHA * t
         }
     }
 
@@ -285,6 +292,8 @@ internal class DoorbellRingWindow private constructor(
         card.video.muted = true
         PanelAlerts.cancel(DoorbellHub.ringTag(tileId))
         val sx = panel.scaleX; val sy = panel.scaleY; val x0 = panel.x; val y0 = panel.y; val dim = scrim.alpha
+        // После поворота плитка на другом месте: окно уходит туда, где она сейчас.
+        if (moved) origin = if (host is MainActivity) DoorbellHub.actions?.tileBounds(tileId) else null
         val to = origin
         run(CLOSE_MS, ::closeNow) { t ->
             if (to != null) {
@@ -312,10 +321,13 @@ internal class DoorbellRingWindow private constructor(
         RecordingEvents.session(tileId, talk, false)
         GateHub.unlisten(gateListener)
         closing = true
+        moving = false
         main.removeCallbacksAndMessages(null)
         animator?.let { animator = null; it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
         restoreBrightness()
         talk.dispose()
+        // После поворота плитка панели — уже на новом экране: основной поток досматривается в ней, как обычно.
+        if (moved && host is MainActivity) card.video.partner = DoorbellHub.actions?.tileVideo(tileId)
         // Экраны поверх панели держат экран сами ([PanelIdle]); прочие (заставка, первая настройка) — нет: флаг снимается.
         if (host !is MainActivity && !PanelIdle.managed(host)) host.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         card.dispose()
@@ -537,7 +549,7 @@ internal class DoorbellRingWindow private constructor(
 
     // ---- Вспомогательное ----
 
-    private fun label(size: Float, color: Int, bold: Boolean = false) = TextView(host).apply {
+    private fun label(size: Float, color: Int, bold: Boolean = false) = TextView(context).apply {
         setTextColor(color)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
@@ -545,7 +557,7 @@ internal class DoorbellRingWindow private constructor(
         setPadding(0, 0, 0, (6 * density).toInt())
     }
 
-    private fun pill(text: String, icon: Int?) = TextView(host).apply {
+    private fun pill(text: String, icon: Int?) = TextView(context).apply {
         this.text = text
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER
@@ -575,8 +587,48 @@ internal class DoorbellRingWindow private constructor(
     }
 
     override fun onDetachedFromWindow() {
-        if (isShowing) closeNow()
+        if (isShowing && !moving) closeNow()
         super.onDetachedFromWindow()
+    }
+
+    // ---- Поворот экрана: окно переезжает на новый экран целиком ----
+
+    /** Окно в пути на новый экран: со старого снято, но не закрыто — звонок, разговор и отсчёт закрытия идут дальше. */
+    var moving = false
+        private set
+    /** Окно уже переезжало: место плитки и её видео берутся заново (прежние остались на старом экране). */
+    private var moved = false
+
+    /**
+     * Экран пересоздаётся (поворот): раньше окно звонка закрывалось вместе с ним и не возвращалось, разговор
+     * обрывался (решение владельца 23.11.2026 — «переделай всё, что необходимо»). Теперь окно снимается со старого
+     * экрана как есть и ставится на новый ([attachTo]). false — переезжать нечему (окно уже закрывается).
+     */
+    fun detachForMove(): Boolean {
+        if (!isShowing || closing) return false
+        moving = true
+        // Раскрытие ещё шло — сразу конечный вид; на новом экране окно встанет по центру.
+        animator?.let { animator = null; it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
+        panel.scaleX = 1f; panel.scaleY = 1f; panel.alpha = 1f
+        scrim.alpha = SCRIM_ALPHA
+        restoreBrightness()
+        card.video.prepareMove()
+        (parent as? ViewGroup)?.removeView(this)
+        return true
+    }
+
+    /** Новый экран после поворота: то же окно, с тем же видео, разговором и состоянием кнопок. */
+    fun attachTo(activity: Activity) {
+        host = activity
+        Movable.rebase(this, activity)
+        (parent as? ViewGroup)?.removeView(this)
+        activity.findViewById<ViewGroup>(android.R.id.content)
+            .addView(this, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        activity.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        moving = false
+        moved = true
+        applyNightBrightness()
+        render()
     }
 
     companion object {
@@ -590,6 +642,7 @@ internal class DoorbellRingWindow private constructor(
         private const val KEEP_AWAKE_MS = 20_000L
         private const val PHOTO_CHECK_MS = 1_000L
         private const val PHOTO_TRIES = 12
+        private const val SCRIM_ALPHA = 0.72f
 
         fun show(activity: Activity, tileId: String, origin: RectF?, onClosed: (DoorbellRingWindow) -> Unit): DoorbellRingWindow {
             val window = DoorbellRingWindow(activity, tileId, origin, onClosed)

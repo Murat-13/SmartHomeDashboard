@@ -309,8 +309,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             return
         }
         if (!visible) {
-            // Короткая пауза: перелистывание страницы туда-обратно не рвёт соединение с домофоном.
-            if (player != null) main.postDelayed(releaseLater, RELEASE_DELAY_MS)
+            // Короткая пауза: перелистывание страницы туда-обратно не рвёт соединение с домофоном. В пути на новый
+            // экран (поворот) плеер не закрывается вовсе: не забрали — карточку закроет [DoorbellMove].
+            if (player != null && !moving) main.postDelayed(releaseLater, RELEASE_DELAY_MS)
             return
         }
         if (src.snapshotOnly || !ENABLED) {
@@ -734,6 +735,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(300, 2_000, 150, 300).build())
             .build()
         player = exo
+        playerStarts++
         startedAt = SystemClock.elapsedRealtime()
         firstFrameRendered = false
         main.removeCallbacks(firstFrameWatchdog)
@@ -1092,14 +1094,30 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     override fun motionChanged() = update()
 
+    /**
+     * Вид переезжает на новый экран (поворот, [DoorbellMove]): пока он снят с окна, плеер, звук и таймеры живут. Перед
+     * этим на подложку кладётся последний кадр — новая поверхность пуста, пока плеер не нарисует на ней первый кадр.
+     */
+    internal var moving = false
+        private set
+
+    fun prepareMove() {
+        if (moving) return
+        keepLastFrame()
+        moving = true
+        main.removeCallbacks(releaseLater)
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        moving = false
         PanelMotion.add(this)
         update()
     }
 
     override fun onDetachedFromWindow() {
         PanelMotion.remove(this)
+        if (moving) { super.onDetachedFromWindow(); return }
         main.removeCallbacksAndMessages(null)
         pictureCall?.cancel()
         pictureCall = null
@@ -1120,6 +1138,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     fun dispose() {
+        moving = false
         onStatus = null
         onQuality = null
         onAspect = null
@@ -1132,6 +1151,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     internal val hasPlayer get() = player != null
+    /** Сколько плееров создал этот вид и сколько кадров показал нынешний — проверка, что поворот не подключается заново. */
+    internal var playerStarts = 0
+        private set
+    internal val framesShown: Int get() = player?.videoDecoderCounters?.let { it.ensureUpdated(); it.renderedOutputBufferCount } ?: 0
     /** Адрес RTSP, с которым плитка работает сейчас (пусто — прямого потока нет). */
     internal val boundRtsp get() = source?.rtsp.orEmpty()
 

@@ -118,6 +118,7 @@
         <activity
             android:name=".ArchiveActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.SmartHomeDashboard.Modern" />
         <!-- «Поделиться» роликом архива: только копия в cache/archive_share, доступ по разовому разрешению. -->
         <provider

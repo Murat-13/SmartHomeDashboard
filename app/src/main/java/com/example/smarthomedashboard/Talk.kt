@@ -2,7 +2,6 @@ package com.example.smarthomedashboard
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -662,7 +661,7 @@ internal class DoorbellTalk(
     fun startCall(): Boolean {
         if (disposed || inCall) return true
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            (context as? Activity)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
+            Movable.activityOf(context)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
             set(State.ERROR, "Разрешите микрофон и нажмите «Ответить» ещё раз")
             return false
         }
@@ -905,7 +904,7 @@ internal class DoorbellTalk(
         if (disposed || inCall) return true
         Log.i(TAG, "Нажато «Говорить» (состояние $state)")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            (context as? Activity)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
+            Movable.activityOf(context)?.let { ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) }
             set(State.ERROR, "Разрешите микрофон и нажмите «Говорить» ещё раз")
             return false
         }

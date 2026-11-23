@@ -118,6 +118,33 @@ class ArchiveStartTest {
         assertTrue("вне события — снова 24/7", archive.shown.continuous && archive.shown.current == null)
     }
 
+    /**
+     * Поворот экрана (решение владельца 23.11.2026 — «переделай всё, что необходимо»): архив остаётся тем же экраном —
+     * место на шкале, ролик и вид «на весь экран» не теряются. Раньше Android строил архив заново, и он возвращался к
+     * «Сейчас».
+     */
+    @Test fun rotationKeepsPlaceAndFullscreen() {
+        val archive = open()
+        loaded(archive)
+        archive.testActions.timelineScrub(now - 90_000, true)
+        loaded(archive)
+        archive.testActions.fullscreen(true)
+        val place = archive.shown.center
+        assertTrue(archive.shown.continuous && archive.shown.fullscreen)
+
+        // Поворот в книжное положение: ширина и высота меняются местами.
+        val turned = android.content.res.Configuration(archive.resources.configuration).apply {
+            orientation = android.content.res.Configuration.ORIENTATION_PORTRAIT
+            val w = screenWidthDp; screenWidthDp = screenHeightDp; screenHeightDp = w
+        }
+        controller!!.configurationChange(turned)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertSame("экран архива — тот же, а не построен заново", archive, controller!!.get())
+        assertEquals("место на шкале то же", place, archive.shown.center)
+        assertTrue("по-прежнему запись на весь экран", archive.shown.continuous && archive.shown.fullscreen)
+    }
+
     @Test fun fromRingWindowStillOpensLatestEvent() {
         val archive = open { putExtra(ArchiveActivity.EXTRA_LATEST, true) }
         loaded(archive)

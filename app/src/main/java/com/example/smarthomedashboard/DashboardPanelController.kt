@@ -330,6 +330,29 @@ internal class DashboardPanelController(
     fun rememberForRecreation(changingConfigurations: Boolean) {
         viewModel.reopenExpansion = modernExpansion.tileId
             ?.takeIf { changingConfigurations && modernExpansion.isOpen && !isEditMode }
+        if (changingConfigurations) parkVideoCards()
+    }
+
+    /**
+     * Поворот: карточки домофона и камер (раскрытая и плитки этой страницы) не закрываются со старым экраном, а
+     * переезжают на новый ([DoorbellMove]) — видео не подключается заново, разговор не обрывается. Сначала раскрытая:
+     * раскрытие при этом возвращает плитке обычный вид.
+     */
+    private fun parkVideoCards() {
+        val open = viewModel.reopenExpansion
+        if (open != null) (modernExpansion.card as? DoorbellCard)?.let { card ->
+            // В пути — до снятия с экрана: иначе снятие закрыло бы плеер и разговор (найдено на эмуляторе).
+            card.prepareMove()
+            if (modernExpansion.release() === card) DoorbellMove.park(open, card)
+        }
+        parkCompactCards()
+    }
+
+    /** Плитки домофона и камер этой панели — в [DoorbellMove]: новая раскладка возьмёт их с живым видео. */
+    private fun parkCompactCards() {
+        renderedViews.forEach { (tileId, view) ->
+            (view as? ViewGroup)?.findViewWithTag<DoorbellCard>("door_compact")?.let { DoorbellMove.park(tileId, it) }
+        }
     }
 
     private fun reopenAfterRecreation() {
@@ -368,6 +391,9 @@ internal class DashboardPanelController(
         val keepModernGroup = (if (modernGroup.isOpen) modernGroup.tileId else viewModel.openModernGroup)
             ?.takeIf { !isEditMode }
             ?.let { id -> tileManager.getAllTiles().find { it.id == id && it.type == "group" && TileButtonStyle.isModern(it.type, it.config) } }
+        // Плитки видео переживают перестроение: панель строится заново и при возврате на экран (onResume), и после
+        // поворота — видео не подключается заново. Не понадобились (плитку удалили, другая страница) — закрываются ниже.
+        parkCompactCards()
         clearPanel(keepModernGroup = keepModernGroup != null && modernGroup.isOpen)
         bottomPanel.removeAllViews()
 
@@ -419,6 +445,7 @@ internal class DashboardPanelController(
         contentController.updateSensorDisplay()
         contentController.updateClockViews()
         host.updateHint()
+        DoorbellMove.closeUnusedTiles()
         reopenAfterRecreation()
     }
 
@@ -1518,7 +1545,10 @@ internal class DashboardPanelController(
             if (width > screenW * 0.94f) { width = (screenW * 0.94f).toInt(); height = (width / config.aspect).toInt() }
             val target = BatteryModernExpansion.Bounds((screenW - width) / 2f, (screenH - height) / 2f, width, height)
             if (!camera) DoorbellHub.acknowledge(tile.id)
-            val expanded = DoorbellCard(activity, expanded = true, camera = camera)
+            // После поворота — та же раскрытая карточка, что была на прежнем экране ([DoorbellMove]): видео, звук,
+            // разговор и увеличение продолжаются; она встаёт на место сразу, без роста из плитки.
+            val moved = DoorbellMove.take(tile.id, expanded = true, camera = camera, activity = activity)
+            val expanded = moved ?: DoorbellCard(Movable.context(activity), expanded = true, camera = camera)
             expanded.tileId = tile.id
             // Архив записей (docs/recording.md): архив проявляется поверх раскрытой карточки, начиная с её последнего кадра;
             // карточка сворачивается уже под ним. Раньше сворачивание и смена экрана шли одновременно — «дёргано» (23.11.2026).
@@ -1557,7 +1587,7 @@ internal class DashboardPanelController(
                 }
             }
             modernExpansion.expand(tile.id, source, expanded, target,
-                if (config.autoCollapse) config.collapseSeconds * 1000L else null)
+                if (config.autoCollapse) config.collapseSeconds * 1000L else null, instant = moved != null)
             renderModern(tile, null, animate = false)
             // Бесшовно: пока подключается основной поток, крупно идёт уже работающий субпоток плитки;
             // при сворачивании — наоборот (DoorbellVideoView.lendTo / partner).

@@ -827,6 +827,28 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         video.dispose()
     }
 
+    /**
+     * Карточка переезжает на новый экран (поворот, [DoorbellMove]): видео, звук и разговор продолжаются. Всё, что
+     * привязал прежний экран, снимается — новый привяжет своё; иначе закрытый экран остался бы в памяти.
+     */
+    fun prepareMove() {
+        video.prepareMove()
+        setHiddenBySource(false)
+        // Увеличение считалось в размерах прежнего экрана — на новом карточка другого размера.
+        zoom?.reset()
+        onArchive = null
+        onCalls = null
+        onAutoReply = null
+        onGuard = null
+        onFloodlight = null
+        onCollapse = null
+        onActivity = null
+        onGate = null
+    }
+
+    /** Идёт разговор (для проверки, что поворот его не оборвал). */
+    internal val inCall get() = talk?.inCall == true
+
     companion object {
         const val SOUND_HINT = "🔊 Звук включён · два пальца — увеличить · касание — свернуть"
         /** Сколько после звонка кнопка разговора в раскрытой плитке — «Ответить» (окно звонка держится минуту). */
@@ -857,8 +879,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
                     }
                 }
             }
-            tile.addView(DoorbellCard(context, expanded = false, camera = camera).apply { this.tileId = tileId },
-                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            // После поворота — та же карточка, что была на прежнем экране: её плеер не подключается заново ([DoorbellMove]).
+            val screen = Movable.activityOf(context)
+            val card = screen?.let { DoorbellMove.take(tileId, expanded = false, camera = camera, activity = it) }
+                ?: DoorbellCard(screen?.let(Movable::context) ?: context, expanded = false, camera = camera)
+            tile.addView(card.apply { this.tileId = tileId }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             val handle = ImageView(context).apply {
                 setImageResource(R.drawable.ic_resize)
                 layoutParams = LayoutParams(40, 40).apply { gravity = Gravity.BOTTOM or Gravity.END }

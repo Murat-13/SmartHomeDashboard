@@ -465,6 +465,13 @@ internal object DoorbellHub {
 
         fun resumed(activity: Activity) {
             resumed = WeakReference(activity)
+            // Поворот: окно звонка ждало новый экран — ставим его туда же, где было (звонок и разговор не прерывались).
+            window?.takeIf { it.moving }?.let { moved ->
+                main.removeCallbacks(dropMoving)
+                // Поворот пересоздаёт тот же экран; другой экран (успели перейти) — окно закрывается, как раньше.
+                if (activity.javaClass == moved.host.javaClass) { moved.attachTo(activity); notifyListeners(); return }
+                moved.closeNow()
+            }
             val (tileId, at) = pending ?: return
             if (SystemClock.uptimeMillis() - at > DoorbellRingWindow.RING_MS) { pending = null; return }
             if (window?.isShowing == true) return
@@ -479,14 +486,22 @@ internal object DoorbellHub {
         }
 
         fun destroyed(activity: Activity) {
-            window?.takeIf { it.host === activity }?.closeNow()
+            window?.takeIf { it.host === activity }?.let { w ->
+                // Экран пересоздаётся (поворот) — окно звонка переезжает на новый; иначе закрывается вместе с экраном.
+                if (activity.isChangingConfigurations && w.detachForMove()) main.postDelayed(dropMoving, DoorbellMove.HOLD_MS)
+                else w.closeNow()
+            }
             banner?.takeIf { it.host === activity }?.dismiss()
         }
+
+        /** Новый экран так и не появился — окно звонка без экрана не остаётся (разговор завершается). */
+        private val dropMoving = Runnable { window?.takeIf { it.moving }?.closeNow() }
 
         val windowOpen get() = window?.isShowing == true
 
         fun closeAll() {
             pending = null
+            main.removeCallbacks(dropMoving)
             banner?.dismiss()
             window?.closeNow()
         }

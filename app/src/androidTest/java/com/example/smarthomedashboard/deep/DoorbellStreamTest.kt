@@ -79,6 +79,47 @@ class DoorbellStreamTest {
         assertTrue("После раскрытия основной поток 1080p даёт «HD»", hd)
     }
 
+    /**
+     * Поворот экрана (решение владельца 23.11.2026): плитка и раскрытая карточка — те же объекты на новом экране, их
+     * плееры не создаются заново и продолжают показывать кадры. Раньше оба плеера закрывались со старым экраном, новые
+     * подключались заново («Подключение…» на секунду). Адреса потоков можно задать аргументами rtspPort, rtspMain,
+     * rtspSub (стенд камер на Mac); без них — потоки стенда CI.
+     */
+    @Test fun rotationKeepsVideoWithoutReconnect() {
+        val port = argument("rtspPort") ?: "8554"
+        open("rtsp://$host:$port/${argument("rtspMain") ?: "main1080"}", "rtsp://$host:$port/${argument("rtspSub") ?: "sub"}")
+        waitFor(40_000, "субпоток") { status() == DoorbellVideoView.Status.PLAYING }
+        var activity: MainActivity? = null
+        scenario!!.onActivity { activity = it }
+        tap(activity!!, onMain { activity!!.window.decorView.findViewWithTag<View>("deep_door") })
+        fun expanded(of: MainActivity) = of.window.decorView.findViewWithTag<DoorbellCard>("door_expanded")
+        waitFor(40_000, "свой поток раскрытой карточки") {
+            onMain { expanded(activity!!)?.video?.let { it.status == DoorbellVideoView.Status.PLAYING && !it.hasGuest && it.framesShown > 5 } == true }
+        }
+        val compactBefore = card()!!
+        val expandedBefore = onMain { expanded(activity!!) }
+        val starts = onMain { compactBefore.video.playerStarts to expandedBefore.video.playerStarts }
+        val framesBefore = onMain { expandedBefore.video.framesShown }
+
+        scenario!!.recreate() // экран пересоздаётся «ради смены конфигурации» — как при повороте
+        var next: MainActivity? = null
+        waitFor(10_000, "раскрытая карточка на новом экране") {
+            scenario!!.onActivity { next = it }
+            next !== activity && onMain { expanded(next!!)?.isAttachedToWindow == true }
+        }
+        val expandedAfter = onMain { expanded(next!!) }
+        assertTrue("раскрытая карточка — та же", expandedAfter === expandedBefore)
+        assertTrue("плитка — та же", card() === compactBefore)
+        assertTrue("карточка живёт на новом экране", onMain { com.example.smarthomedashboard.Movable.activityOf(expandedAfter.context) } === next)
+        // Кадры идут дальше на новом экране тем же плеером.
+        waitFor(10_000, "кадры после поворота") { onMain { expandedAfter.video.framesShown } > framesBefore + 10 }
+        val after = onMain { compactBefore.video.playerStarts to expandedAfter.video.playerStarts }
+        assertTrue("плееры не создавались заново: было $starts, стало $after", after == starts)
+        assertTrue("видео идёт", onMain { expandedAfter.video.status } == DoorbellVideoView.Status.PLAYING)
+        assertTrue("плитка идёт", status() == DoorbellVideoView.Status.PLAYING)
+        log("Поворот: плееры те же ($after), кадров показано ${onMain { expandedAfter.video.framesShown }} (до поворота $framesBefore)")
+    }
+
     /** Разрешение выше 1080p (как 2560×1920 у Reolink): на эмуляторе — программный декодер, результат — сведения, не приговор. */
     @Test fun aboveFullHdIsReported() {
         open("rtsp://$host:8554/main2560", "rtsp://$host:8554/main2560")

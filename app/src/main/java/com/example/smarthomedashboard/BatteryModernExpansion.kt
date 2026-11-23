@@ -138,7 +138,7 @@ internal class BatteryModernExpansion(
      * пока палец ещё на плитке (0.9.16): тогда она не пересоздаётся и не переразмечается, затемнение
      * встаёт под неё.
      */
-    fun expand(id: String, from: View, expandedCard: View, target: Bounds, timeout: Long? = timeoutMs) {
+    fun expand(id: String, from: View, expandedCard: View, target: Bounds, timeout: Long? = timeoutMs, instant: Boolean = false) {
         val early = prefetch?.takeIf { it.source === from }
         if (early != null) prefetch = null
         clear()
@@ -181,7 +181,8 @@ internal class BatteryModernExpansion(
 
         val sx = start.width / target.width.toFloat().coerceAtLeast(1f)
         val sy = start.height / target.height.toFloat().coerceAtLeast(1f)
-        run(OPEN_MS, onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null) }) { t ->
+        // [instant] — карточка уже была раскрыта и переехала с прежнего экрана (поворот): сразу на месте, без роста из плитки.
+        run(if (instant) 0L else OPEN_MS, onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null) }) { t ->
             expandedCard.x = start.x + (target.x - start.x) * t
             expandedCard.y = start.y + (target.y - start.y) * t
             expandedCard.scaleX = sx + (1f - sx) * t
@@ -274,6 +275,19 @@ internal class BatteryModernExpansion(
         if (isOpen) scheduleTimer()
     }
 
+    /**
+     * Отдать раскрытую карточку, не закрывая её: она переезжает на новый экран (поворот, [DoorbellMove]). Всё остальное
+     * раскрытия освобождается, как в [clear]. null — карточки нет или она уже сворачивается.
+     */
+    fun release(): View? {
+        val view = card?.takeIf { !closing } ?: return null
+        card = null
+        view.setLayerType(View.LAYER_TYPE_NONE, null)
+        (view.parent as? ViewGroup)?.removeView(view)
+        clear()
+        return view
+    }
+
     /** Немедленное освобождение: анимация, таймер, overlay, размытый слой и его bitmap; компактная плитка снова видна. */
     fun clear() {
         stopTimer()
@@ -326,6 +340,8 @@ internal class BatteryModernExpansion(
             it.removeAllUpdateListeners()
             it.cancel()
         }
+        // Без движения — сразу конечное состояние: аниматор нулевой длины показал бы один кадр начального.
+        if (duration <= 0L) { frame(1f); onEnd?.invoke(); return }
         val next = ValueAnimator.ofFloat(0f, 1f).apply {
             this.duration = duration
             interpolator = DecelerateInterpolator()
