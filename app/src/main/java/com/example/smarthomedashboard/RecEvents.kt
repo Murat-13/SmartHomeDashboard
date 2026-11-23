@@ -332,9 +332,9 @@ internal class EventRecorder(
             val base = root()
             if (base == null) { failed = true; report(State.NO_STORAGE, "Нет места для записи"); return false }
             if (!canWrite()) { failed = true; report(State.NO_SPACE, "Запись остановлена: нет места"); return false }
-            val start = timeline.wallMs(us)
-            val dir = RecLayout.dayDir(base, camera, start)
+            val dir = RecLayout.dayDir(base, camera, timeline.wallMs(us))
             if (!dir.isDirectory && !dir.mkdirs()) { failed = true; report(State.NO_STORAGE, "Папка записи недоступна"); return false }
+            val start = RecLayout.freeStart(dir, RecFile.Kind.EVENT, timeline.wallMs(us))
             val f = File(dir, RecLayout.openName(RecFile.Kind.EVENT, start))
             writer = Mp4SegmentWriter(f, params, audioParams, queued = true)
             file = f

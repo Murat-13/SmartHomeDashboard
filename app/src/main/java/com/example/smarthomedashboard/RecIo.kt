@@ -61,6 +61,10 @@ internal object RecIo {
      */
     fun <T> call(waitMs: Long, task: () -> T): T? = try {
         executor.submit(Callable { task() }).get(waitMs, TimeUnit.MILLISECONDS)
+    } catch (e: InterruptedException) {
+        // Поток остановили (запись выключают) — признак прерывания остаётся для того, кто его ждёт.
+        Thread.currentThread().interrupt()
+        null
     } catch (e: Exception) {
         Log.w(TAG, "Запись на носитель: не дождались (${e.javaClass.simpleName})")
         null
@@ -142,9 +146,9 @@ internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
     @Volatile private var open = true
 
     init {
-        // Тот же файл ещё дописывается или закрывается (новый ролик с того же ключевого кадра): дождаться, иначе в один
-        // файл писали бы два ролика.
-        if (file.path in RecIo.busyFiles()) RecIo.flush(5_000)
+        // Имя нового файла выбирается свободным ([RecLayout.freeStart]); если всё же занято — два ролика в одном файле
+        // недопустимы: ошибка записи (сессия переподключится), а не ожидание в потоке камеры (ревью 24.11.2026).
+        if (file.path in RecIo.busyFiles()) throw IOException("Файл записи уже пишется: ${file.name}")
         RecIo.opened(file)
     }
 
@@ -156,7 +160,10 @@ internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
         val copy = ByteArray(n).also { src.get(it) }
         RecIo.write(n) {
             if (failure == null) {
-                try { (out ?: FileOutputStream(file).also { out = it }).write(copy) } catch (e: IOException) { failure = e }
+                try { (out ?: FileOutputStream(file).also { out = it }).write(copy) } catch (e: Exception) {
+                    // Любая ошибка носителя — как раньше, ошибка записи; поток записи не падает (ревью 24.11.2026).
+                    failure = e as? IOException ?: IOException(e)
+                }
             }
         }
         return n

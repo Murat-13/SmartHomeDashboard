@@ -144,6 +144,32 @@ class RecordingIoTest {
         assertEquals(2, RecLayout.scan(root).count { !it.open })
     }
 
+    /**
+     * Новый ролик события с того же ключевого кадра, что и прежний, который ещё закрывается (ревью 24.11.2026): имя
+     * берётся свободное, поток камеры не ждёт носитель; два ролика в один файл не пишутся.
+     */
+    @Test fun sameStartGetsFreeNameWithoutWaiting() {
+        val dir = tmp.newFolder("same")
+        val start = 1_763_490_000_000L
+        storageStuck {
+            val first = QueuedFileChannel(File(dir, RecLayout.openName(RecFile.Kind.EVENT, start)))
+            first.write(ByteBuffer.wrap(ByteArray(10)))
+            first.close()
+            val t = System.nanoTime()
+            val free = RecLayout.freeStart(dir, RecFile.Kind.EVENT, start)
+            assertTrue("не ждали носитель", System.nanoTime() - t < 100_000_000L)
+            assertEquals(start + 1, free)
+            try {
+                QueuedFileChannel(File(dir, RecLayout.openName(RecFile.Kind.EVENT, start)))
+                fail("второй писатель в тот же файл")
+            } catch (_: IOException) {
+            }
+            QueuedFileChannel(File(dir, RecLayout.openName(RecFile.Kind.EVENT, free))).close()
+        }
+        assertTrue(RecIo.flush(5_000))
+        assertEquals(start, RecLayout.freeStart(dir, RecFile.Kind.EVENT, start))
+    }
+
     /** Кадры образца H.264 (10 кадров/с, ключевой раз в секунду), продолжённые до [count]. */
     private fun sample(count: Int): Pair<List<VideoFrame>, VideoDepacketizer> {
         val units = accessUnits(nals(resource("sample.h264")), false)

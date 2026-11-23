@@ -171,6 +171,19 @@ internal object RecLayout {
     fun day(ms: Long): String = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(ms))
 
     fun openName(kind: RecFile.Kind, startMs: Long) = "${kind.prefix}_$startMs.part.mp4"
+
+    /**
+     * Время начала нового файла, чтобы его имя не совпало с файлом, который ещё дописывается или закрывается в потоке
+     * записи ([RecIo]): новый ролик события может начаться с того же ключевого кадра, что и прежний (ревью 24.11.2026).
+     * Раньше поток камеры в этом случае ждал, пока прежний закроется. Сдвиг — на миллисекунды.
+     */
+    fun freeStart(dir: File, kind: RecFile.Kind, startMs: Long): Long {
+        var start = startMs
+        val busy = RecIo.busyFiles()
+        while (File(dir, openName(kind, start)).path in busy) start++
+        return start
+    }
+
     fun closedName(kind: RecFile.Kind, startMs: Long, durationMs: Long, starred: Boolean = false) =
         "${kind.prefix}_${startMs}_${durationMs.coerceAtLeast(0)}${if (starred) "_s" else ""}.mp4"
 
@@ -184,19 +197,11 @@ internal object RecLayout {
     }
 
     /**
-     * Закрыть идущий файл: дописать, обрезать по последнему целому фрагменту и переименовать в закрытое имя.
-     * [contentMs] — от первого до последнего кадра; последний кадр длится примерно 1/25 с. Файл без единого фрагмента
-     * (обрыв сразу после ключевого кадра) удаляется — null.
-     */
-    fun finish(writer: Mp4SegmentWriter, file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long): RecFile? {
-        // Ошибка дописывания не теряет файл: ниже он обрезается по последнему целому фрагменту.
-        try { writer.close() } catch (e: Exception) { android.util.Log.w("Recording", "Файл записи не дописан: ${e.message}") }
-        return closed(file, camera, kind, startMs, contentMs)
-    }
-
-    /**
-     * То же, что [finish], но обрезка и переименование — когда файл дописан на носитель: у записи с камеры — в потоке
-     * записи [RecIo], поток камеры их не ждёт. [done] — там же; у тестов и вырезки (файл пишется сразу) — сразу.
+     * Закрыть идущий файл: дописать, обрезать по последнему целому фрагменту и переименовать в закрытое имя. У записи с
+     * камеры обрезка и переименование — когда файл дописан на носитель, в потоке записи [RecIo]: поток камеры их не
+     * ждёт. [done] — там же; у тестов и вырезки (файл пишется сразу) — сразу. [contentMs] — от первого до последнего
+     * кадра; последний кадр длится примерно 1/25 с. Файл без единого фрагмента (обрыв сразу после ключевого кадра)
+     * удаляется — [done] не вызывается.
      */
     fun finishLater(writer: Mp4SegmentWriter, file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long,
                     done: (RecFile) -> Unit) {

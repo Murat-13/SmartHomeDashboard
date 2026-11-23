@@ -192,9 +192,9 @@ internal class ContinuousRecorder(
             val base = root()
             if (base == null) { report(State.NO_STORAGE, "Нет места для записи"); return }
             if (!canWrite()) { report(State.NO_SPACE, "Запись остановлена: нет места"); return }
-            val start = timeline.wallMs(us)
-            val dir = RecLayout.dayDir(base, camera, start)
+            val dir = RecLayout.dayDir(base, camera, timeline.wallMs(us))
             if (!dir.isDirectory && !dir.mkdirs()) { report(State.NO_STORAGE, "Папка записи недоступна"); return }
+            val start = RecLayout.freeStart(dir, RecFile.Kind.CONTINUOUS, timeline.wallMs(us))
             val f = File(dir, RecLayout.openName(RecFile.Kind.CONTINUOUS, start))
             current = Mp4SegmentWriter(f, params, audioParams, queued = true)
             file = f
