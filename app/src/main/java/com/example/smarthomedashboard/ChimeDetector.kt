@@ -8,8 +8,9 @@ import kotlin.math.sqrt
  * Мелодия Reolink (ролик события 23.11.2026): удар «динь» — высокий чистый тон ≈ 2,5 кГц, держится 1,06 с, пауза
  * 1,5 с, удар «дон» — 0,90 с. Блок 32 мс считается тоном мелодии, если он громкий, высокий (переходов через ноль больше
  * 3000 в секунду) и периодичный (корреляция с собой на сдвиге в один-несколько периодов от 0,6). Шипящие в речи бывают
- * такими же, но короткими (до 0,45 с в том же разговоре); поэтому мелодия — только ровная цепочка таких блоков (4 из
- * любых 6 подряд) длиной от [MIN_RUN_MS]. На 12 минутах записи улицы (22–23.11, день и ночь) — ни одного срабатывания.
+ * такими же, но короткими (до 0,45 с в том же разговоре). Начало мелодии — первый блок с её тоном (лучше подождать
+ * зря, чем открыть канал посреди мелодии); конец — когда тон стих, а мелодия звучит уже свою длину; длина мелодии
+ * для следующего звонка — только по ровной цепочке таких блоков (4 из любых 6 подряд) от [MIN_RUN_MS].
  *
  * Время — по отсчётам звука, не по часам: [push] — по порядку прихода. [noneAtMs] — с какой миллисекунды звука можно
  * решить «мелодии нет»: мелодия начинается в пределах ≈ 1 с после прихода звонка, а слушать начинаем чуть позже
@@ -26,8 +27,10 @@ internal class ChimeDetector(private val rate: Int, private val learnedMs: Long 
     private var recentAt = 0
     private var runBlocks = 0
     private var lastLoudMs = -1_000_000L
-    private var chimeRun = false
-    /** Начало мелодии и конец последнего её удара, мс звука; -1 — не было. */
+    /** Последний блок с тоном мелодии; была ли хоть одна ровная цепочка от [MIN_RUN_MS] (для длины мелодии). */
+    private var lastToneMs = -1L
+    private var confirmed = false
+    /** Начало мелодии (первый блок с её тоном) и конец её последнего удара, мс звука; -1 — не было. */
     var onsetMs = -1L
         private set
     var lastMs = -1L
@@ -35,8 +38,8 @@ internal class ChimeDetector(private val rate: Int, private val learnedMs: Long 
     var verdict = Verdict.LISTENING
         private set
 
-    /** Длина мелодии от начала первого удара до конца последнего (для [learnedMs] следующего звонка); 0 — не было. */
-    val chimeMs get() = if (onsetMs >= 0 && lastMs > onsetMs) lastMs - onsetMs else 0L
+    /** Длина мелодии от начала первого удара до конца последнего (для [learnedMs] следующего звонка); 0 — не узнали. */
+    val chimeMs get() = if (confirmed && onsetMs >= 0 && lastMs > onsetMs) lastMs - onsetMs else 0L
     /** Мелодия началась в начале прослушивания — значит, услышана целиком, и её длине можно верить. */
     val heardWhole get() = onsetMs in 0..noneAtMs
 
@@ -56,39 +59,36 @@ internal class ChimeDetector(private val rate: Int, private val learnedMs: Long 
         val now = samples * 1000 / rate
         val (loud, tone) = tonal(buf)
         if (loud) lastLoudMs = now
+        // Начало мелодии — первый же блок с её тоном, даже если удар не дотянет до ровной цепочки: звонок 23.11 в 13:07 —
+        // тон первого удара забит другим звуком через 0,5 с, и «мелодии нет» решилось в паузе перед вторым ударом.
+        // Ошибиться в эту сторону — один раз подождать лишние секунды; в другую — голос копится в домофоне весь разговор.
+        if (tone) {
+            if (onsetMs < 0) onsetMs = (now - BLOCK_MS).coerceAtLeast(0)
+            lastToneMs = now
+        }
         recent[recentAt] = tone
         recentAt = (recentAt + 1) % WINDOW
-        val active = recent.count { it } >= NEED
-        if (active) {
+        if (recent.count { it } >= NEED) {
             runBlocks++
-            val runStart = now - runBlocks * BLOCK_MS
-            if (!chimeRun && runBlocks * BLOCK_MS >= MIN_RUN_MS) {
-                chimeRun = true
-                if (onsetMs < 0) onsetMs = runStart.coerceAtLeast(0)
-            }
-            if (chimeRun) lastMs = now
-        } else {
-            runBlocks = 0
-            chimeRun = false
-        }
+            if (runBlocks * BLOCK_MS >= MIN_RUN_MS) { confirmed = true; lastMs = now }
+        } else runBlocks = 0
         verdict = decide(now)
     }
 
     private fun decide(now: Long): Verdict {
         if (now >= MAX_MS) return Verdict.ENDED
         if (onsetMs < 0) {
-            // Мелодии не слышно, и ничего похожего не звучит прямо сейчас — её нет. Громкий звук только что — подождать:
+            // Тона мелодии не слышно, и ничего громкого прямо сейчас — её нет. Громкий звук только что — подождать:
             // удар начинается с ≈ 0,3 с низкого призвука, а тон после него; но речь гостя ожидание не затягивает.
             val calm = now - lastLoudMs >= CALM_MS || now >= noneAtMs + SPEECH_GRACE_MS
-            return if (now >= noneAtMs && runBlocks == 0 && recent.none { it } && calm) Verdict.NONE else Verdict.LISTENING
+            return if (now >= noneAtMs && calm) Verdict.NONE else Verdict.LISTENING
         }
-        // Удар идёт или начинается что-то похожее (следующий удар подтвердится только через [MIN_RUN_MS]) — ждём.
-        if (chimeRun || runBlocks > 0) return Verdict.PLAYING
-        val quiet = now - lastMs
-        // Длина уже известна по прошлому звонку и мелодия услышана с начала — кончилась вместе с последним ударом.
-        if (learnedMs > 0 && heardWhole && now - onsetMs >= learnedMs - LEARNED_EARLY_MS && quiet >= LEARNED_QUIET_MS) return Verdict.ENDED
-        // Иначе — после паузы длиннее, чем между ударами (1,5 с).
-        return if (quiet >= HANG_MS) Verdict.ENDED else Verdict.PLAYING
+        // Удар идёт (тон держится) — ждём.
+        if (runBlocks > 0) return Verdict.PLAYING
+        // Мелодия звучит уже свою известную длину — кончилась, как только тон стих; раньше — только после паузы длиннее,
+        // чем между ударами (1,47 с).
+        val known = learnedMs > 0 && now - onsetMs >= learnedMs - LEARNED_EARLY_MS
+        return if (now - lastToneMs >= (if (known) LEARNED_QUIET_MS else HANG_MS)) Verdict.ENDED else Verdict.PLAYING
     }
 
     /** Блок громкий; громкий и звучит тоном мелодии. */
@@ -133,7 +133,7 @@ internal class ChimeDetector(private val rate: Int, private val learnedMs: Long 
         /** Пауза после удара, после которой мелодия кончилась (между ударами — 1,47 с). */
         const val HANG_MS = 2_000L
         private const val LEARNED_EARLY_MS = 150L
-        private const val LEARNED_QUIET_MS = 150L
+        private const val LEARNED_QUIET_MS = 300L
         /** Дольше не слушаем в любом случае. */
         const val MAX_MS = 8_000L
         /** −38 дБ от шкалы: мелодия у микрофона домофона — −20…−35 дБ, фон улицы — около −48 дБ. */

@@ -95,7 +95,10 @@ internal object DoorChime {
         when (detector.push(pcm, n)) {
             ChimeDetector.Verdict.NONE -> finish(host, ring, "мелодии нет")
             ChimeDetector.Verdict.ENDED -> {
-                if (detector.heardWhole && detector.chimeMs in LEARN_MS) learned[host] = detector.chimeMs
+                // Длина мелодии только растёт: короче — скорее тон удара забило другим звуком, чем мелодия укоротилась.
+                if (detector.heardWhole && detector.chimeMs in LEARN_MS) {
+                    learned[host] = maxOf(learned[host] ?: DEFAULT_CHIME_MS, detector.chimeMs)
+                }
                 finish(host, ring, "стихла, звучала ${detector.chimeMs} мс")
             }
             else -> Unit
@@ -131,7 +134,7 @@ internal object DoorChime {
     fun unlisten(listener: (String) -> Unit) { listeners -= listener }
 
     /** Правдоподобная длина мелодии, мс. */
-    private val LEARN_MS = 500L..7_000L
+    private val LEARN_MS = 500L..5_000L
 
     /** Для тестов. */
     internal fun reset() {

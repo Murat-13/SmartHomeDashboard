@@ -115,39 +115,58 @@ class ChimeDetectorTest {
     }
 
     /**
-     * Настоящий звук домофона (WAV 16 кГц, вне репозитория: там голоса): `CHIME_REPLAY=<папка>`. Файл с «ring» в имени —
-     * ролик звонка: мелодия находится и стихает; остальные — запись улицы: мелодии в них нет.
+     * Звонок 23.11 в 13:07: тон первого удара забит другим звуком уже через 0,5 с, потом пауза и второй удар. Раньше
+     * «мелодии нет» решалось в паузе — канал открывался перед вторым ударом, и голос опять копился в домофоне.
+     */
+    @Test fun maskedFirstStrikeStillWaitsForSecond() {
+        val masked = strike(1_300).also { s ->
+            for (i in rate * 500 / 1000 until s.size) s[i] = (s[i] / 6 + 9_000 * sin(2 * PI * 180 * i / rate)).toInt().toShort()
+        }
+        val d = ChimeDetector(rate, learnedMs = 3_400, noneAtMs = 1_000)
+        val (v, at) = run(d, join(silence(300), masked, silence(1_000), strike(1_200), silence(3_000)), done)
+        assertEquals(ChimeDetector.Verdict.ENDED, v)
+        val secondEnd = 300 + 1_300 + 1_000 + 1_200
+        assertTrue("стихла через $at мс — не раньше конца второго удара ($secondEnd)", at >= secondEnd - 300)
+    }
+
+    /**
+     * Настоящий звук домофона (WAV 16 кГц, вне репозитория: там голоса): `CHIME_REPLAY=<папка>`. В папке `rings.txt` —
+     * строки «файл, секунда прихода звонка, секунда конца мелодии или none»; файлы `street_*.wav` — запись улицы без
+     * звонков. Слушать начинаем через 0,3 с после звонка, как на планшете.
      */
     @Test fun replayRecordedDoorbellAudio() {
         val path = System.getenv("CHIME_REPLAY")
         assumeTrue("нет папки с записями (CHIME_REPLAY)", !path.isNullOrBlank() && File(path).isDirectory)
-        File(path!!).listFiles { f -> f.name.endsWith(".wav") }!!.sorted().forEach { f ->
-            val pcm = wav(f)
-            if ("ring" in f.name) {
-                val from = (System.getenv("CHIME_RING_FROM_S")?.toDouble() ?: 45.9) * rate
-                val d = ChimeDetector(rate)
-                val (v, at) = run(d, pcm.copyOfRange(from.toInt(), pcm.size), done)
-                println("CHIME ${f.name}: $v через $at мс, начало ${d.onsetMs}, длина ${d.chimeMs}")
-                assertEquals(ChimeDetector.Verdict.ENDED, v)
-                val again = ChimeDetector(rate, d.chimeMs)
-                val second = run(again, pcm.copyOfRange(from.toInt(), pcm.size), done)
-                println("CHIME ${f.name}, длина известна: ${second.first} через ${second.second} мс")
-                // Удары: «динь» с 0,56 до 1,72 с от начала куска, «дон» с 3,19 до 4,08 с (ролик 23.11.2026).
-                assertTrue("длина ${d.chimeMs}", d.chimeMs in 3_000L..3_800L)
-                assertTrue("стихла через $at мс", at in 4_000L..6_300L)
-                assertEquals(ChimeDetector.Verdict.ENDED, second.first)
-                assertTrue("со второго звонка — через ${second.second} мс", second.second in 4_000L..4_600L)
+        val dir = File(path!!)
+        File(dir, "rings.txt").takeIf { it.isFile }?.readLines()?.filter { it.isNotBlank() }?.forEach { line ->
+            val (name, ringS, endS) = line.trim().split(Regex("\\s+"))
+            val pcm = wav(File(dir, name))
+            val start = ((ringS.toDouble() + 0.3) * rate).toInt()
+            val d = ChimeDetector(rate, DoorChime.DEFAULT_CHIME_MS, DoorChime.NONE_AFTER_RING_MS - 300)
+            val (v, at) = run(d, pcm.copyOfRange(start, pcm.size), done)
+            val afterRing = at + 300
+            println("CHIME $line: $v через $afterRing мс после звонка, тон с ${d.onsetMs + 300} мс, длина ${d.chimeMs}")
+            if (endS == "none") {
+                assertTrue("$line: решено через $afterRing мс", v !in done || afterRing <= 5_000)
             } else {
-                // Каждые 2 с — как будто позвонили: мелодии быть не должно.
-                var start = 0
-                while (start + rate * 3 < pcm.size) {
-                    val (v, _) = run(ChimeDetector(rate), pcm.copyOfRange(start, start + rate * 3), done)
-                    assertEquals("${f.name} с ${start / rate} с", ChimeDetector.Verdict.NONE, v)
-                    start += rate * 2
-                }
-                println("CHIME ${f.name}: мелодии нет — верно")
+                val end = ((endS.toDouble() - ringS.toDouble()) * 1000).toLong()
+                assertEquals(line, ChimeDetector.Verdict.ENDED, v)
+                assertTrue("$line: стихла по записи через $end мс, решено через $afterRing", afterRing in end..end + 1_000)
             }
         }
+        var tries = 0; var waited = 0L
+        dir.listFiles { f -> f.name.startsWith("street") && f.name.endsWith(".wav") }!!.sorted().forEach { f ->
+            val pcm = wav(f)
+            var start = 0
+            // Каждые 2 с — как будто позвонили: сколько ждали бы зря (мелодии в записи улицы нет).
+            while (start + rate * 6 < pcm.size) {
+                val (v, at) = run(ChimeDetector(rate, DoorChime.DEFAULT_CHIME_MS, 1_000), pcm.copyOfRange(start, start + rate * 6), done)
+                assertTrue("${f.name} с ${start / rate} с: $v", v in done)
+                tries++; waited += at - 1_000
+                start += rate * 2
+            }
+        }
+        if (tries > 0) println("CHIME улица: $tries проб, лишнее ожидание в среднем ${waited / tries} мс")
     }
 
     private fun wav(f: File): ShortArray {
