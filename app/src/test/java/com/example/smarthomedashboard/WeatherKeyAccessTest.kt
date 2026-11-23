@@ -8,6 +8,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class WeatherKeyAccessTest {
+    /** Свой замок ключа погоды: поток прошлого теста мог остаться с прежним навсегда ([WeatherKeyAccess.lock]). */
+    @org.junit.Before fun freshWeatherLock() { WeatherKeyAccess.lock = Any() }
+
     private class Crash : RuntimeException()
     private class Slot : WeatherKeySlot {
         var value: String? = null

@@ -11,6 +11,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
 class WeatherPreferencesBridgeTest {
+    /** Свой замок ключа погоды: поток прошлого теста мог остаться с прежним навсегда ([WeatherKeyAccess.lock]). */
+    @org.junit.Before fun freshWeatherLock() { WeatherKeyAccess.lock = Any() }
+
     private val app = RuntimeEnvironment.getApplication()
     private val prefs = app.getSharedPreferences("weather-artificial", 0)
     private fun legacy(p: SharedPreferences = prefs) = PreferenceWeatherLegacy({ p }, { "10.0" }, { "20.0" })

@@ -20,6 +20,9 @@ import org.robolectric.util.ReflectionHelpers
 @Config(manifest = Config.NONE, sdk = [28])
 @LooperMode(LooperMode.Mode.PAUSED)
 class WeatherBridgeRegressionTest {
+    /** Свой замок ключа погоды: поток прошлого теста мог остаться с прежним навсегда ([WeatherKeyAccess.lock]). */
+    @org.junit.Before fun freshWeatherLock() { WeatherKeyAccess.lock = Any() }
+
     private val app = RuntimeEnvironment.getApplication()
     private val prefs = app.getSharedPreferences("dashboard_prefs", 0)
     private val access by lazy { weatherKeyTestAccess(app) }

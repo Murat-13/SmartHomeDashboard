@@ -109,13 +109,18 @@ internal class WeatherKeyAccess(
     }
     private fun serialized(action: () -> Result): Result {
         checkWorker()
-        return synchronized(LOCK) {
+        return synchronized(lock) {
             try { action() } catch (failure: WeatherLegacyFailure) { Result(failure.status) }
         }
     }
 
     companion object {
-        private val LOCK = Any()
+        /**
+         * Один замок на процесс: чтение, запись и перенос ключа погоды не идут одновременно. Меняется только в тестах:
+         * в Robolectric поток прошлого теста мог навсегда застрять с этим замком в записи настроек (её очередь
+         * принадлежит уже сброшенной песочнице) — и все следующие тесты погоды ждали его до тайм-аута (CI 05.11–23.11).
+         */
+        @Volatile internal var lock = Any()
         private val REVISION = AtomicLong()
         val revision: Long get() = REVISION.get()
         fun isCurrent(result: Result) = result.revision == revision
