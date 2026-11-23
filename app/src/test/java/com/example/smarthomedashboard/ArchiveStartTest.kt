@@ -161,8 +161,10 @@ class ArchiveStartTest {
         loaded(archive)
         fun live() = org.robolectric.util.ReflectionHelpers.getField<DoorbellVideoView.Source?>(archive, "liveSource")?.rtsp
         assertEquals("rtsp://127.0.0.1:1/door_main", live())
+        assertTrue(archive.shown.live)
         archive.switchCamera("yard")
         loaded(archive)
+        assertTrue("смотрели живой поток — и после смены камеры живой поток (ревью 24.11.2026)", archive.shown.live)
         archive.testActions.toNow()
         assertTrue("«Сейчас» — живой поток", archive.shown.live)
         assertEquals("Живой поток — выбранной камеры", "rtsp://127.0.0.1:1/yard_main", live())

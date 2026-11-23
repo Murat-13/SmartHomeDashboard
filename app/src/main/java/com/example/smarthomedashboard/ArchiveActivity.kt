@@ -169,6 +169,8 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
     /** Другая камера: тот же экран, её записи (плеер останавливается, шкала и списки — заново). */
     internal fun switchCamera(id: String) {
         if (id == tileId) return
+        // Смотрели живой поток — и после смены камеры живой поток, уже новой (ревью 24.11.2026: показывались записи).
+        val wasLive = ui.value.live
         tileId = id
         cameraGen++
         title = cameras.firstOrNull { it.first == id }?.second ?: title
@@ -179,7 +181,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         previewCache.clear()
         ui.value = ArchiveUi(title = title, cameras = cameras, camera = id, doorbell = id in doorbellIds, spanMs = ui.value.spanMs,
             gates = gatesOf[id].orEmpty().isNotEmpty())
-        reload(keepDay = null)
+        reload(keepDay = null, now = wasLive)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
