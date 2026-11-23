@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.view.TextureView
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
 import androidx.annotation.VisibleForTesting
@@ -67,6 +68,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -186,14 +188,18 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         gatesOf = tiles.filter { it.type in CameraSource.TYPES }.associate { it.id to DoorbellConfig.from(it.config).gateIds(it.id) }
         index = try { RecIndex(this) } catch (_: Exception) { null }
         archive = RecArchive(this, index = { index })
+        val frame = handoffFrame.also { handoffFrame = null }
         ui.value = ui.value.copy(title = title, cameras = cameras, camera = tileId, doorbell = tileId in doorbellIds,
-            gates = gatesOf[tileId].orEmpty().isNotEmpty(),
+            gates = gatesOf[tileId].orEmpty().isNotEmpty(), placeholder = frame,
+            videoAspect = frame?.let { it.width.toFloat() / it.height.coerceAtLeast(1) } ?: ui.value.videoAspect,
             tab = if (intent.getBooleanExtra(EXTRA_CALLS, false)) ArchiveUi.Tab.CALLS else ArchiveUi.Tab.RECORDS)
         // HD-ролики событий (Reolink 2560×1920) аппаратный декодер Samsung SM-X216B не принимает — следующий декодер
         // (программный) берётся сам, как у живого видео домофона.
         player = ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true)).build().also { p ->
             p.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) { ui.value = ui.value.copy(playing = isPlaying) }
+                // Запись пошла на экран — кадр плитки больше не нужен.
+                override fun onRenderedFirstFrame() { if (ui.value.placeholder != null) ui.value = ui.value.copy(placeholder = null) }
                 override fun onVideoSizeChanged(videoSize: VideoSize) {
                     if (videoSize.width > 0 && videoSize.height > 0)
                         ui.value = ui.value.copy(videoAspect = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height)
@@ -206,13 +212,21 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         DoorbellHub.addRingListener(ringListener)
         GateLog.listen(ringListener)
         val at = intent.getLongExtra(EXTRA_AT, 0L).takeIf { it > 0 }
+        // Без особого места (из окна звонка — последнее событие, из журнала — момент) — сразу свежая запись «Сейчас».
+        val now = at == null && !intent.getBooleanExtra(EXTRA_LATEST, false) && !intent.getBooleanExtra(EXTRA_CALLS, false)
         // PIN архива «весь архив»: без PIN экран закрывается (тот же PIN, что у настроек).
         if (RecordingDevice(this).archivePin == RecordingDevice.ArchivePin.ALL) {
             ui.value = ui.value.copy(locked = true)
-            PinSecurityUi.authorize(this, { ui.value = ui.value.copy(locked = false); reload(latest = true, at = at) }, { finish() })
+            PinSecurityUi.authorize(this, { ui.value = ui.value.copy(locked = false); reload(latest = !now, at = at, now = now) }, { finish() })
         } else {
-            reload(latest = intent.getBooleanExtra(EXTRA_LATEST, false), at = at)
+            reload(latest = intent.getBooleanExtra(EXTRA_LATEST, false), at = at, now = now)
         }
+    }
+
+    override fun finish() {
+        super.finish()
+        @Suppress("DEPRECATION") // overrideActivityTransition — только с Android 14; это работает везде
+        overridePendingTransition(0, R.anim.archive_out)
     }
 
     override fun onStop() {
@@ -231,7 +245,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
     }
 
     /** Прочитать диск; [latest] — сразу открыть последний ролик (из окна звонка); [at] — встать на этот момент. */
-    private fun reload(latest: Boolean = false, keepDay: Long? = ui.value.day, at: Long? = null) {
+    private fun reload(latest: Boolean = false, keepDay: Long? = ui.value.day, at: Long? = null, now: Boolean = false) {
         ui.value = ui.value.copy(loading = true)
         loadRings()
         loadJob?.cancel()
@@ -246,6 +260,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
             when {
                 at != null -> openMoment(at)
                 latest -> snapshot.events.firstOrNull()?.let { play(it) }
+                now -> ArchiveTimeline.latest(snapshot.continuous, snapshot.events)?.let { goTo(it - NOW_BACK_MS, true) }
             }
             // Ролики, записанные до появления оглавления (или если оно не успело записаться), — в очередь: после
             // этого в них работает перемотка. Сначала события (новые первыми), затем 24/7 выбранного дня.
@@ -629,7 +644,17 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
     private val actions = object : ArchiveActions {
-        override fun back() = finish()
+        override fun back() { if (ui.value.fullscreen) fullscreen(false) else finish() }
+        override fun fullscreen(on: Boolean) {
+            ui.value = ui.value.copy(fullscreen = on, controls = true)
+            // На весь экран — и без полос Android; обратно — как было.
+            val bars = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            if (on) {
+                bars.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                bars.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            } else bars.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+        override fun toggleControls() { ui.value = ui.value.copy(controls = !ui.value.controls) }
         override fun selectDay(day: Long) = this@ArchiveActivity.selectDay(day, recenter = true)
         override fun filter(label: String?) {
             ui.value = ui.value.copy(filter = label, events = filtered(ui.value.day, label, ui.value.week), timeline = timelineOf(label))
@@ -649,7 +674,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         override fun timelineSpan(spanMs: Long) { ui.value = ui.value.copy(spanMs = ArchiveTimeline.clampSpan(spanMs)) }
         override fun toNow() {
             val latest = ArchiveTimeline.latest(snapshot.continuous, snapshot.events) ?: run { toast("Записей пока нет"); return }
-            goTo(latest - 10_000, true)
+            goTo(latest - NOW_BACK_MS, true)
         }
         override fun neighbour(forward: Boolean) = this@ArchiveActivity.neighbour(forward)
         override fun scrubClip(fraction: Float, done: Boolean) = this@ArchiveActivity.scrubClip(fraction, done)
@@ -721,6 +746,8 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         const val EXTRA_CALLS = "calls"
         const val EXTRA_AT = "at"
         private const val FRAME_MS = 40L
+        /** «Сейчас» — столько до конца записанного: последние секунды ещё дописываются. */
+        private const val NOW_BACK_MS = 10_000L
         private const val MAX_SEGMENT_MS = 15 * 60_000L
         private const val PREVIEW_STEP_MS = 5_000L
         private const val PREVIEW_CACHE = 120
@@ -732,10 +759,25 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         internal fun ringKey(ring: RingLog.Ring) = "ring_${ring.atMs}_${ring.photo?.lastModified() ?: 0}"
         internal fun openingKey(entry: GateLog.Entry) = "gate_${entry.key}_${entry.photo?.lastModified() ?: 0}"
 
-        fun open(context: Context, tileId: String, latest: Boolean = false, calls: Boolean = false, atMs: Long? = null) {
-            context.startActivity(Intent(context, ArchiveActivity::class.java)
+        /**
+         * Кадр, с которого архив начинается, пока не пошла запись (последний кадр раскрытой плитки, решение владельца
+         * 23.11.2026: «при переходе на архив сразу должна открываться текущая картина, а не чёрный экран»). В памяти, не в
+         * Intent: кадр большой.
+         */
+        @Volatile internal var handoffFrame: Bitmap? = null
+
+        /**
+         * [frame] — кадр плитки, с которой пришли: показывается сразу, пока не пошла запись. Архив проявляется поверх
+         * панели, без сдвига экрана.
+         */
+        fun open(context: Context, tileId: String, latest: Boolean = false, calls: Boolean = false, atMs: Long? = null,
+                 frame: Bitmap? = null) {
+            handoffFrame = frame
+            val intent = Intent(context, ArchiveActivity::class.java)
                 .putExtra(EXTRA_TILE, tileId).putExtra(EXTRA_LATEST, latest).putExtra(EXTRA_CALLS, calls)
-                .apply { atMs?.let { putExtra(EXTRA_AT, it) } })
+                .apply { atMs?.let { putExtra(EXTRA_AT, it) } }
+            val fade = android.app.ActivityOptions.makeCustomAnimation(context, R.anim.archive_in, R.anim.archive_hold).toBundle()
+            context.startActivity(intent, fade)
         }
     }
 }
@@ -743,6 +785,11 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
 /** Состояние экрана архива (неизменяемое; для тестов и предпросмотра). */
 internal data class ArchiveUi(
     val title: String = "",
+    /** Кадр, который виден, пока запись не пошла на экран ([ArchiveActivity.handoffFrame]). */
+    val placeholder: Bitmap? = null,
+    /** Ролик на весь экран; на весь экран — видны ли кнопки. */
+    val fullscreen: Boolean = false,
+    val controls: Boolean = true,
     val loading: Boolean = true,
     val locked: Boolean = false,
     val days: List<Long> = emptyList(),
@@ -798,6 +845,10 @@ internal data class ArchiveUi(
 
 internal interface ArchiveActions {
     fun back()
+    /** Ролик на весь экран (кнопка ⛶ и двойное касание) и обратно. */
+    fun fullscreen(on: Boolean) {}
+    /** На весь экран: касание по видео — спрятать или показать кнопки. */
+    fun toggleControls() {}
     fun selectDay(day: Long)
     fun filter(label: String?)
     fun play(event: RecArchive.Event)
@@ -894,11 +945,21 @@ internal fun ArchiveScreen(ui: ArchiveUi, thumbs: Map<String, Bitmap?>, actions:
 
 @Composable
 private fun ArchiveContent(ui: ArchiveUi, thumbs: Map<String, Bitmap?>, actions: ArchiveActions, video: @Composable () -> Unit) {
+    // Видео переезжает между обычным видом и «на весь экран» тем же самым окном вывода — картинка не моргает и пауза
+    // остаётся на своём кадре (новое окно вывода плеер на паузе не рисует).
+    val current by rememberUpdatedState(video)
+    val movableVideo = remember { movableContentOf { current() } }
     Box(Modifier.fillMaxSize().background(ArchiveColors.background).testTag("archive_root")) {
         if (ui.locked) {
             Text("Архив защищён PIN", color = ArchiveColors.secondary, fontSize = 22.sp, modifier = Modifier.align(Alignment.Center))
             return@Box
         }
+        BackHandler(enabled = ui.fullscreen) { actions.fullscreen(false) }
+        if (ui.fullscreen) {
+            FullscreenPlayer(ui, actions) { movableVideo() }
+            return@Box
+        }
+        val video = @Composable { movableVideo() }
         BoxWithConstraints(Modifier.fillMaxSize().padding(16.dp)) {
             val landscape = maxWidth > maxHeight
             if (landscape) {
@@ -1015,8 +1076,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.PlayerPane(ui: Archiv
     Box((if (fill) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
         .clip(RoundedCornerShape(16.dp)).background(Color.Black)
         .border(1.dp, ArchiveColors.border, RoundedCornerShape(16.dp))) {
-        if (ui.current != null || ui.continuous) ZoomableVideo(ui, video)
-        else Text(if (ui.loading) "Загрузка…" else "Выберите событие или место на шкале", color = ArchiveColors.hint,
+        if (ui.current != null || ui.continuous || ui.placeholder != null) {
+            ZoomableVideo(ui, video, onDoubleTap = { actions.fullscreen(true) })
+            if (ui.current != null || ui.continuous) FullscreenButton(true, Modifier.align(Alignment.TopEnd)) { actions.fullscreen(true) }
+        } else Text(if (ui.loading) "Загрузка…" else "Выберите событие или место на шкале", color = ArchiveColors.hint,
             fontSize = 18.sp, modifier = Modifier.align(Alignment.Center))
         ui.busy?.let {
             Text(it, color = ArchiveColors.text, fontSize = 18.sp, modifier = Modifier.align(Alignment.Center)
@@ -1035,7 +1098,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.PlayerPane(ui: Archiv
  * увеличенной картинке — сдвиг, двойное касание — увеличить/вернуть. Увеличение сбрасывается при смене ролика.
  */
 @Composable
-private fun ZoomableVideo(ui: ArchiveUi, video: @Composable () -> Unit) {
+private fun ZoomableVideo(ui: ArchiveUi, video: @Composable () -> Unit, onTap: (() -> Unit)? = null, onDoubleTap: () -> Unit = {}) {
     val key = ui.current?.file?.startMs ?: -1L
     var zoom by remember(key) { mutableStateOf(VideoZoom()) }
     Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.Center) {
@@ -1061,17 +1124,70 @@ private fun ZoomableVideo(ui: ArchiveUi, video: @Composable () -> Unit) {
                     } while (event.changes.any { it.pressed })
                 }
             }
-            .pointerInput(key) {
-                detectTapGestures(onDoubleTap = { zoom = zoom.toggle(it.x, it.y, size.width.toFloat(), size.height.toFloat()) })
+            // Двойное касание — на весь экран и обратно (решение владельца 23.11.2026); увеличение — двумя пальцами.
+            .pointerInput(key, onTap != null) {
+                detectTapGestures(onTap = onTap?.let { tap -> { _: Offset -> tap() } }, onDoubleTap = { onDoubleTap() })
             }) {
             Box(Modifier.fillMaxSize().graphicsLayer {
                 transformOrigin = TransformOrigin(0f, 0f)
                 scaleX = zoom.scale; scaleY = zoom.scale
                 translationX = zoom.x; translationY = zoom.y
-            }) { video() }
+            }) {
+                video()
+                // Пока запись не пошла — последний кадр плитки, а не чёрный экран.
+                ui.placeholder?.let { Image(it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().testTag("archive_placeholder")) }
+            }
         }
-        Text(if (zoom.zoomed) "🔍 ${zoom.title} · двойное касание — обычный вид" else "", color = ArchiveColors.text, fontSize = 15.sp,
+        Text(if (zoom.zoomed) "🔍 ${zoom.title} · сведите пальцы — обычный вид" else "", color = ArchiveColors.text, fontSize = 15.sp,
             modifier = Modifier.align(Alignment.TopStart).padding(10.dp).testTag("archive_zoom"))
+    }
+}
+
+/** Кнопка ⛶: на весь экран ([enter]) или обратно. */
+@Composable
+private fun FullscreenButton(enter: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = modifier.padding(6.dp).heightIn(min = 48.dp)
+        .background(Color(0x99000000), RoundedCornerShape(12.dp)).testTag(if (enter) "archive_fullscreen" else "archive_fullscreen_exit")) {
+        Text(if (enter) "⛶" else "⛶ Свернуть", color = ArchiveColors.text, fontSize = 22.sp)
+    }
+}
+
+/**
+ * Ролик на весь экран (решение владельца 23.11.2026): вписан в экран без искажений, касание — спрятать или показать
+ * кнопки, двойное касание или ⛶ — обратно, два пальца — увеличение. Внизу — пуск/пауза, ±10 с, полоса ролика (у
+ * круглосуточной записи — шкала времени), скорость, соседние события.
+ */
+@kotlin.OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FullscreenPlayer(ui: ArchiveUi, actions: ArchiveActions, video: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Color.Black).testTag("archive_fullscreen_view")) {
+        ZoomableVideo(ui, video, onTap = actions::toggleControls, onDoubleTap = { actions.fullscreen(false) })
+        if (!ui.controls) return@Box
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
+            .background(Color(0x99000000)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+            val now = ui.positionWall
+            Text("Архив · ${ui.title}" + (now?.let { " · ${dayFormat.format(Date(it))}, ${timeFormat.format(Date(it))}" } ?: ""),
+                color = ArchiveColors.text, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            FullscreenButton(false, Modifier) { actions.fullscreen(false) }
+        }
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0xB0000000))
+            .padding(horizontal = 16.dp, vertical = 8.dp).testTag("archive_fullscreen_controls")) {
+            if (ui.current != null) ClipBar(ui, actions) else if (ui.continuous) Timeline(ui, actions)
+            Spacer(Modifier.height(6.dp))
+            val active = ui.current != null || ui.continuous
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                ControlButton(if (ui.playing) "❚❚ Пауза" else "▶ Пуск", active, "archive_fs_play") { actions.togglePlay() }
+                ControlButton("−10 с", active, "archive_fs_back10") { actions.seekBy(-10_000) }
+                ControlButton("+10 с", active, "archive_fs_fwd10") { actions.seekBy(10_000) }
+                listOf(1f, 2f, 4f, 8f).forEach { s ->
+                    FilterChip(selected = ui.speed == s, onClick = { actions.speed(s) }, enabled = active,
+                        label = { Text("${s.toInt()}×", fontSize = 16.sp) }, modifier = Modifier.heightIn(min = 48.dp).testTag("archive_fs_speed_${s.toInt()}"))
+                }
+                ControlButton("◀ Событие", true, "archive_fs_prev_event") { actions.neighbour(false) }
+                ControlButton("Событие ▶", true, "archive_fs_next_event") { actions.neighbour(true) }
+            }
+        }
     }
 }
 

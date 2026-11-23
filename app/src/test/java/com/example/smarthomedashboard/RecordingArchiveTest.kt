@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.click
@@ -149,6 +150,51 @@ class RecordingArchiveTest {
         override fun confirmDelete(event: RecArchive.Event?) { calls += "confirm:${event?.file?.startMs}" }
         override fun share(event: RecArchive.Event) { calls += "share:${event.file.startMs}" }
         override fun thumbnail(file: RecFile) {}
+        override fun fullscreen(on: Boolean) { calls += "fullscreen:$on" }
+        override fun toggleControls() { calls += "controls" }
+    }
+
+    /**
+     * Решения владельца 23.11.2026: архив сразу показывает кадр плитки, а не чёрный экран; ролик — на весь экран кнопкой
+     * ⛶ и двойным касанием; на весь экран касание прячет кнопки, внизу — перемотка, скорость, соседние события.
+     */
+    @Test fun placeholderFrameAndFullscreenControls() {
+        val frame = Bitmap.createBitmap(64, 48, Bitmap.Config.ARGB_8888)
+        val actions = Recorded()
+        var ui by androidx.compose.runtime.mutableStateOf(ArchiveUi(title = "Домофон", loading = true, placeholder = frame))
+        compose.setContent { ArchiveScreen(ui, emptyMap<String, Bitmap?>(), actions, video = {}) }
+        compose.onNodeWithTag("archive_placeholder", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("Выберите событие или место на шкале").assertDoesNotExist()
+
+        val clip = event(day + 3_600_000, setOf("person"))
+        ui = ui.copy(loading = false, placeholder = null, current = clip, durationMs = 65_000, days = listOf(day), day = day)
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_placeholder", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("archive_fullscreen").performClick()
+        compose.onNodeWithTag("archive_video").performTouchInput { doubleClick(center) }
+        assertEquals(listOf("fullscreen:true", "fullscreen:true"), actions.calls)
+
+        actions.calls.clear()
+        ui = ui.copy(fullscreen = true)
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_fullscreen_view").assertIsDisplayed()
+        compose.onNodeWithTag("archive_list").assertDoesNotExist()
+        compose.onNodeWithTag("archive_clip_slider").assertIsDisplayed()
+        compose.onNodeWithTag("archive_fs_back10").performClick()
+        compose.onNodeWithTag("archive_fs_speed_4").performClick()
+        compose.onNodeWithTag("archive_fs_next_event").performClick()
+        compose.onNodeWithTag("archive_video").performTouchInput { click(center) }
+        compose.mainClock.advanceTimeBy(1_000) // одиночное касание — когда вышло время на второе
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_fullscreen_exit").performClick()
+        assertEquals(listOf("seekBy:-10000", "speed:4.0", "event:true", "controls", "fullscreen:false"), actions.calls)
+
+        actions.calls.clear()
+        ui = ui.copy(controls = false)
+        compose.waitForIdle()
+        compose.onNodeWithTag("archive_fullscreen_controls").assertDoesNotExist()
+        compose.onNodeWithTag("archive_video").performTouchInput { doubleClick(center) }
+        assertEquals("двойное касание — обратно", listOf("fullscreen:false"), actions.calls)
     }
 
     private fun event(start: Long, labels: Set<String>, starred: Boolean = false) =

@@ -128,6 +128,8 @@ internal class DashboardPanelController(
     private var panelEntityMotionSensor: String? = null
     private var panelEntityIds: Set<String> = emptySet()
     companion object {
+        /** Архив проявляется 220 мс ([R.anim.archive_in]); раскрытая карточка сворачивается уже под ним. */
+        private const val ARCHIVE_COLLAPSE_MS = 400L
         /** Вход в редактирование долгим нажатием на пустое место (было 3 с). */
         internal const val EDIT_LONG_PRESS_MS = 1500L
         internal const val PREF_PAGE_COUNT = "page_count"
@@ -1518,8 +1520,12 @@ internal class DashboardPanelController(
             if (!camera) DoorbellHub.acknowledge(tile.id)
             val expanded = DoorbellCard(activity, expanded = true, camera = camera)
             expanded.tileId = tile.id
-            // Архив записей (docs/recording.md): карточка сворачивается, поверх панели — экран архива.
-            expanded.onArchive = { modernExpansion.collapse(); ArchiveActivity.open(activity, tile.id) }
+            // Архив записей (docs/recording.md): архив проявляется поверх раскрытой карточки, начиная с её последнего кадра;
+            // карточка сворачивается уже под ним. Раньше сворачивание и смена экрана шли одновременно — «дёргано» (23.11.2026).
+            expanded.onArchive = {
+                ArchiveActivity.open(activity, tile.id, frame = runCatching { expanded.video.currentFrame() }.getOrNull())
+                handler.postDelayed({ modernExpansion.collapse() }, ARCHIVE_COLLAPSE_MS)
+            }
             // Разговор (docs/talk-tz.md): пока держат «Говорить», карточка не сворачивается по таймеру.
             expanded.onActivity = { modernExpansion.touch() }
             // Видео можно увеличивать пальцами: касание по неувеличенному видео сворачивает карточку само.
