@@ -850,6 +850,136 @@ class TalkTest {
     }
 
     /**
+     * Ответили через секунду после звонка (первый разговор с человеком у домофона, 23.11.2026): домофон ещё играет свою
+     * мелодию и копит голос, пришедший в это время, — гость слышал нас на ≈ 3 с позже до конца разговора. Канал голоса
+     * открывается только после мелодии; до неё в домофон не уходит ничего.
+     */
+    @Test fun voiceChannelOpensOnlyAfterDoorbellChime() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel().also { channels += it } }) {
+            DoorChime.reset()
+            try {
+                val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+                shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+                val talk = DoorbellTalk(activity) { _, result -> result(null) }
+                talk.street = ScriptedStreet()
+                val texts = CopyOnWriteArrayList<String>()
+                val button = TalkButton(activity, talk)
+                val labels = CopyOnWriteArrayList<String>()
+                button.onStatus = { text -> texts += text; labels += button.text.toString() }
+                val looper = shadowOf(Looper.getMainLooper())
+                DoorChime.rang(doorbellUrl) // кнопка домофона нажата — окно звонка готовит канал голоса
+                looper.idleFor(300, TimeUnit.MILLISECONDS)
+                talk.prepare(doorbellUrl, "")
+                looper.idleFor(700, TimeUnit.MILLISECONDS)
+                talk.startCall() // «Ответить» через секунду после звонка
+                looper.idle()
+                Thread.sleep(300) // канал открылся бы за это время, если бы его открывали
+                looper.idleFor(2_000, TimeUnit.MILLISECONDS)
+                assertEquals("пока домофон играет мелодию, канал голоса не открыт", 0, channels.size)
+                assertTrue("подпись объясняет ожидание: $texts", texts.any { "играет звонок" in it })
+                assertFalse("кнопка не пугает «Нет связи…»: $labels", "Нет связи…" in labels)
+                assertTrue(talk.inCall)
+                looper.idleFor(DoorChime.MS, TimeUnit.MILLISECONDS)
+                await("канал открыт после мелодии") { looper.idle(); channels.size == 1 && talk.state == DoorbellTalk.State.TALKING }
+                await("голос идёт в канал") { channels[0].frames.get() > 5 }
+                talk.endCall()
+                talk.dispose()
+            } finally { DoorChime.reset() }
+        }
+    }
+
+    /**
+     * Канал уже открыт (карточка раскрыта или разговор идёт), а у калитки снова нажали кнопку: голос, уходящий в домофон
+     * во время мелодии, копился бы в нём. Канал закрывается и открывается после мелодии; разговор продолжается.
+     */
+    @Test fun ringWhileVoiceChannelOpenReopensItAfterChime() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel().also { channels += it } }) {
+            DoorChime.reset()
+            try {
+                val labels = CopyOnWriteArrayList<String>()
+                val talk = call(doorbellUrl) {
+                    it.street = ScriptedStreet()
+                    val button = TalkButton(org.robolectric.RuntimeEnvironment.getApplication(), it)
+                    button.onStatus = { _ -> labels += button.text.toString() }
+                }
+                val looper = shadowOf(Looper.getMainLooper())
+                talk.startCall()
+                looper.idle()
+                await("голос идёт в канал") { channels[0].frames.get() > 5 }
+                DoorChime.rang("rtsp://admin@127.0.0.1:554/h264Preview_01_main") // тот же домофон, другой поток
+                looper.idle()
+                await("канал закрыт на время мелодии") { channels[0].closed }
+                looper.idleFor(2_000, TimeUnit.MILLISECONDS)
+                assertEquals("во время мелодии новый канал не открыт", 1, channels.size)
+                assertTrue("разговор продолжается", talk.inCall)
+                assertFalse("кнопка не пугает «Нет связи…»: $labels", "Нет связи…" in labels)
+                looper.idleFor(DoorChime.MS, TimeUnit.MILLISECONDS)
+                await("канал открыт после мелодии") { looper.idle(); channels.size == 2 && talk.state == DoorbellTalk.State.TALKING }
+                await("голос идёт в новый канал") { channels[1].frames.get() > 5 }
+                talk.endCall()
+                talk.dispose()
+            } finally { DoorChime.reset() }
+        }
+    }
+
+    /** Мелодия — у домофона (узла), а не у потока: звонок приходит с одним адресом, разговор идёт по другому. */
+    @Test fun doorChimeIsPerDoorbellAndEnds() {
+        var now = 1_000L
+        val real = DoorChime.clock
+        DoorChime.clock = { now }
+        DoorChime.reset()
+        try {
+            assertEquals(0L, DoorChime.left(doorbellUrl))
+            DoorChime.rang("rtsp://admin@127.0.0.1:554/h264Preview_01_main")
+            assertEquals(DoorChime.MS, DoorChime.left(doorbellUrl))
+            assertEquals("другой домофон", 0L, DoorChime.left("rtsp://10.0.0.9/h264Preview_01_sub"))
+            now += 4_000
+            assertEquals(DoorChime.MS - 4_000, DoorChime.left(doorbellUrl))
+            now += 1_000
+            assertEquals("доиграла", 0L, DoorChime.left(doorbellUrl))
+            DoorChime.rang("")
+            assertEquals("без адреса — ничего", 0L, DoorChime.left(""))
+        } finally { DoorChime.clock = real; DoorChime.reset() }
+    }
+
+    /** Звонок у другого домофона канал этого не трогает. */
+    @Test fun ringAtOtherDoorbellDoesNotTouchVoiceChannel() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel().also { channels += it } }) {
+            DoorChime.reset()
+            try {
+                val talk = call(doorbellUrl) { it.street = ScriptedStreet() }
+                DoorChime.rang("rtsp://10.0.0.9:554/h264Preview_01_sub")
+                shadowOf(Looper.getMainLooper()).idle()
+                assertFalse(channels[0].closed)
+                assertEquals(DoorbellTalk.State.READY, talk.state)
+                talk.dispose()
+            } finally { DoorChime.reset() }
+        }
+    }
+
+    /**
+     * Сжатие очереди по замеру своего эха — по цифрам разговора 23.11.2026: эхо 3573 мс → убрать ≈ 2,7 с пауз; пока не
+     * убрано и пока новый замер не успел это увидеть — новых заказов нет; обычные 0,7–1,1 с не трогаются.
+     */
+    @Test fun queueTrimOrdersOnlyWhatTheEchoShowsAndWaitsForEffect() {
+        val q = QueueTrim()
+        assertNull("эхо не найдено", q.update(0, 0, 0.0))
+        assertNull("обычная задержка", q.update(1_000, 1_064, 0.0))
+        assertEquals(2_673.0, q.update(2_000, 3_573, 0.0)!!, 0.5)
+        assertNull("ещё убирается", q.update(3_000, 3_400, 1_000.0))
+        assertNull("ещё убирается", q.update(9_000, 2_000, 2_600.0))
+        assertNull("убрано — ждём, пока замер это увидит", q.update(10_000, 1_800, 2_673.0))
+        assertNull(q.update(12_000, 1_500, 2_673.0))
+        assertEquals("остаток после паузы", 2_673.0 + 600, q.update(16_000, 1_500, 2_673.0)!!, 0.5)
+        assertNull(q.update(17_000, 1_500, 3_273.0))
+        assertNull("в норме — больше ничего", q.update(30_000, 900, 3_273.0))
+        assertEquals("шаг не больше 3 с", 3_000.0, QueueTrim().update(0, 9_000, 0.0)!!, 0.5)
+    }
+
+    /**
      * Канал «планшет → домофон» оборвался посреди разговора (камера закрыла соединение, сбой Wi-Fi): он открывается
      * заново в том же разговоре, и голос идёт в новый канал. Раньше за каналом в разговоре никто не следил: на экране
      * «Идёт разговор — говорите», а гость нас не слышит до «Завершить» (аудит 21.11.2026).

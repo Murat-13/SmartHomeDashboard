@@ -50,6 +50,11 @@ internal class BaichuanTalkSession(
     @Volatile private var reader: Thread? = null
     @Volatile var droppedMs = 0.0
         private set
+    /** Сжатие очереди по замеру своего эха ([QueueTrim]): сколько пауз не досылать сверх [DRAIN_MS] и сколько уже не дослано. */
+    @Volatile private var trimTarget = 0.0
+    @Volatile override var trimmedMs = 0.0
+        private set
+    override fun trim(totalMs: Double) { if (totalMs > trimTarget) trimTarget = totalMs }
     @Volatile private var sentTap: ((ShortArray, Int) -> Unit)? = null
 
     /** Слушатель того, что реально ушло в домофон (как он это услышит — после кодека); блоки, которые не отправлены, сюда не попадают. */
@@ -167,6 +172,13 @@ internal class BaichuanTalkSession(
                         if (!sleepUntil(next)) next = System.nanoTime()
                         continue
                     }
+                    // Очередь камеры выросла сверх обычной (замер своего эха): каждый второй пустой блок не отправляем.
+                    if (trimmedMs + blockMs <= trimTarget && silentRun % 2 == 0) {
+                        trimmedMs += blockMs
+                        next += blockNs
+                        if (!sleepUntil(next)) next = System.nanoTime()
+                        continue
+                    }
                 } else {
                     silentRun = 0
                     // Разговор идёт, а очередь камеры ещё не растаяла: каждый второй тихий блок (пауза между словами,
@@ -174,6 +186,11 @@ internal class BaichuanTalkSession(
                     quietRun = if (quiet(block, samples)) quietRun + 1 else 0
                     if (droppedMs + blockMs <= DRAIN_MS && quietRun > 0 && quietRun % 2 == 0) {
                         droppedMs += blockMs
+                        continue
+                    }
+                    // Очередь выросла сверх обычной — не отправляем ни одного тихого блока, пока не сожмётся.
+                    if (quietRun > 0 && trimmedMs + blockMs <= trimTarget) {
+                        trimmedMs += blockMs
                         continue
                     }
                 }

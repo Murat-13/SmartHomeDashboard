@@ -255,6 +255,37 @@ class ReolinkTalkTest {
         }
     }
 
+    /**
+     * Очередь динамика выросла (свой голос возвращается через 3 с — разговор 23.11.2026): по заказу [QueueTrim] лишнее
+     * убирается на тихих блоках, речь не пропускается; заказ выполнен — больше ничего не убирается.
+     */
+    @Test fun orderedTrimDropsQuietBlocksButNotSpeech() {
+        FakeCamera().use { cam ->
+            val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)
+            talk.open()
+            talk.beginTalkspurt()
+            val room = ShortArray(320) { i -> (40 * sin(2 * PI * 200 * i / 16_000.0)).toInt().toShort() }
+            val speech = ShortArray(320) { i -> (5_000 * sin(2 * PI * 300 * i / 16_000.0)).toInt().toShort() }
+            repeat(100) { talk.sendAt(room, 320, 16_000); Thread.sleep(20) } // обычное осушение начала прошло
+            Thread.sleep(200)
+            assertEquals("без заказа ничего сверх обычного", 0.0, talk.trimmedMs, 0.0)
+            talk.trim(1_000.0)
+            val before = talk.sentVoice
+            repeat(50) { talk.sendAt(speech, 320, 16_000); Thread.sleep(20) } // 1 с речи
+            Thread.sleep(300)
+            assertTrue("речь не тронута: блоков ${talk.sentVoice - before}", talk.sentVoice - before in 15..17)
+            repeat(150) { talk.sendAt(room, 320, 16_000); Thread.sleep(20) } // паузы: 3 с фона комнаты
+            Thread.sleep(200)
+            assertTrue("убрано ${talk.trimmedMs} мс", talk.trimmedMs in 900.0..1_000.0)
+            val trimmed = talk.trimmedMs
+            repeat(40) { talk.sendAt(room, 320, 16_000); Thread.sleep(20) }
+            Thread.sleep(200)
+            assertEquals("сверх заказа не убирается", trimmed, talk.trimmedMs, 0.0)
+            assertTrue(cam.badBlocks.toString(), cam.badBlocks.isEmpty())
+            talk.close()
+        }
+    }
+
     @Test fun wrongPasswordIsAuthErrorAndNoOnvifRetryWithSamePassword() {
         FakeCamera(password = "other").use { cam ->
             val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)

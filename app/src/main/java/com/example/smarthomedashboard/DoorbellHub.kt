@@ -205,6 +205,8 @@ internal object DoorbellHub {
 
     private fun ring(tile: TileEntity, config: DoorbellConfig) {
         val context = app ?: return
+        // Раньше окна звонка: оно сразу готовит канал голоса, а домофон сейчас играет свою мелодию ([DoorChime]).
+        DoorChime.rang(config.talkRtsp)
         val now = System.currentTimeMillis()
         prefs(context).edit()
             .putInt(KEY_MISSED + tile.id, missed(tile.id) + 1)

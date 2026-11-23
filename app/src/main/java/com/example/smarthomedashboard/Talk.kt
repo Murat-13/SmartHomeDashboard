@@ -77,11 +77,52 @@ internal interface TalkChannel : java.io.Closeable {
      * Канал, который этого не умеет, ничего не делает — разговор остаётся с прежней защитой [EchoGate].
      */
     fun tap(sink: ((ShortArray, Int) -> Unit)?) {}
+    /**
+     * Очередь в самом динамике камеры выросла (свой голос возвращается дольше обычного, [QueueTrim]): не досылать
+     * паузы, пока их не наберётся [totalMs] за весь канал. Канал, который этого не умеет, ничего не делает.
+     */
+    fun trim(totalMs: Double) {}
+    /** Сколько пауз (мс) уже не дослано по [trim]. */
+    val trimmedMs: Double get() = 0.0
     /** Сколько кадров по 20 мс ещё не ушло. */
     val queued: Int
     val alive: Boolean
     val sentPackets: Int
     val sentVoice: Int
+}
+
+/**
+ * Сжатие очереди динамика домофона по замеру своего эха. Обычно свой голос возвращается из домофона через 0,7–1,1 с
+ * (очередь динамика ≈ 0,5 с и обратный путь); если дольше — очередь выросла (домофон копил голос, пока играл мелодию
+ * звонка, или мелодия длиннее ожидаемой, [DoorChime]), и она не тает сама: в первом разговоре с человеком у домофона
+ * (23.11.2026) — 3,6 с в начале и 3,0 с в конце. Лишнее убирается паузами речи ([TalkChannel.trim]); следующий шаг —
+ * только когда прежний убран и новый замер успел его увидеть (эхо отстаёт от отправленного на свою же задержку).
+ */
+internal class QueueTrim {
+    /** Сколько пауз (мс) уже заказано не досылать за этот канал. */
+    var orderedMs = 0.0
+        private set
+    private var settleUntil = 0L
+
+    /** Раз в секунду: [echoMs] — через сколько возвращается свой голос (0 — неизвестно), [trimmedMs] — сколько уже убрано. */
+    fun update(now: Long, echoMs: Int, trimmedMs: Double): Double? {
+        if (echoMs <= 0) return null
+        if (trimmedMs + SLACK_MS < orderedMs) { settleUntil = now + echoMs + SETTLE_MS; return null }
+        if (now < settleUntil || echoMs < TRIGGER_MS) return null
+        orderedMs += (echoMs - TARGET_MS).toDouble().coerceAtMost(MAX_STEP_MS)
+        settleUntil = now + echoMs + SETTLE_MS
+        return orderedMs
+    }
+
+    companion object {
+        /** До этого сжимаем: очередь динамика ≈ 0,6 с — с запасом до провалов (≈ 0,3 с, прототип 20.11.2026). */
+        const val TARGET_MS = 900
+        /** Отсюда очередь считается выросшей: обычные разговоры — 0,7–1,1 с. */
+        const val TRIGGER_MS = 1_400
+        private const val SETTLE_MS = 2_000L
+        private const val MAX_STEP_MS = 3_000.0
+        private const val SLACK_MS = 1.0
+    }
 }
 
 /**
@@ -541,7 +582,7 @@ internal class DoorbellTalk(
             when {
                 now - lastVoiceAt > CALL_SILENCE_MS -> { Log.i(TAG, "Разговор завершён: 2 мин тишины"); endCall() }
                 now - callStarted > CALL_MAX_MS -> { Log.i(TAG, "Разговор завершён: 10 мин"); endCall() }
-                else -> { watchChannel(now); main.postDelayed(this, 1_000) }
+                else -> { watchChannel(now); trimQueue(now); main.postDelayed(this, 1_000) }
             }
         }
     }
@@ -554,7 +595,40 @@ internal class DoorbellTalk(
     private var channelLostAt = 0L
     private var channelRetries = 0
     /** Разговор идёт, но канал голоса оборван и открывается заново: гость нас сейчас не слышит (кнопка — «Нет связи…»). */
-    val reconnecting get() = inCall && channelLostAt != 0L
+    val reconnecting get() = inCall && channelLostAt != 0L && !chiming
+
+    /**
+     * Домофон играет свою мелодию звонка ([DoorChime]): канал голоса откроется после неё. Голос, пришедший в домофон во
+     * время мелодии, он копит и играет потом — и гость слышал нас на ≈ 3 с позже до конца разговора (23.11.2026).
+     */
+    @Volatile var chiming = false
+        private set
+    private val afterChime = Runnable { if (!disposed && session == null) connect() }
+    private val chimeListener: (String) -> Unit = { host -> main.post { chimeStarted(host) } }
+
+    /** Звонок, пока канал уже открыт (карточка раскрыта, разговор идёт): закрыть его и открыть после мелодии. */
+    private fun chimeStarted(host: String) {
+        if (disposed || url.isBlank() || DoorChime.host(url) != host) return
+        if (session == null) return // канал открывается — проверит мелодию, когда откроется
+        Log.i(TAG, "Домофон играет мелодию звонка — канал голоса откроется заново после неё")
+        if (inCall) { stopDuplex(); channelLostAt = clock(); channelRetries = 0 }
+        closeSession()
+        connect()
+    }
+
+    /** Свой голос возвращается дольше обычного — очередь домофона выросла: убрать лишнее паузами ([QueueTrim]). */
+    private var queueTrim = QueueTrim()
+
+    private fun trimQueue(now: Long) {
+        val d = duplex ?: return
+        val s = session ?: return
+        if (!d.far.locked) return
+        val echo = d.far.echoDelayMs
+        val total = queueTrim.update(now, echo, s.trimmedMs) ?: return
+        Log.i(TAG, "Очередь домофона: свой голос возвращается через $echo мс — убираю паузами ещё " +
+            "${(total - s.trimmedMs).toInt()} мс")
+        s.trim(total)
+    }
 
     /** Проверка восстановления (файл `talk_debug/drop_talk`): один раз оборвать канал голоса через 8 с разговора. */
     private val testBreak = Runnable {
@@ -609,7 +683,10 @@ internal class DoorbellTalk(
         communication(false)
         onLevel?.invoke(0f)
         onCall?.invoke(false)
-        session?.let { Log.i(TAG, "Разговор: голосовых пакетов ${it.sentVoice}, микрофон молчал из-за звука с улицы ${gatedFrames * 20 / 1000} с") }
+        session?.let {
+            Log.i(TAG, "Разговор: голосовых пакетов ${it.sentVoice}, микрофон молчал из-за звука с улицы ${gatedFrames * 20 / 1000} с" +
+                if (it.trimmedMs > 0) ", очередь домофона сжата на ${it.trimmedMs.toInt()} мс" else "")
+        }
         if (state == State.TALKING) set(State.READY, READY_TEXT)
     }
 
@@ -704,6 +781,7 @@ internal class DoorbellTalk(
         if (!s.wideband || TalkDebug.flag(context, "no_aec")) return
         val host = runCatching { java.net.URI(url.trim()).host }.getOrNull().orEmpty()
         val d = DuplexEcho(key = host)
+        queueTrim = QueueTrim() // счёт убранного — у каждого канала свой
         d.far.log = { Log.i(TAG, it) }
         d.near.log = { Log.i(TAG, it) }
         s.tap { pcm, n -> d.sent.write(pcm, n); TalkDebug.write("sent_ref", pcm, n, DuplexEcho.RATE) }
@@ -791,6 +869,7 @@ internal class DoorbellTalk(
     init {
         // Что сейчас звучит из динамика (звук с улицы в разговоре): речь в микрофоне должна быть заметно громче.
         mic.speaker = { if (inCall && streetOn && !cancelling) street.playingRms else 0.0 }
+        DoorChime.listen(chimeListener)
     }
 
     /**
@@ -888,6 +967,7 @@ internal class DoorbellTalk(
 
     fun dispose() {
         if (disposed) return
+        DoorChime.unlisten(chimeListener)
         if (inCall) { inCall = false; communication(false); onCall?.invoke(false) }
         stopStreet()
         stopDuplex()
@@ -913,6 +993,16 @@ internal class DoorbellTalk(
     /** Открыть канал голоса. [text] — подпись на время подключения; [delayMs] — пауза перед попыткой (повтор после неудачи). */
     private fun connect(text: String = "Подключение к домофону…", delayMs: Long = 0) {
         if (url.isBlank()) { set(State.ERROR, "Нужен прямой поток (RTSP) домофона"); return }
+        main.removeCallbacks(afterChime)
+        val chime = DoorChime.left(url)
+        if (chime > 0) {
+            chiming = true
+            Log.i(TAG, "Домофон играет мелодию звонка — канал голоса откроется через $chime мс")
+            set(State.CONNECTING, CHIME_TEXT)
+            main.postDelayed(afterChime, chime)
+            return
+        }
+        chiming = false
         set(State.CONNECTING, text)
         Log.i(TAG, "Подключение обратного канала")
         val target = url; val login = user
@@ -930,6 +1020,8 @@ internal class DoorbellTalk(
                         // Карточку закрыли (или сменили камеру), пока канал открывался: он лишний. Очередь фоновой работы
                         // после закрытия карточки задач уже не берёт — раньше приложение на этом падало.
                         if (disposed || target != url) { closeLater(talk); return@post }
+                        // Позвонили, пока канал открывался: голос в нём копился бы за мелодией — открыть после неё.
+                        if (DoorChime.left(target) > 0) { closeLater(talk); connect(); return@post }
                         session = talk
                         set(State.READY, READY_TEXT)
                         val clip = pendingClip
@@ -964,6 +1056,8 @@ internal class DoorbellTalk(
     private fun failed(text: String) {
         failedAt = System.currentTimeMillis()
         channelLostAt = 0
+        chiming = false
+        main.removeCallbacks(afterChime)
         pendingClip = null
         playing = false
         if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
@@ -1019,6 +1113,7 @@ internal class DoorbellTalk(
         private const val TAG = "Talk"
         private const val READY_TEXT = "Удерживайте и говорите"
         private const val RECONNECT_TEXT = "Связь с домофоном прервалась — восстанавливаю…"
+        private const val CHIME_TEXT = "Домофон играет звонок — подключусь, как доиграет"
     }
 }
 
