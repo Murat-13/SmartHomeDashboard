@@ -136,6 +136,78 @@ class GatesWatchTest {
         assertNull("Защёлка через реле — нечего закрывать", GateLogic.autoCloseKind(wicket))
     }
 
+    /**
+     * Проверка аудита 23.11.2026: «не знаю» — не «пусто». Камера прохода недоступна в Home Assistant — раньше это
+     * считалось пустым проходом, и ворота закрывались через 5 минут.
+     */
+    @Test fun unavailableCameraIsNotAnEmptyPassage() {
+        states["binary_sensor.person"] = "unavailable"; push()
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(8.0)
+        assertTrue("Камера недоступна — не закрываем", commands.isEmpty())
+        // Камера снова на связи и никого не видит — ворота закрываются, но не раньше чем через 30 с.
+        states["binary_sensor.person"] = "off"; push()
+        minutes(0.4)
+        assertTrue("Камера на связи меньше 30 с", commands.isEmpty())
+        minutes(0.3)
+        assertEquals(listOf("cover.close_cover cover.drive"), commands)
+    }
+
+    @Test fun cameraWithoutDetectionSensorsDoesNotProveEmptyPassage() {
+        val bare = TileEntity("bare", DoorbellConfig.TYPE, "grid", "Камера", 0, 0, 1, 1,
+            config = DoorbellConfig(camera = "camera.door", gates = listOf("g_drive")).writeTo(DoorbellConfig.newTileConfig()))
+        GateWatch.tiles = { listOf(bare) }
+        DoorbellAway.save(context, "bare", DoorbellAway.Settings(notifyService = "notify.mobile_app_iphone"))
+        try {
+            states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+            minutes(8.0)
+            assertTrue("Камера без датчиков людей и машин ничего не подтверждает", commands.isEmpty())
+        } finally { DoorbellAway.save(context, "bare", DoorbellAway.Settings()) }
+    }
+
+    @Test fun positionSensorOfflineBlocksAutoClose() {
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(1.0)
+        // Датчик положения пропал: положение берётся от привода, но закрывать по нему — нет.
+        states["binary_sensor.drive_open"] = "unavailable"; push()
+        minutes(8.0)
+        assertTrue("Без датчика положения на связи — не закрываем", commands.isEmpty())
+    }
+
+    /**
+     * Ворота начали закрываться по «Закрыть само» и откатились (сработал фотоэлемент привода) — одно «не удалось
+     * закрыть» и больше ни одной команды, пока их не закроют на деле. Раньше приложение закрывало снова каждые 5 минут.
+     */
+    @Test fun reversedAutoCloseIsNotRepeated() {
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(5.2)
+        assertEquals(listOf("cover.close_cover cover.drive"), commands)
+        phone.clear()
+        states["cover.drive"] = "closing"; push()
+        minutes(0.1)
+        states["cover.drive"] = "opening"; push()
+        minutes(0.1)
+        states["cover.drive"] = "open"; push()
+        minutes(12.0)
+        assertEquals("Одна команда за открытие", 1, commands.size)
+        assertEquals(listOf("Ворота: не удалось закрыть"), phone.map { it["message"] }.filter { it == "Ворота: не удалось закрыть" })
+        // Закрыли на деле (пультом) и открыли снова — новая попытка разрешена.
+        states["cover.drive"] = "closed"; states["binary_sensor.drive_open"] = "off"; push()
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(5.2)
+        assertEquals(2, commands.size)
+    }
+
+    @Test fun unsentAutoCloseRemindsOnce() {
+        GateHub.driver = GateHub.Driver { c, _ -> commands += "${c.domain}.${c.service} ${c.entity}"; false }
+        states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
+        minutes(3.1)
+        phone.clear()
+        minutes(2.2)
+        assertEquals(1, commands.size)
+        assertEquals("Одно напоминание, не два", listOf("Ворота: не удалось закрыть"), phone.map { it["message"] })
+    }
+
     @Test fun failedAutoCloseRemindsNotCloses() {
         acked = false
         states["cover.drive"] = "open"; states["binary_sensor.drive_open"] = "on"; push()
