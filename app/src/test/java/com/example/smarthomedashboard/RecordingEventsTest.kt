@@ -167,6 +167,8 @@ class RecordingEventsTest {
             sink.video(frame, d)
         }
         sink.close()
+        // Ролик дописывается и переименовывается в потоке записи (RecIo) — дождаться.
+        assertTrue(RecIo.flush(5_000))
     }
 
     @Test fun clipHasPreRollAndPostRollAndLabels() {

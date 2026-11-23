@@ -274,7 +274,7 @@ internal class SharedStream(
                                 Log.i(TAG, "Камера → планшет (≈ ${videoBytes * 8 / ArrivalDelay.REPORT_MS} кбит/с, " +
                                     "%.1f к/с): кадр приходит через $it мс ".format(videoFrames * 1000f / ArrivalDelay.REPORT_MS) +
                                     "после съёмки (по часам камеры, RTCP), самый поздний — через ${probe.slowest} мс; " +
-                                    "запись занимала поток чтения до ${busyMaxNs / 1_000_000} мс")
+                                    "запись занимала поток чтения до ${busyMaxNs / 1_000_000} мс (${RecBusy.take()})")
                                 videoBytes = 0
                                 videoFrames = 0
                                 busyMaxNs = 0

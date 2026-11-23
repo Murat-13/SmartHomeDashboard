@@ -191,6 +191,20 @@ internal object RecLayout {
     fun finish(writer: Mp4SegmentWriter, file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long): RecFile? {
         // Ошибка дописывания не теряет файл: ниже он обрезается по последнему целому фрагменту.
         try { writer.close() } catch (e: Exception) { android.util.Log.w("Recording", "Файл записи не дописан: ${e.message}") }
+        return closed(file, camera, kind, startMs, contentMs)
+    }
+
+    /**
+     * То же, что [finish], но обрезка и переименование — когда файл дописан на носитель: у записи с камеры — в потоке
+     * записи [RecIo], поток камеры их не ждёт. [done] — там же; у тестов и вырезки (файл пишется сразу) — сразу.
+     */
+    fun finishLater(writer: Mp4SegmentWriter, file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long,
+                    done: (RecFile) -> Unit) {
+        writer.closeThen { closed(file, camera, kind, startMs, contentMs)?.let(done) }
+    }
+
+    /** Закрытый файл: обрезать по последнему целому фрагменту и переименовать в закрытое имя. */
+    private fun closed(file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long): RecFile? {
         if (file == null) return null
         val ok = try { Mp4Repair.truncateToLastFragment(file) > 0 } catch (_: Exception) { false }
         if (!ok) { file.delete(); return null }
@@ -220,7 +234,7 @@ internal object RecLayout {
      * Недописанные отрезки после падения: обрезать по последнему целому фрагменту и переименовать в закрытые.
      * Длительность — по времени последнего изменения файла. Непригодный файл удаляется.
      */
-    fun recover(root: File, skip: Set<File> = emptySet()): Int {
+    fun recover(root: File, skip: Set<String> = emptySet()): Int {
         // Процесс убит во время перекладки в обычный MP4 (Mp4Finalize): временный файл очистке не виден и занимал
         // место навсегда (аудит 20.11.2026). Сам отрезок цел — перекладка повторится при открытии архива.
         File(root, ROOT).listFiles()?.forEach { cam -> cam.listFiles()?.forEach { day ->
@@ -230,7 +244,7 @@ internal object RecLayout {
         } }
         var fixed = 0
         for (f in scan(root)) {
-            if (!f.open || f.path in skip) continue
+            if (!f.open || f.path.path in skip) continue
             // Время последней записи — до обрезки: обрезка сама меняет время изменения файла.
             val modified = f.path.lastModified()
             val ok = try { Mp4Repair.truncateToLastFragment(f.path) > 0 } catch (_: Exception) { false }

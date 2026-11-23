@@ -14,6 +14,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
+import java.nio.channels.WritableByteChannel
 
 /**
  * Запись с камер: отрезок фрагментированного MP4 (docs/recording.md). Видео и звук пишутся как есть, без
@@ -64,9 +65,17 @@ internal data class AudioParams(val config: ByteArray, val sampleRate: Int, val 
 }
 
 @OptIn(UnstableApi::class)
-internal class Mp4SegmentWriter(file: File, val video: VideoParams, audio: AudioParams?) : Closeable {
-    private val stream = FileOutputStream(file)
-    private val muxer = FragmentedMp4Muxer.Builder(stream.channel).setFragmentDurationMs(FRAGMENT_MS).build()
+internal class Mp4SegmentWriter(private val out: WritableByteChannel, val video: VideoParams, audio: AudioParams?) : Closeable {
+    /** Файл пишется сразу, в этом же потоке (вырезка, тесты). */
+    constructor(file: File, video: VideoParams, audio: AudioParams?) : this(FileOutputStream(file).channel, video, audio)
+
+    /** Запись с камеры: файл пишется в потоке записи [RecIo], поток камеры не ждёт носитель. */
+    constructor(file: File, video: VideoParams, audio: AudioParams?, queued: Boolean) :
+        this(if (queued) QueuedFileChannel(file) else FileOutputStream(file).channel, video, audio)
+
+    // Файл закрываем сами (после закрытия муксера — обрезка и переименование в потоке записи), муксер его не закрывает.
+    private val muxer = FragmentedMp4Muxer.Builder(object : WritableByteChannel by out { override fun close() {} })
+        .setFragmentDurationMs(FRAGMENT_MS).build()
     private val videoTrack: Int
     private val audioTrack: Int?
     private var lastVideoUs = Long.MIN_VALUE
@@ -96,7 +105,7 @@ internal class Mp4SegmentWriter(file: File, val video: VideoParams, audio: Audio
                     .build())
             }
         } catch (e: Exception) {
-            try { stream.close() } catch (_: Exception) {}
+            try { out.close() } catch (_: Exception) {}
             throw e
         }
     }
@@ -124,7 +133,22 @@ internal class Mp4SegmentWriter(file: File, val video: VideoParams, audio: Audio
     override fun close() {
         if (closed) return
         closed = true
-        try { muxer.close() } finally { try { stream.close() } catch (_: Exception) {} }
+        try { muxer.close() } finally { try { out.close() } catch (_: Exception) {} }
+    }
+
+    /**
+     * Дописать и закрыть; [then] — когда файл на носителе закрыт: у записи с камеры — в потоке записи [RecIo], иначе
+     * сразу. Ошибка дописывания не мешает [then]: файл потом обрезается по последнему целому фрагменту.
+     */
+    fun closeThen(then: () -> Unit) {
+        if (closed) return
+        closed = true
+        try { muxer.close() } catch (e: Exception) { android.util.Log.w("Recording", "Файл записи не дописан: ${e.message}") }
+        val queued = out as? QueuedFileChannel
+        if (queued != null) queued.close(then) else {
+            try { out.close() } catch (_: Exception) {}
+            then()
+        }
     }
 
     companion object {

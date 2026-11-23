@@ -50,11 +50,15 @@ internal abstract class CameraRecorder(
         stream = CameraHub.attach(CameraHub.Key(url.trim(), user, password), this, sessionFactory, encoderFactory)
     }
 
-    /** Остановить: текущий файл закрывается сразу; последняя запись закрывает и поток камеры (ждём ≤ [waitMs]). */
+    /**
+     * Остановить: текущий файл закрывается сразу; последняя запись закрывает и поток камеры (ждём ≤ [waitMs]). Файл
+     * дописывается и переименовывается в потоке записи [RecIo] — ждём и его (≤ [waitMs]): после остановки файлы закрыты.
+     */
     fun stop(waitMs: Long = 3_000) {
         val s = stream ?: return
         stream = null
         CameraHub.detach(s, this, waitMs)
+        RecIo.flush(waitMs)
         report(State.STOPPED)
     }
 
@@ -180,6 +184,11 @@ internal class ContinuousRecorder(
         }
 
         private fun open(params: VideoParams, us: Long) {
+            val started = System.nanoTime()
+            try { openFile(params, us) } finally { RecBusy.open(System.nanoTime() - started) }
+        }
+
+        private fun openFile(params: VideoParams, us: Long) {
             val base = root()
             if (base == null) { report(State.NO_STORAGE, "Нет места для записи"); return }
             if (!canWrite()) { report(State.NO_SPACE, "Запись остановлена: нет места"); return }
@@ -187,7 +196,7 @@ internal class ContinuousRecorder(
             val dir = RecLayout.dayDir(base, camera, start)
             if (!dir.isDirectory && !dir.mkdirs()) { report(State.NO_STORAGE, "Папка записи недоступна"); return }
             val f = File(dir, RecLayout.openName(RecFile.Kind.CONTINUOUS, start))
-            current = Mp4SegmentWriter(f, params, audioParams)
+            current = Mp4SegmentWriter(f, params, audioParams, queued = true)
             file = f
             segStartUs = us
             segStartWall = start
@@ -199,7 +208,8 @@ internal class ContinuousRecorder(
             val f = file
             current = null
             file = null
-            RecLayout.finish(w, f, camera, RecFile.Kind.CONTINUOUS, segStartWall, (lastUs - segStartUs) / 1_000)?.let(onSegment)
+            // Дописать, обрезать и переименовать — в потоке записи: поток камеры раздаёт живое видео и носитель не ждёт.
+            RecLayout.finishLater(w, f, camera, RecFile.Kind.CONTINUOUS, segStartWall, (lastUs - segStartUs) / 1_000, onSegment)
         }
     }
 

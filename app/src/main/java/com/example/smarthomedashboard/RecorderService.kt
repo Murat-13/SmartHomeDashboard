@@ -131,7 +131,9 @@ class RecorderService : Service() {
             started = true
             // До запуска записей: все недописанные отрезки — от прошлого запуска.
             storageRoot()?.let { root ->
-                val fixed = RecLayout.recover(root)
+                // В потоке записи и после всего, что в нём ждёт: файлы, которые ещё дописываются и закрываются (служба
+                // перезапущена в том же процессе), не трогаются — их закроет сама запись.
+                val fixed = RecIo.call(RECOVER_WAIT_MS) { RecLayout.recover(root, skip = RecIo.busyFiles()) } ?: 0
                 if (fixed > 0) Log.i(TAG, "Запись: восстановлено отрезков после перезапуска: $fixed")
             }
             retention(forceScan = true)
@@ -313,6 +315,8 @@ class RecorderService : Service() {
         /** Сервис уже сверил записи с настройками и открыл их потоки. */
         @Volatile private var synced = false
         private const val STARTING_MS = 15_000L
+        /** Восстановление после падения ждёт очередь записи не дольше (обычно она пуста). */
+        private const val RECOVER_WAIT_MS = 60_000L
 
         /**
          * Запись на планшете включена, но сервис ещё не открыл потоки — первые секунды после запуска приложения. Живому

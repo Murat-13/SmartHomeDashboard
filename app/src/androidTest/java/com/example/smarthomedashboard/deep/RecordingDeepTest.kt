@@ -25,6 +25,8 @@ import kotlin.math.sqrt
 /**
  * Запись с камер на устройстве (docs/recording.md): настоящий AAC-кодер Android для звука G.711 и запись
  * субпотока RTSP-стенда CI (аргумент rtspHost, без камер владельца). Пишет только в свою временную папку.
+ * Адреса потоков можно задать аргументами recSub и recMain (стенд камер на Mac, docs/camera-stand.md): субпоток H.264
+ * шириной 640, основной поток H.264 1920×1080.
  */
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -92,16 +94,18 @@ class RecordingDeepTest {
     @Test fun recordsStandSubstreamIntoPlayableSegments() {
         val host = argument("rtspHost")
         assumeTrue("Нужен аргумент rtspHost (RTSP-стенд CI)", host != null)
-        val (segments, states) = record("rtsp://$host:8554/sub", 16)
+        val (segments, states) = record(argument("recSub") ?: "rtsp://$host:8554/sub", 16)
         assertTrue("отрезков: ${segments.size}, состояния: $states", segments.size >= 2)
         val first = segments.first()
         val extractor = MediaExtractor()
         extractor.setDataSource(first.path.path)
-        assertEquals(1, extractor.trackCount)
-        val format = extractor.getTrackFormat(0)
+        // Субпоток стенда CI — без звука: одна дорожка. У стенда камер на Mac звук есть — дорожка видео ищется по типу.
+        if (argument("recSub") == null) assertEquals(1, extractor.trackCount)
+        val track = (0 until extractor.trackCount).first { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)!!.startsWith("video/") }
+        val format = extractor.getTrackFormat(track)
         assertEquals(MediaFormat.MIMETYPE_VIDEO_AVC, format.getString(MediaFormat.KEY_MIME))
         assertEquals(640, format.getInteger(MediaFormat.KEY_WIDTH))
-        extractor.selectTrack(0)
+        extractor.selectTrack(track)
         var samples = 0
         while (extractor.advance()) samples++
         extractor.release()
@@ -117,7 +121,8 @@ class RecordingDeepTest {
         val root = File(context.cacheDir, "rec-deep-ev-${System.nanoTime()}").apply { mkdirs() }
         val clips = mutableListOf<Pair<RecFile, Set<String>>>()
         val active = java.util.concurrent.atomic.AtomicReference<Set<String>>(emptySet())
-        val r = com.example.smarthomedashboard.EventRecorder("deep", "rtsp://$host:8554/main1080", "", null, audio = true,
+        val main = argument("recMain") ?: "rtsp://$host:8554/main1080"
+        val r = com.example.smarthomedashboard.EventRecorder("deep", main, "", null, audio = true,
             root = { root }, canWrite = { true }, events = { active.get() },
             settings = { com.example.smarthomedashboard.RecordingConfig(preSeconds = 4, postSeconds = 5) },
             onClip = { f, l -> synchronized(clips) { clips += f to l } }, onStatus = { _, _ -> })

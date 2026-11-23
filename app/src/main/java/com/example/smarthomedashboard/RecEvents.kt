@@ -324,6 +324,11 @@ internal class EventRecorder(
         }
 
         private fun open(params: VideoParams, us: Long): Boolean {
+            val started = System.nanoTime()
+            try { return openFile(params, us) } finally { RecBusy.open(System.nanoTime() - started) }
+        }
+
+        private fun openFile(params: VideoParams, us: Long): Boolean {
             val base = root()
             if (base == null) { failed = true; report(State.NO_STORAGE, "Нет места для записи"); return false }
             if (!canWrite()) { failed = true; report(State.NO_SPACE, "Запись остановлена: нет места"); return false }
@@ -331,7 +336,7 @@ internal class EventRecorder(
             val dir = RecLayout.dayDir(base, camera, start)
             if (!dir.isDirectory && !dir.mkdirs()) { failed = true; report(State.NO_STORAGE, "Папка записи недоступна"); return false }
             val f = File(dir, RecLayout.openName(RecFile.Kind.EVENT, start))
-            writer = Mp4SegmentWriter(f, params, audioParams)
+            writer = Mp4SegmentWriter(f, params, audioParams, queued = true)
             file = f
             clipStartUs = us
             clipStartWall = start
@@ -346,7 +351,8 @@ internal class EventRecorder(
             writer = null
             file = null
             val labels = planner.takeLabels(current)
-            RecLayout.finish(w, f, camera, RecFile.Kind.EVENT, clipStartWall, (lastUs - clipStartUs) / 1_000)?.let { onClip(it, labels) }
+            // Дописать, обрезать и переименовать — в потоке записи [RecIo]; метки события — уже сейчас.
+            RecLayout.finishLater(w, f, camera, RecFile.Kind.EVENT, clipStartWall, (lastUs - clipStartUs) / 1_000) { onClip(it, labels) }
         }
 
         /** Конец сессии (обрыв, остановка): идущий ролик закрывается — событие продолжится новым после переподключения. */
