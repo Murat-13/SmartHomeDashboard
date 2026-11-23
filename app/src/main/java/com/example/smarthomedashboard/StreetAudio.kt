@@ -153,8 +153,9 @@ internal class StreetAudio : StreetSource {
             val info = MediaCodec.BufferInfo()
             val limit = rate * MAX_QUEUE_MS / 1000
             val gaps = RtpGaps()
-            Log.i(TAG, "Звук с улицы — отдельно от видео (${if (relay != null) "через планшет" else "напрямую"}, " +
-                "${if (aac != null) "AAC" else setup.track.encoding} ${rate / 1000} кГц)")
+            val how = "${if (relay != null) "через планшет" else "напрямую"}, ${if (aac != null) "AAC" else setup.track.encoding} ${rate / 1000} кГц"
+            // Прослушивание мелодии домофона ([DoorChime]) — не разговор: своя строка, чтобы журнал разговора не путался.
+            Log.i(TAG, if (debug) "Звук с улицы — отдельно от видео ($how)" else "Мелодия домофона: слушаю домофон ($how)")
             s.read(object : RtspSession.Sink {
                 override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
                     if (!alive(run)) { s.close(); return }
@@ -223,7 +224,7 @@ internal class StreetAudio : StreetSource {
     private fun drain(dec: MediaCodec, info: MediaCodec.BufferInfo, fifo: ShortFifo, limit: Int) {
         while (true) {
             val out = dec.dequeueOutputBuffer(info, 0)
-            if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) { Log.i(TAG, "Звук с улицы: декодер выдаёт ${dec.outputFormat}"); continue }
+            if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) { if (debug) Log.i(TAG, "Звук с улицы: декодер выдаёт ${dec.outputFormat}"); continue }
             if (out < 0) return
             val buf = dec.getOutputBuffer(out)
             if (buf != null && info.size > 0) {
