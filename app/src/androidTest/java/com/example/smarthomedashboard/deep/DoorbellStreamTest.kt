@@ -45,12 +45,11 @@ class DoorbellStreamTest {
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
     }
 
-    private fun card(): DoorbellCard? {
-        var found: DoorbellCard? = null
-        scenario!!.onActivity {
-            found = it.window.decorView.findViewWithTag<View>("deep_door")?.findViewWithTag<DoorbellCard>("door_compact")
-        }
-        return found
+    /** Экран панели — без ожидания свободного главного потока ([resumedActivity]): при живом видео его можно не дождаться. */
+    private fun panel(): MainActivity? = resumedActivity() as? MainActivity
+
+    private fun card(): DoorbellCard? = panel()?.let { a ->
+        onMain { a.window.decorView.findViewWithTag<View>("deep_door")?.findViewWithTag<DoorbellCard>("door_compact") }
     }
 
     private fun status(): DoorbellVideoView.Status? = card()?.let { c -> onMain { c.video.status } }
@@ -64,8 +63,7 @@ class DoorbellStreamTest {
     @Test fun mainStreamAfterExpandIsHd() {
         open("rtsp://$host:8554/main1080", "rtsp://$host:8554/sub")
         waitFor(40_000, "субпоток") { status() == DoorbellVideoView.Status.PLAYING }
-        var activity: MainActivity? = null
-        scenario!!.onActivity { activity = it }
+        val activity = panel()
         val tile = onMain { activity!!.window.decorView.findViewWithTag<View>("deep_door") }
         tap(activity!!, tile)
         val hd = runCatching {
@@ -92,9 +90,8 @@ class DoorbellStreamTest {
         open("rtsp://$host:$port/${argument("rtspMain") ?: "main1080"}", "rtsp://$host:$port/${argument("rtspSub") ?: "sub"}",
             autoCollapse = false)
         waitFor(40_000, "субпоток") { status() == DoorbellVideoView.Status.PLAYING }
-        var activity: MainActivity? = null
-        scenario!!.onActivity { activity = it }
-        tap(activity!!, onMain { activity!!.window.decorView.findViewWithTag<View>("deep_door") })
+        val activity = panel()
+        tap(activity!!, onMain { activity.window.decorView.findViewWithTag<View>("deep_door") })
         fun expanded(of: MainActivity) = of.window.decorView.findViewWithTag<DoorbellCard>("door_expanded")
         waitFor(40_000, "свой поток раскрытой карточки") {
             onMain { expanded(activity!!)?.video?.let { it.status == DoorbellVideoView.Status.PLAYING && !it.hasGuest && it.framesShown > 5 } == true }
@@ -107,8 +104,8 @@ class DoorbellStreamTest {
         scenario!!.recreate() // экран пересоздаётся «ради смены конфигурации» — как при повороте
         var next: MainActivity? = null
         waitFor(10_000, "раскрытая карточка на новом экране") {
-            scenario!!.onActivity { next = it }
-            next !== activity && onMain { expanded(next!!)?.isAttachedToWindow == true }
+            next = panel()
+            next != null && next !== activity && onMain { expanded(next!!)?.isAttachedToWindow == true }
         }
         val expandedAfter = onMain { expanded(next!!) }
         assertTrue("раскрытая карточка — та же", expandedAfter === expandedBefore)

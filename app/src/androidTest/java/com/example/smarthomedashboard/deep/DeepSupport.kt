@@ -126,6 +126,16 @@ internal fun waitFor(timeoutMs: Long, what: String, condition: () -> Boolean) {
     }
 }
 
+/**
+ * Экран на переднем плане — без ожидания «главный поток свободен». `ActivityScenario.onActivity` перед каждым вызовом
+ * ждёт, пока главный поток освободится, а при живом видео (плитка и раскрытая карточка) на медленном эмуляторе он
+ * может не освободиться минутами: 23.11 так ждал тест поворота (локально 5 минут, в CI — до конца отпущенного времени).
+ */
+internal fun resumedActivity(): Activity? = onMain {
+    androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+        .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).firstOrNull()
+}
+
 internal fun <T> onMain(block: () -> T): T {
     var value: Result<T>? = null
     instrumentation.runOnMainSync { value = runCatching(block) }
