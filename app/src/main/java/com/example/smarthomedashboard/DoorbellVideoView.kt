@@ -483,6 +483,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Последняя остановка плеера: когда началась и что было в этот момент (в журнал, когда плеер пойдёт дальше). */
     private var stallAt = 0L
     private var stallNote = ""
+    /** Что делали декодер, камера и главный поток во время остановки (только журнал, пункт F аудита 23.11). */
+    private val stallProbe = StallProbe()
     private var lastBuffered = 0L
 
     /** До какого запаса идёт рывок: цель догоняющего режима этого плеера и ещё [LiveCatchUp.BURST_MARGIN_MS]. */
@@ -804,9 +806,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     stallAt = SystemClock.elapsedRealtime()
                     stallNote = "${exo.videoSize.height}p, запас ${exo.totalBufferedDuration} мс (за секунду до неё $lastBuffered), скорость ${exo.playbackParameters.speed}, " +
                         "${stallAt - firstFrameAt} мс после первого кадра" + if (burstUntil != 0L) ", во время рывка" else ""
+                    stallProbe.begin(exo.videoDecoderCounters, liveFactory?.video?.decoderNote(),
+                        if (viaRelay) CameraHub.sinceLastFrameMs(playingRtsp, source?.user.orEmpty()) else null, main)
                 }
                 if (player === exo && state == Player.STATE_READY && stallAt != 0L) {
-                    Log.i(TAG, "Остановка видео на ${SystemClock.elapsedRealtime() - stallAt} мс: $stallNote")
+                    val details = stallProbe.end(exo.videoDecoderCounters)
+                    Log.i(TAG, "Остановка видео на ${SystemClock.elapsedRealtime() - stallAt} мс: $stallNote" +
+                        if (details.isNotEmpty()) "; $details" else "")
                     stallAt = 0
                     if (burstInterrupted) { burstInterrupted = false; startBurst(exo) }
                 }

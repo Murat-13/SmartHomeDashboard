@@ -274,6 +274,9 @@ internal class LiveRenderers(
     /** Выравнивание времени показа у созданного видеорендерера (для журнала); null — выключено. */
     @Volatile var retimer: FrameRetimer? = null
         private set
+    /** Созданный видеорендерер (состояние декодера — в журнал остановок, [StallProbe]). */
+    @Volatile var video: LowDelayVideoRenderer? = null
+        private set
 
     override fun buildVideoRenderers(
         context: Context, extensionRendererMode: Int, mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
@@ -282,7 +285,7 @@ internal class LiveRenderers(
         val timing = if (retime) FrameRetimer() else null
         retimer = timing
         out.add(LowDelayVideoRenderer(context, codecAdapterFactory, mediaCodecSelector, allowedVideoJoiningTimeMs,
-            enableDecoderFallback, eventHandler, eventListener, softwareLowDelay, timing))
+            enableDecoderFallback, eventHandler, eventListener, softwareLowDelay, timing).also { video = it })
     }
 }
 
@@ -353,14 +356,25 @@ internal class LowDelayVideoRenderer(
         const val FLUSH_CALLERS = 5
     }
 
-    /** Кадры, отправленные в декодер и ещё не вышедшие из него, и когда отправлен последний. */
-    private var inCodec = 0
-    private var lastQueuedAtMs = 0L
+    /** Кадры, отправленные в декодер и ещё не вышедшие из него, и когда отправлен последний (пишет поток плеера). */
+    @Volatile private var inCodec = 0
+    @Volatile private var lastQueuedAtMs = 0L
+    /** Когда из декодера вышел последний кадр (показан или выброшен). */
+    @Volatile private var lastOutputAtMs = 0L
     private var wasReady = false
 
     override fun onProcessedOutputBuffer(presentationTimeUs: Long) {
         super.onProcessedOutputBuffer(presentationTimeUs)
         if (inCodec > 0) inCodec--
+        lastOutputAtMs = android.os.SystemClock.elapsedRealtime()
+    }
+
+    /** Состояние декодера для журнала остановки (читается не из потока плеера — значения приблизительные). */
+    fun decoderNote(): String {
+        val now = android.os.SystemClock.elapsedRealtime()
+        fun ago(at: Long) = if (at == 0L) "—" else "${now - at} мс назад"
+        return "в декодере кадров ${inCodec}, последний отправлен ${ago(lastQueuedAtMs)}, последний вышел ${ago(lastOutputAtMs)}" +
+            if (freshest) ", программный" else ""
     }
 
     /**

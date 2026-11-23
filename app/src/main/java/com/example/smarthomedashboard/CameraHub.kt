@@ -86,6 +86,14 @@ internal object CameraHub {
     fun audioAheadMs(url: String, user: String): Long? =
         streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.audioAheadMs
 
+    /**
+     * Сколько миллисекунд назад камера прислала последний кадр видео потока [url]; null — поток не идёт. Для журнала
+     * остановок живого видео ([StallProbe]): остановка из-за камеры или сети видна по паузе здесь.
+     */
+    fun sinceLastFrameMs(url: String, user: String): Long? =
+        streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.lastFrameAtMs
+            ?.takeIf { it > 0 }?.let { android.os.SystemClock.elapsedRealtime() - it }
+
     internal fun byToken(token: String): SharedStream? = streams.values.firstOrNull { it.token == token }
 
     /** Для тестов: сколько общих потоков открыто. */
@@ -108,6 +116,10 @@ internal class SharedStream(
     @Volatile var floorJitterMs = 0L
         private set
     private val jitterMemory = JitterMemory()
+
+    /** Когда пришёл последний целый кадр видео (часы [android.os.SystemClock.elapsedRealtime]); 0 — ещё не было. */
+    @Volatile var lastFrameAtMs = 0L
+        private set
 
     /** Одноразовая часть адреса ретранслятора: без неё другие приложения планшета не увидят видео. */
     val token: String = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
@@ -264,7 +276,7 @@ internal class SharedStream(
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
                             videoBytes += rtp.length
-                            if (rtp.marker) videoFrames++
+                            if (rtp.marker) { videoFrames++; lastFrameAtMs = android.os.SystemClock.elapsedRealtime() }
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
                                 arrivalJitterMs = (probe.slowest - it).coerceIn(0, MAX_JITTER_MS)
                                 floorJitterMs = jitterMemory.add(arrivalJitterMs)
