@@ -120,6 +120,45 @@ class DoorbellStreamTest {
         log("Поворот: плееры те же ($after), кадров показано ${onMain { expandedAfter.video.framesShown }} (до поворота $framesBefore)")
     }
 
+    /**
+     * Утечки при повороте (проверка аудита 23.11.2026, пункт J): карточки видео и их плееры переезжают на новый экран, а
+     * старый экран не должен оставаться в памяти через них (контекст карточки переводится на новый экран). Четыре
+     * поворота с раскрытой карточкой: плееры те же, в пути никого не осталось, старые экраны собраны сборщиком мусора.
+     */
+    @Test fun rotationsWithVideoDoNotLeakOldScreens() {
+        val port = argument("rtspPort") ?: "8554"
+        open("rtsp://$host:$port/${argument("rtspMain") ?: "main1080"}", "rtsp://$host:$port/${argument("rtspSub") ?: "sub"}",
+            autoCollapse = false)
+        waitFor(40_000, "субпоток") { status() == DoorbellVideoView.Status.PLAYING }
+        fun expanded() = panel()?.let { a -> onMain { a.window.decorView.findViewWithTag<DoorbellCard>("door_expanded") } }
+        panel()!!.let { a -> tap(a, onMain { a.window.decorView.findViewWithTag<View>("deep_door") }) }
+        waitFor(40_000, "свой поток раскрытой карточки") {
+            expanded()?.let { c -> onMain { c.video.status == DoorbellVideoView.Status.PLAYING && !c.video.hasGuest && c.video.framesShown > 5 } } == true
+        }
+        val card = expanded()!!
+        val starts = onMain { card.video.playerStarts }
+        val old = mutableListOf<java.lang.ref.WeakReference<MainActivity>>()
+        repeat(4) {
+            val before = panel()!!
+            old += java.lang.ref.WeakReference(before)
+            scenario!!.recreate()
+            waitFor(10_000, "раскрытая карточка на новом экране") {
+                panel().let { now -> now != null && now !== before && expanded() === card && onMain { card.isAttachedToWindow } }
+            }
+        }
+        waitFor(10_000, "кадры после поворотов") { onMain { card.video.framesShown } > 20 }
+        assertTrue("плееры не создавались заново", onMain { card.video.playerStarts } == starts)
+        assertTrue("в пути никого не осталось", onMain { com.example.smarthomedashboard.DoorbellMove.waiting } == 0)
+        var alive = old.size
+        repeat(20) {
+            if (alive == 0) return@repeat
+            Runtime.getRuntime().gc(); System.runFinalization(); Thread.sleep(250)
+            alive = old.count { it.get() != null }
+        }
+        log("Поворот ×4 с видео: старых экранов в памяти $alive из ${old.size}, плееры те же ($starts)")
+        assertTrue("Старые экраны удерживаются в памяти: $alive из ${old.size}", alive <= 1)
+    }
+
     /** Разрешение выше 1080p (как 2560×1920 у Reolink): на эмуляторе — программный декодер, результат — сведения, не приговор. */
     @Test fun aboveFullHdIsReported() {
         open("rtsp://$host:8554/main2560", "rtsp://$host:8554/main2560")
