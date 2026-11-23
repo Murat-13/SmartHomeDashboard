@@ -34,8 +34,17 @@ class RecorderService : Service() {
     /** Файлы записей в памяти: полный обход диска — при запуске и раз в 6 часов. */
     private val files = ArrayList<RecFile>()
     private var lastScan = 0L
+    /** Первый обход носителя после запуска отложен до открытия записей ([startupCleanup]). */
+    private var cleanupPending = false
     @Volatile private var freeCache = Long.MAX_VALUE
     @Volatile private var freeCacheAt = 0L
+    /**
+     * Носитель записей для потоков камер — обновляется в потоке управления раз в 5 с ([refreshStorage]). Выбор
+     * носителя ходит в систему (Binder), свободное место — StatFs на SD-карте: в потоке камеры при открытии каждого
+     * отрезка это стоило до 40–50 мс (замер 23.11.2026), и столько же стояло живое видео.
+     */
+    @Volatile private var rootCache: File? = null
+    @Volatile private var rootCacheAt = 0L
     @Volatile private var paused = false
     private var started = false
     /** Последнее известное расположение камер (поток управления). */
@@ -65,6 +74,7 @@ class RecorderService : Service() {
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
         // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
         control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
+        control.scheduleWithFixedDelay({ safe { refreshStorage() } }, 0, STORAGE_REFRESH_S, TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -129,14 +139,13 @@ class RecorderService : Service() {
         }
         if (!started) {
             started = true
-            // До запуска записей: все недописанные отрезки — от прошлого запуска.
-            storageRoot()?.let { root ->
-                // В потоке записи и после всего, что в нём ждёт: файлы, которые ещё дописываются и закрываются (служба
-                // перезапущена в том же процессе), не трогаются — их закроет сама запись.
-                val fixed = RecIo.call(RECOVER_WAIT_MS) { RecLayout.recover(root, skip = RecIo.busyFiles()) } ?: 0
-                if (fixed > 0) Log.i(TAG, "Запись: восстановлено отрезков после перезапуска: $fixed")
-            }
-            retention(forceScan = true)
+            // Обход файлов носителя — восстановление после падения и очистка по сроку и месту — на SD-карте занимает
+            // секунды (24.11: 858 файлов, 1,1–1,7 с на обход, а их два), и записи открывались только после него: плитка
+            // не дожидалась общего потока (5 с) и шла к камере вторым подключением. Места хватает — записи открываются
+            // сразу, обход идёт после. Мало места — сначала очистка, как раньше: иначе запись сказала бы «нет места».
+            val root = storageRoot()
+            if (root != null && freeBytes(root) >= RecordingDevice(this).reserveGb * RecRetention.GB) cleanupPending = true
+            else startupCleanup()
         }
         for ((id, want) in wanted) {
             if (recorders.containsKey(id)) continue
@@ -145,13 +154,13 @@ class RecorderService : Service() {
             val (key, config) = want
             val r: CameraRecorder = if (id.endsWith(HD)) EventRecorder(
                 camera = camera, url = key.url, user = key.user, password = passwordFor[tileId], audio = key.audio,
-                root = { storageRoot() }, canWrite = { canWrite() },
+                root = { cameraRoot() }, canWrite = { canWrite() },
                 events = { RecordingEvents.of(tileId) }, settings = { config },
                 onClip = { file, labels -> control.execute { safe { clipClosed(file, labels) } } },
                 onStatus = { _, status -> statusChanged(id, status) }
             ) else ContinuousRecorder(
                 camera = camera, url = key.url, user = key.user, password = passwordFor[tileId],
-                audio = key.audio, root = { storageRoot() }, canWrite = { canWrite() },
+                audio = key.audio, root = { cameraRoot() }, canWrite = { canWrite() },
                 onSegment = { file -> control.execute { safe { segmentClosed(file) } } },
                 onStatus = { _, status -> statusChanged(id, status) }
             )
@@ -166,6 +175,24 @@ class RecorderService : Service() {
         }
         // Потоки записей открыты (или стало ясно, что их не будет): живому видео больше нечего ждать ([starting]).
         synced = true
+        // Сверка оборвалась ошибкой раньше — обход пройдёт при следующей (запуск, раз в 10 минут).
+        if (cleanupPending) { cleanupPending = false; startupCleanup() }
+    }
+
+    /**
+     * Первый обход носителя после запуска службы: недописанные отрезки прошлого запуска и очистка. Восстановление — в
+     * потоке записи и после всего, что в нём ждёт: файлы, которые ещё дописываются (идущие записи, служба перезапущена в
+     * том же процессе), не трогаются — их закроет сама запись.
+     */
+    private fun startupCleanup() {
+        cleanupProbe?.invoke()
+        val started = android.os.SystemClock.elapsedRealtime()
+        storageRoot()?.let { root ->
+            val fixed = RecIo.call(RECOVER_WAIT_MS) { RecLayout.recover(root, skip = RecIo.busyFiles()) } ?: 0
+            if (fixed > 0) Log.i(TAG, "Запись: восстановлено отрезков после перезапуска: $fixed")
+        }
+        retention(forceScan = true)
+        Log.i(TAG, "Запись: обход файлов после запуска — ${android.os.SystemClock.elapsedRealtime() - started} мс")
     }
 
     private fun retrySoon() {
@@ -194,11 +221,28 @@ class RecorderService : Service() {
 
     private fun freeBytes(root: File): Long = RecVolumes.freeBytes(root)
 
-    /** Можно ли открыть новый отрезок: место сверх неприкосновенного остатка. Дёшево: кэш 5 с. */
+    /** Носитель и свободное место — заранее, в потоке управления (для потоков камер, [rootCache]). */
+    private fun refreshStorage() {
+        val root = storageRoot()
+        val free = root?.let { freeBytes(it) } ?: 0L
+        rootCache = root
+        freeCache = free
+        val now = System.currentTimeMillis()
+        rootCacheAt = now
+        freeCacheAt = now
+    }
+
+    /** Папка записей для потока камеры: из кэша; устарел (поток управления занят дольше обычного) — как раньше, сразу. */
+    private fun cameraRoot(): File? {
+        val cached = rootCache
+        return if (cached != null && System.currentTimeMillis() - rootCacheAt <= STORAGE_STALE_MS) cached else storageRoot()
+    }
+
+    /** Можно ли открыть новый отрезок: место сверх неприкосновенного остатка. Дёшево: кэш обновляет поток управления. */
     private fun canWrite(): Boolean {
         if (paused) return false
         val now = System.currentTimeMillis()
-        if (now - freeCacheAt > 5_000) {
+        if (now - freeCacheAt > STORAGE_STALE_MS) {
             freeCache = storageRoot()?.let { freeBytes(it) } ?: 0L
             freeCacheAt = now
         }
@@ -221,7 +265,8 @@ class RecorderService : Service() {
     }
 
     private fun segmentClosed(file: RecFile) {
-        files += file
+        // Обход носителя мог уже найти этот файл (закрылся, пока шёл обход после запуска) — не считать дважды.
+        if (files.none { it.path == file.path }) files += file
         retention(forceScan = false)
     }
 
@@ -257,7 +302,8 @@ class RecorderService : Service() {
         try { index.remove(deleted) } catch (e: Exception) { Log.w(TAG, "Запись: индекс событий: ${e.javaClass.simpleName}") }
         if (plan.delete.isNotEmpty()) {
             Log.i(TAG, "Запись: удалено отрезков ${plan.delete.size}")
-            freeCacheAt = 0
+            // Место освободилось — сразу пересчитать (здесь, а не в потоке камеры при следующем отрезке).
+            refreshStorage()
             // Пустые папки дней не копятся.
             plan.delete.mapNotNull { it.path.parentFile }.toSet().forEach { dir -> if (dir.list()?.isEmpty() == true) dir.delete() }
         }
@@ -315,6 +361,11 @@ class RecorderService : Service() {
         /** Сервис уже сверил записи с настройками и открыл их потоки. */
         @Volatile private var synced = false
         private const val STARTING_MS = 15_000L
+        /** Для тестов: вызывается в начале первого обхода носителя после запуска (видно, открыты ли уже записи). */
+        @androidx.annotation.VisibleForTesting @Volatile internal var cleanupProbe: (() -> Unit)? = null
+        /** Как часто поток управления обновляет носитель и свободное место ([refreshStorage]), и когда кэш устарел. */
+        private const val STORAGE_REFRESH_S = 5L
+        private const val STORAGE_STALE_MS = 15_000L
         /** Восстановление после падения ждёт очередь записи не дольше (обычно она пуста). */
         private const val RECOVER_WAIT_MS = 60_000L
 

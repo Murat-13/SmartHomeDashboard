@@ -3,6 +3,7 @@ package com.example.smarthomedashboard
 import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -70,6 +71,38 @@ class RecordingColdStartTest {
 
     /** Запись одинакова рядом и издалека — служба не выясняет, где камера, и сразу её запускает. */
     private val always = RecordingConfig.Mode.CONTINUOUS_EVENTS
+
+    /**
+     * Записи открываются до обхода носителя (24.11.2026): на SD-карте обход занимает секунды, и плитка не дожидалась
+     * общего потока — шла к камере вторым подключением. Мало места — сначала очистка, как раньше.
+     */
+    /** Плитка с настоящими адресами потоков (у [tile] они не читаются — тем тестам записи не нужны). */
+    private fun streamingTile(id: String) = TileEntity(id, DoorbellConfig.CAMERA_TYPE, "grid", "Камера", 0, 0, 1, 1,
+        config = RecordingConfig(mode = always, remoteMode = always).writeTo(
+            DoorbellConfig(rtspMain = "rtsp://127.0.0.1:9/main", rtspSub = "rtsp://127.0.0.1:9/sub").writeTo(DoorbellConfig.newTileConfig())))
+
+    @Test fun recordingsOpenBeforeStorageWalk() {
+        val cam = streamingTile("cam_fast")
+        TileManager(context).saveTiles(listOf(cam))
+        RecordingDevice(context).setEnabled(cam.id, true)
+        val marker = put(cam.id, RecFile.Kind.CONTINUOUS, 400.0)
+        var streamsAtWalk = -1
+        RecorderService.cleanupProbe = { streamsAtWalk = CameraHub.openStreams }
+        try { coldStart(marker) } finally { RecorderService.cleanupProbe = null }
+        assertTrue("записи открыты до обхода носителя: потоков $streamsAtWalk", streamsAtWalk > 0)
+    }
+
+    @Test fun lowSpaceCleansBeforeRecording() {
+        ShadowStatFs.registerStats(root, 1_000_000, 1_000, 1_000) // свободно меньше остатка
+        val cam = streamingTile("cam_low")
+        TileManager(context).saveTiles(listOf(cam))
+        RecordingDevice(context).setEnabled(cam.id, true)
+        val marker = put(cam.id, RecFile.Kind.CONTINUOUS, 400.0)
+        var streamsAtWalk = -1
+        RecorderService.cleanupProbe = { streamsAtWalk = CameraHub.openStreams }
+        try { coldStart(marker) } finally { RecorderService.cleanupProbe = null }
+        assertEquals("мало места — сначала очистка", 0, streamsAtWalk)
+    }
 
     @Test fun ownerKeepDaysHoldOnColdStart() {
         val cam = tile("cam_long", RecordingConfig(mode = always, remoteMode = always, keepContinuousDays = 14, keepEventDays = 90))
