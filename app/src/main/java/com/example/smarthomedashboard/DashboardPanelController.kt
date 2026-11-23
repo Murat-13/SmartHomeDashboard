@@ -361,10 +361,12 @@ internal class DashboardPanelController(
         // После первого кадра нового экрана: снимок фона для размытия берётся уже с нарисованной панели.
         bottomPanel.postOnAnimation {
             bottomPanel.postOnAnimation {
-                if (isEditMode || hasExpansion()) return@postOnAnimation
-                val view = renderedViews[id]?.takeIf { it.parent === bottomPanel } ?: return@postOnAnimation
-                val tile = tileManager.getAllTiles().find { it.id == id && isModern(it.type) } ?: return@postOnAnimation
-                expandModernBattery(tile, view)
+                val view = renderedViews[id]?.takeIf { it.parent === bottomPanel }
+                val tile = tileManager.getAllTiles().find { it.id == id && isModern(it.type) }
+                if (!isEditMode && !hasExpansion() && view != null && tile != null) expandModernBattery(tile, view)
+                // Раскрытая карточка домофона, которую не взяли (не раскрылась, плитка на другой части экрана), — закрыть
+                // сразу: иначе её звук и разговор шли бы ещё несколько секунд без экрана (независимое ревью 24.11.2026).
+                DoorbellMove.dropExpanded("после поворота панель её не раскрыла")
             }
         }
     }

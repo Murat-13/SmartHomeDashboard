@@ -124,6 +124,33 @@ class ScreenMoveTest {
         assertNull(DoorbellMove.take("door", expanded = true, camera = false, activity = screen()))
     }
 
+    /**
+     * Плитки паркуются при каждом перестроении панели — срок ожидания раскрытой карточки от этого не продлевается
+     * (независимое ревью 24.11.2026: она могла работать без экрана сколько угодно).
+     */
+    @Test fun parkingTilesDoesNotExtendExpandedCardWait() {
+        val old = screen()
+        val expanded = DoorbellCard(Movable.context(old), expanded = true)
+        DoorbellMove.park("door", expanded)
+        repeat(4) {
+            idle(1_500)
+            val tileCard = DoorbellCard(Movable.context(old), expanded = false)
+            DoorbellMove.park("door", tileCard)
+            DoorbellMove.take("door", expanded = false, camera = false, activity = old)?.dispose()
+        }
+        assertTrue("раскрытую никто не взял — закрыта по своему сроку", talkClosed(expanded))
+        assertEquals(0, DoorbellMove.waiting)
+    }
+
+    @Test fun droppedExpandedCardClosesAtOnce() {
+        val old = screen()
+        val expanded = DoorbellCard(Movable.context(old), expanded = true)
+        DoorbellMove.park("door", expanded)
+        DoorbellMove.dropExpanded("тест")
+        assertTrue(talkClosed(expanded))
+        assertEquals(0, DoorbellMove.waiting)
+    }
+
     @Test fun onlyOwnTileAndKindIsTaken() {
         val old = screen()
         val compact = DoorbellCard(Movable.context(old), expanded = false)
@@ -193,6 +220,35 @@ class ScreenMoveTest {
         idle(4_000)
         assertNull("минута прошла — окно закрылось само", DoorbellHub.RingUi.current)
         assertTrue(talkClosed(window))
+    }
+
+    /**
+     * Звонок другого домофона пришёл, пока экран пересоздавался (независимое ревью 24.11.2026): раньше окно первого
+     * переезжало на новый экран, а второй звонок терялся — без поворота он показался бы.
+     */
+    @Test fun ringFromOtherDoorbellDuringRotationIsShown() {
+        val other = TileEntity("door2", DoorbellConfig.TYPE, "grid", "Ворота", 0, 0, 1, 1,
+            config = DoorbellConfig(camera = "camera.gate", visitor = "binary_sensor.gate_visitor").writeTo(DoorbellConfig.newTileConfig()))
+        com.example.smarthomedashboard.data.TileManager(org.robolectric.RuntimeEnvironment.getApplication()).saveTiles(listOf(tile, other))
+        values["camera.gate"] = "idle"; values["binary_sensor.gate_visitor"] = "off"
+        val both = { DoorbellHub.onState(listOf(tile, other), readings()) }
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val old = controller.get()
+        val window = ringIn(controller)
+        both()
+        ReflectionHelpers.setField(Activity::class.java, old, "mChangingConfigurations", true)
+        controller.pause().stop().destroy()
+        assertTrue(window.moving)
+        // Экрана нет — звонят у ворот.
+        values["binary_sensor.gate_visitor"] = "on"; both()
+        values["binary_sensor.gate_visitor"] = "off"; both()
+        val next = screen()
+        idle(50)
+        assertSame("окно первого звонка переехало", window, DoorbellHub.RingUi.current)
+        assertSame(next, window.host)
+        val banner = root(next).findViewWithTag<DoorbellBanner>("door_banner")
+        assertNotNull("второй звонок показан", banner)
+        assertEquals("door2", banner!!.tileId)
     }
 
     @Test fun ringWindowWithoutNewScreenIsClosed() {

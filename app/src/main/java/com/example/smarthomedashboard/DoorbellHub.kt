@@ -471,7 +471,18 @@ internal object DoorbellHub {
             window?.takeIf { it.moving }?.let { moved ->
                 main.removeCallbacks(dropMoving)
                 // Поворот пересоздаёт тот же экран; другой экран (успели перейти) — окно закрывается, как раньше.
-                if (activity.javaClass == moved.host.javaClass) { moved.attachTo(activity); notifyListeners(); return }
+                if (activity.javaClass == moved.host.javaClass) {
+                    moved.attachTo(activity)
+                    notifyListeners()
+                    // Звонок, пришедший, пока экрана не было (независимое ревью 24.11.2026): того же домофона — окно
+                    // продлевается, другого — показывается, как показался бы без поворота.
+                    val (tileId, at) = pending ?: return
+                    pending = null
+                    if (SystemClock.uptimeMillis() - at > DoorbellRingWindow.RING_MS) return
+                    if (tileId == moved.tileId) moved.extend()
+                    else if (activity is MainActivity) show(activity, tileId, null) else showBanner(activity, tileId)
+                    return
+                }
                 moved.closeNow()
             }
             val (tileId, at) = pending ?: return
