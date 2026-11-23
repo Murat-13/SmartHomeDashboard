@@ -81,6 +81,43 @@ class ArchiveStartTest {
         assertTrue("«Сейчас» — за 10 с до конца записанного: ${now - at}", (now - at) in 9_000L..11_000L)
     }
 
+    /**
+     * Решение владельца 23.11.2026: «при переходе в архив пусть сразу показывает текущий поток». С потоком у камеры —
+     * живой поток; любое место на шкале — запись; «Сейчас» — снова живой поток.
+     */
+    @Test fun withCameraStreamStartsLiveAndNowReturnsToIt() {
+        TileManager(context).saveTiles(listOf(TileEntity("door", DoorbellConfig.TYPE, "grid", "Домофон", 0, 0, 1, 1,
+            config = DoorbellConfig(rtspMain = "rtsp://127.0.0.1:1/h264Preview_01_main", rtspSub = "rtsp://127.0.0.1:1/h264Preview_01_sub")
+                .writeTo(DoorbellConfig.newTileConfig()))))
+        val archive = open()
+        loaded(archive)
+        assertTrue("сразу — живой поток", archive.shown.live)
+        assertTrue(!archive.shown.continuous && archive.shown.current == null)
+        archive.testActions.timelineScrub(now - 90_000, true)
+        loaded(archive)
+        assertTrue("место на шкале — запись", !archive.shown.live && archive.shown.continuous)
+        archive.testActions.toNow()
+        assertTrue("«Сейчас» — снова живой поток", archive.shown.live)
+    }
+
+    /**
+     * Решение владельца 23.11.2026: «когда мотаю (постоянный субпоток) и навожу на события — пусть показывает в HD».
+     * Место, где есть ролик события, — ролик события (HD), и пока ведут ленту, и когда отпустили; рядом — 24/7.
+     */
+    @Test fun scrubOverEventShowsHdClip() {
+        file(RecFile.Kind.EVENT, now - 100_000, 30_000) // событие внутри круглосуточной записи
+        val archive = open() // у камеры нет потока — «Сейчас» записи, 24/7
+        loaded(archive)
+        assertTrue("до события — 24/7", archive.shown.continuous)
+        archive.testActions.timelineScrub(now - 90_000, false)
+        assertEquals("ведут ленту по событию — ролик HD", now - 100_000, archive.shown.current?.file?.startMs)
+        archive.testActions.timelineScrub(now - 85_000, true)
+        assertEquals("отпустили на событии — ролик HD", now - 100_000, archive.shown.current?.file?.startMs)
+        assertTrue(!archive.shown.continuous)
+        archive.testActions.timelineScrub(now - 30_000, true)
+        assertTrue("вне события — снова 24/7", archive.shown.continuous && archive.shown.current == null)
+    }
+
     @Test fun fromRingWindowStillOpensLatestEvent() {
         val archive = open { putExtra(ArchiveActivity.EXTRA_LATEST, true) }
         loaded(archive)

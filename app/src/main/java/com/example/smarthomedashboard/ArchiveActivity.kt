@@ -140,6 +140,9 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
     private val thumbs = mutableStateMapOf<String, Bitmap?>()
     private var snapshot = RecArchive.Snapshot(emptyList(), emptyList())
     private var texture: TextureView? = null
+    /** Живой поток камеры, с которого архив начинается (как в раскрытой плитке); null — у камеры нет потока. */
+    private var liveSource: DoorbellVideoView.Source? = null
+    private var liveView: DoorbellVideoView? = null
     private val ringListener: () -> Unit = { loadRings() }
     /** Проходы каждой камеры (docs/gate-tz.md): вкладка «Открытия» — у камер, где отмечен проход. */
     private var gatesOf: Map<String, List<String>> = emptyMap()
@@ -188,6 +191,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         gatesOf = tiles.filter { it.type in CameraSource.TYPES }.associate { it.id to DoorbellConfig.from(it.config).gateIds(it.id) }
         index = try { RecIndex(this) } catch (_: Exception) { null }
         archive = RecArchive(this, index = { index })
+        liveSource = tile?.let { liveSourceOf(it) }
         val frame = handoffFrame.also { handoffFrame = null }
         ui.value = ui.value.copy(title = title, cameras = cameras, camera = tileId, doorbell = tileId in doorbellIds,
             gates = gatesOf[tileId].orEmpty().isNotEmpty(), placeholder = frame,
@@ -207,7 +211,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
             })
         }
         setContent {
-            ArchiveScreen(ui.value, thumbs, actions, video = { VideoSurface() })
+            ArchiveScreen(ui.value, thumbs, actions, video = { if (ui.value.live) LiveSurface() else VideoSurface() })
         }
         DoorbellHub.addRingListener(ringListener)
         GateLog.listen(ringListener)
@@ -260,7 +264,9 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
             when {
                 at != null -> openMoment(at)
                 latest -> snapshot.events.firstOrNull()?.let { play(it) }
-                now -> ArchiveTimeline.latest(snapshot.continuous, snapshot.events)?.let { goTo(it - NOW_BACK_MS, true) }
+                // Решение владельца 23.11.2026: «при переходе в архив пусть сразу показывает текущий поток».
+                now -> if (liveSource != null) goLive()
+                    else ArchiveTimeline.latest(snapshot.continuous, snapshot.events)?.let { goTo(it - NOW_BACK_MS, true) }
             }
             // Ролики, записанные до появления оглавления (или если оно не успело записаться), — в очередь: после
             // этого в них работает перемотка. Сначала события (новые первыми), затем 24/7 выбранного дня.
@@ -334,12 +340,13 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
 
     // ---- Плеер ----
 
-    private fun play(event: RecArchive.Event, offsetMs: Long = 0) {
+    private fun play(event: RecArchive.Event, offsetMs: Long = 0, start: Boolean = true) {
         val p = player ?: return
+        leaveLive()
         p.setSeekParameters(SeekParameters.EXACT)
         p.setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(event.file.path)), offsetMs.coerceAtLeast(0))
         p.prepare()
-        p.play()
+        if (start) p.play()
         loadedDay = null
         ui.value = ui.value.copy(current = event, continuous = false, center = event.file.startMs + offsetMs)
         tick()
@@ -353,6 +360,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
     private fun playContinuous(d: ArchiveDay, wallMs: Long, play: Boolean = true) {
         val p = player ?: return
         val (segment, offset) = d.locate(wallMs) ?: return
+        leaveLive()
         val loaded = loadedDay
         if (ui.value.continuous && loaded != null && loaded.dayStartMs == d.dayStartMs) {
             p.seekTo(segment, offset)
@@ -375,10 +383,16 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         val p = player ?: return
         val d = dayOf(wallMs)
         val inSegment = d.segments.any { wallMs >= it.startMs && wallMs < it.endMs }
+        // Под риской ролик события — он в HD (решение владельца 23.11.2026: «мотаю и навожу на события — пусть
+        // показывает в HD»); круглосуточная запись — субпоток. Раньше 24/7 брался первым, и событие было видно в низком
+        // качестве.
+        val event = snapshot.events.firstOrNull { wallMs >= it.file.startMs && wallMs < it.file.endMs }
         if (!done) {
             p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
             val current = ui.value.current
             when {
+                event != null && current?.file?.path == event.file.path -> p.seekTo(wallMs - event.file.startMs)
+                event != null -> play(event, wallMs - event.file.startMs, start = false)
                 inSegment -> playContinuous(d, wallMs, play = false)
                 current != null && wallMs >= current.file.startMs && wallMs < current.file.endMs -> p.seekTo(wallMs - current.file.startMs)
             }
@@ -388,10 +402,9 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         ui.value = ui.value.copy(center = wallMs)
         val day = RecArchive.dayStart(wallMs)
         if (day != ui.value.day && day in ui.value.days) selectDay(day)
-        val event = snapshot.events.firstOrNull { wallMs >= it.file.startMs && wallMs < it.file.endMs }
         when {
-            inSegment -> playContinuous(d, wallMs)
             event != null -> play(event, wallMs - event.file.startMs)
+            inSegment -> playContinuous(d, wallMs)
             else -> {
                 // Пропуск в записи — к ближайшей следующей (24/7 или событие).
                 val next = (snapshot.continuous.map { it.startMs } + snapshot.events.map { it.file.startMs }).filter { it > wallMs }.minOrNull()
@@ -643,6 +656,9 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
 
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
+    /** Действия экрана — для тестов (касание шкалы, «Сейчас»). */
+    @VisibleForTesting internal val testActions: ArchiveActions get() = actions
+
     private val actions = object : ArchiveActions {
         override fun back() { if (ui.value.fullscreen) fullscreen(false) else finish() }
         override fun fullscreen(on: Boolean) {
@@ -673,6 +689,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         override fun timelineScrub(atMs: Long, done: Boolean) = goTo(atMs, done)
         override fun timelineSpan(spanMs: Long) { ui.value = ui.value.copy(spanMs = ArchiveTimeline.clampSpan(spanMs)) }
         override fun toNow() {
+            if (liveSource != null) { goLive(); return }
             val latest = ArchiveTimeline.latest(snapshot.continuous, snapshot.events) ?: run { toast("Записей пока нет"); return }
             goTo(latest - NOW_BACK_MS, true)
         }
@@ -730,6 +747,45 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
             ui.value = ui.value.copy(tab = ArchiveUi.Tab.RECORDS)
             openMoment(entry.atMs)
         }
+    }
+
+    /** Живой поток: запись ставится на паузу, под риской — «сейчас». */
+    private fun goLive() {
+        player?.pause()
+        ui.value = ui.value.copy(live = true, current = null, continuous = false, center = null, positionWall = null)
+    }
+
+    /** Выбрали запись — живой поток закрывается (декодер и сеть — записи). */
+    private fun leaveLive() {
+        if (ui.value.live) ui.value = ui.value.copy(live = false)
+    }
+
+    /** Живой поток плитки — как у раскрытой плитки: основной поток, не принят — субпоток. */
+    private fun liveSourceOf(tile: com.example.smarthomedashboard.data.TileEntity): DoorbellVideoView.Source? {
+        if (tile.type !in CameraSource.TYPES) return null
+        val config = DoorbellConfig.from(tile.config)
+        val main = DoorbellConfig.playableRtsp(config.rtspMain)
+        val sub = DoorbellConfig.playableRtsp(config.rtspSub)
+        if (main.isBlank() && sub.isBlank()) return null
+        return DoorbellVideoView.Source(rtsp = main.ifBlank { sub }, user = config.rtspUser, camera = config.camera,
+            snapshotOnly = false, fallbackRtsp = sub,
+            secretKey = if (tile.type == DoorbellConfig.CAMERA_TYPE) tile.id else "")
+    }
+
+    /** Живой поток — тем же видом, что в раскрытой плитке ([DoorbellVideoView]); звук — как там, включён. */
+    @Composable
+    private fun LiveSurface() {
+        val source = liveSource ?: return
+        AndroidView(factory = { context ->
+            DoorbellVideoView(context).also { v ->
+                liveView = v
+                v.muted = false
+                v.onAspect = { a -> if (a > 0f) ui.value = ui.value.copy(videoAspect = a) }
+                // Живая картинка пошла — кадр плитки больше не нужен.
+                v.onStatus = { st -> if (st == DoorbellVideoView.Status.PLAYING && ui.value.placeholder != null) ui.value = ui.value.copy(placeholder = null) }
+                v.bind(source, null)
+            }
+        }, modifier = Modifier.fillMaxSize(), onRelease = { v -> v.dispose(); if (liveView === v) liveView = null })
     }
 
     /** Видео: TextureView (в отличие от SurfaceView, её можно увеличивать пальцами). */
@@ -790,6 +846,8 @@ internal data class ArchiveUi(
     /** Ролик на весь экран; на весь экран — видны ли кнопки. */
     val fullscreen: Boolean = false,
     val controls: Boolean = true,
+    /** Идёт живой поток камеры (не запись): «Сейчас» — к нему же. */
+    val live: Boolean = false,
     val loading: Boolean = true,
     val locked: Boolean = false,
     val days: List<Long> = emptyList(),
@@ -908,6 +966,8 @@ private object ArchiveColors {
     val danger = Color(0xFFFF5252)
     val star = Color(0xFFFFCD78)
     val segment = Color(0x50FFCD78)
+    /** «● Прямой эфир». */
+    val live = Color(0xFFFF5A5A)
 
     fun label(key: String) = when (key) {
         "visitor" -> Color(0xFF34E89E)
@@ -1067,7 +1127,8 @@ private fun androidx.compose.foundation.layout.ColumnScope.PlayerPane(ui: Archiv
         Text("Архив · ${ui.title}", color = ArchiveColors.text, fontSize = 24.sp, fontWeight = FontWeight.Bold,
             modifier = Modifier.weight(1f).padding(start = 8.dp))
         val now = ui.positionWall
-        if (now != null) Text("${dayFormat.format(Date(now))}, ${timeFormat.format(Date(now))}" +
+        if (ui.live) Text("● Прямой эфир", color = ArchiveColors.live, fontSize = 16.sp, modifier = Modifier.testTag("archive_position"))
+        else if (now != null) Text("${dayFormat.format(Date(now))}, ${timeFormat.format(Date(now))}" +
             if (ui.continuous) " · круглосуточно" else " · событие HD", color = ArchiveColors.secondary, fontSize = 16.sp,
             modifier = Modifier.testTag("archive_position"))
     }
@@ -1076,9 +1137,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.PlayerPane(ui: Archiv
     Box((if (fill) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
         .clip(RoundedCornerShape(16.dp)).background(Color.Black)
         .border(1.dp, ArchiveColors.border, RoundedCornerShape(16.dp))) {
-        if (ui.current != null || ui.continuous || ui.placeholder != null) {
+        if (ui.current != null || ui.continuous || ui.live || ui.placeholder != null) {
             ZoomableVideo(ui, video, onDoubleTap = { actions.fullscreen(true) })
-            if (ui.current != null || ui.continuous) FullscreenButton(true, Modifier.align(Alignment.TopEnd)) { actions.fullscreen(true) }
+            if (ui.live) LiveBadge(Modifier.align(Alignment.TopStart))
+            if (ui.current != null || ui.continuous || ui.live) FullscreenButton(true, Modifier.align(Alignment.TopEnd)) { actions.fullscreen(true) }
         } else Text(if (ui.loading) "Загрузка…" else "Выберите событие или место на шкале", color = ArchiveColors.hint,
             fontSize = 18.sp, modifier = Modifier.align(Alignment.Center))
         ui.busy?.let {
@@ -1099,7 +1161,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.PlayerPane(ui: Archiv
  */
 @Composable
 private fun ZoomableVideo(ui: ArchiveUi, video: @Composable () -> Unit, onTap: (() -> Unit)? = null, onDoubleTap: () -> Unit = {}) {
-    val key = ui.current?.file?.startMs ?: -1L
+    val key = ui.current?.file?.startMs ?: if (ui.live) -2L else -1L
     var zoom by remember(key) { mutableStateOf(VideoZoom()) }
     Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.Center) {
         Box(Modifier.aspectRatio(ui.videoAspect.coerceIn(0.3f, 4f)).fillMaxSize().testTag("archive_video")
@@ -1144,6 +1206,13 @@ private fun ZoomableVideo(ui: ArchiveUi, video: @Composable () -> Unit, onTap: (
     }
 }
 
+/** «● Прямой эфир» поверх живого видео. */
+@Composable
+private fun LiveBadge(modifier: Modifier) {
+    Text("● Прямой эфир", color = ArchiveColors.live, fontSize = 15.sp, modifier = modifier.padding(10.dp)
+        .background(Color(0x99000000), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 4.dp).testTag("archive_live"))
+}
+
 /** Кнопка ⛶: на весь экран ([enter]) или обратно. */
 @Composable
 private fun FullscreenButton(enter: Boolean, modifier: Modifier, onClick: () -> Unit) {
@@ -1164,32 +1233,54 @@ private fun FullscreenPlayer(ui: ArchiveUi, actions: ArchiveActions, video: @Com
     Box(Modifier.fillMaxSize().background(Color.Black).testTag("archive_fullscreen_view")) {
         ZoomableVideo(ui, video, onTap = actions::toggleControls, onDoubleTap = { actions.fullscreen(false) })
         if (!ui.controls) return@Box
+        // Кнопки — полупрозрачные (решение владельца 23.11.2026: «чуть более прозрачными, но чтобы их можно было отличить
+        // на фоне ролика»): тёмная подложка 35 %, кнопки 55 %, белый текст с тенью.
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
-            .background(Color(0x99000000)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+            .background(FS_BAR).padding(horizontal = 12.dp, vertical = 4.dp)) {
             val now = ui.positionWall
-            Text("Архив · ${ui.title}" + (now?.let { " · ${dayFormat.format(Date(it))}, ${timeFormat.format(Date(it))}" } ?: ""),
-                color = ArchiveColors.text, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            Text("Архив · ${ui.title}" + (if (ui.live) " · ● Прямой эфир" else now?.let { " · ${dayFormat.format(Date(it))}, ${timeFormat.format(Date(it))}" } ?: ""),
+                color = ArchiveColors.text, fontSize = 18.sp, style = FS_TEXT, modifier = Modifier.weight(1f))
             FullscreenButton(false, Modifier) { actions.fullscreen(false) }
         }
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0xB0000000))
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(FS_BAR)
             .padding(horizontal = 16.dp, vertical = 8.dp).testTag("archive_fullscreen_controls")) {
             if (ui.current != null) ClipBar(ui, actions) else if (ui.continuous) Timeline(ui, actions)
             Spacer(Modifier.height(6.dp))
             val active = ui.current != null || ui.continuous
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                ControlButton(if (ui.playing) "❚❚ Пауза" else "▶ Пуск", active, "archive_fs_play") { actions.togglePlay() }
-                ControlButton("−10 с", active, "archive_fs_back10") { actions.seekBy(-10_000) }
-                ControlButton("+10 с", active, "archive_fs_fwd10") { actions.seekBy(10_000) }
+                FsButton(if (ui.playing) "❚❚ Пауза" else "▶ Пуск", active, "archive_fs_play") { actions.togglePlay() }
+                FsButton("−10 с", active, "archive_fs_back10") { actions.seekBy(-10_000) }
+                FsButton("+10 с", active, "archive_fs_fwd10") { actions.seekBy(10_000) }
                 listOf(1f, 2f, 4f, 8f).forEach { s ->
                     FilterChip(selected = ui.speed == s, onClick = { actions.speed(s) }, enabled = active,
-                        label = { Text("${s.toInt()}×", fontSize = 16.sp) }, modifier = Modifier.heightIn(min = 48.dp).testTag("archive_fs_speed_${s.toInt()}"))
+                        label = { Text("${s.toInt()}×", fontSize = 16.sp, style = FS_TEXT) },
+                        colors = FilterChipDefaults.filterChipColors(containerColor = FS_BUTTON, labelColor = ArchiveColors.text,
+                            selectedContainerColor = ArchiveColors.accent.copy(alpha = 0.55f), selectedLabelColor = ArchiveColors.text),
+                        modifier = Modifier.heightIn(min = 48.dp).testTag("archive_fs_speed_${s.toInt()}"))
                 }
-                ControlButton("◀ Событие", true, "archive_fs_prev_event") { actions.neighbour(false) }
-                ControlButton("Событие ▶", true, "archive_fs_next_event") { actions.neighbour(true) }
+                FsButton("◀ Событие", true, "archive_fs_prev_event") { actions.neighbour(false) }
+                FsButton("Событие ▶", true, "archive_fs_next_event") { actions.neighbour(true) }
+                if (!ui.live) FsButton("● Сейчас", true, "archive_fs_now") { actions.toNow() }
             }
         }
     }
 }
+
+/** Полупрозрачная кнопка поверх ролика на весь экран. */
+@Composable
+private fun FsButton(text: String, enabled: Boolean, tag: String, onClick: () -> Unit) {
+    Button(onClick = onClick, enabled = enabled, modifier = Modifier.heightIn(min = 48.dp).testTag(tag),
+        colors = ButtonDefaults.buttonColors(containerColor = FS_BUTTON, contentColor = ArchiveColors.text,
+            disabledContainerColor = FS_BUTTON.copy(alpha = 0.3f), disabledContentColor = ArchiveColors.text.copy(alpha = 0.4f))) {
+        Text(text, fontSize = 16.sp, style = FS_TEXT)
+    }
+}
+
+/** На весь экран: подложка полос (35 %), кнопки (55 %), текст с тенью — читается на любом кадре. */
+private val FS_BAR = Color(0x59000000)
+private val FS_BUTTON = Color(0x8C1C232B)
+private val FS_TEXT = androidx.compose.ui.text.TextStyle(shadow = androidx.compose.ui.graphics.Shadow(
+    color = Color(0xCC000000), offset = Offset(0f, 1.5f), blurRadius = 4f))
 
 /** Полоса ролика события: позиция, перетаскивание с переходом по ходу движения, длительность. */
 @Composable
