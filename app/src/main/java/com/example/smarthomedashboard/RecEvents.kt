@@ -33,9 +33,33 @@ internal object RecordingEvents {
     const val DIRECT_HOLD_MS = 10_000L
     internal var clock: () -> Long = { System.currentTimeMillis() }
 
+    /**
+     * Сеанс у калитки: окно звонка открыто или идёт разговор. Пока он держится, ролик события пишется дальше, после —
+     * обычная дозапись. Раньше ролик кончался через дозапись после последнего срабатывания датчика: звонок 23.11 в 13:20
+     * — ролик до 13:20:47, а разговор шёл до 13:21:05, и его конец в архив не попал.
+     * Плитка → кто держит (окно, разговор) → (метка, с какого времени). Держится не дольше [SESSION_MAX_MS] —
+     * на случай, если окно закрылось, не сообщив.
+     */
+    private val sessions = ConcurrentHashMap<String, ConcurrentHashMap<Any, Pair<String, Long>>>()
+    const val SESSION_MAX_MS = 11 * 60_000L
+
+    /**
+     * [on] — сеанс начался или кончился у [owner]. Метка ролика — «Звонок», если звонок пишется в HD, иначе первое
+     * событие, которое пишется; никакое не пишется — ролик не продлевается.
+     */
+    fun session(tileId: String?, owner: Any, on: Boolean) {
+        if (tileId.isNullOrEmpty()) return
+        if (!on) { sessions[tileId]?.remove(owner); return }
+        val triggers = DoorbellHub.storedTile(tileId)?.let { RecordingConfig.from(it.config).eventTriggers }
+            ?: RecordingConfig.DEFAULT_TRIGGERS
+        val label = if ("visitor" in triggers) "visitor" else RecordingConfig.TRIGGERS.map { it.first }.firstOrNull { it in triggers } ?: return
+        sessions.getOrPut(tileId) { ConcurrentHashMap() }[owner] = label to clock()
+    }
+
     fun of(tileId: String): Set<String>? {
         val now = clock()
-        val direct = directUntil[tileId]?.filterValues { it > now }?.keys.orEmpty()
+        val direct = directUntil[tileId]?.filterValues { it > now }?.keys.orEmpty() +
+            sessions[tileId]?.values?.filter { now - it.second < SESSION_MAX_MS }?.map { it.first }.orEmpty()
         if (tileId !in known) return direct.takeIf { it.isNotEmpty() }
         val ha = active[tileId].orEmpty()
         return if (direct.isEmpty()) ha else ha + direct
@@ -63,7 +87,7 @@ internal object RecordingEvents {
         active.keys.retainAll(ids)
     }
 
-    fun clear() { known.clear(); active.clear(); directUntil.clear() }
+    fun clear() { known.clear(); active.clear(); directUntil.clear(); sessions.clear() }
 
     /** Сработавшие датчики, запускающие HD-запись; null — связи с HA нет или идёт синхронизация. */
     fun labels(source: CameraSource, rec: RecordingConfig, readings: BatteryReadings): Set<String>? {

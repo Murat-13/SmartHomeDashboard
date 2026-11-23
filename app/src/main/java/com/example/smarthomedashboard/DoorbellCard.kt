@@ -443,7 +443,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         t.onDuck = { video.ducked = it }
         t.freshStreetSound = { video.soundSeparate }
         // Разговор как по телефону: звук с улицы — разговорным потоком; пока говорят, карточка не сворачивается.
-        t.onCall = { on -> video.callAudio = on; if (on) keepOpen.run() else removeCallbacks(keepOpen) }
+        t.onCall = { on ->
+            video.callAudio = on
+            if (on) keepOpen.run() else removeCallbacks(keepOpen)
+            RecordingEvents.session(tileId, t, on) // разговор — в ролик события целиком
+        }
         TalkButton(context, t).apply { visibility = GONE; onActivity = { this@DoorbellCard.onActivity?.invoke() } }
     }
     private val keepOpen = object : Runnable {

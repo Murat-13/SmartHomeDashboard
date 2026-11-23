@@ -123,7 +123,11 @@ internal class DoorbellRingWindow private constructor(
         talk.onDuck = { card.video.ducked = it }
         talk.freshStreetSound = { card.video.soundSeparate }
         // Разговор как по телефону: звук с улицы — разговорным потоком; окно не закрывается, пока говорят.
-        talk.onCall = { on -> card.video.callAudio = on; if (on) inCallKeep.run() else main.removeCallbacks(inCallKeep) }
+        talk.onCall = { on ->
+            card.video.callAudio = on
+            if (on) inCallKeep.run() else main.removeCallbacks(inCallKeep)
+            RecordingEvents.session(tileId, talk, on) // разговор — в ролик события целиком
+        }
         replyButton.setOnClickListener { touched(); showReplies(replies.visibility != VISIBLE) }
         closeButton.setOnClickListener { touched(); close() }
         card.setOnClickListener { touched() }
@@ -213,6 +217,7 @@ internal class DoorbellRingWindow private constructor(
 
     private fun open() {
         isShowing = true
+        RecordingEvents.session(tileId, this, true) // пока окно звонка открыто, ролик события пишется дальше
         GateHub.listen(gateListener)
         openedAt = SystemClock.uptimeMillis()
         render()
@@ -302,6 +307,8 @@ internal class DoorbellRingWindow private constructor(
         if (!isShowing && parent == null) return
         val wasShowing = isShowing
         isShowing = false
+        RecordingEvents.session(tileId, this, false)
+        RecordingEvents.session(tileId, talk, false)
         GateHub.unlisten(gateListener)
         closing = true
         main.removeCallbacksAndMessages(null)

@@ -77,6 +77,41 @@ class RecordingEventsTest {
         assertNull(RecordingEvents.of("door1"))
     }
 
+    /**
+     * Звонок 23.11 в 13:20: ролик события кончился в 13:20:47 (дозапись после последнего срабатывания), а разговор шёл
+     * до 13:21:05 — конец разговора в архив не попал. Пока открыто окно звонка или идёт разговор, ролик пишется дальше;
+     * кончилось — обычная дозапись. Брошенный сеанс держит не дольше [RecordingEvents.SESSION_MAX_MS].
+     */
+    @Test fun callSessionKeepsEventClipUntilTalkEnds() {
+        var now = 1_000_000L
+        val real = RecordingEvents.clock
+        RecordingEvents.clock = { now }
+        try {
+            RecordingEvents.clear()
+            val window = Any(); val talk = Any()
+            val p = EventPlanner(postMs = 20_000)
+            RecordingEvents.direct("door1", listOf("visitor"), RecordingConfig.DEFAULT_TRIGGERS) // звонок с камеры
+            RecordingEvents.session("door1", window, true)
+            assertEquals(EventPlanner.Decision.START, p.update(now, RecordingEvents.of("door1")))
+            now += 6_000; RecordingEvents.session("door1", talk, true) // «Ответить»
+            now += 41_000 // разговор: датчики давно молчат, дозапись после звонка давно вышла
+            assertEquals(setOf("visitor"), RecordingEvents.of("door1"))
+            assertEquals(EventPlanner.Decision.CONTINUE, p.update(now, RecordingEvents.of("door1")))
+            RecordingEvents.session("door1", talk, false); RecordingEvents.session("door1", window, false) // «Завершить», окно закрыто
+            val end = now
+            now += 19_000
+            assertEquals(EventPlanner.Decision.CONTINUE, p.update(now, RecordingEvents.of("door1")))
+            now = end + 20_000
+            assertEquals("после разговора — обычная дозапись", EventPlanner.Decision.STOP, p.update(now, RecordingEvents.of("door1")))
+
+            RecordingEvents.session("door1", window, true) // окно «забыли» закрыть
+            now += RecordingEvents.SESSION_MAX_MS
+            assertNull("брошенный сеанс ролик не держит", RecordingEvents.of("door1"))
+            RecordingEvents.session(null, window, true)
+            RecordingEvents.session("", window, true)
+        } finally { RecordingEvents.clock = real; RecordingEvents.clear() }
+    }
+
     // ---- Буфер предзаписи ----
 
     @Test fun preRollKeepsWholeGopsFromKeyframeBeforeWindow() {
