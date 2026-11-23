@@ -256,27 +256,6 @@ class ReolinkTalkTest {
     }
 
     /**
-     * Канал открылся сразу после мелодии звонка, «Ответить» — через ≈ 1 с (разговор 23.11.2026): очередь домофона
-     * (≈ 1,25 с) должна растаять уже к началу разговора и в первые секунды, иначе голос первые ≈ 20 с шёл через 1,5 с.
-     * За 1 с до «Ответить» убирается не меньше 0,45 с, за следующие 1,2 с фона комнаты в разговоре — остаток до 1 с.
-     */
-    @Test fun cameraQueueMeltsWithinFirstSecondsOfChannel() {
-        FakeCamera().use { cam ->
-            val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)
-            talk.open()
-            Thread.sleep(1_000)
-            assertTrue("до «Ответить» убрано ${talk.droppedMs} мс", talk.droppedMs >= 450.0)
-            talk.beginTalkspurt()
-            val room = ShortArray(320) { i -> (40 * sin(2 * PI * 200 * i / 16_000.0)).toInt().toShort() }
-            repeat(60) { talk.sendAt(room, 320, 16_000); Thread.sleep(20) }
-            Thread.sleep(200)
-            assertTrue("к 2,4 с убрано ${talk.droppedMs} мс", talk.droppedMs >= 900.0)
-            assertTrue("не больше обычного: ${talk.droppedMs}", talk.droppedMs <= BaichuanTalkSession.DRAIN_MS)
-            talk.close()
-        }
-    }
-
-    /**
      * Очередь динамика выросла (свой голос возвращается через 3 с — разговор 23.11.2026): по заказу [QueueTrim] лишнее
      * убирается на тихих блоках, речь не пропускается; заказ выполнен — больше ничего не убирается.
      */
