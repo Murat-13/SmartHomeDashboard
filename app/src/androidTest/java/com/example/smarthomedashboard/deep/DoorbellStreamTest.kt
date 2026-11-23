@@ -28,8 +28,24 @@ class DoorbellStreamTest {
     private val host: String? get() = argument("rtspHost")
 
     @After fun stop() {
+        // ActivityScenario.close (как recreate, launch и onActivity) ждёт свободного главного потока, а при живом видео
+        // на медленном эмуляторе CI его можно ждать часами (Deep tests для c48c75c). Сначала закрыть экран без ожидания —
+        // видео остановится, — потом close.
+        resumedActivity()?.let { a ->
+            onMain { a.finish() }
+            runCatching { waitFor(10_000, "экран закрыт") { onMain { a.isDestroyed } } }
+        }
         scenario?.close()
         if (::ha.isInitialized) ha.close()
+    }
+
+    /** Поворот: экран пересоздаётся «ради смены конфигурации» — без ожидания свободного главного потока (см. [stop]). */
+    private fun rotate(): MainActivity {
+        val old = panel() ?: error("нет экрана панели")
+        onMain { old.recreate() }
+        var next: MainActivity? = null
+        waitFor(15_000, "новый экран после поворота") { next = panel(); next != null && next !== old }
+        return next!!
     }
 
     private fun open(main: String, sub: String, autoCollapse: Boolean = true) {
@@ -101,12 +117,8 @@ class DoorbellStreamTest {
         val starts = onMain { compactBefore.video.playerStarts to expandedBefore.video.playerStarts }
         val framesBefore = onMain { expandedBefore.video.framesShown }
 
-        scenario!!.recreate() // экран пересоздаётся «ради смены конфигурации» — как при повороте
-        var next: MainActivity? = null
-        waitFor(10_000, "раскрытая карточка на новом экране") {
-            next = panel()
-            next != null && next !== activity && onMain { expanded(next!!)?.isAttachedToWindow == true }
-        }
+        val next: MainActivity? = rotate() // экран пересоздаётся «ради смены конфигурации» — как при повороте
+        waitFor(10_000, "раскрытая карточка на новом экране") { onMain { expanded(next!!)?.isAttachedToWindow == true } }
         val expandedAfter = onMain { expanded(next!!) }
         assertTrue("раскрытая карточка — та же", expandedAfter === expandedBefore)
         assertTrue("плитка — та же", card() === compactBefore)
@@ -139,12 +151,9 @@ class DoorbellStreamTest {
         val starts = onMain { card.video.playerStarts }
         val old = mutableListOf<java.lang.ref.WeakReference<MainActivity>>()
         repeat(4) {
-            val before = panel()!!
-            old += java.lang.ref.WeakReference(before)
-            scenario!!.recreate()
-            waitFor(10_000, "раскрытая карточка на новом экране") {
-                panel().let { now -> now != null && now !== before && expanded() === card && onMain { card.isAttachedToWindow } }
-            }
+            old += java.lang.ref.WeakReference(panel()!!)
+            rotate()
+            waitFor(10_000, "раскрытая карточка на новом экране") { expanded() === card && onMain { card.isAttachedToWindow } }
         }
         waitFor(10_000, "кадры после поворотов") { onMain { card.video.framesShown } > 20 }
         assertTrue("плееры не создавались заново", onMain { card.video.playerStarts } == starts)
