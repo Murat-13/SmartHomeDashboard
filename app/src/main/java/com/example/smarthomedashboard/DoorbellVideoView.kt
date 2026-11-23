@@ -824,7 +824,12 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         main.postDelayed(catchUp, LiveCatchUp.CHECK_MS)
     }
 
+    /** Сколько попыток подключения закончились неудачей (для проверок: состояние «ошибка» держится меньше секунды). */
+    internal var failedAttempts = 0
+        private set
+
     internal fun failed(reason: String) {
+        failedAttempts++
         Log.w(TAG, "Видео домофона: $reason" + if (viaRelay) " (через планшет)" else "")
         // Ретранслятор подвёл (запись переподключается, выключена) — следующая попытка напрямую; не вышло напрямую —
         // снова через планшет. Первый сбой ретранслятора не считается недоступностью камеры.

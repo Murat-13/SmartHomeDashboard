@@ -154,7 +154,11 @@ class DoorbellStreamTest {
             assertTrue("$name: плитка не показывает живое видео ($finalStatus)", finalStatus != DoorbellVideoView.Status.PLAYING)
             // Каждый вид пропавшей камеры обязан закончиться ошибкой и повтором, а не вечным «Подключение…»
             // (молчащая камера — через проверку первого кадра за 20 с, 0.9.13).
-            assertTrue("$name: попытка заканчивается ошибкой (были: $seen)", DoorbellVideoView.Status.ERROR in seen)
+            // Ошибка между попытками держится от 0,5 с: опрос раз в 250 мс на медленном эмуляторе CI её пропускал
+            // (20.11 и 22.11: «были: [CONNECTING]»). Неудачные попытки считает сам вид.
+            val failed = card()?.let { c -> onMain { c.video.failedAttempts } } ?: 0
+            assertTrue("$name: попытка заканчивается ошибкой (были: $seen, неудачных попыток $failed)",
+                DoorbellVideoView.Status.ERROR in seen || failed > 0)
             scenario?.close()
             scenario = null
             ha.close()
