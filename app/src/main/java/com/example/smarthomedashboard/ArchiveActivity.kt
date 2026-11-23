@@ -142,6 +142,8 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
     private var texture: TextureView? = null
     /** Живой поток камеры, с которого архив начинается (как в раскрытой плитке); null — у камеры нет потока. */
     private var liveSource: DoorbellVideoView.Source? = null
+    /** Живые потоки камер этого планшета: при смене камеры в архиве «Сейчас» показывает её, а не прежнюю (аудит 23.11.2026). */
+    private var liveSources: Map<String, DoorbellVideoView.Source?> = emptyMap()
     private var liveView: DoorbellVideoView? = null
     private val ringListener: () -> Unit = { loadRings() }
     /** Проходы каждой камеры (docs/gate-tz.md): вкладка «Открытия» — у камер, где отмечен проход. */
@@ -170,6 +172,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         tileId = id
         cameraGen++
         title = cameras.firstOrNull { it.first == id }?.second ?: title
+        liveSource = liveSources[id]
         player?.stop()
         loadedDay = null
         thumbs.clear()
@@ -191,7 +194,8 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         gatesOf = tiles.filter { it.type in CameraSource.TYPES }.associate { it.id to DoorbellConfig.from(it.config).gateIds(it.id) }
         index = try { RecIndex(this) } catch (_: Exception) { null }
         archive = RecArchive(this, index = { index })
-        liveSource = tile?.let { liveSourceOf(it) }
+        liveSources = tiles.filter { it.type in CameraSource.TYPES }.associate { it.id to liveSourceOf(it) }
+        liveSource = liveSources[tileId] ?: tile?.let { liveSourceOf(it) }
         val frame = handoffFrame.also { handoffFrame = null }
         ui.value = ui.value.copy(title = title, cameras = cameras, camera = tileId, doorbell = tileId in doorbellIds,
             gates = gatesOf[tileId].orEmpty().isNotEmpty(), placeholder = frame,
@@ -510,7 +514,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         lifecycleScope.launch {
             val ok = withContext(Dispatchers.IO) { archive.delete(event.file) }
             if (!ok) { toast("Не удалось удалить ролик"); return@launch }
-            thumbs.remove(event.file.path.name)
+            thumbs.remove(thumbKey(event.file))
             replace(event, null)
             loadStorage()
         }
@@ -706,7 +710,7 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         }
         override fun share(event: RecArchive.Event) = this@ArchiveActivity.share(event)
         override fun thumbnail(file: RecFile) {
-            val key = file.path.name
+            val key = thumbKey(file)
             if (key in thumbs) return
             thumbs[key] = null
             lifecycleScope.launch { thumbs[key] = withContext(Dispatchers.IO) { archive.thumbnail(file) } }
@@ -812,6 +816,8 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         @VisibleForTesting @Volatile
         internal var loadHook: ((camera: String, load: () -> RecArchive.Snapshot) -> RecArchive.Snapshot)? = null
 
+        /** Миниатюра ролика — с камерой: имена файлов у разных камер могут совпасть. */
+        internal fun thumbKey(file: RecFile) = "${file.camera}/${file.path.name}"
         internal fun ringKey(ring: RingLog.Ring) = "ring_${ring.atMs}_${ring.photo?.lastModified() ?: 0}"
         internal fun openingKey(entry: GateLog.Entry) = "gate_${entry.key}_${entry.photo?.lastModified() ?: 0}"
 
@@ -1675,7 +1681,7 @@ private fun dayTitle(dayStart: Long): String {
 
 @Composable
 private fun EventRow(event: RecArchive.Event, selected: Boolean, thumbs: Map<String, Bitmap?>, actions: ArchiveActions) {
-    val key = event.file.path.name
+    val key = ArchiveActivity.thumbKey(event.file)
     LaunchedEffect(key) { actions.thumbnail(event.file) }
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
         .background(if (selected) ArchiveColors.accentSoft else ArchiveColors.surface)

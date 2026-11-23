@@ -145,6 +145,37 @@ class ArchiveStartTest {
         assertTrue("по-прежнему запись на весь экран", archive.shown.continuous && archive.shown.fullscreen)
     }
 
+    /**
+     * Проверка аудита 23.11.2026: после смены камеры в архиве «Сейчас» показывало живой поток прежней камеры под
+     * названием новой — источник живого потока задавался только при открытии архива.
+     */
+    @Test fun switchingCameraSwitchesLiveStream() {
+        TileManager(context).saveTiles(listOf(
+            TileEntity("door", DoorbellConfig.TYPE, "grid", "Домофон", 0, 0, 1, 1,
+                config = DoorbellConfig(rtspMain = "rtsp://127.0.0.1:1/door_main", rtspSub = "rtsp://127.0.0.1:1/door_sub")
+                    .writeTo(DoorbellConfig.newTileConfig())),
+            TileEntity("yard", DoorbellConfig.CAMERA_TYPE, "grid", "Двор", 0, 0, 1, 1,
+                config = DoorbellConfig(rtspMain = "rtsp://127.0.0.1:1/yard_main", rtspSub = "rtsp://127.0.0.1:1/yard_sub")
+                    .writeTo(DoorbellConfig.newTileConfig()))))
+        val archive = open()
+        loaded(archive)
+        fun live() = org.robolectric.util.ReflectionHelpers.getField<DoorbellVideoView.Source?>(archive, "liveSource")?.rtsp
+        assertEquals("rtsp://127.0.0.1:1/door_main", live())
+        archive.switchCamera("yard")
+        loaded(archive)
+        archive.testActions.toNow()
+        assertTrue("«Сейчас» — живой поток", archive.shown.live)
+        assertEquals("Живой поток — выбранной камеры", "rtsp://127.0.0.1:1/yard_main", live())
+        archive.switchCamera("door")
+        assertEquals("rtsp://127.0.0.1:1/door_main", live())
+    }
+
+    @Test fun thumbnailKeyIncludesCamera() {
+        val a = RecFile(File(root, "a/e_1_1.mp4"), "door", RecFile.Kind.EVENT, 1, 1, 1)
+        val b = RecFile(File(root, "b/e_1_1.mp4"), "yard", RecFile.Kind.EVENT, 1, 1, 1)
+        assertTrue("Одинаковые имена у разных камер — разные миниатюры", ArchiveActivity.thumbKey(a) != ArchiveActivity.thumbKey(b))
+    }
+
     @Test fun fromRingWindowStillOpensLatestEvent() {
         val archive = open { putExtra(ArchiveActivity.EXTRA_LATEST, true) }
         loaded(archive)
