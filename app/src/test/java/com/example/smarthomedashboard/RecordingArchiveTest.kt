@@ -158,6 +158,34 @@ class RecordingArchiveTest {
      * Решения владельца 23.11.2026: архив сразу показывает кадр плитки, а не чёрный экран; ролик — на весь экран кнопкой
      * ⛶ и двойным касанием; на весь экран касание прячет кнопки, внизу — перемотка, скорость, соседние события.
      */
+    /**
+     * Владелец 23.11.2026: на весь экран, когда шкала доходит до события, «пропадает возможность мотать пальцем». Шкала
+     * остаётся под пальцем (и не сдвигается), прокрутка доходит до конца; в обычном виде — то же.
+     */
+    @Test fun scrubThroughEventKeepsTimelineUnderFinger() {
+        val actions = Recorded()
+        fun start(full: Boolean) = ArchiveUi(title = "Домофон", loading = false, days = listOf(day), day = day,
+            continuous = true, fullscreen = full, center = day + 3_600_000,
+            timeline = ArchiveUi.Timeline(listOf(day until day + 86_400_000), emptyList()))
+        var ui by androidx.compose.runtime.mutableStateOf(start(true))
+        compose.setContent { ArchiveScreen(ui, emptyMap<String, Bitmap?>(), actions, video = {}) }
+        for (full in listOf(true, false)) {
+            actions.calls.clear()
+            ui = start(full)
+            compose.waitForIdle()
+            val before = compose.onNodeWithTag("archive_timeline").fetchSemanticsNode().boundsInRoot
+            compose.onNodeWithTag("archive_timeline").performTouchInput { down(center); moveBy(androidx.compose.ui.geometry.Offset(-80f, 0f)) }
+            // Под риской событие — плеер переключился на ролик события в HD.
+            ui = ui.copy(continuous = false, current = event(day + 3_500_000, setOf("person")), durationMs = 65_000)
+            compose.waitForIdle()
+            assertEquals("шкала не сдвинулась (на весь экран: $full)", before,
+                compose.onNodeWithTag("archive_timeline").fetchSemanticsNode().boundsInRoot)
+            compose.onNodeWithTag("archive_timeline").performTouchInput { moveBy(androidx.compose.ui.geometry.Offset(-80f, 0f)); up() }
+            compose.waitForIdle()
+            assertTrue("прокрутка дошла до конца (на весь экран: $full): ${actions.calls}", "scrub:true" in actions.calls)
+        }
+    }
+
     @Test fun placeholderFrameAndFullscreenControls() {
         val frame = Bitmap.createBitmap(64, 48, Bitmap.Config.ARGB_8888)
         val actions = Recorded()

@@ -1148,7 +1148,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.PlayerPane(ui: Archiv
                 .background(Color(0xB0000000), RoundedCornerShape(10.dp)).padding(12.dp))
         }
     }
-    if (ui.current != null) ClipBar(ui, actions)
+    // Книжный вид: место полосы ролика — всегда, иначе, появившись на событии, она сдвигала бы шкалу под пальцем.
+    // Альбом: полоса отнимает высоту у видео, шкала внизу стоит на месте.
+    if (fill) { if (ui.current != null) ClipBar(ui, actions) }
+    else Box(Modifier.fillMaxWidth().height(CLIP_BAR_HEIGHT)) { if (ui.current != null) ClipBar(ui, actions) }
     Spacer(Modifier.height(8.dp))
     Controls(ui, actions)
     Spacer(Modifier.height(8.dp))
@@ -1244,7 +1247,10 @@ private fun FullscreenPlayer(ui: ArchiveUi, actions: ArchiveActions, video: @Com
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(FS_BAR)
             .padding(horizontal = 16.dp, vertical = 8.dp).testTag("archive_fullscreen_controls")) {
-            if (ui.current != null) ClipBar(ui, actions) else if (ui.continuous) Timeline(ui, actions)
+            // Шкала — всегда, и по событию тоже: раньше на событии её подменяла полоса ролика, и прокрутка пальцем
+            // обрывалась посреди движения (владелец, 23.11.2026). Полоса ролика — над шкалой, шкалу не сдвигает.
+            if (ui.current != null) ClipBar(ui, actions)
+            if (ui.current != null || ui.continuous || ui.live) Timeline(ui, actions)
             Spacer(Modifier.height(6.dp))
             val active = ui.current != null || ui.continuous
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1311,6 +1317,9 @@ private fun clock(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
     return "%d:%02d".format(s / 60, s % 60)
 }
+
+/** Высота полосы ролика (ползунок 48 dp и отступ): место под неё держится и без ролика события. */
+private val CLIP_BAR_HEIGHT = 52.dp
 
 /** Переход плеера при перетаскивании — не чаще (декодер HD не успевает за каждым движением пальца). */
 private const val SCRUB_EVERY_MS = 150L
