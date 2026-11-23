@@ -604,16 +604,27 @@ internal class DoorbellTalk(
     @Volatile var chiming = false
         private set
     private val afterChime = Runnable { if (!disposed && session == null) connect() }
-    private val chimeListener: (String) -> Unit = { host -> main.post { chimeStarted(host) } }
+    private val chimeListener: (String) -> Unit = { host -> main.post { chimeChanged(host) } }
 
-    /** Звонок, пока канал уже открыт (карточка раскрыта, разговор идёт): закрыть его и открыть после мелодии. */
-    private fun chimeStarted(host: String) {
+    /**
+     * У домофона позвонили, его стало слышно или мелодия стихла ([DoorChime]). Звонок, пока канал уже открыт (карточка
+     * раскрыта, разговор идёт), — закрыть его и открыть после мелодии; ждём мелодию — открыть, как только стихла.
+     */
+    private fun chimeChanged(host: String) {
         if (disposed || url.isBlank() || DoorChime.host(url) != host) return
-        if (session == null) return // канал открывается — проверит мелодию, когда откроется
-        Log.i(TAG, "Домофон играет мелодию звонка — канал голоса откроется заново после неё")
-        if (inCall) { stopDuplex(); channelLostAt = clock(); channelRetries = 0 }
-        closeSession()
-        connect()
+        val left = DoorChime.left(url)
+        when {
+            left > 0 && session != null -> {
+                Log.i(TAG, "Домофон играет мелодию звонка — канал голоса откроется заново после неё")
+                if (inCall) { stopDuplex(); channelLostAt = clock(); channelRetries = 0 }
+                closeSession()
+                connect()
+            }
+            // Ждём мелодию: срок поменялся (домофон стало слышно) или она стихла — connect() решит заново.
+            chiming && session == null -> connect()
+            // Канал открывается — проверит мелодию, когда откроется.
+            else -> Unit
+        }
     }
 
     /** Свой голос возвращается дольше обычного — очередь домофона выросла: убрать лишнее паузами ([QueueTrim]). */

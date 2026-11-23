@@ -924,6 +924,85 @@ class TalkTest {
         }
     }
 
+    /** Звук домофона для [DoorChime]: тест сам подаёт отсчёты, как будто они пришли с домофона. */
+    private class HeardDoorbell : StreetSource {
+        @Volatile var sink: ((ShortArray, Int, Int) -> Unit)? = null
+        @Volatile var stopped = false
+        override fun start(rtsp: String, user: String, password: String?, onSound: (Boolean) -> Unit) = onSound(true)
+        override fun stop() { stopped = true }
+        override fun listen(sink: ((ShortArray, Int, Int) -> Unit)?) { this.sink = sink }
+        fun feed(pcm: ShortArray) {
+            var at = 0
+            while (at < pcm.size) { val n = minOf(1024, pcm.size - at); sink?.invoke(pcm.copyOfRange(at, at + n), n, 16_000); at += n }
+        }
+    }
+
+    /** «Динь-дон» как у домофона владельца: два затухающих удара высокого тона с паузой, потом тишина. */
+    private fun dingDong(tailMs: Int): ShortArray {
+        fun strike(ms: Int) = ShortArray(16 * ms) { i -> val t = i / 16_000.0; (7_000 * kotlin.math.exp(-t * 1.9) * kotlin.math.sin(2 * Math.PI * 2_550 * t)).toInt().toShort() }
+        return strike(1_300) + ShortArray(16 * 1_200) + strike(1_200) + ShortArray(16 * tailMs)
+    }
+
+    private fun chimeTalk(setup: (DoorbellTalk) -> Unit = {}): DoorbellTalk {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        shadowOf(activity.application).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        return DoorbellTalk(activity) { _, result -> result(null) }.also { it.street = ScriptedStreet(); setup(it) }
+    }
+
+    /**
+     * Домофон слышно: канал голоса открывается, как только мелодия стихла, — а не по запасу времени. На часах панели
+     * прошло меньше прежних 4,5 с ожидания.
+     */
+    @Test fun voiceChannelOpensWhenHeardChimeEnds() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel().also { channels += it } }) {
+            val heard = HeardDoorbell()
+            val realSource = DoorChime.source
+            DoorChime.reset()
+            DoorChime.source = { heard }
+            try {
+                val looper = shadowOf(Looper.getMainLooper())
+                val talk = chimeTalk()
+                DoorChime.rang(doorbellUrl, "") { it(null) }
+                talk.prepare(doorbellUrl, "")
+                talk.startCall()
+                looper.idle()
+                await("домофон слушается") { heard.sink != null }
+                heard.feed(dingDong(0).copyOfRange(0, 16 * 2_000)) // «динь» и начало паузы
+                looper.idle(); Thread.sleep(200); looper.idle()
+                assertEquals("мелодия звучит — канала нет", 0, channels.size)
+                heard.feed(dingDong(600).copyOfRange(16 * 2_000, dingDong(600).size)) // «дон» и тишина после
+                await("канал открыт, как только мелодия стихла") { looper.idle(); channels.size == 1 && talk.state == DoorbellTalk.State.TALKING }
+                assertTrue("прослушивание остановлено", heard.stopped)
+                assertEquals(0L, DoorChime.left(doorbellUrl))
+                talk.endCall(); talk.dispose()
+            } finally { DoorChime.source = realSource; DoorChime.reset() }
+        }
+    }
+
+    /** Мелодии нет (выключена в приложении Reolink или звонок пришёл уже после неё): канал — через ≈ 1,3 с после звонка. */
+    @Test fun voiceChannelOpensSoonWhenNoChimeHeard() {
+        val channels = CopyOnWriteArrayList<ScriptedChannel>()
+        withChannels({ ScriptedChannel().also { channels += it } }) {
+            val heard = HeardDoorbell()
+            val realSource = DoorChime.source
+            DoorChime.reset()
+            DoorChime.source = { heard }
+            try {
+                val looper = shadowOf(Looper.getMainLooper())
+                val talk = chimeTalk()
+                DoorChime.rang(doorbellUrl, "") { it(null) }
+                talk.prepare(doorbellUrl, "")
+                talk.startCall()
+                looper.idle()
+                await("домофон слушается") { heard.sink != null }
+                heard.feed(ShortArray(16 * 1_500) { ((it * 7919 % 400) - 200).toShort() }) // тихая улица
+                await("канал открыт") { looper.idle(); channels.size == 1 && talk.state == DoorbellTalk.State.TALKING }
+                talk.endCall(); talk.dispose()
+            } finally { DoorChime.source = realSource; DoorChime.reset() }
+        }
+    }
+
     /** Мелодия — у домофона (узла), а не у потока: звонок приходит с одним адресом, разговор идёт по другому. */
     @Test fun doorChimeIsPerDoorbellAndEnds() {
         var now = 1_000L

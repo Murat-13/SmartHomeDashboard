@@ -37,6 +37,8 @@ internal interface StreetSource {
      * запоминается как опора для микрофона. Источник сам включает его ([DuplexEcho.active]), если частота подходит.
      */
     fun duplex(echo: DuplexEcho?) {}
+    /** Принятый звук (отсчёты, сколько, частота) — по мере прихода, из потока приёма ([DoorChime]); null — перестать. */
+    fun listen(sink: ((ShortArray, Int, Int) -> Unit)?) {}
 }
 
 internal class StreetAudio : StreetSource {
@@ -47,8 +49,10 @@ internal class StreetAudio : StreetSource {
     private class Run { @Volatile var session: RtspSession? = null }
     @Volatile private var current: Run? = null
     private fun alive(run: Run) = current === run
-    /** Только принимать (измерение [TalkProbe]): динамик планшета молчит. */
+    /** Только принимать (измерение [TalkProbe], мелодия домофона): динамик планшета молчит. */
     @Volatile var silent = false
+    /** Писать звук в проверочную запись разговора ([TalkDebug]); у прослушивания мелодии ([DoorChime]) — нет. */
+    @Volatile var debug = true
     /**
      * Проверка восстановления (файл `talk_debug/drop_street`): один раз оборвать приём через столько миллисекунд после
      * первого звука — как при переподключении камеры посреди разговора. 0 — не обрывать.
@@ -76,7 +80,13 @@ internal class StreetAudio : StreetSource {
     }
 
     /** Наш голос, вернувшийся из микрофона домофона, — вычесть из принятого (на месте); и запись для разбора. */
+    @Volatile private var sink: ((ShortArray, Int, Int) -> Unit)? = null
+    override fun listen(sink: ((ShortArray, Int, Int) -> Unit)?) { this.sink = sink }
+
     private fun clean(pcm: ShortArray, rate: Int): ShortArray {
+        sink?.invoke(pcm, pcm.size, rate)
+        // Прослушивание мелодии домофона — не разговор: его звук не пишется в проверочную запись разговора.
+        if (!debug) return pcm
         TalkDebug.write("street_rx", pcm, pcm.size, rate)
         val d = echo
         if (d != null && d.active) {
@@ -266,7 +276,7 @@ internal class StreetAudio : StreetSource {
                 } else {
                     val n = fifo.pop(buf, chunk)
                     if (n < chunk) buf.fill(0, n, chunk)
-                    TalkDebug.write("street_raw", buf, chunk, rate)
+                    if (debug) TalkDebug.write("street_raw", buf, chunk, rate)
                     // Наш голос, вернувшийся из микрофона домофона (его подавление эха не справляется), — тишина.
                     val muted = System.nanoTime() < mutedUntil
                     if (muted) buf.fill(0)
@@ -278,7 +288,7 @@ internal class StreetAudio : StreetSource {
                     playingRms = maxOf(rms, playingRms * 0.85)
                     if (!muted && rms > LOUD_RMS) lastLoudAt = System.nanoTime()
                 }
-                TalkDebug.write("street", buf, chunk, rate)
+                if (debug) TalkDebug.write("street", buf, chunk, rate)
                 // То, что сейчас прозвучит из динамика, — опора для микрофона (в том числе тишина: счёт отсчётов общий).
                 if (!silent) echo?.takeIf { it.active }?.played?.write(buf, chunk)
                 // Дорожка сама держит темп (запись блокирует).
