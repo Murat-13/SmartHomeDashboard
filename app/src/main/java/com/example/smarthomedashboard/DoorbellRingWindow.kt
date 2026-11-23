@@ -316,8 +316,8 @@ internal class DoorbellRingWindow private constructor(
         animator?.let { animator = null; it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }
         restoreBrightness()
         talk.dispose()
-        // Экраны настроек и редакторов сами по себе экран не держат: флаг окна снимается.
-        if (host !is MainActivity) host.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Экраны поверх панели держат экран сами ([PanelIdle]); прочие (заставка, первая настройка) — нет: флаг снимается.
+        if (host !is MainActivity && !PanelIdle.managed(host)) host.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         card.dispose()
         (parent as? ViewGroup)?.removeView(this)
         if (wasShowing) onClosed(this)

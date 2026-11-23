@@ -125,7 +125,10 @@ import java.util.TimeZone
  * посетителей и строка о месте под записи. Открывается из раскрытой плитки домофона и из окна звонка.
  */
 @OptIn(UnstableApi::class)
-class ArchiveActivity : AppCompatActivity() {
+class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
+    /** Видео играет — без касаний на панель не возвращаемся ([PanelIdle]). */
+    override val idleBusy get() = player?.isPlaying == true
+
     private lateinit var tileId: String
     private lateinit var title: String
     private lateinit var archive: RecArchive

@@ -117,10 +117,11 @@ internal object SystemBarInsets {
     }
 }
 
-/** Класс приложения: только подключение [SystemBarInsets]; прочая логика остаётся в экранах. */
+/** Класс приложения: только подключение [SystemBarInsets] и [PanelIdle]; прочая логика остаётся в экранах. */
 class SmartHomeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(SystemBarInsets.callbacks)
+        registerActivityLifecycleCallbacks(PanelIdle.callbacks)
     }
 }
