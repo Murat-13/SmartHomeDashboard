@@ -59,6 +59,7 @@ internal class DoorbellRingWindow private constructor(
     /** Разговор (docs/talk-tz.md): удержание — голос в домофон; сессия открывается вместе с окном. */
     private val talk = DoorbellTalk(host)
     private val talkButton = TalkButton(host, talk).apply {
+        answering = { true } // окно звонка — всегда звонок
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         visibility = GONE
     }

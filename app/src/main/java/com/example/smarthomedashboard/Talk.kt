@@ -1200,6 +1200,16 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
     var callMode = true
         set(value) { field = value; label(talk.state) }
 
+    /**
+     * Звонят: кнопка — «Ответить»; без звонка — «Говорить» (решение владельца 23.11.2026: «логичнее было бы написать
+     * там „говорить“, а во время звонка от домофона — „ответить“»). Окно звонка — всегда звонок; раскрытая плитка —
+     * пока звонок свежий ([DoorbellCard]).
+     */
+    var answering: () -> Boolean = { false }
+
+    /** Обновить надпись (звонок начался или устарел). */
+    fun refresh() = label(talk.state)
+
     private fun label(state: DoorbellTalk.State) {
         text = when {
             // Подписи состояния на экране нет — о том, что гость нас сейчас не слышит, говорит сама кнопка
@@ -1207,12 +1217,17 @@ internal class TalkButton(context: Context, private val talk: DoorbellTalk, priv
             callMode && talk.reconnecting -> "Нет связи…"
             callMode && talk.inCall -> "Завершить"
             callMode && state == DoorbellTalk.State.CONNECTING -> "Подключение…"
-            callMode -> "Ответить"
+            callMode -> if (answering()) "Ответить" else "Говорить"
             state == DoorbellTalk.State.TALKING -> "● Говорите…"
             state == DoorbellTalk.State.CONNECTING -> "Говорить…"
             else -> "Говорить"
         }
-        contentDescription = if (callMode) (if (talk.inCall) "Завершить разговор" else "Ответить: разговор с калиткой") else "Говорить: удерживайте"
+        contentDescription = when {
+            !callMode -> "Говорить: удерживайте"
+            talk.inCall -> "Завершить разговор"
+            answering() -> "Ответить: разговор с калиткой"
+            else -> "Говорить с калиткой"
+        }
     }
     /** Касание кнопки — для таймеров автозакрытия владельца. */
     var onActivity: (() -> Unit)? = null

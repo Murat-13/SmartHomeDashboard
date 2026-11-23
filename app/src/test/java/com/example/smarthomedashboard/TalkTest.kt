@@ -205,6 +205,11 @@ class TalkTest {
         val calls = mutableListOf<Boolean>()
         talk.onCall = { calls += it }
         val button = TalkButton(activity, talk)
+        // Без звонка — «Говорить», при звонке — «Ответить» (решение владельца 23.11.2026).
+        assertEquals("Говорить", button.text.toString())
+        var ringing = true
+        button.answering = { ringing }
+        button.refresh()
         assertEquals("Ответить", button.text.toString())
         talk.prepare(camera.url, "")
         val until = System.currentTimeMillis() + 5_000
@@ -225,6 +230,9 @@ class TalkTest {
         assertFalse(talk.inCall)
         assertEquals(listOf(true, false), calls)
         assertEquals("Ответить", button.text.toString())
+        ringing = false
+        button.refresh()
+        assertEquals("звонок устарел — «Говорить»", "Говорить", button.text.toString())
         // Снова — и «Завершить» кнопкой.
         talk.startCall()
         assertTrue(talk.inCall)

@@ -448,7 +448,12 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             if (on) keepOpen.run() else removeCallbacks(keepOpen)
             RecordingEvents.session(tileId, t, on) // разговор — в ролик события целиком
         }
-        TalkButton(context, t).apply { visibility = GONE; onActivity = { this@DoorbellCard.onActivity?.invoke() } }
+        TalkButton(context, t).apply {
+            visibility = GONE
+            onActivity = { this@DoorbellCard.onActivity?.invoke() }
+            // «Ответить» — пока звонок свежий (окно звонка столько же держится само), иначе «Говорить».
+            answering = { tileId?.let { id -> DoorbellHub.lastRing(id) }?.let { System.currentTimeMillis() - it in 0 until RING_ANSWER_MS } == true }
+        }
     }
     private val keepOpen = object : Runnable {
         override fun run() {
@@ -638,6 +643,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             val show = !ringMode && config.canTalk
             button.visibility = if (show) VISIBLE else GONE
             button.callMode = config.talkCall
+            button.refresh()
             if (show) talk?.prepare(config.talkRtsp, config.rtspUser)
             fillPhrases(if (show) phrases else emptyList())
         }
@@ -823,6 +829,8 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
 
     companion object {
         const val SOUND_HINT = "🔊 Звук включён · два пальца — увеличить · касание — свернуть"
+        /** Сколько после звонка кнопка разговора в раскрытой плитке — «Ответить» (окно звонка держится минуту). */
+        const val RING_ANSWER_MS = 60_000L
         const val HD_ALPHA = 0.55f
         const val HD_FADE_MS = 250L
 
