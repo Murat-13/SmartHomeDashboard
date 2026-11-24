@@ -2,6 +2,7 @@ package com.example.smarthomedashboard
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -324,19 +325,24 @@ internal object HaScan {
         Socket().use { it.connect(InetSocketAddress(host, port), TIMEOUT_MS); true }
     } catch (_: java.io.IOException) { false }
 
-    /**
-     * Адрес планшета в домашней сети (Wi-Fi или провод, не VPN) и длина префикса; null — домашней сети нет.
-     */
+    /** Домашняя сеть планшета: сама сеть Android (чтобы запросы шли через неё, а не через VPN), адрес и длина префикса. */
+    class Lan(val network: Network, val address: Inet4Address, val prefix: Int)
+
+    /** Wi-Fi или провод, не VPN; null — домашней сети нет. */
     @Suppress("DEPRECATION") // allNetworks: синхронно и одинаково на Android 7–16
-    fun network(context: Context): Pair<InetAddress, Int>? {
+    fun lan(context: Context): Lan? {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return null
         return try {
-            manager.allNetworks.filter { n ->
+            manager.allNetworks.asSequence().filter { n ->
                 val c = manager.getNetworkCapabilities(n) ?: return@filter false
                 !c.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
                     (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
-            }.flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty() }
-                .firstOrNull { it.address is Inet4Address && it.address.isSiteLocalAddress }?.let { it.address to it.prefixLength }
+            }.mapNotNull { n ->
+                val link = manager.getLinkProperties(n)?.linkAddresses.orEmpty().firstOrNull { it.address is Inet4Address && it.address.isSiteLocalAddress }
+                link?.let { Lan(n, it.address as Inet4Address, it.prefixLength) }
+            }.firstOrNull()
         } catch (_: RuntimeException) { null }
     }
+
+    fun network(context: Context): Pair<InetAddress, Int>? = lan(context)?.let { it.address to it.prefix }
 }
