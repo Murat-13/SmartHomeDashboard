@@ -105,6 +105,11 @@
             android:name=".GatesActivity"
             android:exported="false"
             android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <!-- Планшет (docs/diagnostics-tz.md, часть 2): декодеры и опыт показа видео. -->
+        <activity
+            android:name=".TabletActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
         <activity
             android:name=".GateEditorActivity"
             android:exported="false"

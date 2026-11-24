@@ -123,5 +123,7 @@ class SmartHomeApp : Application() {
         super.onCreate()
         registerActivityLifecycleCallbacks(SystemBarInsets.callbacks)
         registerActivityLifecycleCallbacks(PanelIdle.callbacks)
+        // Профиль планшета (docs/diagnostics-tz.md, часть 2): опыт показа видео прошлых запусков.
+        TabletProfile.load(this)
     }
 }

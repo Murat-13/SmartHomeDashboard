@@ -124,6 +124,11 @@ internal class SharedStream(
         private set
     private val jitterMemory = JitterMemory()
 
+    init {
+        // Профиль планшета: до первого замера — неровность, запомненная в прошлый раз (плеер не набирает запас остановками).
+        TabletProfile.jitter(key.url).takeIf { it > 0 }?.let { floorJitterMs = jitterMemory.add(it) }
+    }
+
     /** Сводка текущей сессии для диагностики ([StreamStats]); новая сессия камеры — новая сводка. */
     @Volatile var stats: StreamStats? = null
         private set
@@ -301,6 +306,7 @@ internal class SharedStream(
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
                                 arrivalJitterMs = (probe.slowest - it).coerceIn(0, MAX_JITTER_MS)
                                 floorJitterMs = jitterMemory.add(arrivalJitterMs)
+                                TabletProfile.rememberJitter(key.url, jitterMemory.usual)
                                 videoArrivalMs = it
                                 // Неровный приход — главный предел задержки живого видео (docs/doorbell.md): плееру нужен
                                 // запас не меньше самой длинной паузы. «Запись занимала поток» — наша доля в этих паузах.
@@ -328,7 +334,10 @@ internal class SharedStream(
                                 each { _, sink -> sink.video(frame, depacketizer) }
                             }
                             busyMaxNs = maxOf(busyMaxNs, System.nanoTime() - started)
-                            if (!summary.hasCodec && depacketizer.sps != null) summary.codec(depacketizer.codec, depacketizer.sps)
+                            if (!summary.hasCodec && depacketizer.sps != null) {
+                                summary.codec(depacketizer.codec, depacketizer.sps)
+                                summary.snapshot().let { TabletProfile.cameraSize(key.url, it.width, it.height) }
+                            }
                             if (rtp.marker) summary.frameEnd(rtp.timestamp, readNs, keyTs == rtp.timestamp)
                             if (frames != null) {
                                 frames.busy(System.nanoTime() - readNs)

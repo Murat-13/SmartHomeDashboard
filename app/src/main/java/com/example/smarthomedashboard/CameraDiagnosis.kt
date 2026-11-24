@@ -103,7 +103,9 @@ internal object CameraDiagnosis {
             main = main, sub = sub,
             subMissing = t.main.isNotBlank() && (t.sub.isBlank() || t.sub == t.main),
             mainShows = PlaybackLog.recent(t.main), subShows = if (t.sub != t.main) PlaybackLog.recent(t.sub) else emptyList(),
-            mainUndecodable = t.main.isNotBlank() && t.main in DoorbellVideoView.undecodable,
+            mainUndecodable = t.main.isNotBlank() && (runCatching { t.main in DoorbellVideoView.undecodable }.getOrDefault(false) ||
+                TabletProfile.undecodable(t.main)),
+            mainHeavy = t.main.isNotBlank() && TabletProfile.heavy(t.main),
             encoder = encoder, subEncoder = subEncoder, clockOffsetMs = clock,
             wifi = DeviceFacts.wifi(context), thermal = DeviceFacts.thermal(context), decoders = decoders()
         )
@@ -156,9 +158,11 @@ internal object CameraDiagnosis {
         return Onvif.Stream("", j.optInt("w"), j.optInt("h"), j.optString("enc"), "", j.optInt("fps"), j.optInt("kbps"), j.optInt("gov"), o)
     }
 
-    /** Декодеры планшета не меняются, пока работает приложение. */
+    /** Декодеры планшета не меняются, пока работает приложение («Проверить заново» на экране «Планшет» — опросить снова). */
     @Volatile private var cachedDecoders: DecoderFacts? = null
     private fun decoders(): DecoderFacts = cachedDecoders ?: DeviceFacts.decoders().also { cachedDecoders = it }
+    internal fun decoderFacts(): DecoderFacts = decoders()
+    internal fun refreshDecoders() { cachedDecoders = null }
 
     private const val TAG = "CameraDiagnosis"
     private const val PROGRESS_MS = 500L

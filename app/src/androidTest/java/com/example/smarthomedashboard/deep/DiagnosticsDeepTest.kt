@@ -7,6 +7,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.smarthomedashboard.DoorbellConfig
 import com.example.smarthomedashboard.DoorbellEditorActivity
+import com.example.smarthomedashboard.TabletActivity
 import com.example.smarthomedashboard.data.TileEntity
 import org.json.JSONObject
 import org.junit.After
@@ -66,6 +67,28 @@ class DiagnosticsDeepTest {
         assertTrue(rows.joinToString("\n"), rows.any { it.startsWith("⚠ Потери по дороге") })
         assertTrue(rows.joinToString("\n"), rows.any { it.startsWith("⚠ Частота кадров") })
         assertTrue("кодек виден", rows.any { it.startsWith("✓ Кодек: H.264") })
+    }
+
+    /** Экран «Планшет» (этап 2): настоящие декодеры эмулятора и решение по плитке домофона. Стенд не нужен. */
+    @Test fun tabletScreenShowsDecoders() {
+        ha = FakeHomeAssistant()
+        val door = DoorbellConfig(rtspMain = "rtsp://10.0.2.2:1/main", rtspSub = "rtsp://10.0.2.2:1/sub")
+        val config = JSONObject(DoorbellConfig.newTileConfig()).put(DoorbellConfig.KEY, door.toJson()).toString()
+        prepareApp(ha, listOf(TileEntity("deep_door", DoorbellConfig.TYPE, "grid", "Домофон", 40, 40, 1, 1, config = config)))
+        val tablet = ActivityScenario.launch<TabletActivity>(Intent(appContext, TabletActivity::class.java))
+        try {
+            fun text(tag: String): String? { val activity = resumedActivity(); return onMain { (activity?.window?.decorView?.findViewWithTag<View>(tag) as? TextView)?.text?.toString() } }
+            waitFor(10_000, "экран «Планшет»") { text("tablet_h264") != null }
+            val h264 = text("tablet_h264")!!
+            log("Планшет: ${text("tablet_model")}; $h264; ${text("tablet_h265")}; ${text("tablet_heat")}")
+            assertTrue(h264, h264.startsWith("H.264 — "))
+            val shown = resumedActivity()
+            val camera = onMain { (shown?.window?.decorView?.findViewWithTag<View>("tablet_camera_deep_door") as? android.view.ViewGroup)?.childCount }
+            assertTrue("строка домофона", (camera ?: 0) >= 2)
+            SystemClockSleep.sleep(500)
+            val shot = instrumentation.uiAutomation.takeScreenshot()
+            File(appContext.getExternalFilesDir(null), "tablet_screen.png").outputStream().use { shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        } finally { tablet.close() }
     }
 
     private object SystemClockSleep { fun sleep(ms: Long) = android.os.SystemClock.sleep(ms) }

@@ -204,9 +204,10 @@ internal object CameraDiagnostics {
                 "быстрее и без нагрева"
         }
         val shows = input.mainShows.takeLast(RECENT_SHOWS)
-        if (input.mainUndecodable || (shows.isNotEmpty() && shows.none { it.keepsUp })) {
+        if (input.mainUndecodable || input.mainHeavy || (shows.isNotEmpty() && shows.none { it.keepsUp })) {
             return Check("К3", title, Level.BAD, "$size — планшет не успевает его показывать" +
-                (shows.lastOrNull()?.let { ": показано ${fpsText(it.shownFps)} к/с" } ?: ""), advice)
+                (shows.lastOrNull()?.let { ": показано ${fpsText(it.shownFps)} к/с" } ?: "") +
+                (if (input.mainHeavy) "; в раскрытой плитке и окне звонка показывается субпоток" else ""), advice)
         }
         val software = "$size — больше предела аппаратного декодера${limit?.let { " ($it)" } ?: ""}, планшет показывает его программно" +
             (shows.lastOrNull()?.let { " и успевает: ${fpsText(it.shownFps)} к/с" } ?: "")
@@ -306,6 +307,10 @@ internal object CameraDiagnostics {
             return Check("П3", title, Level.BAD, "Планшет не смог показать основной поток — в раскрытой плитке показан субпоток",
                 "Смотрите «Размер основного потока» (К3) и «Кодек» (К4)")
         }
+        if (input.mainHeavy) {
+            return Check("П3", title, Level.BAD, "Программный декодер планшета не успевал показывать основной поток — в раскрытой " +
+                "плитке и окне звонка показывается субпоток", "Смотрите «Размер основного потока» (К3) и «Кодек» (К4)")
+        }
         val last = input.mainShows.lastOrNull() ?: return Check("П3", title, Level.UNKNOWN, "Основной поток ещё не показывался")
         return Check("П3", title, Level.OK, "Показан ${if (last.software) "программно" else "аппаратно"}, ${fpsText(last.shownFps)} к/с")
     }
@@ -403,6 +408,8 @@ internal data class DiagInput(
     val mainShows: List<ShowSummary> = emptyList(),
     val subShows: List<ShowSummary> = emptyList(),
     val mainUndecodable: Boolean = false,
+    /** Профиль планшета решил: программный декодер не успевает — в раскрытой плитке субпоток. */
+    val mainHeavy: Boolean = false,
     /** Настройки кодировщика основного потока и субпотока по ONVIF (с тем, что камера разрешает). */
     val encoder: Onvif.Stream? = null,
     val subEncoder: Onvif.Stream? = null,

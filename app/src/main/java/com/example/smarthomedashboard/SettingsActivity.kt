@@ -509,6 +509,13 @@ class SettingsActivity : PinProtectedActivity() {
                     startActivity(android.content.Intent(this, GatesActivity::class.java))
                 }.apply { tag = "btnGates" }, minOf(1, section.childCount))
             }
+            // Планшет (docs/diagnostics-tz.md, часть 2): декодеры и опыт показа видео — сразу после «Калиток и ворот».
+            if (section.findViewWithTag<View>("btnTablet") == null) {
+                val after = section.findViewWithTag<View>("btnGates")?.let { section.indexOfChild(it) + 1 } ?: minOf(1, section.childCount)
+                section.addView(ModernUi.secondaryButton(this, "Планшет…") {
+                    startActivity(android.content.Intent(this, TabletActivity::class.java))
+                }.apply { tag = "btnTablet" }, after)
+            }
         }
         findViewById<CompoundButton?>(R.id.cbModernHaptics)?.setOnCheckedChangeListener { _, checked ->
             apply { putBoolean(ModernHaptics.PREF, checked) }

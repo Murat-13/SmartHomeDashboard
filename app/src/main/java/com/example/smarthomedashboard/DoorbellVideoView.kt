@@ -691,7 +691,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 .setSocketFactory(sockets)
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
             // Аппаратный декодер этот поток уже не принял — сразу программный, без лишней попытки.
-            play(software = rtsp == src.rtsp && rtsp in hardwareRejected, live = true, withSound = !splitSound, connects = sockets) {
+            play(software = rtsp == src.rtsp && (rtsp in hardwareRejected || TabletProfile.software(rtsp)), live = true,
+                withSound = !splitSound, connects = sockets) {
                 it.setMediaSource(media)
             }
             syncSound()
@@ -711,7 +712,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     /** Основной поток, если планшет его уже не декодировал, — сразу субпоток, без новой неудачи. */
     internal fun rtspFor(src: Source) =
-        if (src.fallbackRtsp.isNotBlank() && src.fallbackRtsp != src.rtsp && src.rtsp in undecodable) src.fallbackRtsp else src.rtsp
+        if (src.fallbackRtsp.isNotBlank() && src.fallbackRtsp != src.rtsp &&
+            (src.rtsp in undecodable || TabletProfile.undecodable(src.rtsp) || TabletProfile.heavy(src.rtsp))) src.fallbackRtsp else src.rtsp
 
     /**
      * Основной поток не принял ни один декодер планшета (плеер перебирает их сам, программный — после
@@ -722,6 +724,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val src = source ?: return false
         if (playingRtsp != src.rtsp || src.fallbackRtsp.isBlank() || src.fallbackRtsp == src.rtsp) return false
         undecodable += src.rtsp
+        CameraHub.stats(src.rtsp, src.user).let { TabletProfile.markUndecodable(src.rtsp, it?.width ?: 0, it?.height ?: 0) }
         Log.w(TAG, "Основной поток не декодируется на этом планшете ни одним декодером (${error.errorCodeName}) — показываю субпоток")
         viaRelay = false
         releasePlayer()
@@ -759,8 +762,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         minuteTicks = 0
         jitterFloor = live && !LiveTuning.off(context, "no_jitter_floor")
         floorFollows = !LiveTuning.off(context, "floor_grows")
+        // Неровность ещё не измерена (запуск приложения, просмотр без записи) — запомненная профилем планшета.
         seedFloor = if (!jitterFloor) 0 else LiveCatchUp.floorFor(source?.user.orEmpty().let { user ->
-            if (floorFollows) CameraHub.floorJitterMs(playingRtsp, user) else CameraHub.arrivalJitterMs(playingRtsp, user)
+            (if (floorFollows) CameraHub.floorJitterMs(playingRtsp, user) else CameraHub.arrivalJitterMs(playingRtsp, user))
+                .takeIf { it > 0 } ?: TabletProfile.jitter(playingRtsp)
         })
         catchUpFloor = seedFloor
         burstUntil = 0
@@ -828,6 +833,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 val main = source?.rtsp ?: return
                 if (playingRtsp == main && isSoftwareDecoder(decoderName) && hardwareRejected.add(main)) {
                     Log.i(TAG, "Основной поток — программным декодером ($decoderName): аппаратный его не принял")
+                    CameraHub.stats(main, source?.user.orEmpty()).let { TabletProfile.markSoftware(main, it?.width ?: 0, it?.height ?: 0) }
                 }
             }
         })
@@ -980,9 +986,17 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val size = exo.videoSize
         val rendered = counters.renderedOutputBufferCount
         val dropped = counters.droppedBufferCount + counters.skippedOutputBufferCount
-        if (playingRtsp.isNotBlank() && rendered > 0) PlaybackLog.add(playingRtsp, ShowSummary(System.currentTimeMillis(), seconds,
-            decoderInUse.orEmpty(), decoderInUse?.let(::isSoftwareDecoder) == true, size.width, size.height, rendered / seconds,
-            dropped.toFloat() / (rendered + dropped), longStalls))
+        if (playingRtsp.isNotBlank() && rendered > 0) {
+            val show = ShowSummary(System.currentTimeMillis(), seconds, decoderInUse.orEmpty(), decoderInUse?.let(::isSoftwareDecoder) == true,
+                size.width, size.height, rendered / seconds, dropped.toFloat() / (rendered + dropped), longStalls)
+            PlaybackLog.add(playingRtsp, show)
+            // Профиль планшета (решение владельца 3): основной поток, который программный декодер не успевает показывать, —
+            // дальше субпоток в раскрытой плитке. Только если субпоток есть.
+            val src = source
+            if (src != null && playingRtsp == src.rtsp && src.fallbackRtsp.isNotBlank() && src.fallbackRtsp != src.rtsp) {
+                TabletProfile.mainShown(src.rtsp, show, CameraHub.stats(src.rtsp, src.user)?.fps)
+            }
+        }
         Log.i(TAG, "Видео: ${decoderInUse ?: "?"} ${size.width}×${size.height}, показано ${counters.renderedOutputBufferCount} " +
             "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
                 counters.renderedOutputBufferCount / seconds, seconds) +
@@ -1449,6 +1463,9 @@ internal class JitterMemory(private val size: Int = MINUTES) {
     }
 
     val max: Long get() = (0 until minOf(count, size)).maxOfOrNull { recent[it] } ?: 0
+
+    /** Обычная из последних (середина) — её профиль планшета помнит до следующего запуска: случайный сбой не в счёт. */
+    val usual: Long get() = (0 until minOf(count, size)).map { recent[it] }.sorted().let { if (it.isEmpty()) 0 else it[it.size / 2] }
 
     companion object { const val MINUTES = 3 }
 }
