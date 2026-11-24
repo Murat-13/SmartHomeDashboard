@@ -173,7 +173,11 @@ class GatesUiTest {
         root.findViewWithTag<View>("door_gates_manage").performClick()
         controller.pause()
         GateStore.save(context, listOf(wicket, drive, Gate("gate_3", "Дверь", Gate.Kind.LOCK, open = "lock.door")))
-        controller.resume(); idle()
+        controller.resume()
+        // После возврата экран снова проверяет PIN в фоне; без ожидания «Сохранить» на медленной машине CI попадал в
+        // «сессия истекла» (Android CI для 2ecc576, 24.11.2026; локально проверка успевала раньше).
+        weatherAwait { org.robolectric.util.ReflectionHelpers.getField<Boolean>(e, "pinAuthorized") }
+        idle()
         assertEquals(listOf("gate_2", "gate_3"), e.config.gateIds("door"))
         assertTrue(e.save()); idle()
         assertEquals(listOf("gate_2", "gate_3"), DoorbellConfig.from(manager.loadTiles().single().config).gates)
