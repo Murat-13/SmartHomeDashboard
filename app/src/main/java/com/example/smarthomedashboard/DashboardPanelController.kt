@@ -1080,13 +1080,13 @@ internal class DashboardPanelController(
         collapseChildrenRunnable?.let { handler.removeCallbacks(it) }
     }
 
+    /** На панели что-то раскрыто: карточка, группа или сенсор. */
+    fun isAnythingExpanded() = expandedGroupId != null || expandedSensorView != null || modernExpansion.isOpen || modernGroup.isOpen
+
     /**
      * «Назад» при раскрытой карточке или группе сворачивает её, а не закрывает панель (найдено агентом 05.11.2026:
      * раньше «Назад» при раскрытой АКБ уводил с панели). false — сворачивать нечего.
      */
-    /** На панели что-то раскрыто: карточка, группа или сенсор. */
-    fun isAnythingExpanded() = expandedGroupId != null || expandedSensorView != null || modernExpansion.isOpen || modernGroup.isOpen
-
     fun collapseOnBack(): Boolean {
         if (!isAnythingExpanded()) return false
         collapseAll()

@@ -113,7 +113,8 @@ class CopyDeepTest {
         val plain = code.replace("-", "")
         val done = java.util.concurrent.CountDownLatch(1)
         var href = ""
-        onMain {
+        // Ссылка держится до конца: без неё сборщик мусора закрывает браузер посреди загрузки (так упало на CI).
+        val web = onMain {
             android.webkit.WebView(appContext).apply {
                 @android.annotation.SuppressLint("SetJavaScriptEnabled")
                 settings.javaScriptEnabled = true
@@ -125,7 +126,9 @@ class CopyDeepTest {
                 loadUrl("http://$host/#$plain")
             }
         }
-        assertTrue("страница открылась", done.await(20, java.util.concurrent.TimeUnit.SECONDS))
+        val opened = done.await(40, java.util.concurrent.TimeUnit.SECONDS)
+        onMain { web.destroy() }
+        assertTrue("страница открылась", opened)
         assertEquals("\"intent://copy/$host/$plain#Intent;scheme=smarthomedashboard;package=com.example.smarthomedashboard;end\"", href)
     }
 

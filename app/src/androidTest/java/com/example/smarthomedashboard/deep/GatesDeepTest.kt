@@ -59,6 +59,20 @@ class GatesDeepTest {
         instrumentation.sendPointerSync(MotionEvent.obtain(down, down + ms, MotionEvent.ACTION_UP, x, y, 0))
     }
 
+    /**
+     * Раскрытие закончилось: кнопка полсекунды на одном месте. Иначе на медленном эмуляторе CI палец попадал мимо, карточка
+     * сворачивалась, а удержание на пустом месте включало режим редактирования.
+     */
+    private fun still(view: View) {
+        var last = intArrayOf(-1, -1)
+        var since = 0L
+        waitFor(15_000, "кнопка остановилась") {
+            val now = IntArray(2).also { onMain { view.getLocationOnScreen(it) } }
+            if (!now.contentEquals(last)) { last = now; since = SystemClock.uptimeMillis() }
+            SystemClock.uptimeMillis() - since >= 500
+        }
+    }
+
     @Test fun openWicketFromExpandedTileWithoutRing() {
         assumeTrue("Только эмулятор: тест заменяет данные приложения", isEmulator())
         ha = FakeHomeAssistant()
@@ -83,6 +97,7 @@ class GatesDeepTest {
             button?.isShown == true
         }
         assertEquals("Открыть калитку", onMain { button!!.label })
+        still(button!!)
 
         hold(button!!, 400)
         SystemClock.sleep(500)
@@ -143,6 +158,7 @@ class GatesDeepTest {
             button?.isShown == true
         }
         waitFor(10_000, "опрос Shelly: закрыто по датчику") { onMain { button!!.stateHint.orEmpty() }.startsWith("Закрыт") }
+        still(button!!)
         hold(button!!, 2_500)
         waitFor(10_000, "импульс реле Shelly") { calls.any { it.startsWith("/rpc/Switch.Set") } }
         assertEquals("/rpc/Switch.Set?id=0&on=true&toggle_after=3", calls.first { it.startsWith("/rpc/Switch.Set") })
