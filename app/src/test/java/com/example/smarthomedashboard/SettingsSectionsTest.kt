@@ -56,6 +56,46 @@ class SettingsSectionsTest {
         assertFalse(nav().getChildAt(0).isSelected)
     }
 
+    @Test fun signInAgainUsesAddressesFromFieldsAndShowsSavedOnesAfterwards() {
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText("   ")
+        activity.findViewById<View>(R.id.btnHaLogin).performClick()
+        assertEquals("Укажите локальный или внешний адрес Home Assistant", activity.findViewById<TextView>(R.id.tvHaConnectionStatus).text.toString())
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText("http://192.168.77.10:8123")
+        activity.findViewById<EditText>(R.id.etHaRemoteHost).setText("https://home.example.com")
+        activity.findViewById<View>(R.id.btnHaLogin).performClick()
+        val started = shadowOf(activity).nextStartedActivityForResult
+        assertEquals(HaLoginActivity::class.java.name, started.intent.component!!.className)
+        assertEquals("http://192.168.77.10:8123", started.intent.getStringExtra(HaLoginActivity.EXTRA_LOCAL))
+        assertEquals("https://home.example.com", started.intent.getStringExtra(HaLoginActivity.EXTRA_EXTERNAL))
+        // До успешного входа ничего не сохранено; отмена оставляет прежнее.
+        assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
+        shadowOf(activity).receiveResult(started.intent, android.app.Activity.RESULT_CANCELED, null)
+        assertEquals("http://192.168.77.10:8123", activity.findViewById<EditText>(R.id.etHaLocalHost).text.toString())
+        prefs.edit().putString("ha_local_host", "http://192.168.77.10:8123").putString("ha_remote_host", "").commit() // как HaConnector
+        activity.findViewById<View>(R.id.btnHaLogin).performClick()
+        shadowOf(activity).receiveResult(shadowOf(activity).nextStartedActivityForResult.intent, android.app.Activity.RESULT_OK, null)
+        assertEquals("", activity.findViewById<EditText>(R.id.etHaRemoteHost).text.toString())
+        assertFalse("сохранять больше нечего", ArchitectureTestAccess.methods(activity).single { it.name == "haChanged" }
+            .apply { isAccessible = true }.invoke(activity) as Boolean)
+    }
+
+    @Test fun findInNetworkOnlyFillsTheField() {
+        var change: ((List<HaFound>) -> Unit)? = null
+        activity.newDiscovery = { context, on -> change = on; HaDiscovery(context, on, object : HaBrowser {
+            override fun start(onService: (HaService) -> Unit) {}
+            override fun stop() {}
+        }, names = emptyList(), network = { null }) }
+        activity.findViewById<View>(R.id.btnHaFind).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        change!!(listOf(HaFound("http://192.168.77.10:8123", "Мой дом", "2026.11.3", "u1", "https://home.example.com")))
+        shadowOf(Looper.getMainLooper()).idle()
+        val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() as android.app.AlertDialog
+        shadowOf(dialog.listView).performItemClick(0)
+        assertEquals("http://192.168.77.10:8123", activity.findViewById<EditText>(R.id.etHaLocalHost).text.toString())
+        assertEquals("https://home.example.com", activity.findViewById<EditText>(R.id.etHaRemoteHost).text.toString())
+        assertEquals("сохраняется только проверкой или входом", "http://previous.example.invalid", prefs.getString("ha_local_host", null))
+    }
+
     @Test fun safeSettingsApplyImmediatelyAndInvalidValuesAreNotWritten() {
         activity.findViewById<EditText>(R.id.etScreenTimeout).setText("7")
         assertEquals(7, prefs.getInt("screen_timeout_minutes", 0))

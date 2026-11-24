@@ -54,8 +54,10 @@ class SplashActivity : AppCompatActivity() {
     private fun openNextScreen() {
         val setupCompleted = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
             .getBoolean("setup_completed", false)
+        // Мастер прервали после входа — продолжается (но не по кнопке «Домой»: там панель).
+        val wizard = !setupCompleted || SetupActivity.resumeStep(this) != null && !HomeScreenMode.isHomeLaunch(intent)
         // MainActivity — singleTask: существующая панель выводится на передний план, а не создаётся заново.
-        startActivity(Intent(this, if (setupCompleted) MainActivity::class.java else SetupActivity::class.java))
+        startActivity(Intent(this, if (wizard) SetupActivity::class.java else MainActivity::class.java))
         finish()
     }
 }

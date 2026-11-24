@@ -1,10 +1,10 @@
 package com.example.smarthomedashboard
 
-import android.content.res.Resources
 import android.os.Looper
 import android.util.SparseArray
 import android.widget.*
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.lifecycleScope
 import com.example.smarthomedashboard.data.TileManager
@@ -22,29 +22,15 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.*
-import org.robolectric.shadow.api.Shadow
-import org.robolectric.shadows.ShadowResources
-import org.robolectric.util.ReflectionHelpers
 import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-@Implements(Resources::class)
-class HaTokenResources : ShadowResources() {
-    @RealObject private lateinit var resources: Resources
-    @Implementation fun getText(id: Int): CharSequence = when (id) {
-        R.string.connected -> "Подключено"
-        R.string.fill_fields -> "Заполните адрес и токен"
-        else -> Shadow.directlyOn(resources, Resources::class.java, "getText",
-            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, id))
-    }
-}
-
 // Настоящие методы потребителей и WebSocket auth по loopback; JCA использует искусственный тестовый ключ.
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE, sdk = [28], shadows = [HaTokenResources::class])
+@Config(manifest = Config.NONE, sdk = [28])
 @LooperMode(LooperMode.Mode.PAUSED)
 class HaTokenConsumerIntegrationTest {
     private val context = RuntimeEnvironment.getApplication()
@@ -85,13 +71,18 @@ class HaTokenConsumerIntegrationTest {
     }
     private fun seed(value: String = "FAKE-LEGACY") { prefs.edit().putString("ha_token", value).commit() }
 
-    private fun setup(): SetupActivity = Robolectric.buildActivity(SetupActivity::class.java).get().also { activity ->
-        live(activity)
-        listOf("etLocalHost", "etRemoteHost", "etHaToken").forEach { set(activity, it, EditText(activity)) }
-        listOf("btnConnect", "btnSkip").forEach { set(activity, it, Button(activity)) }
-        listOf("tvStatus", "tvHaTokenStatus").forEach { set(activity, it, TextView(activity)) }
-        invoke(activity, "prepareTokenInput")
+    /** Проверка и сохранение мастера и «Войти заново» — общее [HaConnector]. */
+    private class Owner : LifecycleOwner {
+        override val lifecycle = LifecycleRegistry(this).apply { handleLifecycleEvent(Lifecycle.Event.ON_CREATE) }
     }
+    private class Setup(val connector: HaConnector, val owner: Owner) {
+        var done = false
+        var error: String? = null
+        val statuses = mutableListOf<String>()
+        fun start(address: String, token: String = "") = connector.start(HaConnector.Target("", address), token,
+            { statuses += it }) { error = it; done = true }
+    }
+    private fun setup(tokens: () -> HaTokenAccess = { access }) = Owner().let { Setup(HaConnector(context, it, tokens), it) }
     private fun settings(): SettingsActivity = Robolectric.buildActivity(SettingsActivity::class.java).get().also { activity ->
         live(activity)
         listOf("etHaLocalHost", "etHaRemoteHost", "etHaToken",
@@ -135,18 +126,16 @@ class HaTokenConsumerIntegrationTest {
             val peer = Peer()
             server.enqueue(MockResponse().withWebSocketUpgrade(peer))
             server.start()
-            val activity = setup()
-            field<EditText>(activity, "etRemoteHost").setText(server.url("/").toString())
-            invoke(activity, "loadTokenStatus")
-            await { !prefs.contains("ha_token") }
-            assertEquals("", field<EditText>(activity, "etHaToken").text.toString())
-            invoke(activity, "tryConnect")
-            await { activity.isFinishing }
+            val setup = setup()
+            setup.start(server.url("/").toString())
+            await { setup.done }
+            assertNull(setup.error)
             assertEquals("FAKE-LEGACY", peer.messages.single { it.optString("type") == "auth" }.getString("access_token"))
             assertEquals("FAKE-LEGACY", read().value)
             assertFalse(prefs.contains("ha_token"))
             assertTrue(prefs.getBoolean("setup_completed", false))
-            assertFalse(field<TextView>(activity, "tvStatus").text.contains("FAKE-"))
+            assertEquals(server.url("/").toString(), prefs.getString("ha_remote_host", null))
+            assertTrue(setup.statuses.none { it.contains("FAKE-") })
         }
     }
     @Test fun setupRejectedNewTokenDoesNotPersistItOrMarkSetupComplete() {
@@ -154,16 +143,15 @@ class HaTokenConsumerIntegrationTest {
             val peer = Peer(false)
             server.enqueue(MockResponse().withWebSocketUpgrade(peer))
             server.start()
-            val activity = setup()
-            field<EditText>(activity, "etRemoteHost").setText(server.url("/").toString())
-            field<EditText>(activity, "etHaToken").setText("FAKE-REJECTED")
-            invoke(activity, "tryConnect")
-            await { peer.messages.any { it.optString("type") == "auth" } &&
-                field<Button>(activity, "btnConnect").isEnabled }
+            val setup = setup()
+            setup.start(server.url("/").toString(), "FAKE-REJECTED")
+            await { setup.done }
+            assertTrue(peer.messages.any { it.optString("type") == "auth" })
+            assertTrue(setup.error!!, setup.error!!.contains("токен"))
             assertEquals(HaTokenAccess.Status.ABSENT, read().status)
             assertFalse(prefs.contains("ha_token"))
             assertFalse(prefs.getBoolean("setup_completed", false))
-            invoke(activity, "cancelConnection")
+            assertFalse(prefs.contains("ha_remote_host"))
         }
     }
     @Test fun settingsBlankSavePreservesSecureTokenAndExplicitInputReplacesWithoutPlaintext() {
@@ -195,7 +183,7 @@ class HaTokenConsumerIntegrationTest {
     }
     @Test fun secretInputsDoNotSaveViewStateAndStatusNeverContainsToken() {
         seed()
-        for (activity in listOf(setup(), settings())) {
+        for (activity in listOf(settings())) {
             val input = field<EditText>(activity, "etHaToken")
             input.id = R.id.etHaToken
             input.setText("FAKE-UNSAVED-INPUT")
@@ -203,7 +191,7 @@ class HaTokenConsumerIntegrationTest {
             input.saveHierarchyState(state)
             assertEquals(0, state.size())
             input.text.clear()
-            invoke(activity, if (activity is SetupActivity) "loadTokenStatus" else "loadHaTokenStatus")
+            invoke(activity, "loadHaTokenStatus")
             await { field<TextView>(activity, "tvHaTokenStatus").text == "Токен HA сохранён" }
             assertEquals("", input.text.toString())
             assertFalse(field<TextView>(activity, "tvHaTokenStatus").text.contains("FAKE-"))
@@ -256,7 +244,6 @@ class HaTokenConsumerIntegrationTest {
         }
     }
     @Test fun finishedScreenIgnoresDelayedTokenResult() {
-        val activity = setup()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val slow = HaTokenAccess(object : HaTokenSlot {
@@ -272,14 +259,15 @@ class HaTokenConsumerIntegrationTest {
             override fun mark(phase: String?) = true
             override fun removeIfUnchanged(expected: String?) = true
         }) {}
-        set(activity, "haTokens", slow)
-        invoke(activity, "loadTokenStatus")
+        val setup = setup { slow }
+        setup.start("http://ha.example.invalid")
         assertTrue(entered.await(5, TimeUnit.SECONDS))
-        activity.finish()
+        setup.connector.cancel()
         release.countDown()
-        await { activity.lifecycleScope.coroutineContext[kotlinx.coroutines.Job]!!.children.none() }
+        await { setup.owner.lifecycleScope.coroutineContext[kotlinx.coroutines.Job]!!.children.none() }
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals("Проверка токена HA...", field<TextView>(activity, "tvHaTokenStatus").text.toString())
+        assertFalse("отменённая проверка не сообщает итог", setup.done)
+        assertFalse(prefs.getBoolean("setup_completed", false))
     }
 
 
@@ -288,17 +276,12 @@ class HaTokenConsumerIntegrationTest {
             val peer = Peer()
             server.enqueue(MockResponse().withWebSocketUpgrade(peer))
             server.start()
-            val activity = setup()
-            field<EditText>(activity, "etRemoteHost").setText(server.url("/").toString())
-            field<EditText>(activity, "etHaToken").setText("FAKE-SETUP-NEW")
-            invoke(activity, "tryConnect")
-            await { activity.isFinishing }
+            val setup = setup()
+            setup.start(server.url("/").toString(), "FAKE-SETUP-NEW")
+            await { setup.done }
+            assertNull(setup.error)
             assertEquals("FAKE-SETUP-NEW", read().value)
             assertFalse(prefs.contains("ha_token"))
-            assertEquals("", field<EditText>(activity, "etHaToken").text.toString())
-            val intent = shadowOf(activity).nextStartedActivity
-            assertNotNull(intent)
-            assertTrue(intent.extras == null || intent.extras!!.isEmpty)
             assertTrue(prefs.getBoolean("setup_completed", false))
         }
     }
@@ -345,14 +328,12 @@ class HaTokenConsumerIntegrationTest {
     @Test fun unavailableSecureStoreDoesNotDowngradeOrApplyConnectionSettingsInAnyConsumer() {
         seed()
         prefs.edit().putString("ha_local_host", "http://previous.example.invalid").commit()
-        val setup = setup()
-        set(setup, "haTokens", unavailable())
-        field<EditText>(setup, "etLocalHost").setText("http://new.example.invalid")
-        field<EditText>(setup, "etHaToken").setText("FAKE-NEW")
-        invoke(setup, "tryConnect")
-        await { field<Button>(setup, "btnConnect").isEnabled }
-        assertNull(field<HomeAssistantWebSocket?>(setup, "connection"))
-        assertFalse(setup.isFinishing)
+        val setup = setup { unavailable() }
+        setup.start("http://new.example.invalid", "FAKE-NEW")
+        await { setup.done }
+        assertNotNull(setup.error)
+        assertFalse("подключения не было", setup.connector.busy)
+        assertEquals("http://previous.example.invalid", prefs.getString("ha_local_host", null))
 
         val settings = settings()
         set(settings, "haTokens", unavailable())
@@ -379,7 +360,9 @@ class HaTokenConsumerIntegrationTest {
         await { picker.lifecycleScope.coroutineContext[kotlinx.coroutines.Job]!!.children.none() }
         assertNull(field<HomeAssistantWebSocket?>(picker, "webSocket"))
         assertEquals("FAKE-LEGACY", prefs.getString("ha_token", null))
-        for (activity in listOf(setup, settings, picker)) {
+        assertTrue(setup.error!!.contains("недоступен"))
+        assertTrue((setup.statuses + setup.error!!).none { it.contains("FAKE-") })
+        for (activity in listOf(settings, picker)) {
             val name = if (activity is SettingsActivity) "tvHaTokenStatus" else "tvStatus"
             val status = field<TextView>(activity, name).text.toString()
             assertTrue(status.contains("недоступен"))

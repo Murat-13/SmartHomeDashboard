@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Диагностика камеры (docs/diagnostics-tz.md): уровень сигнала Wi-Fi планшета на Android 11 и раньше. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Поиск Home Assistant в домашней сети (docs/setup-tz.md): без него часть планшетов не слышит ответы mDNS.
+         Обычное разрешение, окна не показывает. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Разговор через домофон (docs/talk-tz.md): голос в динамик домофона; запрашивается при первом «Говорить». -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Самообновление из GitHub Releases (этап 09): установка проверенного APK через PackageInstaller;
@@ -36,9 +39,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Мастер первой настройки и вход в Home Assistant (docs/setup-tz.md). Вход поворотом не прерывается. -->
         <activity
             android:name=".SetupActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <activity
+            android:name=".HaLoginActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
 
         <!-- Запись с камер: круглосуточная запись без участия экрана. -->
         <service

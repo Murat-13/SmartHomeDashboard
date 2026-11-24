@@ -2,6 +2,7 @@ package com.example.smarthomedashboard
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.content.res.Configuration
@@ -9,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CompoundButton
 import android.widget.EditText
@@ -21,9 +23,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
 import org.json.JSONObject
-import org.json.JSONArray
 import org.json.JSONException
-import org.json.JSONTokener
 import java.io.IOException
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -151,6 +151,8 @@ class SettingsActivity : PinProtectedActivity() {
 
         btnSave.setOnClickListener { saveConnections() }
         btnSaveWeather?.setOnClickListener { saveConnections() }
+        findViewById<Button?>(R.id.btnHaFind)?.setOnClickListener { findServer() }
+        findViewById<Button?>(R.id.btnHaLogin)?.setOnClickListener { signIn() }
         applyImmediately()
 
         btnSelectMotionSensor.setOnClickListener {
@@ -370,7 +372,7 @@ class SettingsActivity : PinProtectedActivity() {
     /** Применение текста настроек (файл или копия). Неверный формат — сообщение, ничего не записывается. */
     private fun importText(text: String) {
         try {
-            val outcome = applyImport(parseConfigObject(text))
+            val outcome = ConfigImport.apply(this, ConfigImport.parse(text))
             refreshFormAfterImport()
             val message = if (outcome.skipped) {
                 "Настройки импортированы. Данные доступа, PIN и другие неподдерживаемые поля пропущены."
@@ -674,6 +676,44 @@ class SettingsActivity : PinProtectedActivity() {
         }
     }
 
+    /** «Найти в сети»: выбранный адрес — в поле, сохраняется только проверкой или входом. */
+    private fun findServer() {
+        if (!requireAdmin()) return
+        val items = mutableListOf<HaFound>()
+        val adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1)
+        val dialog = AlertDialog.Builder(this).setTitle("Ищу Home Assistant в сети…")
+            .setAdapter(adapter) { _, which -> items.getOrNull(which)?.let { picked ->
+                etHaLocalHost.setText(picked.address)
+                if (etHaRemoteHost.text.isBlank() && picked.external.isNotEmpty()) etHaRemoteHost.setText(picked.external)
+            } }
+            .setNegativeButton("Отмена", null).create()
+        val search = newDiscovery(this) { found ->
+            items.clear(); items.addAll(found)
+            adapter.clear(); adapter.addAll(found.map { listOf(it.title, it.version, it.address).filter(String::isNotBlank).joinToString(" · ") })
+            dialog.setTitle("Выберите Home Assistant")
+        }
+        dialog.setOnDismissListener { search.stop() }
+        dialog.show()
+        search.start()
+    }
+    internal var newDiscovery: (Context, (List<HaFound>) -> Unit) -> HaDiscovery = { context, onChange -> HaDiscovery(context, onChange) }
+
+    /** «Войти заново»: страница Home Assistant или QR; адреса — из полей, сохраняются вместе с новым доступом. */
+    private fun signIn() {
+        if (!requireAdmin()) return
+        val local = etHaLocalHost.text.toString().trim()
+        val remote = etHaRemoteHost.text.toString().trim()
+        if (local.isEmpty() && remote.isEmpty()) {
+            tvHaConnectionStatus.text = "Укажите локальный или внешний адрес Home Assistant"
+            return
+        }
+        if (try { HaServer.origin(local.ifEmpty { remote }).isEmpty() } catch (_: IllegalArgumentException) { true }) {
+            tvHaConnectionStatus.text = "Адрес указан неверно"
+            return
+        }
+        startActivityForResult(HaLoginActivity.intent(this, HaConnector.Target(local, remote), ""), REQUEST_LOGIN)
+    }
+
     private fun cancelProbe() {
         probeAttempt++
         probeHandler.removeCallbacksAndMessages(null)
@@ -896,6 +936,8 @@ class SettingsActivity : PinProtectedActivity() {
             }
             setSavePending(false)
             prefs.edit {
+                // Другой локальный адрес — возможно, другой Home Assistant: его идентификатор узнаётся заново.
+                if (haLocal != prefs.getString("ha_local_host", "").orEmpty().trim()) remove(HaConnector.KEY_UUID)
                 putString("ha_local_host", haLocal)
                 putString("ha_remote_host", haRemote)
                 putBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, allowInsecure)
@@ -987,84 +1029,6 @@ class SettingsActivity : PinProtectedActivity() {
 
     private fun buildExportConfig(): JSONObject = ConfigBackup.build(this)
 
-    private fun parseConfigObject(text: String): JSONObject {
-        val tokener = JSONTokener(text)
-        val json = tokener.nextValue() as? JSONObject ?: throw JSONException("Ожидался объект настроек")
-        require(tokener.nextClean().code == 0)
-        return json
-    }
-
-    private fun configInt(value: Any?): Int {
-        require(value is Int || value is Long && value in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong())
-        return (value as Number).toInt()
-    }
-
-    private fun validateImportedTiles(text: String) {
-        val tokener = JSONTokener(text)
-        val array = tokener.nextValue() as? JSONArray ?: throw JSONException("Ожидался список плиток")
-        require(tokener.nextClean().code == 0)
-        for (i in 0 until array.length()) {
-            val tile = array.getJSONObject(i)
-            // Проверяем типы данных, но не пересобираем JSON: порядок и дополнительные поля сохраняются.
-            for (key in listOf("id", "type", "container", "title")) require(tile.opt(key) is String)
-            for (key in listOf("x", "y", "width", "height")) configInt(tile.opt(key))
-            for (key in listOf("appearance", "conditions", "config", "collapsedSensorIds", "colorRules", "icon", "sourceType")) {
-                if (tile.has(key)) require(tile.opt(key) is String)
-            }
-            if (tile.has("fontSize")) configInt(tile.opt("fontSize"))
-            if (tile.has("enabled")) require(tile.opt("enabled") is Boolean)
-            if (tile.has("page")) require(configInt(tile.opt("page")) >= 0)
-        }
-    }
-
-    /** Итог импорта: пропущены ли поля и какой адрес HA предложить (если он отличается от текущего). */
-    private class ImportOutcome(val skipped: Boolean, val local: String?, val remote: String?)
-
-    private fun applyImportedConfig(json: JSONObject): Boolean = applyImport(json).skipped
-
-    private fun applyImport(json: JSONObject): ImportOutcome {
-        val strings = linkedMapOf<String, String>()
-        val integers = linkedMapOf<String, Int>()
-        val booleans = linkedMapOf<String, Boolean>()
-        ConfigBackup.STRING_DEFAULTS.keys.forEach { key ->
-            if (json.has(key)) strings[key] = json.get(key) as? String ?: throw JSONException("Неверный тип настройки")
-        }
-        ConfigBackup.INT_DEFAULTS.keys.forEach { key ->
-            if (json.has(key)) integers[key] = configInt(json.get(key))
-        }
-        ConfigBackup.BOOLEAN_DEFAULTS.keys.forEach { key ->
-            if (json.has(key)) booleans[key] = json.get(key) as? Boolean ?: throw JSONException("Неверный тип настройки")
-        }
-        val address = ConfigBackup.ADDRESS_KEYS.associateWith { key ->
-            if (json.has(key)) (json.get(key) as? String ?: throw JSONException("Неверный тип настройки")).trim() else null
-        }
-        val tiles = if (json.has("tiles_json")) {
-            (json.get("tiles_json") as? String ?: throw JSONException("Неверный тип списка плиток"))
-                .also { validateImportedTiles(it) }
-        } else null
-        val skipped = json.keys().asSequence().any { it !in ConfigBackup.ALLOWED_KEYS }
-
-        // Вся проверка завершена до первой записи. Отсутствующие поля, секреты, допуск и адрес HA не изменяем.
-        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        if (strings.isNotEmpty() || integers.isNotEmpty() || booleans.isNotEmpty()) {
-            prefs.edit {
-                strings.forEach { (key, value) -> putString(key, value) }
-                integers.forEach { (key, value) -> putInt(key, value) }
-                booleans.forEach { (key, value) -> putBoolean(key, value) }
-            }
-        }
-        if (tiles != null) {
-            getSharedPreferences("tiles_prefs", MODE_PRIVATE).edit { putString("tiles", tiles) }
-        }
-        val local = address[ConfigBackup.HA_LOCAL]
-        val remote = address[ConfigBackup.HA_REMOTE]
-        val currentLocal = prefs.getString(ConfigBackup.HA_LOCAL, "").orEmpty().trim()
-        val currentRemote = prefs.getString(ConfigBackup.HA_REMOTE, "").orEmpty().trim()
-        val differs = (local != null && local != currentLocal) || (remote != null && remote != currentRemote)
-        return if (differs && (!local.isNullOrEmpty() || !remote.isNullOrEmpty()))
-            ImportOutcome(skipped, local ?: currentLocal, remote ?: currentRemote) else ImportOutcome(skipped, null, null)
-    }
-
     /** Перезапуск панели после импорта, как раньше. */
     private fun restartAfterImport() {
         val restartIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
@@ -1117,6 +1081,13 @@ class SettingsActivity : PinProtectedActivity() {
                 }
                 updateBackupStatus()
             }
+            REQUEST_LOGIN -> {
+                val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+                etHaLocalHost.setText(prefs.getString("ha_local_host", ""))
+                etHaRemoteHost.setText(prefs.getString("ha_remote_host", ""))
+                etHaToken.text.clear()
+                tvHaConnectionStatus.text = "Вход выполнен, подключение проверено"
+            }
             REQUEST_SELECT_MOTION_SENSOR -> {
                 val selected = data?.getStringArrayListExtra("selected_sensors")
                 if (!selected.isNullOrEmpty()) {
@@ -1159,6 +1130,7 @@ class SettingsActivity : PinProtectedActivity() {
     companion object {
         private const val REQUEST_SELECT_MOTION_SENSOR = 1004
         private const val REQUEST_BACKUP_FOLDER = 1005
+        private const val REQUEST_LOGIN = 1006
         private const val STATE_SECTION = "settings_section"
         /** Открыть раздел по номеру (3 — «Устройство», где восстановление из копий). */
         const val EXTRA_SECTION = "settings_section_extra"

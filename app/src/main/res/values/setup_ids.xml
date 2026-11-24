@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Строки состояния мастера первой настройки (docs/setup-tz.md): у строки состояния тег занят самим состоянием. -->
+<resources>
+    <item name="setupServerStatus" type="id" />
+    <item name="setupPinStatus" type="id" />
+</resources>

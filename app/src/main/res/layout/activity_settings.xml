@@ -87,6 +87,14 @@
                             android:importantForAutofill="no"
                             android:inputType="textUri" />
 
+                        <Button
+                            android:id="@+id/btnHaFind"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:text="Найти в сети" />
+
                         <TextView style="@style/SettingsLabel" android:text="@string/remote_host_label" />
 
                         <EditText
@@ -125,6 +133,14 @@
                             android:layout_height="wrap_content"
                             android:text="Проверка токена HA..."
                             android:textAppearance="@style/TextAppearance.Modern.Secondary" />
+
+                        <Button
+                            android:id="@+id/btnHaLogin"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_s"
+                            android:text="Войти заново" />
 
                         <EditText
                             android:id="@+id/etHaToken"
