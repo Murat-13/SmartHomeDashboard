@@ -6,4 +6,5 @@
     <item name="setupRoomsStatus" type="id" />
     <item name="setupPinStatus" type="id" />
     <item name="tabletSummary" type="id" />
+    <item name="copyStatus" type="id" />
 </resources>

@@ -73,6 +73,30 @@
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.SmartHomeDashboard.Modern" />
 
+        <!-- Второй планшет (docs/setup-tz.md, часть 5). Ссылка из QR открывает только «Скопировать с другого планшета» и только при
+             первой настройке; копирует человек кнопкой. -->
+        <activity
+            android:name=".CopyOutActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <activity
+            android:name=".CopyInActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="copy"
+                    android:scheme="smarthomedashboard" />
+            </intent-filter>
+        </activity>
+
         <!-- Режим «главный экран»: включается в настройках (HomeScreenMode). Тогда Android сам открывает
              панель после перезагрузки, по кнопке «Домой» и после падения. -->
         <activity-alias

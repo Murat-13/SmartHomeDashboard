@@ -504,6 +504,14 @@
                                 android:text="Импорт из файла" />
                         </LinearLayout>
 
+                        <Button
+                            android:id="@+id/btnCopyOut"
+                            style="@style/Widget.Modern.Button.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/modern_space_m"
+                            android:text="Скопировать на другой планшет" />
+
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"

@@ -96,6 +96,10 @@ class SetupActivity : AppCompatActivity() {
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) addCamera(data)
     }
+    private val copyIn = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) copied(data)
+    }
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) restoreFrom { contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }
     }
@@ -124,7 +128,7 @@ class SetupActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = back()
         })
-        show(step)
+        if (savedInstanceState == null && intent.getBooleanExtra(CopyInActivity.EXTRA_COPIED, false)) copied(intent) else show(step)
     }
 
     private fun restoreState(state: Bundle) {
@@ -225,10 +229,13 @@ class SetupActivity : AppCompatActivity() {
         content.addView(gap(20))
         content.addView(ModernUi.primaryButton(this, "Новая панель") { show(Step.SERVER) }.apply { tag = "setup_new" })
         content.addView(gap())
+        content.addView(ModernUi.secondaryButton(this, "Скопировать с другого планшета") { copyIn.launch(Intent(this, CopyInActivity::class.java)) }
+            .apply { tag = "setup_copy" })
+        content.addView(gap())
         content.addView(ModernUi.secondaryButton(this, "Восстановить из файла копии") { openFile.launch(arrayOf("application/json", "application/octet-stream")) }
             .apply { tag = "setup_restore" })
-        content.addView(ModernUi.caption(this, "Файл копии хранит плитки и настройки. Токен, пароли и PIN в нём не хранятся — " +
-            "после восстановления нужно войти в Home Assistant."))
+        content.addView(ModernUi.caption(this, "Копия — это плитки и настройки. Токен, пароли и PIN в ней не хранятся — после восстановления нужно " +
+            "войти в Home Assistant."))
         buttons(ModernUi.secondaryButton(this, "Пропустить настройку") { openPanel() }.apply { tag = "setup_skip" })
     }
 
@@ -241,18 +248,31 @@ class SetupActivity : AppCompatActivity() {
             val outcome = try {
                 ConfigImport.apply(this@SetupActivity, ConfigImport.parse(text ?: throw JSONException("Файл не прочитан")))
             } catch (_: JSONException) { refused(); return@launch } catch (_: IllegalArgumentException) { refused(); return@launch }
-            restored = true
-            addressText = outcome.local?.ifEmpty { null } ?: outcome.remote.orEmpty()
-            externalText = if (outcome.local.isNullOrEmpty()) "" else outcome.remote.orEmpty()
-            show(Step.SERVER)
+            restoredWith(outcome.local, outcome.remote)
         }
+    }
+
+    /** Скопировано с другого планшета ([CopyInActivity]): настройки уже применены, осталось войти. */
+    private fun copied(data: Intent) = restoredWith(data.getStringExtra(CopyInActivity.EXTRA_LOCAL)?.ifEmpty { null },
+        data.getStringExtra(CopyInActivity.EXTRA_REMOTE)?.ifEmpty { null })
+
+    private fun restoredWith(local: String?, remote: String?) {
+        restored = true
+        addressText = local?.ifEmpty { null } ?: remote.orEmpty()
+        externalText = if (local.isNullOrEmpty()) "" else remote.orEmpty()
+        show(Step.SERVER)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(CopyInActivity.EXTRA_COPIED, false)) copied(intent)
     }
 
     // ---- Home Assistant ----
 
     private fun server() {
         if (restored) {
-            content.addView(ModernUi.body(this, "Плитки и настройки из файла восстановлены. Осталось войти в Home Assistant."))
+            content.addView(ModernUi.body(this, "Плитки и настройки восстановлены. Осталось войти в Home Assistant."))
             content.addView(gap())
         }
         content.addView(ModernUi.title(this, "Найдите свой Home Assistant"))

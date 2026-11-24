@@ -168,6 +168,7 @@ class SettingsActivity : PinProtectedActivity() {
 
         btnExport.setOnClickListener { exportConfig() }
         btnImport.setOnClickListener { importConfig() }
+        findViewById<Button?>(R.id.btnCopyOut)?.setOnClickListener { startActivity(android.content.Intent(this, CopyOutActivity::class.java)) }
         findViewById<Button>(R.id.btnHelp).setOnClickListener { UserHints.showWelcome(this) }
         findViewById<Button>(R.id.btnRestoreHints).setOnClickListener {
             UserHints.restoreAll(this)
