@@ -38,6 +38,7 @@ internal class BaichuanTalkSession(
     private val connectTimeoutMs: Int = 4_000,
     stallMs: Long = SendWatch.STALL_MS
 ) : TalkChannel {
+    override val path get() = "протокол Reolink"
     private val watch = SendWatch(stallMs)
     private lateinit var socket: Socket
     private lateinit var input: DataInputStream

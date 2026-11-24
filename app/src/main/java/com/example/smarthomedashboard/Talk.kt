@@ -53,10 +53,15 @@ internal object G711 {
     private val SEG_END = intArrayOf(0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF)
 }
 
-internal class TalkException(message: String) : java.io.IOException(message)
+internal class TalkException(message: String, /** Не принят логин или пароль: не повторять. */ val auth: Boolean = false) : java.io.IOException(message)
 
-/** Канал голоса в динамик камеры: ONVIF-обратный канал ([TalkSession]) или протокол Reolink ([BaichuanTalkSession]). */
+/**
+ * Канал голоса в динамик камеры: протокол Reolink ([BaichuanTalkSession]), ONVIF-обратный канал ([TalkSession]) или, когда его
+ * нет, HTTP камеры ([HttpTalk]).
+ */
 internal interface TalkChannel : java.io.Closeable {
+    /** Каким путём идёт голос — для журнала и «Проверить звук». */
+    val path: String get() = "ONVIF"
     /** Подключиться (блокирует; фоновый поток) и начать непрерывный поток. Возвращает описание кодека. */
     fun open(): String
     /** Начало фразы. */
@@ -199,10 +204,32 @@ internal object TalkChannels {
                 refused = refusedBy(e)
             }
         }
+        // В прошлый раз обратного канала ONVIF не было, а по HTTP голос открылся — сразу туда; не вышло — обычным путём.
+        if (host in httpHosts) { http(rtsp, host, user, password)?.let { return it }; httpHosts -= host }
         val talk = onvif(rtsp, user, password, readTimeoutMs)
-        try { Log.i("Talk", "Голос — по ONVIF (${talk.open()})") } catch (e: Exception) { talk.close(); throw e }
+        try {
+            Log.i("Talk", "Голос — по ONVIF (${talk.open()})")
+        } catch (e: Exception) {
+            talk.close()
+            val other = if (!looksReolink(rtsp) && host.isNotEmpty() && HttpTalk.worthTrying(e)) otherWay(rtsp, host, user, password) else null
+            return other ?: throw e
+        }
         if (refused) hold(host)
         return talk
+    }
+
+    /** Камеры, у которых голос идёт по HTTP (обратного канала ONVIF нет); до перезапуска приложения. */
+    private val httpHosts = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    /** Для тестов: голос по HTTP камеры. */
+    internal var http: (rtsp: String, host: String, user: String, password: String) -> TalkChannel? = HttpTalk::open
+
+    private fun otherWay(rtsp: String, host: String, user: String, password: String): TalkChannel? = try {
+        http(rtsp, host, user, password)?.also { httpHosts += host }
+    } catch (e: TalkException) {
+        throw e
+    } catch (e: java.io.IOException) {
+        Log.i("Talk", "По HTTP камера голос не взяла: ${e.javaClass.simpleName}")
+        null
     }
 
     private fun refusedBy(e: Exception): Boolean {
@@ -220,7 +247,7 @@ internal object TalkChannels {
         if (pause > 0) Log.i("Talk", "Протокол Reolink не открылся $failures раз подряд — следующая попытка через ${pause / 60_000} мин")
     }
 
-    internal fun forget() = holds.clear()
+    internal fun forget() { holds.clear(); httpHosts.clear() }
 
     /** На сколько протокол Reolink не пробуется после отказа: первого, второго, третьего и дальше подряд. */
     val HOLD_MS = longArrayOf(0, 5 * 60_000L, 30 * 60_000L)
@@ -1053,7 +1080,7 @@ internal class DoorbellTalk(
      * разговор не изображает связь, которой нет. Неверный пароль не повторяем.
      */
     private fun connectFailed(e: Exception) {
-        val auth = (e is BaichuanException && e.auth) || (e is RtspException && e.status == 401)
+        val auth = (e is BaichuanException && e.auth) || (e is RtspException && e.status == 401) || (e is TalkException && e.auth)
         if (inCall && channelLostAt != 0L && !auth && clock() - channelLostAt < CHANNEL_GIVE_UP_MS) {
             val pause = STREET_RETRY_MS[minOf(channelRetries, STREET_RETRY_MS.lastIndex)]
             channelRetries++
@@ -1137,7 +1164,7 @@ internal object TalkCheck {
                 val result = try {
                     val opened = TalkChannels.open(rtsp, user, password.orEmpty(), readTimeoutMs = 10_000)
                     talk = opened
-                    val codec = if (opened is BaichuanTalkSession) "протокол Reolink" else "ONVIF"
+                    val codec = opened.path
                     Log.i("Talk", "Проверка звука: обратный канал открыт ($codec)")
                     Thread.sleep(500) // немного тишины: камера начинает воспроизводить поток
                     opened.beginTalkspurt()
