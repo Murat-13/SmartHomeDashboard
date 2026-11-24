@@ -1,0 +1,20 @@
+# Стенд Home Assistant для проверки первой настройки (docs/setup-tz.md). Только выдуманные устройства, ничего настоящего.
+homeassistant:
+  name: "Стенд"
+  latitude: 0
+  longitude: 0
+  unit_system: metric
+  time_zone: UTC
+  # Внутренний адрес задаётся в prepare.py: его объявляет mDNS (internal_url).
+http:
+  server_port: 8124
+  ip_ban_enabled: true
+  login_attempts_threshold: 5
+frontend:
+config:
+zeroconf:
+websocket_api:
+api:
+history:
+logbook:
+demo:
