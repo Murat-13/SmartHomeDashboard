@@ -13,6 +13,9 @@
 
 Камера D (если есть ролики d_main/d_sub) — «плохие условия» для диагностики (docs/diagnostics-tz.md): линия
 10 Мбит/с (пакеты идут не быстрее), потеря 0,5 % пакетов видео, 20 к/с с датчика 25 к/с (шаги меток 40 и 80 мс).
+У D есть поддельный ONVIF (порт 8580, без проверки пароля): профили, возможности кодировщика, чтение и изменение
+настроек (этап 4 диагностики — «Применить»). Изменение перезапускает потоки D. Файл `onvif_mode` в папке роликов:
+`refuse` — камера отказывает, `ignore` — отвечает «да», но не меняет; иначе — меняет.
 """
 import base64
 import os
@@ -227,6 +230,9 @@ class Camera:
         return {"hik": {1: 0, 2: 1}, "dahua": {0: 0, 1: 1}, "tapo": {1: 0, 2: 1}}[self.style].get(number)
 
 
+CLIENTS = []
+
+
 class Client(threading.Thread):
     def __init__(self, camera, sock):
         super().__init__(daemon=True)
@@ -234,6 +240,7 @@ class Client(threading.Thread):
         with LOCK:
             CONNECTIONS[0] += 1
             self.id = CONNECTIONS[0]
+            CLIENTS.append(self)
         self.send_lock = threading.Lock()
         self.session = "%08d" % random.randrange(10 ** 8)
         self.channels = {}  # 0 — видео, 1 — звук → канал interleaved
@@ -446,6 +453,8 @@ class Client(threading.Thread):
     def close(self):
         with LOCK:
             was, self.open = self.open, False
+            if self in CLIENTS:
+                CLIENTS.remove(self)
             if was and getattr(self, "playing", False) and self.stream is not None:
                 key = (self.camera.title, self.stream.path)
                 ACTIVE[key] = ACTIVE.get(key, 1) - 1
@@ -457,6 +466,132 @@ class Client(threading.Thread):
                 self.sock.close()
             except OSError:
                 pass
+
+
+# ---- Поддельный ONVIF камеры D (этап 4 диагностики) ----
+
+TT = "http://www.onvif.org/ver10/schema"
+ONVIF_CONFIG = {
+    "v0": {"name": "mainVideo", "enc": "H264", "w": 2560, "h": 1920, "fps": 20, "gov": 20, "kbps": 6300, "sizes": [(2560, 1920), (1920, 1080), (1280, 720)]},
+    "v1": {"name": "subVideo", "enc": "H264", "w": 640, "h": 480, "fps": 15, "gov": 15, "kbps": 525, "sizes": [(640, 480), (640, 360)]},
+}
+
+
+def soap(body):
+    return ('<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+            'xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+            'xmlns:tt="%s"><s:Body>%s</s:Body></s:Envelope>' % (TT, body)).encode("utf-8")
+
+
+def encoder_xml(token, tag="trt:Configuration"):
+    c = ONVIF_CONFIG[token]
+    return ('<%s token="%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding>'
+            '<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>4</tt:Quality>'
+            '<tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval>'
+            '<tt:BitrateLimit>%d</tt:BitrateLimit></tt:RateControl><tt:H264><tt:GovLength>%d</tt:GovLength>'
+            '<tt:H264Profile>High</tt:H264Profile></tt:H264><tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type>'
+            '<tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>0</tt:TTL>'
+            '<tt:AutoStart>false</tt:AutoStart></tt:Multicast><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>') % (
+        tag, token, c["name"], c["enc"], c["w"], c["h"], c["fps"], c["kbps"], c["gov"], tag)
+
+
+def onvif_reply(operation, root, host, folder, camera):
+    """Ответ на запрос ONVIF (тело SOAP) или (код, тело) ошибки."""
+    import xml.etree.ElementTree as ET
+    if operation == "GetSystemDateAndTime":
+        t = time.gmtime()
+        return soap('<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime><tt:UTCDateTime><tt:Date><tt:Year>%d</tt:Year>'
+                    '<tt:Month>%d</tt:Month><tt:Day>%d</tt:Day></tt:Date><tt:Time><tt:Hour>%d</tt:Hour><tt:Minute>%d</tt:Minute>'
+                    '<tt:Second>%d</tt:Second></tt:Time></tt:UTCDateTime></tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>'
+                    % (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec))
+    if operation == "GetDeviceInformation":
+        return soap("<tds:GetDeviceInformationResponse><tds:Manufacturer>Stand</tds:Manufacturer><tds:Model>D</tds:Model>"
+                    "<tds:FirmwareVersion>1.0</tds:FirmwareVersion></tds:GetDeviceInformationResponse>")
+    if operation == "GetCapabilities":
+        return soap('<tds:GetCapabilitiesResponse><tds:Capabilities><tt:Media><tt:XAddr>http://%s/onvif/media_service</tt:XAddr>'
+                    '</tt:Media></tds:Capabilities></tds:GetCapabilitiesResponse>' % host)
+    if operation == "GetProfiles":
+        return soap("<trt:GetProfilesResponse>" + "".join(
+            '<trt:Profiles token="00%d" fixed="true"><tt:Name>%s</tt:Name>%s</trt:Profiles>' % (
+                i, ONVIF_CONFIG[t]["name"], encoder_xml(t, "tt:VideoEncoderConfiguration")) for i, t in enumerate(["v0", "v1"]))
+            + "</trt:GetProfilesResponse>")
+    text = ET.tostring(root, encoding="unicode")
+    profile = re.search(r"ProfileToken[^>]*>([^<]+)<", text)
+    token = "v1" if profile and profile.group(1).endswith("1") else "v0"
+    if operation == "GetStreamUri":
+        path = "/Streaming/Channels/10%d" % (2 if token == "v1" else 1)
+        return soap("<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>rtsp://%s:%d%s</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse>"
+                    % (host.split(":")[0], camera.port, path))
+    if operation == "GetVideoEncoderConfigurationOptions":
+        c = ONVIF_CONFIG[token]
+        sizes = "".join("<tt:ResolutionsAvailable><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:ResolutionsAvailable>" % s for s in c["sizes"])
+        return soap("<trt:GetVideoEncoderConfigurationOptionsResponse><trt:Options><tt:QualityRange><tt:Min>1</tt:Min><tt:Max>6</tt:Max>"
+                    "</tt:QualityRange><tt:H264>%s<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>100</tt:Max></tt:GovLengthRange>"
+                    "<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>30</tt:Max></tt:FrameRateRange><tt:EncodingIntervalRange><tt:Min>1</tt:Min>"
+                    "<tt:Max>1</tt:Max></tt:EncodingIntervalRange><tt:H264ProfilesSupported>High</tt:H264ProfilesSupported></tt:H264>"
+                    "<tt:Extension><tt:H264><tt:BitrateRange><tt:Min>256</tt:Min><tt:Max>8192</tt:Max></tt:BitrateRange></tt:H264>"
+                    "</tt:Extension></trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>" % sizes)
+    if operation == "GetVideoEncoderConfiguration":
+        token = re.search(r"ConfigurationToken[^>]*>([^<]+)<", text).group(1)
+        return soap("<trt:GetVideoEncoderConfigurationResponse>%s</trt:GetVideoEncoderConfigurationResponse>" % encoder_xml(token))
+    if operation == "SetVideoEncoderConfiguration":
+        config = next(e for e in root.iter() if e.tag.endswith("}Configuration") or e.tag == "Configuration")
+        token = config.get("token")
+        value = lambda name: next((e.text for e in config.iter() if e.tag.split("}")[-1] == name), None)
+        mode = ""
+        try:
+            mode = open(os.path.join(folder, "onvif_mode")).read().strip()
+        except OSError:
+            pass
+        if mode == "refuse" or token not in ONVIF_CONFIG:
+            log("ONVIF: изменение настроек %s отклонено (режим %s)" % (token, mode or "нет такого"))
+            return 400, soap('<s:Fault><s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:InvalidArgVal</s:Value>'
+                             '</s:Subcode></s:Code><s:Reason><s:Text xml:lang="en">ConfigModify</s:Text></s:Reason></s:Fault>')
+        if mode != "ignore":
+            c = ONVIF_CONFIG[token]
+            before = dict(c)
+            c.update(enc=value("Encoding") or c["enc"], w=int(value("Width") or c["w"]), h=int(value("Height") or c["h"]),
+                     fps=int(value("FrameRateLimit") or c["fps"]), kbps=int(value("BitrateLimit") or c["kbps"]),
+                     gov=int(value("GovLength") or c["gov"]))
+            changed = ", ".join("%s %s → %s" % (k, before[k], c[k]) for k in ("enc", "w", "h", "fps", "kbps", "gov") if before[k] != c[k])
+            log("ONVIF: настройки %s изменены: %s — потоки D перезапускаются" % (token, changed or "без изменений"))
+            with LOCK:
+                kick = [cl for cl in CLIENTS if cl.camera is camera]
+            for cl in kick:
+                cl.close()
+        else:
+            log("ONVIF: изменение %s принято, но не применено (режим ignore)" % token)
+        return soap("<trt:SetVideoEncoderConfigurationResponse/>")
+    return 400, soap('<s:Fault><s:Code><s:Value>s:Receiver</s:Value></s:Code><s:Reason><s:Text xml:lang="en">ActionNotSupported</s:Text>'
+                     '</s:Reason></s:Fault>')
+
+
+def serve_onvif(camera, bind, port, folder):
+    import http.server
+    import xml.etree.ElementTree as ET
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            try:
+                root = ET.fromstring(body)
+                envelope_body = next(e for e in root if e.tag.endswith("}Body"))
+                operation = list(envelope_body)[0].tag.split("}")[-1]
+                reply = onvif_reply(operation, list(envelope_body)[0], self.headers.get("Host", "127.0.0.1:%d" % port), folder, camera)
+            except Exception as e:  # noqa: BLE001 — стенд: любой разбор не удался — ошибка ONVIF
+                log("ONVIF: запрос не разобран: %s" % e.__class__.__name__)
+                reply = (400, soap("<s:Fault/>"))
+            code, data = reply if isinstance(reply, tuple) else (200, reply)
+            self.send_response(code)
+            self.send_header("Content-Type", "application/soap+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    http.server.ThreadingHTTPServer((bind, port), Handler).serve_forever()
 
 
 def serve(camera, bind):
@@ -506,6 +641,9 @@ def main():
                 cam.title, cam.port, s.path, "H.265" if v.hevc else "H.264", v.width, v.height, v.fps, v.kbps,
                 len(v.keys) / max(1, sum(v.keys)) / v.fps, s.audio.kind if s.audio else "нет"))
         threading.Thread(target=serve, args=(cam, bind), daemon=True).start()
+        if cam.title == "StandD":
+            threading.Thread(target=serve_onvif, args=(cam, bind, 8580, folder), daemon=True).start()
+            log("StandD: поддельный ONVIF на порту 8580")
     signal.signal(signal.SIGUSR1, lambda *_: stall(1200))
     signal.signal(signal.SIGUSR2, lambda *_: stall(150))
     log("стенд слушает (pid %d)" % os.getpid())
