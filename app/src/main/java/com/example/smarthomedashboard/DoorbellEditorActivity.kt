@@ -167,6 +167,11 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         })
 
         side.addView(header("Видео"))
+        if (!camera) {
+            val found = kit.label("", 13f).apply { tag = "door_find_result" }
+            side.addView(kit.button("Найти в сети", "door_find_network") { findInNetwork(found) })
+            side.addView(found)
+        }
         if (camera) {
             buildOnvif(side)
             side.addView(entityRow("light", "Прожектор (Home Assistant)", "у Reolink не нужно — находится сам") { config.light })
@@ -459,6 +464,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(text("host", "Адрес камеры (IP в домашней сети)", config.host, "192.168.1.60") { update(config.copy(host = it)) })
         side.addView(number("door_onvif_port", "Порт ONVIF (0 — найти самому)", config.onvifPort, 0..65535) { update(config.copy(onvifPort = it)) })
         val result = kit.label(if (config.model.isNotBlank()) "Камера: ${config.model}" else "", 13f).apply { tag = "door_onvif_result" }
+        side.addView(kit.button("Найти в сети", "door_find_network") { findInNetwork(result) })
         side.addView(kit.button("Найти потоки (ONVIF)", "door_onvif_find") { findStreams(result) })
         side.addView(result)
         side.addView(kit.label("Логин и пароль — ниже, в полях «Логин камеры» и «Пароль камеры». Ссылки на потоки после " +
@@ -487,6 +493,63 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         }
         if (!typed.isNullOrEmpty()) start(typed)
         else CameraPasswords.read(this, secretKey) { saved -> start(saved.orEmpty()) }
+    }
+
+    /** Камеры в домашней сети (docs/setup-tz.md, часть 3): только чтение, без паролей; выбранная — в поля редактора. */
+    private fun findInNetwork(result: TextView) {
+        if (!requireAdmin()) return
+        val items = mutableListOf<CameraFound>()
+        val adapter = android.widget.ArrayAdapter<String>(this, android.R.layout.simple_list_item_1)
+        val dialog = AlertDialog.Builder(this).setTitle("Ищу камеры в сети…")
+            .setAdapter(adapter) { _, which -> items.getOrNull(which)?.let { useFound(it, result) } }
+            .setNegativeButton("Отмена", null).create()
+        val search = newCameraSearch(this, { found ->
+            items.clear(); items.addAll(found)
+            adapter.clear(); adapter.addAll(found.map { listOf(it.title, it.host).distinct().joinToString(" · ") })
+            dialog.setTitle("Выберите камеру")
+        }, { if (items.isEmpty()) dialog.setTitle("Не нашёл. Введите адрес вручную") })
+        dialog.setOnDismissListener { search.stop() }
+        dialog.show()
+        search.start()
+    }
+    internal var newCameraSearch: (android.content.Context, (List<CameraFound>) -> Unit, () -> Unit) -> CameraDiscovery =
+        { context, onChange, done -> CameraDiscovery(context, onChange, done) }
+
+    /** Выбранная камера: адрес в поля, ссылки — сразу, если пароль уже введён или сохранён. */
+    internal fun useFound(found: CameraFound, result: TextView) {
+        if (camera) {
+            update(config.copy(host = found.host, onvifPort = found.onvifPort))
+            window.decorView.findViewWithTag<android.widget.EditText>("door_host")?.setText(found.host)
+            window.decorView.findViewWithTag<android.widget.EditText>("door_onvif_port")?.setText(found.onvifPort.toString())
+        }
+        val user = config.rtspUser.ifBlank { CameraSetup.DEFAULT_USER }
+        val start = { pass: String ->
+            if (pass.isEmpty()) result.text = "Выбрано: ${found.title}. Введите пароль камеры ниже и нажмите «" + (if (camera) "Найти потоки" else "Найти в сети") + "» ещё раз"
+            else {
+                result.text = "Подключаюсь к камере…"
+                Thread({
+                    val outcome = runCatching { CameraSetup.connect(found, user, pass) }
+                    runOnUiThread {
+                        if (isDestroyed) return@runOnUiThread
+                        outcome.onSuccess { ready -> applyFound(ready); result.text = "Найдено: ${ready.title}" +
+                            CameraSetup.decoderNote(ready.info, CameraDiagnosis.decoderFacts()).let { if (it.isEmpty()) "" else "\n$it" } }
+                            .onFailure { e -> result.text = ((e as? CameraSetup.Failed)?.message ?: "Камера не ответила") + "\n" + CameraHints.of(found.brand) }
+                    }
+                }, "camera-setup").apply { isDaemon = true; start() }
+            }
+        }
+        val typed = password
+        if (!typed.isNullOrEmpty()) start(typed) else if (typed == "") start("") else CameraPasswords.read(this, secretKey) { saved -> start(saved.orEmpty()) }
+    }
+
+    private fun applyFound(ready: CameraSetup.Ready) {
+        val c = ready.config
+        // У домофона — прежний набор настроек: только ссылки и логин.
+        update(if (camera) config.copy(host = c.host, onvifPort = c.onvifPort, model = c.model, rtspMain = c.rtspMain, rtspSub = c.rtspSub, rtspUser = c.rtspUser)
+            else config.copy(rtspMain = c.rtspMain, rtspSub = c.rtspSub, rtspUser = c.rtspUser))
+        for ((tag, value) in listOf("door_rtsp_main" to c.rtspMain, "door_rtsp_sub" to c.rtspSub, "door_rtsp_user" to c.rtspUser) +
+            if (camera) listOf("door_onvif_port" to c.onvifPort.toString()) else emptyList())
+            window.decorView.findViewWithTag<android.widget.EditText>(tag)?.setText(value)
     }
 
     private fun applyOnvif(info: Onvif.Info) {

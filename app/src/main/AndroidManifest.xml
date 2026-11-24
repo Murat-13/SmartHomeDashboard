@@ -62,6 +62,13 @@
                 android:value="Continuous recording of the user's own doorbell and security cameras to local storage" />
         </service>
 
+        <activity
+            android:name=".CameraSetupActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+
         <!-- Режим «главный экран»: включается в настройках (HomeScreenMode). Тогда Android сам открывает
              панель после перезагрузки, по кнопке «Домой» и после падения. -->
         <activity-alias
