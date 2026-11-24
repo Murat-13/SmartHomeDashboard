@@ -127,6 +127,8 @@ class SetupDeepTest {
         assertTrue("постоянный доступ", token.value!!.length > 100)
         val before = devices(token.value!!)
         click(setup, "setup_rooms_next")
+        waitFor(20_000, "шаг «Планшет»") { onMain { texts(setup.window.decorView).contains("Главный экран: ") } }
+        click(setup, "setup_next")
         waitFor(20_000, "шаг «Защита»") { onMain { setup.window.decorView.findViewWithTag<View>("setup_pin") } != null }
         val tiles = TileManager(appContext).loadTiles()
         assertTrue("плитки комнат: ${tiles.map { it.title }}", tiles.map { it.title }.containsAll(listOf("Часы · Погода · Климат", "Свет · Гостиная", "Свет · Кухня",

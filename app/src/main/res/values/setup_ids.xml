@@ -5,4 +5,5 @@
     <item name="setupCamerasStatus" type="id" />
     <item name="setupRoomsStatus" type="id" />
     <item name="setupPinStatus" type="id" />
+    <item name="tabletSummary" type="id" />
 </resources>

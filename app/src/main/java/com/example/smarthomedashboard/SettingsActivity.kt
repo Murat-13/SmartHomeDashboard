@@ -539,6 +539,15 @@ class SettingsActivity : PinProtectedActivity() {
                     }
                 }, minOf(1, section.childCount))
             }
+            // «Планшет: есть советы» (docs/setup-tz.md, часть 4) — так же, первой строкой.
+            section.findViewWithTag<View>("rowTabletAdvice")?.let { section.removeView(it) }
+            TabletWatch.text()?.let { text ->
+                section.addView(ModernUi.statusRow(this, ModernUi.Status.WARNING, text).apply {
+                    tag = "rowTabletAdvice"
+                    isClickable = true
+                    setOnClickListener { startActivity(android.content.Intent(this@SettingsActivity, TabletActivity::class.java)) }
+                }, minOf(1, section.childCount))
+            }
             // Планшет (docs/diagnostics-tz.md, часть 2): декодеры и опыт показа видео — сразу после «Калиток и ворот».
             if (section.findViewWithTag<View>("btnTablet") == null) {
                 val after = section.findViewWithTag<View>("btnGates")?.let { section.indexOfChild(it) + 1 } ?: minOf(1, section.childCount)

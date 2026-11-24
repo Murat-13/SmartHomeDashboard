@@ -14,11 +14,14 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Экран «Планшет» (docs/diagnostics-tz.md, часть 2): что этот планшет умеет и что приложение решило для каждой камеры.
+ * Экран «Планшет»: «Проверка планшета» (docs/setup-tz.md, часть 4) — что мешает панели работать круглосуточно; ниже
+ * (docs/diagnostics-tz.md, часть 2) — что планшет умеет с видео и что приложение решило для каждой камеры.
  * Настройки → «Устройство» → «Планшет». «Забыть опыт» — с PIN, как другие изменения настроек.
  */
 class TabletActivity : PinProtectedActivity() {
     private lateinit var content: LinearLayout
+    private var checks: List<TabletCheck.Item> = emptyList()
+    private var checkRun = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,7 +37,7 @@ class TabletActivity : PinProtectedActivity() {
         val pad = resources.getDimensionPixelSize(R.dimen.modern_space_l)
         val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad) }
         column.addView(ModernUi.header(this, "Планшет"))
-        column.addView(ModernUi.secondary(this, "Что этот планшет умеет с видео и что приложение решило для каждой камеры. Опыт " +
+        column.addView(ModernUi.secondary(this, "Что мешает панели работать круглосуточно, что этот планшет умеет с видео и что приложение решило для каждой камеры. Опыт " +
             "показа запоминается и переживает перезапуск; после обновления Android или приложения он собирается заново."))
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "tablet_content" }
         column.addView(content)
@@ -55,6 +58,12 @@ class TabletActivity : PinProtectedActivity() {
     private fun render() {
         if (!::content.isInitialized) return
         content.removeAllViews()
+        content.addView(gap())
+        val summary = ModernUi.statusRow(this, ModernUi.Status.PROGRESS, "Проверяю…").apply { id = R.id.tabletSummary }
+        val checkList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "tablet_checks" }
+        content.addView(ModernUi.section(this, "Проверка планшета", summary, checkList))
+        if (checks.isNotEmpty()) showChecks()
+        readChecks()
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName.orEmpty() } catch (_: Exception) { "" }
         content.addView(gap())
         content.addView(ModernUi.section(this, "Устройство",
@@ -71,6 +80,12 @@ class TabletActivity : PinProtectedActivity() {
             choice("tablet_light", choices.map { it.title }, choices.indexOf(LightMode.choice)) { i ->
                 if (requireAdmin()) { LightMode.set(this, choices[i]); render() } else render()
             }))
+        content.addView(gap())
+        content.addView(ModernUi.section(this, "Экран",
+            ModernUi.switch(this, "Экран OLED: понемногу сдвигать картинку", TabletWatch.oled(this)) { on ->
+                if (requireAdmin()) TabletWatch.setOled(this, on) else render()
+            }.apply { tag = "tablet_oled" },
+            ModernUi.caption(this, "Раз в ${PanelCooling.SHIFT_MINUTES} минуты панель сдвигается на пару пикселей — защита OLED от выгорания. На обычном (LCD) экране не нужно.")))
         val decoders = CameraDiagnosis.decoderFacts()
         content.addView(gap())
         content.addView(ModernUi.section(this, "Декодеры видео",
@@ -99,6 +114,25 @@ class TabletActivity : PinProtectedActivity() {
             rows.ifEmpty { listOf(ModernUi.body(this@TabletActivity, "Плиток с видео нет")) }.forEach { addView(it) }
         }
         content.addView(ModernUi.section(this, "Камеры", list))
+    }
+
+    /** Факты читаются в фоне: список причин закрытия и настройки Android — не в главном потоке. */
+    private fun readChecks() {
+        val run = ++checkRun
+        Thread({
+            val items = try { TabletCheck.evaluate(TabletCheck.read(this)) } catch (_: RuntimeException) { emptyList() }
+            runOnUiThread {
+                if (run != checkRun || isFinishing || isDestroyed) return@runOnUiThread
+                checks = items
+                showChecks()
+            }
+        }, "tablet-check").apply { isDaemon = true; start() }
+    }
+
+    private fun showChecks() {
+        val list = content.findViewWithTag<LinearLayout>("tablet_checks") ?: return
+        TabletCheckView.summary(checks).let { (status, text) -> ModernUi.setStatus(content.findViewById(R.id.tabletSummary), status, text) }
+        TabletCheckView.render(list, checks) { action -> if (requireAdmin()) TabletActions.run(this, action) { readChecks() } }
     }
 
     /** Что решено для основного потока ([main]) на этом планшете. */

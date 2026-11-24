@@ -125,6 +125,9 @@ class MainActivity : AppCompatActivity() {
         private const val PILL_LOSS_DELAY_MS = 5_000L
         private const val PILL_START_DELAY_MS = 15_000L
         private const val PILL_RECOVERED_MS = 3_000L
+        private const val PILL_BOOT_MS = 30_000L
+        /** Меньшая разница яркости не меняет окно. */
+        private const val BRIGHTNESS_STEP = 0.02f
         /** Ошибка операции при живом соединении видна на плашке столько, затем плашка скрывается. */
         internal const val PILL_OPERATION_ERROR_MS = 12_000L
         private const val PAGE_FLING = 1000f
@@ -269,6 +272,12 @@ class MainActivity : AppCompatActivity() {
         clockHandler.post(clockRunnable)
         clockHandler.removeCallbacks(cameraWatchRunnable)
         clockHandler.post(cameraWatchRunnable)
+        PanelDream.shown = true
+        // Первый показ после включения планшета (docs/setup-tz.md, часть 4): итог проверки — плашкой.
+        BootReturn.panelShown(this)?.takeIf { it.tested }?.let { result ->
+            showPill(if (result.how == BootReturn.How.HAND) ModernUi.Status.WARNING else ModernUi.Status.OK, BootReturn.text(result))
+            pillHandler.postDelayed(hidePill, PILL_BOOT_MS)
+        }
     }
 
     override fun onPause() {
@@ -278,6 +287,7 @@ class MainActivity : AppCompatActivity() {
         pinDisabled = null
         haTokenRequest++
         super.onPause()
+        PanelDream.shown = false
         clockHandler.removeCallbacks(clockRunnable)
         clockHandler.removeCallbacks(weatherRefreshRunnable)
         clockHandler.removeCallbacks(cameraWatchRunnable)
@@ -289,9 +299,34 @@ class MainActivity : AppCompatActivity() {
     private val cameraWatchRunnable = object : Runnable {
         override fun run() {
             CameraWatch.tick(this@MainActivity) { if (drawer?.isOpen == true) updateSystemStatus() }
+            TabletWatch.tick(this@MainActivity) { if (!isDestroyed) { coolPanel(); if (drawer?.isOpen == true) updateSystemStatus() } }
+            shiftPanel()
             addressWatch.tick(localRoute == true && viewModel.uiState.value.connectionStatus == ConnectionStatus.Connected)
             clockHandler.postDelayed(this, CAMERA_WATCH_MS)
         }
+    }
+
+    /** Яркость окна панели, которую поставила сама панель: чужую (окно звонка) остывание не трогает. */
+    private var panelBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+
+    /** Аккумулятор слишком горячий — яркость ниже на четверть; остыл — как было ([PanelCooling]). */
+    private fun coolPanel() {
+        val params = window.attributes
+        val brightness = PanelCooling.brightness(this, TabletWatch.hot || PanelCooling.debug(this, "dim"))
+        if (isDimmed || params.screenBrightness != panelBrightness || kotlin.math.abs(brightness - panelBrightness) <= BRIGHTNESS_STEP) return
+        params.screenBrightness = brightness
+        panelBrightness = brightness
+        window.attributes = params
+        Log.i("MainActivity", "Остывание панели: яркость " + if (brightness < 0) "обычная" else "ниже на четверть")
+    }
+
+    private var shiftMinutes = 0
+
+    /** Сдвиг картинки раз в [PanelCooling.SHIFT_MINUTES] минуты — только если выбран экран OLED; не посреди раскрытия и правки. */
+    private fun shiftPanel() {
+        if (!TabletWatch.oled(this)) { PanelCooling.applyShift(this, -1); return }
+        if (isEditMode || panelController.isAnythingExpanded() || ++shiftMinutes % PanelCooling.SHIFT_MINUTES != 0) return
+        PanelCooling.applyShift(this, shiftMinutes / PanelCooling.SHIFT_MINUTES)
     }
 
     /** Тот же Home Assistant по другому адресу (docs/setup-tz.md, решение 6): строка в боковой панели и плашка. */
@@ -504,6 +539,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun installUpdate() = openWithPinCheck { UpdateInstallUi.start(this@MainActivity) }
             override fun cameraAdvice() = openWithPinCheck { openCameraAdvice() }
+            override fun tabletAdvice() = openWithPinCheck { startActivity(Intent(this@MainActivity, TabletActivity::class.java)) }
             override fun newAddress() = openWithPinCheck { offerNewAddress() }
             override fun endAdmin() {
                 PinSecurityUi.session.revoke()
@@ -722,6 +758,9 @@ class MainActivity : AppCompatActivity() {
         val advice = CameraWatch.text()
         if (advice != null) ModernUi.setStatus(side.camerasRow, ModernUi.Status.WARNING, advice)
         side.camerasRow.visibility = if (advice == null) View.GONE else View.VISIBLE
+        val tablet = TabletWatch.text()
+        if (tablet != null) ModernUi.setStatus(side.tabletRow, ModernUi.Status.WARNING, tablet)
+        side.tabletRow.visibility = if (tablet == null) View.GONE else View.VISIBLE
         side.addressRow.visibility = if (addressWatch.suggestion == null) View.GONE else View.VISIBLE
         val update = AppUpdater.drawerText(this)
         if (update != null) ModernUi.setStatus(side.updateRow, ModernUi.Status.PROGRESS, update)
@@ -1107,7 +1146,7 @@ class MainActivity : AppCompatActivity() {
         isDimmed = false
         PanelMotion.dimmed = false
         val params = window.attributes
-        params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE // Системное значение
+        params.screenBrightness = panelBrightness // Системное значение, при остывании — на четверть ниже
         window.attributes = params
         resetIdleTimer()
     }

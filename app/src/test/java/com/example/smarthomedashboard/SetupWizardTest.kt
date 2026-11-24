@@ -76,7 +76,7 @@ class SetupWizardTest {
         assertEquals(SetupActivity.Step.START, activity.step)
         assertTrue(activity.texts().contains("Восстановить из файла копии"))
         activity.click("setup_new")
-        assertTrue(activity.texts().contains("Шаг 2 из 6"))
+        assertTrue(activity.texts().contains("Шаг 2 из 7"))
         onChange!!(listOf(HaFound("http://192.168.77.10:8123", "Мой дом", "2026.11.3", "u1", "https://home.example.com"),
             HaFound("http://192.168.77.11:8123", "Дача", "2025.1.0", "u2")))
         idle()
@@ -153,6 +153,9 @@ class SetupWizardTest {
         await("комнаты не прочитались") { activity.texts().contains("Home Assistant не отвечает") }
         assertFalse("создавать нечего", activity.view("setup_rooms_next").isEnabled)
         activity.click("setup_rooms_skip")
+        assertEquals(SetupActivity.Step.TABLET, activity.step)
+        await("планшет проверен") { activity.texts().contains("Главный экран: обычный рабочий стол") }
+        activity.click("setup_next")
         assertEquals(SetupActivity.Step.PROTECT, activity.step)
         activity.click("setup_next")
         assertEquals(SetupActivity.Step.DONE, activity.step)
@@ -238,7 +241,7 @@ class SetupWizardTest {
         assertEquals(listOf(false), homes)
         offline.added(door, "door-tile", "Калитка", true)
         offline.click("setup_next")
-        assertEquals(SetupActivity.Step.PROTECT, offline.step)
+        assertEquals(SetupActivity.Step.TABLET, offline.step)
         assertEquals(setOf("Часы · Погода · Климат", "Калитка"), tilesNow().map { it.title }.toSet())
     }
 
@@ -312,7 +315,7 @@ class SetupWizardTest {
         idle()
         assertFalse(activity.box("setup_room_bed").isChecked)
         activity.click("setup_rooms_next")
-        assertEquals(SetupActivity.Step.PROTECT, activity.step)
+        assertEquals(SetupActivity.Step.TABLET, activity.step)
         assertEquals(setOf("Часы · Погода · Климат", "Свет · Кухня", "Кухня · Люстра", "Кухня · Подсветка"), activity.tileTitles())
         assertTrue("замок не выбран — прохода нет", GateStore.load(context).isEmpty())
         // Назад и ещё раз: предложенное заменяется (камер нет — назад сразу к комнатам).
@@ -325,6 +328,7 @@ class SetupWizardTest {
         assertTrue(activity.tileTitles().containsAll(listOf("Входная дверь", "Спальня · Ночник")))
         assertEquals(listOf("lock.door"), GateStore.load(context).map { it.open })
         // Убрать на последнем шаге.
+        activity.click("setup_next")
         activity.click("setup_next")
         assertTrue(activity.texts().contains("Плиток на панели: 6"))
         activity.click("setup_undo")
@@ -358,6 +362,7 @@ class SetupWizardTest {
         activity.newCameraSearch = search()
         activity.click("setup_server_skip")
         assertEquals(SetupActivity.Step.CAMERAS, activity.step)
+        activity.click("setup_next")
         activity.click("setup_next")
         activity.click("setup_next")
         assertTrue(activity.texts().contains("Home Assistant: не подключён"))

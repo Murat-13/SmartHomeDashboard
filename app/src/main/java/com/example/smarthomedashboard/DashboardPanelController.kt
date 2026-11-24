@@ -1084,8 +1084,11 @@ internal class DashboardPanelController(
      * «Назад» при раскрытой карточке или группе сворачивает её, а не закрывает панель (найдено агентом 05.11.2026:
      * раньше «Назад» при раскрытой АКБ уводил с панели). false — сворачивать нечего.
      */
+    /** На панели что-то раскрыто: карточка, группа или сенсор. */
+    fun isAnythingExpanded() = expandedGroupId != null || expandedSensorView != null || modernExpansion.isOpen || modernGroup.isOpen
+
     fun collapseOnBack(): Boolean {
-        if (expandedGroupId == null && expandedSensorView == null && !modernExpansion.isOpen && !modernGroup.isOpen) return false
+        if (!isAnythingExpanded()) return false
         collapseAll()
         return true
     }

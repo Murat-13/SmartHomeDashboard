@@ -28,7 +28,7 @@ import org.json.JSONException
  * шаг можно пропустить. На уже настроенной панели не открывается.
  */
 class SetupActivity : AppCompatActivity() {
-    internal enum class Step(val title: String) { START("Начало"), SERVER("Home Assistant"), CAMERAS("Камеры"), ROOMS("Комнаты"), PROTECT("Защита"), DONE("Готово") }
+    internal enum class Step(val title: String) { START("Начало"), SERVER("Home Assistant"), CAMERAS("Камеры"), ROOMS("Комнаты"), TABLET("Планшет"), PROTECT("Защита"), DONE("Готово") }
 
     internal var step = Step.START
         private set
@@ -189,7 +189,7 @@ class SetupActivity : AppCompatActivity() {
         footer.removeAllViews()
         serverStatus = null
         camerasStatus = null
-        when (next) { Step.START -> start(); Step.SERVER -> server(); Step.CAMERAS -> cameras(); Step.ROOMS -> rooms(); Step.PROTECT -> protect(); Step.DONE -> done() }
+        when (next) { Step.START -> start(); Step.SERVER -> server(); Step.CAMERAS -> cameras(); Step.ROOMS -> rooms(); Step.TABLET -> tablet(); Step.PROTECT -> protect(); Step.DONE -> done() }
         (content.parent as? ScrollView)?.scrollTo(0, 0)
     }
 
@@ -200,7 +200,8 @@ class SetupActivity : AppCompatActivity() {
         Step.SERVER -> show(Step.START)
         Step.CAMERAS -> show(Step.SERVER)
         Step.ROOMS -> show(Step.CAMERAS)
-        Step.PROTECT -> show(if (!StarterTiles.canPropose(this)) Step.SERVER else if (connected()) Step.ROOMS else Step.CAMERAS)
+        Step.TABLET -> show(if (!StarterTiles.canPropose(this)) Step.SERVER else if (connected()) Step.ROOMS else Step.CAMERAS)
+        Step.PROTECT -> show(Step.TABLET)
         Step.DONE -> show(Step.PROTECT)
     }
 
@@ -501,7 +502,7 @@ class SetupActivity : AppCompatActivity() {
         if (connected()) { show(Step.ROOMS); return }
         // Без Home Assistant комнат нет: на панели — часы и добавленные камеры.
         if (cameras.isNotEmpty()) createPlan(emptyProposal(), setOf(StarterPlan.CLIMATE))
-        show(Step.PROTECT)
+        show(Step.TABLET)
     }
 
     /** Добавленные камеры с тем, что о них знает Home Assistant (датчики событий, камера для видео вне дома). */
@@ -524,7 +525,7 @@ class SetupActivity : AppCompatActivity() {
     private fun connected() = prefs().getBoolean(HaConnector.KEY_DONE, false)
 
     /** Панель уже с плитками (восстановлена из файла) — предлагать нечего. */
-    private fun afterLogin() = if (StarterTiles.canPropose(this)) Step.CAMERAS else Step.PROTECT
+    private fun afterLogin() = if (StarterTiles.canPropose(this)) Step.CAMERAS else Step.TABLET
 
     private fun rooms() {
         content.addView(ModernUi.title(this, "Что показать на панели"))
@@ -538,7 +539,7 @@ class SetupActivity : AppCompatActivity() {
             ModernUi.secondaryButton(this, "Пропустить") {
                 // Комнаты не нужны, но добавленные камеры остаются.
                 if (cameras.isNotEmpty()) createPlan(emptyProposal(), setOf(StarterPlan.CLIMATE))
-                show(Step.PROTECT)
+                show(Step.TABLET)
             }.apply { tag = "setup_rooms_skip" },
             ModernUi.primaryButton(this, "Создать плитки") { createTiles() }.apply { tag = "setup_rooms_next"; isEnabled = false })
         proposal?.let { renderRooms(it) } ?: loadRooms()
@@ -655,7 +656,44 @@ class SetupActivity : AppCompatActivity() {
         val plan = currentPlan(p, selected)
         val done = if (plan.tiles.isEmpty()) { if (StarterTiles.untouched(this)) StarterTiles.undo(this); true } else StarterTiles.apply(this, plan)
         if (!done) note("Панель уже изменили — плитки не созданы")
-        show(Step.PROTECT)
+        show(Step.TABLET)
+    }
+
+    // ---- Планшет ----
+
+    private var tabletChecks: List<TabletCheck.Item> = emptyList()
+    private var tabletRun = 0
+
+    private fun tablet() {
+        content.addView(ModernUi.title(this, "Планшет на стене"))
+        content.addView(ModernUi.body(this, "Чтобы панель работала круглосуточно и возвращалась сама. Необязательно: этот же список — в Настройках → " +
+            "«Устройство» → «Планшет»."))
+        content.addView(ModernUi.statusRow(this, ModernUi.Status.PROGRESS, "Проверяю…").apply { id = R.id.tabletSummary })
+        content.addView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "tablet_checks" })
+        buttons(ModernUi.secondaryButton(this, "Назад") { back() },
+            ModernUi.primaryButton(this, "Дальше") { show(Step.PROTECT) }.apply { tag = "setup_next" })
+        if (tabletChecks.isNotEmpty()) showTablet()
+        if (resumed) readTablet()
+    }
+
+    /** Факты читаются в фоне; после экранов Android — заново (onResume). */
+    private fun readTablet() {
+        val run = ++tabletRun
+        Thread({
+            val items = try { TabletCheck.evaluate(TabletCheck.read(this)) } catch (_: RuntimeException) { emptyList() }
+            runOnUiThread {
+                if (run != tabletRun || isFinishing || isDestroyed) return@runOnUiThread
+                tabletChecks = items
+                showTablet()
+            }
+        }, "setup-tablet").apply { isDaemon = true; start() }
+    }
+
+    private fun showTablet() {
+        if (step != Step.TABLET) return
+        val list = content.findViewWithTag<LinearLayout>("tablet_checks") ?: return
+        TabletCheckView.summary(tabletChecks).let { (status, text) -> ModernUi.setStatus(content.findViewById(R.id.tabletSummary), status, text) }
+        TabletCheckView.render(list, tabletChecks) { action -> TabletActions.run(this, action) { readTablet() } }
     }
 
     // ---- Защита ----
@@ -746,6 +784,8 @@ class SetupActivity : AppCompatActivity() {
         if (step == Step.SERVER) startDiscovery()
         if (step == Step.CAMERAS && foundCameras.isEmpty()) searchCameras()
         refreshPin()
+        if (step == Step.TABLET) readTablet()
+        BootReturn.panelShown(this)
     }
 
     override fun onPause() {

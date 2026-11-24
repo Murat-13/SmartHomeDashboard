@@ -33,6 +33,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         fun stateChanged(open: Boolean) {}
         /** «Камеры: есть советы» — открыть диагностику камеры (через PIN). */
         fun cameraAdvice() {}
+        /** «Планшет: есть советы» — экран «Планшет» (через PIN). */
+        fun tabletAdvice() {}
         /** «Home Assistant: новый адрес» — вопрос о переключении (через PIN). */
         fun newAddress() {}
         /** Подпись текущей страницы, например «Страница 2 из 3»; null — не показывать. */
@@ -75,6 +77,12 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         tag = "drawer_cameras"
         setOnClickListener { close(); host.cameraAdvice() }
     }
+    /** Видна, только когда планшету что-то мешает и держится ([TabletWatch]); касание — «Проверка планшета». */
+    val tabletRow = ModernUi.statusRow(context, ModernUi.Status.WARNING, "").apply {
+        visibility = View.GONE
+        isClickable = true
+        setOnClickListener { close(); host.tabletAdvice() }
+    }
     /** Видна, только когда тот же Home Assistant найден в сети по другому адресу ([HaAddressWatch]). */
     val addressRow = ModernUi.statusRow(context, ModernUi.Status.WARNING, "Home Assistant: новый адрес").apply {
         visibility = View.GONE
@@ -105,7 +113,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(16), dp(12), dp(16))
             addView(ModernUi.caption(context, "Состояние"))
-            listOf(haRow, routeRow, addressRow, internetRow, backupRow, camerasRow, updateRow).forEach { addView(it) }
+            listOf(haRow, routeRow, addressRow, internetRow, backupRow, camerasRow, tabletRow, updateRow).forEach { addView(it) }
             fun action(view: View) = addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
             action(updateButton)
