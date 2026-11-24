@@ -25,6 +25,7 @@
     <exclude domain="sharedpref" path="camera_secrets.xml" />
     <!-- Проверка планшета: заряд, нагрев и отметки — только этого планшета. -->
     <exclude domain="sharedpref" path="tablet_watch.xml" />
+    <exclude domain="sharedpref" path="camera_tls.xml" />
     <exclude domain="file" path="doorbell_phrases/" />
     <exclude domain="database" path="recording_index.db" />
     <exclude domain="database" path="recording_index.db-journal" />

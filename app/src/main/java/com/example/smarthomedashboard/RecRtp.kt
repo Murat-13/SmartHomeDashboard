@@ -96,6 +96,8 @@ internal abstract class VideoDepacketizer(val codec: Codec) {
     private var corrupt = false
     private var waitKey = true
     private var fragment: ByteArrayOutputStream? = null
+    /** Параметры и пояснения (SPS, PPS, SEI), пришедшие отдельно от кадра. */
+    private var lead = mutableListOf<ByteArray>()
 
     val hasParameters get() = sps != null && pps != null && (codec == Codec.H264 || vps != null)
 
@@ -129,12 +131,19 @@ internal abstract class VideoDepacketizer(val codec: Codec) {
         val wasCorrupt = corrupt
         corrupt = false
         if (wasCorrupt) {
+            lead = mutableListOf()
             // Кадр испорчен (даже если от него ничего не осталось): дальше — только с ключевого.
             droppedFrames++
             waitKey = true
             return null
         }
         if (nals.isEmpty()) return null
+        if (nals.none { isPicture(it) }) {
+            // Камера ставит маркер и на SPS/PPS (Tapo, Reolink Duo): это ещё не кадр, а начало следующего.
+            if (lead.size + nals.size <= MAX_LEAD) lead += nals else lead = nals
+            return null
+        }
+        if (lead.isNotEmpty()) { nals.addAll(0, lead); lead = mutableListOf() }
         val key = nals.any { isKey(it) }
         if (waitKey) {
             if (!key || !hasParameters) { droppedFrames++; return null }
@@ -145,6 +154,11 @@ internal abstract class VideoDepacketizer(val codec: Codec) {
 
     protected fun nal(data: ByteArray) {
         if (data.isEmpty()) return
+        // Параметры и кадр одним куском через стартовые коды (так делает часть камер): разобрать на части.
+        if (!isPicture(data)) {
+            val parts = AnnexB.split(data)
+            if (parts.size > 1) { parts.forEach(::nal); return }
+        }
         when (parameterKind(data)) {
             0 -> vps = data
             1 -> sps = data
@@ -162,6 +176,8 @@ internal abstract class VideoDepacketizer(val codec: Codec) {
 
     protected abstract fun payload(data: ByteArray, off: Int, len: Int)
     protected abstract fun isKey(nal: ByteArray): Boolean
+    /** Часть картинки (срез), а не параметры и пояснения. */
+    protected abstract fun isPicture(nal: ByteArray): Boolean
     /** 0 — VPS, 1 — SPS, 2 — PPS, -1 — прочее. */
     protected abstract fun parameterKind(nal: ByteArray): Int
 
@@ -186,7 +202,41 @@ internal abstract class VideoDepacketizer(val codec: Codec) {
             else -> null
         }
 
-        private fun decode(b64: String): ByteArray? = RecBase64.decode(b64)?.takeIf { it.isNotEmpty() }
+        private const val MAX_LEAD = 16
+        private fun decode(b64: String): ByteArray? = RecBase64.decode(b64)?.let(AnnexB::strip)?.takeIf { it.isNotEmpty() }
+    }
+}
+
+/** Стартовые коды Annex-B (00 00 01, 00 00 00 01) там, где их быть не должно. */
+internal object AnnexB {
+    /** Без стартового кода в начале и без нулей в конце. */
+    fun strip(nal: ByteArray): ByteArray {
+        var from = 0
+        while (from < nal.size && nal[from].toInt() == 0) from++
+        from = if (from >= 2 && from < nal.size && nal[from].toInt() == 1) from + 1 else 0
+        var to = nal.size
+        while (to > from && nal[to - 1].toInt() == 0) to--
+        return if (from == 0 && to == nal.size) nal else nal.copyOfRange(from, to)
+    }
+
+    /** Части, разделённые стартовыми кодами; их нет — один элемент, тот же массив. */
+    fun split(data: ByteArray): List<ByteArray> {
+        val cuts = ArrayList<Int>()
+        var i = 0
+        while (i + 2 < data.size) {
+            if (data[i + 2].toInt() and 0xFF > 1) { i += 3; continue }
+            if (data[i].toInt() == 0 && data[i + 1].toInt() == 0 && data[i + 2].toInt() == 1) { cuts += i; i += 3 } else i++
+        }
+        if (cuts.isEmpty()) return listOf(data)
+        val out = ArrayList<ByteArray>()
+        var from = 0
+        for (cut in cuts + data.size) {
+            var to = cut
+            while (to > from && data[to - 1].toInt() == 0) to--
+            if (to > from) out += data.copyOfRange(from, to)
+            from = cut + 3
+        }
+        return out
     }
 }
 
@@ -219,6 +269,7 @@ internal class H264Depacketizer : VideoDepacketizer(Codec.H264) {
     }
 
     override fun isKey(nal: ByteArray) = (nal[0].toInt() and 0x1F) == 5
+    override fun isPicture(nal: ByteArray) = (nal[0].toInt() and 0x1F) in 1..5
     override fun parameterKind(nal: ByteArray) = when (nal[0].toInt() and 0x1F) { 7 -> 1; 8 -> 2; else -> -1 }
 }
 
@@ -256,6 +307,7 @@ internal class H265Depacketizer : VideoDepacketizer(Codec.H265) {
     }
 
     override fun isKey(nal: ByteArray) = ((nal[0].toInt() shr 1) and 0x3F) in 16..21
+    override fun isPicture(nal: ByteArray) = ((nal[0].toInt() shr 1) and 0x3F) < 32
     override fun parameterKind(nal: ByteArray) = when ((nal[0].toInt() shr 1) and 0x3F) { 32 -> 0; 33 -> 1; 34 -> 2; else -> -1 }
 }
 

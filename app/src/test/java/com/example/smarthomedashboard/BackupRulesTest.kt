@@ -71,6 +71,7 @@ class BackupRulesTest {
             assertTrue("Голос владельца — не в облако", ("file" to "doorbell_phrases/") in excludes)
             assertFalse("Уведомление и автоответ — только этого планшета", rulesPermit(root, "doorbell_away.xml"))
             assertFalse("Пароли камер — не в облако", rulesPermit(root, "camera_secrets.xml"))
+            assertFalse("Отпечатки сертификатов камер — только этого планшета", rulesPermit(root, "camera_tls.xml"))
             assertFalse("Проверка планшета — только этого планшета", rulesPermit(root, "tablet_watch.xml"))
         }
     }

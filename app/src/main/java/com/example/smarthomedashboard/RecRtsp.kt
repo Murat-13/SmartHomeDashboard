@@ -8,8 +8,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.net.URI
-import java.security.MessageDigest
 import java.util.Locale
 
 /**
@@ -64,7 +64,7 @@ internal object SdpParser {
                 }
                 media == null -> {}
                 line.startsWith("a=rtpmap:") -> {
-                    val body = line.substringAfter(':')
+                    val body = line.substringAfter(':').trim()
                     if (body.substringBefore(' ').toIntOrNull() == pt) {
                         val spec = body.substringAfter(' ').trim().split('/')
                         encoding = spec.getOrNull(0)?.uppercase(Locale.ROOT).orEmpty()
@@ -73,7 +73,7 @@ internal object SdpParser {
                     }
                 }
                 line.startsWith("a=fmtp:") -> {
-                    val body = line.substringAfter(':')
+                    val body = line.substringAfter(':').trim()
                     if (body.substringBefore(' ').toIntOrNull() == pt) {
                         fmtp = body.substringAfter(' ').split(';').mapNotNull { item ->
                             val key = item.substringBefore('=').trim().lowercase(Locale.ROOT)
@@ -89,17 +89,39 @@ internal object SdpParser {
         return tracks
     }
 
+    /**
+     * Адрес с нашим узлом: часть камер пишет в Content-Base и control адрес, по которому их не достать (0.0.0.0, внутренний
+     * адрес за роутером, старый IP). Путь и параметры — как прислала камера, узел и порт — те, куда подключились.
+     */
+    fun sameHost(url: String, request: String): String {
+        val scheme = request.substringBefore("://", "")
+        if (scheme.isEmpty() || !url.contains("://")) return url
+        val ours = request.substringAfter("://").substringBefore('/').substringBefore('?').substringAfterLast('@')
+        val rest = url.substringAfter("://")
+        val end = rest.indexOfFirst { it == '/' || it == '?' }.let { if (it < 0) rest.length else it }
+        return if (rest.substring(0, end).substringAfterLast('@').equals(ours, true)) url else "$scheme://$ours${rest.substring(end)}"
+    }
+
     /** Адрес дорожки: абсолютный control, «*» — базовый адрес, иначе относительный к Content-Base. */
     fun resolve(base: String, control: String): String = when {
         control.isEmpty() || control == "*" -> base
         control.startsWith("rtsp://", ignoreCase = true) || control.startsWith("rtsps://", ignoreCase = true) -> control
         base.endsWith("/") -> base + control
+        control.startsWith("/") || control.startsWith("?") -> base + control
         else -> "$base/$control"
+    }
+
+    /** Та же дорожка по правилам адресов (RFC 3986): часть камер ждёт её так, а не приписанной в конец. Не отличается — null. */
+    fun resolveRfc(base: String, control: String): String? {
+        if (control.isEmpty() || control == "*" || control.contains("://")) return null
+        return runCatching { URI(base).resolve(control).toString() }.getOrNull()?.takeIf { it != resolve(base, control) }
     }
 }
 
 /** Ответ RTSP (заголовки — ключи в нижнем регистре). */
-internal class RtspResponse(val status: Int, val reason: String, val headers: Map<String, String>, val body: ByteArray) {
+internal class RtspResponse(val status: Int, val reason: String, val headers: Map<String, String>, val body: ByteArray,
+                            /** Все `WWW-Authenticate` ответа: камеры предлагают несколько вариантов. */
+                            val challenges: List<String> = emptyList()) {
     fun header(name: String) = headers[name.lowercase(Locale.ROOT)]
     val bodyText get() = String(body, Charsets.UTF_8)
 }
@@ -132,8 +154,9 @@ internal class RtspSession(
         fun onRtcp(setup: Setup, packet: ByteArray, length: Int) {}
     }
 
-    private val requestUrl = url.trim()
-    private val uri = URI(requestUrl)
+    /** UniFi Protect даёт ссылку с `?enableSrtp` — без него поток идёт тем же TLS, обычным RTP. */
+    private var requestUrl = url.trim().removeSuffix("?enableSrtp")
+    private var uri = URI(requestUrl)
     private var socket: Socket? = null
     private lateinit var input: InputStream
     private lateinit var output: OutputStream
@@ -141,7 +164,7 @@ internal class RtspSession(
     private var session: String? = null
     private var sessionTimeoutSec = 60
     private var keepAliveMethod = "GET_PARAMETER"
-    private var auth: Challenge? = null
+    private var auth: DigestAuth? = null
     @Volatile private var closed = false
     var setups: List<Setup> = emptyList()
         private set
@@ -149,28 +172,13 @@ internal class RtspSession(
     var sdp: String = ""
         private set
 
-    private data class Challenge(val scheme: String, val realm: String, val nonce: String, val qop: String?, val opaque: String?)
-    private var nonceCount = 0
-
     /** Подключиться и начать воспроизведение дорожек, выбранных [wanted]. Возвращает выполненные SETUP. */
     fun open(wanted: (SdpTrack) -> Boolean): List<Setup> {
-        val host = uri.host ?: throw RtspException("Нет адреса камеры")
-        val port = if (uri.port > 0) uri.port else 554
-        val s = Socket()
-        socket = s
-        if (closed) throw RtspException("Сессия закрыта")
-        s.connect(InetSocketAddress(host, port), connectTimeoutMs)
-        s.soTimeout = readTimeoutMs
-        s.tcpNoDelay = true
-        input = BufferedInputStream(s.getInputStream(), 64 * 1024)
-        output = s.getOutputStream()
-
-        val options = request("OPTIONS", requestUrl)
-        options.header("public")?.let { public ->
-            if (!public.contains("GET_PARAMETER", ignoreCase = true)) keepAliveMethod = "OPTIONS"
-        }
-        val describe = request("DESCRIBE", requestUrl, listOf("Accept" to "application/sdp"))
-        val base = (describe.header("content-base") ?: describe.header("content-location") ?: requestUrl).trimEnd()
+        connect()
+        options()
+        val describe = describe()
+        val base = SdpParser.sameHost((describe.header("content-base") ?: describe.header("content-location") ?: requestUrl).trim()
+            .takeIf { it.contains("://") } ?: requestUrl, requestUrl)
         sdp = describe.bodyText
         val tracks = SdpParser.parse(describe.bodyText).filter(wanted)
         if (tracks.isEmpty()) throw RtspException("Нет подходящих дорожек в SDP")
@@ -178,8 +186,13 @@ internal class RtspSession(
         val done = mutableListOf<Setup>()
         for ((index, track) in tracks.withIndex()) {
             val channel = index * 2
-            val reply = request("SETUP", SdpParser.resolve(base, track.control),
-                listOf("Transport" to "RTP/AVP/TCP;unicast;interleaved=$channel-${channel + 1}"))
+            val reply = try {
+                setup(base, track, channel)
+            } catch (e: RtspException) {
+                // Камера объявила звук, но не отдаёт его (или отдаёт один поток за раз): видео важнее.
+                if (track.isVideo || e.status == UNAUTHORIZED || e.status == 0 || require != null) throw e
+                continue
+            }
             reply.header("session")?.let { value ->
                 session = value.substringBefore(';').trim()
                 Regex("timeout=(\\d+)").find(value)?.groupValues?.get(1)?.toIntOrNull()?.let {
@@ -190,9 +203,76 @@ internal class RtspSession(
             val assigned = Regex("interleaved=(\\d+)").find(transport)?.groupValues?.get(1)?.toIntOrNull() ?: channel
             done += Setup(track, assigned)
         }
-        request("PLAY", base, listOf("Range" to "npt=0.000-"))
+        if (done.isEmpty()) throw RtspException("Камера не отдала ни одной дорожки")
+        try {
+            request("PLAY", base, listOf("Range" to "npt=0.000-"))
+        } catch (e: RtspException) {
+            // Content-Base камеры годится для дорожек, но не для PLAY — пробуем адрес, по которому пришли.
+            if (e.status !in NOT_THAT_URL || base == requestUrl) throw e
+            request("PLAY", requestUrl, listOf("Range" to "npt=0.000-"))
+        }
         setups = done
         return done
+    }
+
+    /** SETUP дорожки; камера не нашла её по обычному адресу — ещё раз по правилам RFC (так у части регистраторов). */
+    private fun setup(base: String, track: SdpTrack, channel: Int): RtspResponse {
+        val transport = listOf("Transport" to "RTP/AVP/TCP;unicast;interleaved=$channel-${channel + 1}")
+        return try {
+            request("SETUP", SdpParser.sameHost(SdpParser.resolve(base, track.control), requestUrl), transport)
+        } catch (e: RtspException) {
+            val other = if (e.status in OTHER_CONTROL) SdpParser.resolveRfc(base, track.control) else null
+            request("SETUP", SdpParser.sameHost(other ?: throw e, requestUrl), transport)
+        }
+    }
+
+    private fun connect() {
+        val host = uri.host ?: throw RtspException("Нет адреса камеры")
+        val secure = uri.scheme.equals("rtsps", ignoreCase = true)
+        val port = if (uri.port > 0) uri.port else if (secure) CameraTls.PORT else RTSP_PORT
+        var s = Socket()
+        socket = s
+        if (closed) throw RtspException("Сессия закрыта")
+        s.connect(InetSocketAddress(host, port), connectTimeoutMs)
+        s.soTimeout = readTimeoutMs
+        s.tcpNoDelay = true
+        if (secure) {
+            s = CameraTls.wrap(s, host, port)
+            socket = s
+        }
+        input = BufferedInputStream(s.getInputStream(), 64 * 1024)
+        output = s.getOutputStream()
+    }
+
+    /** OPTIONS нужен только ради способа держать сессию: камера, которая его не понимает, всё равно покажет видео. */
+    private fun options() {
+        try {
+            request("OPTIONS", requestUrl).header("public")?.let { public ->
+                if (!public.contains("GET_PARAMETER", ignoreCase = true)) keepAliveMethod = "OPTIONS"
+            }
+        } catch (e: RtspException) {
+            if (e.status == 0 || e.status == UNAUTHORIZED) throw e
+            keepAliveMethod = "GET_PARAMETER"
+        }
+    }
+
+    /** DESCRIBE; регистратор может отправить на другой адрес (301/302) — только в домашней сети и не больше двух раз. */
+    private fun describe(): RtspResponse {
+        repeat(MAX_REDIRECTS) {
+            val reply = request("DESCRIBE", requestUrl, listOf("Accept" to "application/sdp"), redirects = true)
+            if (reply.status in 200..299) return reply
+            val location = reply.header("location")?.trim().orEmpty()
+            val target = runCatching { URI(location) }.getOrNull()
+            val host = target?.host
+            if (host == null || !target.scheme.orEmpty().startsWith("rtsp", true) ||
+                !host.equals(uri.host, true) && !HomeAssistantAddress.isPrivateNetwork(host)) throw RtspException("DESCRIBE: ${reply.status} ${reply.reason}", reply.status)
+            val moved = !host.equals(uri.host, true) || target.port != uri.port
+            requestUrl = location
+            uri = target
+            auth = null
+            if (moved) { runCatching { socket?.close() }; connect() }
+        }
+        throw RtspException("Камера перенаправляет по кругу")
     }
 
     /** Читать поток до ошибки, конца или [close]. */
@@ -201,8 +281,18 @@ internal class RtspSession(
         for (s in setups) { byChannel[s.rtpChannel] = s to true; byChannel[s.rtpChannel + 1] = s to false }
         var buffer = ByteArray(64 * 1024)
         var nextKeepAlive = clock() + sessionTimeoutSec * 500L
+        var mayRepeat = true
+        var quiet = 0
         while (!closed) {
-            val first = input.read()
+            val first = try {
+                input.read()
+            } catch (e: SocketTimeoutException) {
+                // В сессии только с обратным каналом камера молчит: держим её запросом, а не считаем оборванной.
+                if (require == null || ++quiet > QUIET_LIMIT) throw e
+                send(keepAliveMethod, requestUrl, emptyList())
+                continue
+            }
+            quiet = 0
             if (first < 0) throw EOFException("Камера закрыла соединение")
             if (first == '$'.code) {
                 val channel = readByte()
@@ -211,18 +301,58 @@ internal class RtspSession(
                 readFully(buffer, length)
                 val target = byChannel[channel]
                 if (target != null) {
-                    if (target.second) sink.onRtp(target.first, buffer, length) else sink.onRtcp(target.first, buffer, length)
+                    val rtp = target.second && !(length >= 2 && (buffer[1].toInt() and 0xFF) in RTCP_TYPES)
+                    if (rtp) sink.onRtp(target.first, buffer, length) else sink.onRtcp(target.first, buffer, length)
                 }
-            } else {
-                // Ответ на keep-alive или запрос сервера внутри потока: дочитать и пропустить.
-                readMessage(first.toChar().toString())
-            }
+            } else if (first == '\r'.code || first == '\n'.code) {
+                // Лишний перевод строки между кадрами.
+            } else if (isMessage(first)) {
+                // Ответ на keep-alive (или запрос сервера внутри потока). «Нужна новая авторизация» — один повтор сразу: иначе
+                // сессия держалась бы только следующим запросом, а к нему камера её уже закроет.
+                val reply = readMessage(first.toChar().toString())
+                val fresh = if (reply?.status == UNAUTHORIZED && user.isNotEmpty()) DigestAuth.choose(reply.challenges) else null
+                if (fresh != null) {
+                    auth = fresh
+                    if (mayRepeat) { mayRepeat = false; send(keepAliveMethod, requestUrl, emptyList()) }
+                }
+            } else resync(byChannel.keys)
             val now = clock()
             if (now >= nextKeepAlive) {
                 nextKeepAlive = now + sessionTimeoutSec * 500L
+                mayRepeat = true
                 send(keepAliveMethod, requestUrl, emptyList())
             }
         }
+    }
+
+    /** Начинается ли здесь сообщение RTSP (первый символ уже прочитан). */
+    private fun isMessage(first: Int): Boolean {
+        if (first.toChar() !in 'A'..'Z') return false
+        input.mark(MESSAGE_PREFIX)
+        val rest = ByteArray(MESSAGE_PREFIX - 1)
+        readFully(rest, rest.size)
+        input.reset()
+        return first.toChar() + String(rest, Charsets.ISO_8859_1) in MESSAGES
+    }
+
+    /**
+     * Мусор между кадрами (так делают дешёвые камеры после потери пакета): ищем начало следующего кадра `$` с каналом, который
+     * камера нам назначила. Слишком много мусора — это уже не поток.
+     */
+    private fun resync(channels: Set<Int>) {
+        var previous = -1
+        repeat(MAX_GARBAGE) {
+            val b = input.read()
+            if (b < 0) throw EOFException("Камера закрыла соединение")
+            if (previous == '$'.code && b in channels) {
+                val length = (readByte() shl 8) or readByte()
+                // Кадр, на котором сбились, пропускаем целиком: следующий начинается ровно.
+                input.skipNBytesCompat(length)
+                return
+            }
+            previous = b
+        }
+        throw RtspException("Камера прислала не поток")
     }
 
     /** Отправить RTP-пакет камере по каналу [channel] (обратный канал); из любого потока. */
@@ -261,17 +391,22 @@ internal class RtspSession(
         try { s.close() } catch (_: Exception) {}
     }
 
-    private fun request(method: String, url: String, headers: List<Pair<String, String>> = emptyList()): RtspResponse {
+    private fun request(method: String, url: String, headers: List<Pair<String, String>> = emptyList(), redirects: Boolean = false): RtspResponse {
         var reply = exchange(method, url, headers)
-        if (reply.status == 401) {
-            val challenge = parseChallenge(reply.headers["www-authenticate"])
-                ?: throw RtspException("Камера требует авторизацию неизвестного вида", 401)
-            if (user.isEmpty()) throw RtspException("Камера требует логин и пароль", 401)
+        if (reply.status == UNAUTHORIZED) {
+            val challenge = DigestAuth.choose(reply.challenges)
+                ?: throw RtspException("Камера требует авторизацию неизвестного вида", UNAUTHORIZED)
+            if (user.isEmpty()) throw RtspException("Камера требует логин и пароль", UNAUTHORIZED)
             auth = challenge
-            nonceCount = 0
             reply = exchange(method, url, headers)
-            if (reply.status == 401) throw RtspException("Неверный логин или пароль камеры", 401)
+            // «Устарел nonce» (живёт у камеры секунды) — не отказ в пароле: ещё раз с новым.
+            if (reply.status == UNAUTHORIZED) DigestAuth.choose(reply.challenges)?.takeIf { it.stale }?.let {
+                auth = it
+                reply = exchange(method, url, headers)
+            }
+            if (reply.status == UNAUTHORIZED) throw RtspException("Неверный логин или пароль камеры", UNAUTHORIZED)
         }
+        if (redirects && reply.status in REDIRECTS) return reply
         if (reply.status !in 200..299) throw RtspException("$method: ${reply.status} ${reply.reason}", reply.status)
         return reply
     }
@@ -316,6 +451,7 @@ internal class RtspSession(
     private fun readMessage(prefix: String): RtspResponse? {
         val statusLine = prefix + readLine()
         val headers = LinkedHashMap<String, String>()
+        val challenges = ArrayList<String>()
         while (true) {
             val line = readLine()
             if (line.isEmpty()) break
@@ -323,8 +459,7 @@ internal class RtspSession(
             if (colon > 0) {
                 val key = line.substring(0, colon).trim().lowercase(Locale.ROOT)
                 val value = line.substring(colon + 1).trim()
-                // Несколько WWW-Authenticate: Digest предпочтительнее Basic.
-                if (key == "www-authenticate" && headers.containsKey(key) && !value.startsWith("Digest", true)) continue
+                if (key == "www-authenticate") challenges += value
                 headers[key] = value
             }
         }
@@ -332,10 +467,22 @@ internal class RtspSession(
         if (length < 0 || length > 1_000_000) throw RtspException("Слишком длинный ответ камеры")
         val body = ByteArray(length)
         readFully(body, length)
-        if (!statusLine.startsWith("RTSP/")) return null
+        if (!statusLine.startsWith("RTSP/")) {
+            // Запрос камеры внутри сессии (OPTIONS, SET_PARAMETER, ANNOUNCE): без ответа часть камер рвёт сессию.
+            if (statusLine.endsWith("RTSP/1.0")) answer(headers["cseq"])
+            return null
+        }
         val parts = statusLine.split(' ', limit = 3)
         val status = parts.getOrNull(1)?.toIntOrNull() ?: throw RtspException("Непонятный ответ камеры")
-        return RtspResponse(status, parts.getOrNull(2).orEmpty(), headers, body)
+        return RtspResponse(status, parts.getOrNull(2).orEmpty(), headers, body, challenges)
+    }
+
+    private fun answer(cseq: String?) {
+        val text = "RTSP/1.0 200 OK\r\n" + (cseq?.let { "CSeq: $it\r\n" } ?: "") + (session?.let { "Session: $it\r\n" } ?: "") + "\r\n"
+        synchronized(this) {
+            output.write(text.toByteArray(Charsets.UTF_8))
+            output.flush()
+        }
     }
 
     private fun readLine(): String {
@@ -373,41 +520,23 @@ internal class RtspSession(
         }
     }
 
-    private fun parseChallenge(value: String?): Challenge? {
-        if (value == null) return null
-        val scheme = value.substringBefore(' ').trim()
-        val params = Regex("(\\w+)=(\"([^\"]*)\"|[^,\\s]+)").findAll(value.substringAfter(' ')).associate { m ->
-            m.groupValues[1].lowercase(Locale.ROOT) to (m.groups[3]?.value ?: m.groupValues[2])
-        }
-        return when {
-            scheme.equals("Digest", true) -> Challenge("Digest", params["realm"].orEmpty(), params["nonce"].orEmpty(),
-                params["qop"]?.split(',')?.map { it.trim() }?.firstOrNull { it == "auth" }, params["opaque"])
-            scheme.equals("Basic", true) -> Challenge("Basic", params["realm"].orEmpty(), "", null, null)
-            else -> null
-        }
-    }
+    private fun authorization(method: String, url: String): String? = auth?.header(user, password.orEmpty(), method, url)
 
-    private fun authorization(method: String, url: String): String? {
-        val c = auth ?: return null
-        val pass = password.orEmpty()
-        if (c.scheme == "Basic") return "Basic " + RecBase64.encode("$user:$pass".toByteArray(Charsets.UTF_8))
-        val ha1 = md5("$user:${c.realm}:$pass")
-        val ha2 = md5("$method:$url")
-        val parts = mutableListOf("username=\"$user\"", "realm=\"${c.realm}\"", "nonce=\"${c.nonce}\"", "uri=\"$url\"")
-        if (c.qop != null) {
-            val nc = "%08x".format(++nonceCount)
-            val cnonce = md5(System.nanoTime().toString()).take(16)
-            parts += "response=\"${md5("$ha1:${c.nonce}:$nc:$cnonce:${c.qop}:$ha2")}\""
-            parts += "qop=${c.qop}"; parts += "nc=$nc"; parts += "cnonce=\"$cnonce\""
-        } else {
-            parts += "response=\"${md5("$ha1:${c.nonce}:$ha2")}\""
-        }
-        c.opaque?.let { parts += "opaque=\"$it\"" }
-        return "Digest " + parts.joinToString(", ")
+    private companion object {
+        const val UNAUTHORIZED = 401
+        const val RTSP_PORT = 554
+        const val MAX_REDIRECTS = 3
+        const val MESSAGE_PREFIX = 4
+        const val MAX_GARBAGE = 256 * 1024
+        val REDIRECTS = setOf(301, 302, 303, 305, 307, 308)
+        val NOT_THAT_URL = setOf(400, 404, 405, 454, 455, 460)
+        val OTHER_CONTROL = setOf(400, 404, 451, 455, 500, 503)
+        val RTCP_TYPES = 200..204
+        /** Сколько раз подряд молчание сессии, в которой камера ничего не шлёт (обратный канал), — ещё не обрыв. */
+        const val QUIET_LIMIT = 3
+        /** Так начинаются ответы и запросы сервера; остальное между кадрами — мусор. */
+        val MESSAGES = setOf("RTSP", "OPTI", "SET_", "GET_", "ANNO", "REDI", "TEAR", "DESC", "PLAY", "PAUS", "RECO", "SETU")
     }
-
-    private fun md5(text: String): String =
-        MessageDigest.getInstance("MD5").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 }
 
 /** Base64 (RFC 4648) без Android и без java.util.Base64 (minSdk 24): SDP sprop-* и Basic-авторизация. */

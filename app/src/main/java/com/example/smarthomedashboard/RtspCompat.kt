@@ -39,7 +39,11 @@ internal object Media3Sdp {
         var changed = false
         val fixed = blocks.map { block ->
             val track = SdpParser.parse(block.joinToString("\r\n")).firstOrNull()
-            if (track == null || !lacksH264Params(track)) return@map block
+            if (track == null || !lacksH264Params(track)) {
+                val clean = track?.let(::cleanSprop) ?: return@map block
+                changed = true
+                return@map withFmtp(block, track.payloadType, "sprop-parameter-sets=$clean")
+            }
             val params = h264?.invoke() ?: return@map block
             changed = true
             Log.i(TAG, "Видео H.264 без параметров в описании — дописаны SPS/PPS из потока камеры")
@@ -66,8 +70,25 @@ internal object Media3Sdp {
     }
 
     /** Ветка H.264: Media3 требует `sprop-parameter-sets` (из SPS берёт размер кадра для декодера). */
-    internal fun lacksH264Params(track: SdpTrack) =
-        track.isVideo && track.encoding == "H264" && track.fmtp["sprop-parameter-sets"].isNullOrEmpty()
+    internal fun lacksH264Params(track: SdpTrack) = track.isVideo && track.encoding == "H264" && sets(track).let { sets ->
+        sets.none { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 7 } || sets.none { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 8 }
+    }
+
+    private fun sets(track: SdpTrack): List<ByteArray> =
+        track.fmtp["sprop-parameter-sets"].orEmpty().split(',').mapNotNull { RecBase64.decode(it)?.let(AnnexB::strip) }
+
+    /**
+     * Media3 ждёт ровно два набора — SPS и PPS. Со стартовыми кодами внутри или с лишними наборами (так пишет часть камер) —
+     * только эти два, без кодов; всё уже так — null.
+     */
+    private fun cleanSprop(track: SdpTrack): String? {
+        if (!track.isVideo || track.encoding != "H264") return null
+        val raw = track.fmtp["sprop-parameter-sets"].orEmpty().split(',').mapNotNull(RecBase64::decode)
+        val sets = sets(track)
+        val needed = listOfNotNull(sets.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 7 },
+            sets.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 8 })
+        return if (raw.size == needed.size && raw.zip(needed).all { (a, b) -> a.contentEquals(b) }) null else needed.joinToString(",") { RecBase64.encode(it) }
+    }
 
     /** Строка fmtp дорожки заменяется (прежние параметры, кроме вычисленных, сохраняются) или добавляется после rtpmap. */
     private fun withFmtp(block: List<String>, payloadType: Int, params: String): List<String> {

@@ -129,5 +129,7 @@ class SmartHomeApp : Application() {
         LightMode.load(this)
         // Заставка Android поверх панели (docs/setup-tz.md, часть 4).
         PanelDream.register(this)
+        // Запомненные сертификаты камер rtsps (docs/cameras.md).
+        CameraTls.load(this)
     }
 }
