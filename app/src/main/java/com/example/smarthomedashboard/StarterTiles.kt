@@ -45,7 +45,8 @@ internal object StarterTiles {
             putInt(DashboardPanelController.PREF_PAGE_COUNT, plan.pages.coerceAtLeast(1))
             // Стартовые часы и погода больше не нужны; подсказки новичка остаются.
             putBoolean(MainActivity.PREF_STARTER_TILES_DONE, true)
-            putString(KEY, JSONObject().put("tiles", fingerprint(context)).put("gates", JSONArray(plan.gates.map { it.id })).toString())
+            putString(KEY, JSONObject().put("tiles", fingerprint(context)).put("gates", JSONArray(plan.gates.map { it.id }))
+                .put("cameras", JSONArray(plan.tiles.filter { it.type == DoorbellConfig.CAMERA_TYPE }.map { it.id })).toString())
         }
         return true
     }
@@ -53,8 +54,11 @@ internal object StarterTiles {
     /** Убрать предложенное; false — панель уже правили, ничего не изменено. */
     fun undo(context: Context): Boolean {
         if (!untouched(context)) return false
+        val cameras = applied(context)?.optJSONArray("cameras")
         removeGates(context)
         if (!TileManager(context).saveTiles(emptyList())) return false
+        // Пароли убранных камер не остаются.
+        if (cameras != null) for (i in 0 until cameras.length()) CameraPasswords.save(context, cameras.optString(i), "") {}
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
             remove(KEY)
             putInt(DashboardPanelController.PREF_PAGE_COUNT, 1)

@@ -9,6 +9,8 @@ import android.widget.EditText
 import android.widget.TextView
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.example.smarthomedashboard.CameraSecrets
+import com.example.smarthomedashboard.CameraSetupActivity
 import com.example.smarthomedashboard.ConnectionStatus
 import com.example.smarthomedashboard.HaLoginActivity
 import com.example.smarthomedashboard.HaTokenAccess
@@ -35,7 +37,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Первая настройка на эмуляторе с настоящим Home Assistant стенда (tools/ha-stand): haStand=http://10.0.2.2:8124,
- * haUser, haPass. Без них пропускается (на CI стенда нет). Данные приложения на эмуляторе стираются.
+ * haUser, haPass; со стендом камер — ещё camHost=10.0.2.2 (ONVIF камеры D на порту 8000). Без стенда пропускается (на CI
+ * его нет). Данные приложения на эмуляторе стираются.
  */
 @RunWith(AndroidJUnit4::class)
 class SetupDeepTest {
@@ -88,8 +91,32 @@ class SetupDeepTest {
             setOf("light", "switch", "fan", "lock", "cover", "input_boolean") }.associate { it.getString("entity_id") to it.getString("state") }
     }
 
+    /** Шаг «Камеры»: в сети эмулятора камер нет; со стендом камер (camHost) — камера D по адресу, с картинкой. */
+    private fun cameras(setup: SetupActivity) {
+        waitFor(30_000, "шаг «Камеры»") { view(setup, "setup_camera_host") != null }
+        val host = argument("camHost")
+        if (host != null) {
+            onMain { setup.window.decorView.findViewWithTag<EditText>("setup_camera_host").setText(host) }
+            click(setup, "setup_camera_typed")
+            val camera = screen<CameraSetupActivity>()
+            onMain { camera.window.decorView.findViewWithTag<EditText>("camera_password").setText("stand") }
+            click(camera, "camera_check")
+            waitFor(30_000, "камера проверена") { view(camera, "camera_add") != null }
+            waitFor(30_000, "картинка") { onMain {
+                val video = (camera.window.decorView.findViewWithTag<android.view.ViewGroup>("camera_picture")).getChildAt(0)
+                video.javaClass.methods.first { it.name == "getStatus" }.invoke(video).toString() == "PLAYING"
+            } }
+            onMain { camera.window.decorView.findViewWithTag<EditText>("camera_title").setText("Камера стенда") }
+            click(camera, "camera_add")
+            screen<SetupActivity>()
+            waitFor(10_000, "добавлена") { onMain { texts(setup.window.decorView).contains("Камера · добавлено") } }
+        }
+        click(setup, "setup_next")
+    }
+
     private fun finishWizardAndCheckPanel() {
         val setup = screen<SetupActivity>()
+        cameras(setup)
         waitFor(30_000, "комнаты прочитаны") { onMain { texts(setup.window.decorView).contains("Плиток:") } }
         assertEquals(stand, prefs.getString("ha_local_host", null))
         assertTrue(prefs.getBoolean("setup_completed", false))
@@ -105,6 +132,13 @@ class SetupDeepTest {
         assertTrue("плитки комнат: ${tiles.map { it.title }}", tiles.map { it.title }.containsAll(listOf("Часы · Погода · Климат", "Свет · Гостиная", "Свет · Кухня",
             "Кухня · Чайник", "Ворота", "Калитка")))
         assertTrue(tiles.any { it.page > 0 })
+        if (argument("camHost") != null) {
+            val tile = tiles.single { it.title == "Камера стенда" }
+            assertEquals("на главной", 0, tile.page)
+            val password = java.util.concurrent.Executors.newSingleThreadExecutor().let { p ->
+                try { p.submit<String?> { CameraSecrets(appContext).read(tile.id) }.get(10, TimeUnit.SECONDS) } finally { p.shutdownNow() } }
+            assertEquals("пароль — под номером плитки", "stand", password)
+        }
         checkAfter = { assertEquals("мастер ничего не переключил", before, devices(token.value!!)) }
         click(setup, "setup_next")
         click(setup, "setup_finish")

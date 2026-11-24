@@ -76,7 +76,7 @@ class SetupWizardTest {
         assertEquals(SetupActivity.Step.START, activity.step)
         assertTrue(activity.texts().contains("Восстановить из файла копии"))
         activity.click("setup_new")
-        assertTrue(activity.texts().contains("Шаг 2 из 5"))
+        assertTrue(activity.texts().contains("Шаг 2 из 6"))
         onChange!!(listOf(HaFound("http://192.168.77.10:8123", "Мой дом", "2026.11.3", "u1", "https://home.example.com"),
             HaFound("http://192.168.77.11:8123", "Дача", "2025.1.0", "u2")))
         idle()
@@ -142,11 +142,14 @@ class SetupWizardTest {
         val started = shadowOf(activity).nextStartedActivityForResult
         prefs.edit().putBoolean("setup_completed", true).commit() // как HaConnector после входа
         activity.readHome = { throw HaLogin.LoginException("Home Assistant не отвечает") }
+        activity.newCameraSearch = search()
         shadowOf(activity).receiveResult(started.intent, android.app.Activity.RESULT_OK,
             Intent().putExtra(HaLoginActivity.EXTRA_NAME, "Мой дом"))
         idle()
+        assertEquals(SetupActivity.Step.CAMERAS, activity.step)
+        assertEquals("прерванный мастер продолжится здесь", SetupActivity.Step.CAMERAS, SetupActivity.resumeStep(context))
+        activity.click("setup_next")
         assertEquals(SetupActivity.Step.ROOMS, activity.step)
-        assertEquals("прерванный мастер продолжится здесь", SetupActivity.Step.ROOMS, SetupActivity.resumeStep(context))
         await("комнаты не прочитались") { activity.texts().contains("Home Assistant не отвечает") }
         assertFalse("создавать нечего", activity.view("setup_rooms_next").isEnabled)
         activity.click("setup_rooms_skip")
@@ -158,6 +161,116 @@ class SetupWizardTest {
         assertEquals(MainActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
         assertTrue(activity.isFinishing)
         assertNull("мастер закончен — больше не продолжается", SetupActivity.resumeStep(context))
+    }
+
+    // ---- Камеры ----
+
+    /** Поиск камер без сети: то, что задано, сразу. */
+    private fun search(vararg items: CameraFound, homes: MutableList<Boolean> = mutableListOf()): (android.content.Context, (List<CameraFound>) -> Unit, () -> Unit, (() -> HaHome)?) -> CameraDiscovery =
+        { context, change, done, home ->
+            homes += home != null
+            CameraDiscovery(context, change, done, home, onvif = { found, _ -> items.forEach(found) }, reolink = { _, _ -> })
+        }
+
+    private val door = CameraFound("192.168.77.60", "", "Video Doorbell", CameraBrand.REOLINK, 8000, setOf(CameraFound.Source.ONVIF), true)
+    private val yard = CameraFound("192.168.77.61", "", "IPC", CameraBrand.OTHER, 80, setOf(CameraFound.Source.ONVIF))
+
+    private fun cameras(connected: Boolean, vararg items: CameraFound, homes: MutableList<Boolean> = mutableListOf()): SetupActivity {
+        prefs.edit().putBoolean("setup_completed", connected).apply {
+            if (connected) putString("setup_step", "CAMERAS").putLong("setup_step_at", System.currentTimeMillis())
+        }.commit()
+        val c = Robolectric.buildActivity(SetupActivity::class.java)
+        controller = c
+        c.get().readHome = { home() }
+        c.get().newCameraSearch = search(*items, homes = homes)
+        return c.setup().get()
+    }
+
+    private fun SetupActivity.added(item: CameraFound, id: String, title: String, doorbell: Boolean) {
+        click("setup_camera_${item.host}")
+        val started = shadowOf(this).nextStartedActivityForResult
+        assertEquals(CameraSetupActivity::class.java.name, started.intent.component!!.className)
+        assertEquals(item.host, started.intent.getStringExtra(CameraSetupActivity.EXTRA_HOST))
+        assertEquals(item.onvifPort, started.intent.getIntExtra(CameraSetupActivity.EXTRA_PORT, -1))
+        shadowOf(this).receiveResult(started.intent, android.app.Activity.RESULT_OK, Intent().putExtra(CameraSetupActivity.EXTRA_ID, id)
+            .putExtra(CameraSetupActivity.EXTRA_HOST, item.host).putExtra(CameraSetupActivity.EXTRA_TITLE, title).putExtra(CameraSetupActivity.EXTRA_DOORBELL, doorbell)
+            .putExtra(CameraSetupActivity.EXTRA_CONFIG, DoorbellConfig(rtspMain = "rtsp://${item.host}/main", rtspUser = "admin").toJson().toString()))
+        idle()
+    }
+    private fun tilesNow() = com.example.smarthomedashboard.data.TileManager(context).loadTiles()
+
+    @Test fun foundCamerasAreAddedAndPlacedOnMainWithTheirIds() {
+        val homes = mutableListOf<Boolean>()
+        val activity = cameras(true, yard, door, homes = homes)
+        await("найдены") { activity.texts().contains("Найдено: 2") }
+        assertEquals("поиск спрашивает и Home Assistant", listOf(true), homes)
+        activity.added(door, "door-tile", "Калитка", true)
+        activity.added(yard, "yard-tile", "Двор", false)
+        assertTrue(activity.texts().contains("Домофон · добавлено"))
+        assertNull("добавленная второй раз не предлагается", activity.window.decorView.findViewWithTag<View>("setup_camera_${door.host}"))
+        activity.click("setup_next")
+        await("комнаты") { activity.texts().contains("Плиток:") }
+        activity.click("setup_rooms_next")
+        val video = tilesNow().filter { DoorbellConfig.isVideo(it.type) }
+        assertEquals("номера плиток — те, под которыми сохранены пароли", listOf("door-tile" to DoorbellConfig.TYPE, "yard-tile" to DoorbellConfig.CAMERA_TYPE),
+            video.map { it.id to it.type })
+        assertTrue(video.all { it.page == 0 })
+        assertEquals("rtsp://192.168.77.60/main", DoorbellConfig.from(video.first().config).rtspMain)
+        assertTrue(activity.texts(), tilesNow().any { it.title == "Свет · Кухня" })
+    }
+
+    @Test fun camerasStayWhenRoomsAreSkippedAndWithoutHomeAssistant() {
+        val activity = cameras(true, door)
+        await("найдена") { activity.texts().contains("Найдено: 1") }
+        activity.added(door, "door-tile", "Калитка", true)
+        activity.click("setup_next")
+        await("комнаты") { activity.texts().contains("Плиток:") }
+        activity.click("setup_rooms_skip")
+        assertEquals(setOf("Часы · Погода · Климат", "Калитка"), tilesNow().map { it.title }.toSet())
+        controller!!.pause().stop().destroy(); controller = null
+        setUp()
+        val homes = mutableListOf<Boolean>()
+        val offline = cameras(false, door, homes = homes)
+        // Не вошли — мастер начинается сначала; до камер доходим через «Пропустить».
+        assertEquals(SetupActivity.Step.START, offline.step)
+        offline.click("setup_new"); offline.click("setup_server_skip")
+        await("найдена") { offline.texts().contains("Найдено: 1") }
+        assertEquals(listOf(false), homes)
+        offline.added(door, "door-tile", "Калитка", true)
+        offline.click("setup_next")
+        assertEquals(SetupActivity.Step.PROTECT, offline.step)
+        assertEquals(setOf("Часы · Погода · Климат", "Калитка"), tilesNow().map { it.title }.toSet())
+    }
+
+    @Test fun removedCameraIsForgottenAndAddressOutsideHomeIsRefused() {
+        val activity = cameras(true, door)
+        await("найдена") { activity.texts().contains("Найдено: 1") }
+        activity.added(door, "door-tile", "Калитка", true)
+        activity.click("setup_camera_remove_${door.host}")
+        assertTrue(activity.cameras.isEmpty())
+        (activity.view("setup_camera_host") as EditText).setText("8.8.8.8")
+        activity.click("setup_camera_typed")
+        assertTrue(activity.texts().contains("Нужен адрес в домашней сети"))
+        assertNull(shadowOf(activity).peekNextStartedActivityForResult())
+        (activity.view("setup_camera_host") as EditText).setText("http://192.168.77.99:80/onvif")
+        activity.click("setup_camera_typed")
+        assertEquals("192.168.77.99", shadowOf(activity).nextStartedActivityForResult.intent.getStringExtra(CameraSetupActivity.EXTRA_HOST))
+    }
+
+    @Test fun rotationKeepsAddedCameras() {
+        val activity = cameras(true, door)
+        await("найдена") { activity.texts().contains("Найдено: 1") }
+        activity.added(door, "door-tile", "Калитка", true)
+        val state = android.os.Bundle()
+        controller!!.saveInstanceState(state)
+        controller!!.pause().stop().destroy()
+        val c = Robolectric.buildActivity(SetupActivity::class.java)
+        controller = c
+        c.get().readHome = { home() }
+        c.get().newCameraSearch = search(door)
+        c.create(state).start().restoreInstanceState(state).resume().visible()
+        assertEquals(listOf("door-tile" to "Калитка"), c.get().cameras.map { it.id to it.title })
+        assertEquals("rtsp://192.168.77.60/main", c.get().cameras.single().config.rtspMain)
     }
 
     // ---- Комнаты ----
@@ -202,7 +315,7 @@ class SetupWizardTest {
         assertEquals(SetupActivity.Step.PROTECT, activity.step)
         assertEquals(setOf("Часы · Погода · Климат", "Свет · Кухня", "Кухня · Люстра", "Кухня · Подсветка"), activity.tileTitles())
         assertTrue("замок не выбран — прохода нет", GateStore.load(context).isEmpty())
-        // Назад и ещё раз: предложенное заменяется.
+        // Назад и ещё раз: предложенное заменяется (камер нет — назад сразу к комнатам).
         activity.onBackPressedDispatcher.onBackPressed(); idle()
         assertEquals(SetupActivity.Step.ROOMS, activity.step)
         assertFalse("выбор помнится", activity.box("setup_room_bed").isChecked)
@@ -242,7 +355,10 @@ class SetupWizardTest {
     @Test fun everythingCanBeSkippedAndPanelOpensWithoutServer() {
         val activity = open()
         activity.click("setup_new")
+        activity.newCameraSearch = search()
         activity.click("setup_server_skip")
+        assertEquals(SetupActivity.Step.CAMERAS, activity.step)
+        activity.click("setup_next")
         activity.click("setup_next")
         assertTrue(activity.texts().contains("Home Assistant: не подключён"))
         activity.click("setup_finish")

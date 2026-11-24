@@ -23,12 +23,12 @@ import kotlinx.coroutines.withContext
 import org.json.JSONException
 
 /**
- * Мастер первой настройки (docs/setup-tz.md): начало → Home Assistant → вход ([HaLoginActivity]) → комнаты → защита →
- * готово. Камеры и проверка планшета — шаги следующих этапов. Каждый шаг можно пропустить. На уже настроенной панели не
- * открывается.
+ * Мастер первой настройки (docs/setup-tz.md): начало → Home Assistant → вход ([HaLoginActivity]) → камеры → комнаты →
+ * защита → готово. Камеры — раньше комнат, чтобы раскладка сразу учла их. Проверка планшета — шаг следующего этапа. Каждый
+ * шаг можно пропустить. На уже настроенной панели не открывается.
  */
 class SetupActivity : AppCompatActivity() {
-    internal enum class Step(val title: String) { START("Начало"), SERVER("Home Assistant"), ROOMS("Комнаты"), PROTECT("Защита"), DONE("Готово") }
+    internal enum class Step(val title: String) { START("Начало"), SERVER("Home Assistant"), CAMERAS("Камеры"), ROOMS("Комнаты"), PROTECT("Защита"), DONE("Готово") }
 
     internal var step = Step.START
         private set
@@ -49,7 +49,15 @@ class SetupActivity : AppCompatActivity() {
     private var serverStatus: LinearLayout? = null
     private var checking = 0
 
-    // Шаг «Комнаты».
+    // Шаг «Камеры».
+    private var cameraSearch: CameraDiscovery? = null
+    private var foundCameras: List<CameraFound> = emptyList()
+    private var cameraHost = ""
+    internal val cameras = mutableListOf<StarterPlan.Direct>()
+    private var camerasStatus: LinearLayout? = null
+
+    // Шаг «Комнаты». Дом читается один раз: и для камер, и для комнат.
+    @Volatile private var home: HaHome? = null
     private var proposal: StarterPlan.Proposal? = null
     private var chosen: Set<String>? = null
     private val expanded = HashSet<String>()
@@ -66,6 +74,9 @@ class SetupActivity : AppCompatActivity() {
             stored.value.orEmpty())
     }
 
+    internal var newCameraSearch: (Context, (List<CameraFound>) -> Unit, () -> Unit, (() -> HaHome)?) -> CameraDiscovery =
+        { context, onChange, done, home -> CameraDiscovery(context, onChange, done, home) }
+
     /** Поиск и проверка адреса (в тестах — подмена). */
     internal var newDiscovery: (Context, (List<HaFound>) -> Unit) -> HaDiscovery = { context, onChange -> HaDiscovery(context, onChange) }
     internal var checkServer: (String) -> HaServer.Check = HaServer::check
@@ -75,10 +86,15 @@ class SetupActivity : AppCompatActivity() {
             serverName = result.data?.getStringExtra(HaLoginActivity.EXTRA_NAME).orEmpty().ifBlank { serverName }
             // Вошли — возможно, в другой Home Assistant: комнаты читаются заново.
             proposal = null
+            home = null
             chosen = null
             expanded.clear()
             show(afterLogin())
         }
+    }
+    private val cameraSetup = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) addCamera(data)
     }
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) restoreFrom { contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }
@@ -119,6 +135,9 @@ class SetupActivity : AppCompatActivity() {
         restored = state.getBoolean(STATE_RESTORED)
         chosen = state.getStringArrayList(STATE_CHOSEN)?.toSet()
         state.getStringArrayList(STATE_EXPANDED)?.let { expanded.addAll(it) }
+        cameraHost = state.getString(STATE_CAMERA_HOST).orEmpty()
+        state.getStringArrayList(STATE_CAMERAS)?.mapNotNull { text -> runCatching { StarterPlan.Direct.fromJson(org.json.JSONObject(text)) }.getOrNull() }
+            ?.let { cameras.addAll(it) }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -131,6 +150,8 @@ class SetupActivity : AppCompatActivity() {
         outState.putBoolean(STATE_RESTORED, restored)
         chosen?.let { outState.putStringArrayList(STATE_CHOSEN, ArrayList(it)) }
         outState.putStringArrayList(STATE_EXPANDED, ArrayList(expanded))
+        outState.putString(STATE_CAMERA_HOST, cameraHost)
+        outState.putStringArrayList(STATE_CAMERAS, ArrayList(cameras.map { it.toJson().toString() }))
     }
 
     private fun build(): View {
@@ -158,6 +179,7 @@ class SetupActivity : AppCompatActivity() {
     private fun show(next: Step) {
         readInputs()
         stopDiscovery()
+        stopCameraSearch()
         checking++
         reading++
         step = next
@@ -166,7 +188,8 @@ class SetupActivity : AppCompatActivity() {
         content.removeAllViews()
         footer.removeAllViews()
         serverStatus = null
-        when (next) { Step.START -> start(); Step.SERVER -> server(); Step.ROOMS -> rooms(); Step.PROTECT -> protect(); Step.DONE -> done() }
+        camerasStatus = null
+        when (next) { Step.START -> start(); Step.SERVER -> server(); Step.CAMERAS -> cameras(); Step.ROOMS -> rooms(); Step.PROTECT -> protect(); Step.DONE -> done() }
         (content.parent as? ScrollView)?.scrollTo(0, 0)
     }
 
@@ -175,8 +198,9 @@ class SetupActivity : AppCompatActivity() {
     private fun back() = when (step) {
         Step.START -> finish()
         Step.SERVER -> show(Step.START)
-        Step.ROOMS -> show(Step.SERVER)
-        Step.PROTECT -> show(if (connected() && afterLogin() == Step.ROOMS) Step.ROOMS else Step.SERVER)
+        Step.CAMERAS -> show(Step.SERVER)
+        Step.ROOMS -> show(Step.CAMERAS)
+        Step.PROTECT -> show(if (!StarterTiles.canPropose(this)) Step.SERVER else if (connected()) Step.ROOMS else Step.CAMERAS)
         Step.DONE -> show(Step.PROTECT)
     }
 
@@ -252,7 +276,7 @@ class SetupActivity : AppCompatActivity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
         })
         buttons(ModernUi.secondaryButton(this, "Назад") { show(Step.START) },
-            ModernUi.secondaryButton(this, "Пропустить") { show(if (connected()) afterLogin() else Step.PROTECT) }.apply { tag = "setup_server_skip" },
+            ModernUi.secondaryButton(this, "Пропустить") { show(afterLogin()) }.apply { tag = "setup_server_skip" },
             ModernUi.primaryButton(this, "Дальше") { checkAndLogin() }.apply { tag = "setup_next" })
         renderFound()
         startDiscovery()
@@ -326,7 +350,9 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun readInputs() {
-        if (!::content.isInitialized || step != Step.SERVER) return
+        if (!::content.isInitialized) return
+        if (step == Step.CAMERAS) content.findViewWithTag<EditText>("setup_camera_host")?.let { cameraHost = it.text.toString().trim() }
+        if (step != Step.SERVER) return
         content.findViewWithTag<EditText>("setup_address")?.let { addressText = it.text.toString().trim() }
         content.findViewWithTag<EditText>("setup_external")?.let { externalText = it.text.toString().trim() }
     }
@@ -370,12 +396,135 @@ class SetupActivity : AppCompatActivity() {
     private fun redirected(address: String, origin: String) =
         try { HaServer.origin(address) != origin } catch (_: IllegalArgumentException) { false }
 
+    // ---- Камеры ----
+
+    private fun cameras() {
+        content.addView(ModernUi.title(this, "Камеры и домофоны"))
+        content.addView(ModernUi.body(this, "Ищу камеры в домашней сети и в Home Assistant — без паролей, ничего в них не меняя."))
+        val mine = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "setup_cameras_added" }
+        content.addView(mine)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "setup_cameras" }
+        content.addView(list)
+        val status = ModernUi.statusRow(this, ModernUi.Status.PROGRESS, "Ищу…").apply { id = R.id.setupCamerasStatus }
+        camerasStatus = status
+        content.addView(status)
+        content.addView(ModernUi.secondaryButton(this, "Искать ещё раз") { searchCameras() }.apply { tag = "setup_cameras_again" })
+        content.addView(gap(20))
+        content.addView(ModernUi.title(this, "Или введите адрес камеры"))
+        content.addView(ModernUi.input(this, cameraHost, "IP в домашней сети, например 192.168.1.60").apply {
+            tag = "setup_camera_host"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        })
+        content.addView(gap(8))
+        content.addView(ModernUi.secondaryButton(this, "Настроить камеру по адресу") { typedCamera() }.apply { tag = "setup_camera_typed" })
+        buttons(ModernUi.secondaryButton(this, "Назад") { show(Step.SERVER) },
+            ModernUi.primaryButton(this, "Дальше") { camerasDone() }.apply { tag = "setup_next" })
+        renderCameras()
+        if (resumed) searchCameras()
+    }
+
+    private fun searchCameras() {
+        stopCameraSearch()
+        camerasStatus?.let { ModernUi.setStatus(it, ModernUi.Status.PROGRESS, "Ищу…") }
+        val read = readHome
+        cameraSearch = newCameraSearch(this, { items ->
+            foundCameras = items
+            renderCameras()
+        }, {
+            if (step == Step.CAMERAS) camerasStatus?.let {
+                if (foundCameras.isEmpty()) ModernUi.setStatus(it, ModernUi.Status.WARNING, "Не нашёл. Часть камер не отвечает на поиск (выключены ONVIF и RTSP, другая сеть) — введите адрес")
+                else ModernUi.setStatus(it, ModernUi.Status.OK, "Найдено: ${foundCameras.size}")
+            }
+        }, if (connected()) ({ (home ?: read()).also { home = it } }) else null).also { it.start() }
+    }
+
+    private fun stopCameraSearch() { cameraSearch?.stop(); cameraSearch = null }
+
+    private fun renderCameras() {
+        if (step != Step.CAMERAS) return
+        val mine = content.findViewWithTag<LinearLayout>("setup_cameras_added") ?: return
+        val list = content.findViewWithTag<LinearLayout>("setup_cameras") ?: return
+        mine.removeAllViews()
+        cameras.forEach { camera ->
+            mine.addView(ModernUi.section(this, camera.title, ModernUi.secondary(this, (if (camera.doorbell) "Домофон" else "Камера") + " · добавлено"),
+                ModernUi.secondaryButton(this, "Убрать") { removeCamera(camera) }.apply { tag = "setup_camera_remove_${camera.host}" }), roomParams())
+        }
+        list.removeAllViews()
+        foundCameras.filter { item -> cameras.none { it.host == item.host } }.forEach { item ->
+            val details = listOf(item.brand.title, item.model.takeUnless { it == item.title }.orEmpty(), item.host).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+            list.addView(ModernUi.section(this, item.title, ModernUi.secondary(this, details),
+                ModernUi.primaryButton(this, "Настроить") { openCamera(item) }.apply { tag = "setup_camera_${item.host}" }), roomParams())
+        }
+    }
+
+    private fun typedCamera() {
+        readInputs()
+        val host = cameraHost.trim().removePrefix("http://").removePrefix("https://").substringBefore('/').substringBefore(':')
+        if (host.isEmpty()) { camerasStatus?.let { ModernUi.setStatus(it, ModernUi.Status.WARNING, "Введите адрес камеры") }; return }
+        if (!HomeAssistantAddress.isPrivateNetwork(host)) {
+            camerasStatus?.let { ModernUi.setStatus(it, ModernUi.Status.ERROR, "Нужен адрес в домашней сети: пароль камеры через интернет не отправляется") }
+            return
+        }
+        openCamera(foundCameras.firstOrNull { it.host == host } ?: CameraFound(host))
+    }
+
+    private fun openCamera(item: CameraFound) =
+        cameraSetup.launch(CameraSetupActivity.intent(this, item, cameras.any { it.doorbell && it.host != item.host }))
+
+    private fun addCamera(data: Intent) {
+        val id = data.getStringExtra(CameraSetupActivity.EXTRA_ID).orEmpty()
+        val host = data.getStringExtra(CameraSetupActivity.EXTRA_HOST).orEmpty()
+        val config = try { DoorbellConfig.fromJson(org.json.JSONObject(data.getStringExtra(CameraSetupActivity.EXTRA_CONFIG).orEmpty())) } catch (_: JSONException) { return }
+        if (id.isEmpty()) return
+        val doorbell = data.getBooleanExtra(CameraSetupActivity.EXTRA_DOORBELL, false)
+        val device = foundCameras.firstOrNull { it.host == host }?.haDevice.orEmpty()
+        cameras.removeAll { it.host == host }
+        cameras += StarterPlan.Direct(id, doorbell, data.getStringExtra(CameraSetupActivity.EXTRA_TITLE).orEmpty(), host, config, device)
+        camerasChanged()
+    }
+
+    private fun removeCamera(camera: StarterPlan.Direct) {
+        cameras.remove(camera)
+        if (!camera.doorbell) CameraPasswords.save(this, camera.id, "") {}
+        camerasChanged()
+    }
+
+    /** Камеры изменились — предложение и выбор плиток считаются заново. */
+    private fun camerasChanged() {
+        proposal = null
+        chosen = null
+        renderCameras()
+    }
+
+    private fun camerasDone() {
+        readInputs()
+        if (connected()) { show(Step.ROOMS); return }
+        // Без Home Assistant комнат нет: на панели — часы и добавленные камеры.
+        if (cameras.isNotEmpty()) createPlan(emptyProposal(), setOf(StarterPlan.CLIMATE))
+        show(Step.PROTECT)
+    }
+
+    /** Добавленные камеры с тем, что о них знает Home Assistant (датчики событий, камера для видео вне дома). */
+    private fun directCameras(): List<StarterPlan.Direct> {
+        val known = home ?: return cameras
+        return cameras.map { c ->
+            val device = c.haDevice.ifEmpty { foundCameras.firstOrNull { it.host == c.host }?.haDevice.orEmpty() }
+            StarterPlan.Direct(c.id, c.doorbell, c.title, c.host, StarterPlan.withHome(c.config, known, device, c.doorbell), device)
+        }
+    }
+
+    private fun emptyProposal() = StarterPlan.Proposal(emptyList(), "", 0)
+
+    private fun createPlan(p: StarterPlan.Proposal, selected: Set<String>) {
+        if (!StarterTiles.apply(this, currentPlan(p, selected))) note("Панель уже изменили — плитки не созданы")
+    }
+
     // ---- Комнаты ----
 
     private fun connected() = prefs().getBoolean(HaConnector.KEY_DONE, false)
 
     /** Панель уже с плитками (восстановлена из файла) — предлагать нечего. */
-    private fun afterLogin() = if (StarterTiles.canPropose(this)) Step.ROOMS else Step.PROTECT
+    private fun afterLogin() = if (StarterTiles.canPropose(this)) Step.CAMERAS else Step.PROTECT
 
     private fun rooms() {
         content.addView(ModernUi.title(this, "Что показать на панели"))
@@ -385,8 +534,12 @@ class SetupActivity : AppCompatActivity() {
         content.addView(status)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "setup_rooms" }
         content.addView(list)
-        buttons(ModernUi.secondaryButton(this, "Назад") { show(Step.SERVER) },
-            ModernUi.secondaryButton(this, "Пропустить") { show(Step.PROTECT) }.apply { tag = "setup_rooms_skip" },
+        buttons(ModernUi.secondaryButton(this, "Назад") { show(Step.CAMERAS) },
+            ModernUi.secondaryButton(this, "Пропустить") {
+                // Комнаты не нужны, но добавленные камеры остаются.
+                if (cameras.isNotEmpty()) createPlan(emptyProposal(), setOf(StarterPlan.CLIMATE))
+                show(Step.PROTECT)
+            }.apply { tag = "setup_rooms_skip" },
             ModernUi.primaryButton(this, "Создать плитки") { createTiles() }.apply { tag = "setup_rooms_next"; isEnabled = false })
         proposal?.let { renderRooms(it) } ?: loadRooms()
     }
@@ -395,7 +548,8 @@ class SetupActivity : AppCompatActivity() {
         val run = ++reading
         val read = readHome
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { StarterPlan.propose(read()) } }
+            val known = cameras.mapTo(HashSet()) { it.haDevice }.apply { remove("") }
+            val result = withContext(Dispatchers.IO) { runCatching { StarterPlan.propose((home ?: read()).also { home = it }, known) } }
             if (run != reading || isFinishing || isDestroyed || step != Step.ROOMS) return@launch
             result.onSuccess { proposal = it; renderRooms(it) }.onFailure { e ->
                 content.findViewById<LinearLayout>(R.id.setupRoomsStatus)?.let { ModernUi.setStatus(it, ModernUi.Status.ERROR,
@@ -418,13 +572,13 @@ class SetupActivity : AppCompatActivity() {
 
     private fun currentPlan(p: StarterPlan.Proposal, selected: Set<String>): StarterPlan.Plan {
         val (w, h) = panelSize()
-        return StarterPlan.layout(p, selected, w, h, resources.displayMetrics.density, GateStore.load(this))
+        return StarterPlan.layout(p, selected, w, h, resources.displayMetrics.density, GateStore.load(this), directCameras())
     }
 
     private fun renderRooms(p: StarterPlan.Proposal) {
         val list = content.findViewWithTag<LinearLayout>("setup_rooms") ?: return
         val (w, h) = panelSize()
-        val selected = chosen ?: StarterPlan.defaults(p, w, h, resources.displayMetrics.density).also { chosen = it }
+        val selected = chosen ?: StarterPlan.defaults(p, w, h, resources.displayMetrics.density, cameras).also { chosen = it }
         list.removeAllViews()
         val preview = StarterPreview(this).apply { tag = "setup_preview" }
         val plan = currentPlan(p, selected)
@@ -554,8 +708,11 @@ class SetupActivity : AppCompatActivity() {
         val count = com.example.smarthomedashboard.data.TileManager(this).loadTiles().size
         content.addView(ModernUi.statusRow(this, if (count > 0) ModernUi.Status.OK else ModernUi.Status.UNKNOWN,
             if (count > 0) "Плиток на панели: $count" else "Плитки: часы и погода, остальное добавите сами"))
+        val video = com.example.smarthomedashboard.data.TileManager(this).loadTiles().count { DoorbellConfig.isVideo(it.type) }
+        if (restored && video > 0) content.addView(ModernUi.statusRow(this, ModernUi.Status.WARNING,
+            "Пароли камер в копии не хранятся: введите их в редакторах плиток (камер: $video)"))
         if (StarterTiles.untouched(this)) content.addView(ModernUi.secondaryButton(this, "Убрать предложенные плитки") {
-            StarterTiles.undo(this)
+            if (StarterTiles.undo(this)) { cameras.clear(); camerasChanged() }
             show(Step.DONE)
         }.apply { tag = "setup_undo" })
         val folder = prefs().getString(AutoBackup.PREF_TREE, null) != null
@@ -576,7 +733,7 @@ class SetupActivity : AppCompatActivity() {
 
     /** Прерванный мастер продолжается с того же шага — но не дольше часа: настроенная панель на стене важнее. */
     private fun remember() = prefs().edit {
-        if (connected() && step >= Step.ROOMS) {
+        if (connected() && step >= Step.CAMERAS) {
             putString(KEY_STEP, step.name); putLong(KEY_STEP_AT, System.currentTimeMillis())
         } else { remove(KEY_STEP); remove(KEY_STEP_AT) }
     }
@@ -587,12 +744,14 @@ class SetupActivity : AppCompatActivity() {
         super.onResume()
         resumed = true
         if (step == Step.SERVER) startDiscovery()
+        if (step == Step.CAMERAS && foundCameras.isEmpty()) searchCameras()
         refreshPin()
     }
 
     override fun onPause() {
         resumed = false
         stopDiscovery()
+        stopCameraSearch()
         super.onPause()
     }
 
@@ -604,6 +763,9 @@ class SetupActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         stopDiscovery()
+        stopCameraSearch()
+        // Логин прошлой камеры — только на время мастера.
+        if (isFinishing) CameraSetupActivity.last = null
         super.onDestroy()
     }
 
@@ -615,6 +777,8 @@ class SetupActivity : AppCompatActivity() {
         private const val STATE_RESTORED = "setup_restored"
         private const val STATE_CHOSEN = "setup_chosen"
         private const val STATE_EXPANDED = "setup_expanded"
+        private const val STATE_CAMERAS = "setup_cameras"
+        private const val STATE_CAMERA_HOST = "setup_camera_host"
         private const val KEY_STEP = "setup_step"
         private const val KEY_STEP_AT = "setup_step_at"
         private const val RESUME_MS = 60 * 60_000L
@@ -625,7 +789,7 @@ class SetupActivity : AppCompatActivity() {
             val prefs = context.getSharedPreferences(HaConnector.PREFS, Context.MODE_PRIVATE)
             val age = System.currentTimeMillis() - prefs.getLong(KEY_STEP_AT, 0)
             if (age !in 0..RESUME_MS) return null
-            return Step.entries.firstOrNull { it.name == prefs.getString(KEY_STEP, null) && it >= Step.ROOMS }
+            return Step.entries.firstOrNull { it.name == prefs.getString(KEY_STEP, null) && it >= Step.CAMERAS }
         }
     }
 }

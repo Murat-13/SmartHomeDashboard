@@ -171,6 +171,40 @@ class StarterPlanTest {
         assertEquals(plan.gates.map { it.id }.toSet(), main.filter { it.type == GateTileConfig.TYPE }.map { GateTileConfig.gateId(it.config) }.toSet())
     }
 
+    @Test fun directCamerasComeFirstAndTheirHomeAssistantTwinIsNotOffered() {
+        val home = house().read()
+        val twin = StarterPlan.propose(home, setOf("cam_dev"))
+        assertTrue("та же камера через Home Assistant не предлагается", twin.items.none { it.kind == StarterPlan.Kind.CAMERA })
+        val direct = listOf(StarterPlan.Direct("yard-tile", false, "Двор", "192.0.2.61", DoorbellConfig(rtspMain = "rtsp://192.0.2.61/main")),
+            StarterPlan.Direct("door-tile", true, "Калитка", "192.0.2.60", DoorbellConfig(rtspMain = "rtsp://192.0.2.60/main"), "cam_dev"),
+            StarterPlan.Direct("third", false, "Сад", "192.0.2.62", DoorbellConfig(rtspMain = "rtsp://192.0.2.62/main")))
+        val chosen = StarterPlan.defaults(twin, 1920, 1200, 1.5f, direct)
+        val plan = StarterPlan.layout(twin, chosen, 1920, 1200, 1.5f, direct = direct)
+        assertTidy(plan, 1920, 1200)
+        val video = plan.tiles.filter { DoorbellConfig.isVideo(it.type) }
+        assertEquals("домофон — первым; номера — те, под которыми пароли", listOf("door-tile", "yard-tile"), video.filter { it.page == 0 }.map { it.id })
+        assertEquals("лишняя — на своей странице", "third", video.single { it.page > 0 }.id)
+        assertEquals(DoorbellConfig.TYPE, video.first().type)
+        // Через Home Assistant отмечаются только оставшиеся места главной.
+        val both = StarterPlan.defaults(StarterPlan.propose(home), 1920, 1200, 1.5f, direct)
+        assertTrue(both.none { it.startsWith("camera.") })
+        assertEquals(direct.map { it.id to it.config }, direct.map { StarterPlan.Direct.fromJson(JSONObject(it.toJson().toString()))!! }.map { it.id to it.config })
+    }
+
+    @Test fun homeAssistantFillsSensorsOfTheSameCamera() {
+        val home = Home().device("d").entity("camera.door", "Калитка", device = "d", state = "idle").entity("binary_sensor.door_visitor", "Звонок", device = "d")
+            .entity("binary_sensor.door_person", "Человек", device = "d").entity("binary_sensor.door_motion", "Движение", device = "d", hidden = "user")
+            .entity("binary_sensor.other_person", "Чужой", device = "x").read()
+        val filled = StarterPlan.withHome(DoorbellConfig(rtspMain = "rtsp://x"), home, "d", doorbell = true)
+        assertEquals("camera.door", filled.camera)
+        assertEquals("binary_sensor.door_visitor", filled.visitor)
+        assertEquals("binary_sensor.door_person", filled.person)
+        assertEquals("скрытое не берётся", "", filled.motion)
+        assertEquals("", StarterPlan.withHome(DoorbellConfig(), home, "d", doorbell = false).visitor)
+        assertEquals("своё не заменяется", "camera.mine", StarterPlan.withHome(DoorbellConfig(camera = "camera.mine"), home, "d", true).camera)
+        assertEquals(DoorbellConfig(), StarterPlan.withHome(DoorbellConfig(), home, "", true))
+    }
+
     @Test fun onlyChosenIsCreatedAndEmptyChoiceGivesNothing() {
         val p = proposal()
         val plan = plan(p, chosen = setOf("switch.kettle"))

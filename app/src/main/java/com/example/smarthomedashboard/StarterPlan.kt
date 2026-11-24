@@ -26,6 +26,20 @@ internal object StarterPlan {
         val isEmpty get() = items.isEmpty() && weather.isEmpty() && rooms.none { it.temperature.isNotEmpty() }
     }
 
+    /**
+     * Камера или домофон, настроенные в мастере напрямую ([CameraSetupActivity]): [id] — номер будущей плитки (под ним уже
+     * сохранён пароль камеры), [haDevice] — то же устройство в Home Assistant (его камера второй раз не предлагается).
+     */
+    class Direct(val id: String, val doorbell: Boolean, val title: String, val host: String, val config: DoorbellConfig, val haDevice: String = "") {
+        fun toJson(): JSONObject = JSONObject().put("id", id).put("doorbell", doorbell).put("title", title).put("host", host)
+            .put("config", config.toJson()).put("device", haDevice)
+        companion object {
+            fun fromJson(j: JSONObject): Direct? = j.optString("id").ifEmpty { null }?.let {
+                Direct(it, j.optBoolean("doorbell"), j.optString("title"), j.optString("host"),
+                    DoorbellConfig.fromJson(j.optJSONObject("config") ?: JSONObject()), j.optString("device")) }
+        }
+    }
+
     /** Плитка «Часы · Погода · Климат» в выборе: у неё нет своей сущности. */
     const val CLIMATE = "climate"
     const val NO_ROOM = "Без комнаты"
@@ -37,7 +51,8 @@ internal object StarterPlan {
     private val GATE_COVERS = setOf("gate", "garage", "door")
     private val INNER_TEMPERATURE = listOf("cpu", "processor", "chip", "device", "board", "процессор", "плат", "устройств", "water", "вод", "boiler", "котел", "котёл")
 
-    fun propose(home: HaHome): Proposal {
+    /** [known] — устройства Home Assistant, чьи камеры уже настроены напрямую: их камеры не предлагаются. */
+    fun propose(home: HaHome, known: Set<String> = emptySet()): Proposal {
         val usable = home.entities.filter { !it.hidden }
         var skipped = 0
         fun available(e: HaHome.Entity): Boolean = e.available.also { if (!it) skipped++ }
@@ -66,7 +81,7 @@ internal object StarterPlan {
         }
         // Камера отдаёт несколько потоков — несколько сущностей: предлагается одна на устройство.
         var cameras = 0
-        sorted.filter { it.domain == "camera" }.groupBy { it.device.ifEmpty { it.id } }.values.forEach { same ->
+        sorted.filter { it.domain == "camera" && it.device !in known }.groupBy { it.device.ifEmpty { it.id } }.values.forEach { same ->
             val e = same.firstOrNull { it.available } ?: run { skipped++; return@forEach }
             add(e, home.devices[e.device]?.name?.takeIf { it.isNotBlank() } ?: e.name, Kind.CAMERA, cameras++ < CAMERAS_ON_MAIN)
         }
@@ -77,11 +92,26 @@ internal object StarterPlan {
             val list = items[area.id].orEmpty().sortedBy { it.kind.ordinal }
             if (list.isEmpty() && temperature.isEmpty()) null else Room(area.id, area.name, list, temperature, humidity)
         }
-        val known = home.areas.mapTo(HashSet()) { it.id }
-        val outside = items.filterKeys { it !in known }.values.flatten().sortedBy { it.kind.ordinal }
+        val areaIds = home.areas.mapTo(HashSet()) { it.id }
+        val outside = items.filterKeys { it !in areaIds }.values.flatten().sortedBy { it.kind.ordinal }
         val weather = usable.filter { it.domain == "weather" && it.available }.sortedWith(compareBy({ it.id != "weather.home" }, { it.id }))
             .firstOrNull()?.id.orEmpty()
         return Proposal(rooms + if (outside.isEmpty()) emptyList() else listOf(Room("", NO_ROOM, outside)), weather, skipped)
+    }
+
+    /**
+     * То, что Home Assistant знает об этой камере: её сущность (видео вне дома) и датчики событий того же устройства —
+     * чтобы звонок и значки работали сразу. Заполняется только пустое.
+     */
+    fun withHome(config: DoorbellConfig, home: HaHome, device: String, doorbell: Boolean): DoorbellConfig {
+        if (device.isEmpty()) return config
+        val mine = home.entities.filter { it.device == device && !it.hidden }.sortedBy { it.id }
+        fun sensor(vararg ends: String) = mine.firstOrNull { e -> e.domain == "binary_sensor" && ends.any { e.id.endsWith("_$it") } }?.id.orEmpty()
+        return config.copy(
+            camera = config.camera.ifEmpty { mine.firstOrNull { it.domain == "camera" && it.available }?.id.orEmpty() },
+            visitor = config.visitor.ifEmpty { if (doorbell) sensor("visitor", "doorbell", "ring") else "" },
+            person = config.person.ifEmpty { sensor("person", "people", "human") }, vehicle = config.vehicle.ifEmpty { sensor("vehicle", "car") },
+            animal = config.animal.ifEmpty { sensor("animal", "pet") }, motion = config.motion.ifEmpty { sensor("motion") })
     }
 
     /** Датчики «Климата» комнаты: выбранные в Home Assistant или самые подходящие. */
@@ -107,18 +137,23 @@ internal object StarterPlan {
     class Plan(val tiles: List<TileEntity>, val gates: List<Gate>, val pages: Int)
 
     /** Отмеченное сразу: рекомендованное, но не больше главной и двух страниц. */
-    fun defaults(proposal: Proposal, width: Int, height: Int, density: Float): Set<String> {
+    fun defaults(proposal: Proposal, width: Int, height: Int, density: Float, direct: List<Direct> = emptyList()): Set<String> {
         val chosen = LinkedHashSet<String>()
         chosen += CLIMATE
-        proposal.items.filter { it.recommended }.mapTo(chosen) { it.entity }
+        // Настроенные напрямую занимают места камер на главной: через Home Assistant тогда отмечаются лишь оставшиеся.
+        var spare = (CAMERAS_ON_MAIN - direct.size).coerceAtLeast(0)
+        proposal.items.filter { it.recommended && (it.kind != Kind.CAMERA || spare-- > 0) }.mapTo(chosen) { it.entity }
         val removable = proposal.rooms.asReversed().flatMap { room ->
             room.items.filter { it.recommended }.sortedByDescending { it.kind == Kind.SWITCH }.filter { it.kind != Kind.GATE && it.kind != Kind.CAMERA } }
         for (item in removable) {
-            if (layout(proposal, chosen, width, height, density).pages <= DEFAULT_PAGES) break
+            if (layout(proposal, chosen, width, height, density, direct = direct).pages <= DEFAULT_PAGES) break
             chosen -= item.entity
         }
         return chosen
     }
+
+    /** Плитка с видео: настроенная напрямую (номер и пароль уже есть) или камера Home Assistant. */
+    private class Video(val id: String, val type: String, val title: String, val config: DoorbellConfig)
 
     private class Cell(val tile: (x: Int, y: Int, page: Int) -> TileEntity, val columns: Int = 1)
 
@@ -138,7 +173,8 @@ internal object StarterPlan {
         fun span(columns: Int) = columns * side + (columns - 1) * gap
     }
 
-    fun layout(proposal: Proposal, selected: Set<String>, width: Int, height: Int, density: Float, existing: List<Gate> = emptyList()): Plan {
+    fun layout(proposal: Proposal, selected: Set<String>, width: Int, height: Int, density: Float, existing: List<Gate> = emptyList(),
+               direct: List<Direct> = emptyList()): Plan {
         val w = maxOf(width, height)
         val h = minOf(width, height)
         val grid = Grid(w, h, density)
@@ -147,7 +183,8 @@ internal object StarterPlan {
         val chosen = proposal.items.filter { it.entity in selected }
 
         // Главная, верх: «Часы · Погода · Климат» 2:1 и до двух камер 4:3 одной высоты.
-        val cameras = chosen.filter { it.kind == Kind.CAMERA }
+        val cameras = direct.sortedByDescending { it.doorbell }.map { Video(it.id, if (it.doorbell) DoorbellConfig.TYPE else DoorbellConfig.CAMERA_TYPE, it.title, it.config) } +
+            chosen.filter { it.kind == Kind.CAMERA }.map { Video(UUID.randomUUID().toString(), DoorbellConfig.CAMERA_TYPE, it.name, DoorbellConfig(camera = it.entity, talk = false)) }
         val onMain = cameras.take(CAMERAS_ON_MAIN)
         val ratios = (if (CLIMATE in selected) listOf(HomeClimateConfig.ASPECT) else emptyList()) + onMain.map { DoorbellConfig.DEFAULT_ASPECT }
         var flowTop = grid.top
@@ -162,7 +199,7 @@ internal object StarterPlan {
             }
             onMain.forEach { item ->
                 val cw = (rowHeight * DoorbellConfig.DEFAULT_ASPECT).toInt()
-                tiles += tile(DoorbellConfig.CAMERA_TYPE, "grid", item.name, cameraConfig(item, cw, rowHeight), x, grid.top, 0)
+                tiles += videoTile(item, cw, rowHeight, x, grid.top, 0)
                 x += cw + grid.gap
             }
             flowTop = grid.top + rowHeight + grid.gap
@@ -240,8 +277,7 @@ internal object StarterPlan {
             val cw = minOf((grid.inner - grid.gap) / 2, ((grid.bottom - grid.top - grid.gap) / 2 * DoorbellConfig.DEFAULT_ASPECT).toInt())
             val ch = (cw / DoorbellConfig.DEFAULT_ASPECT).toInt()
             group.forEachIndexed { i, item ->
-                tiles += tile(DoorbellConfig.CAMERA_TYPE, "grid", item.name, cameraConfig(item, cw, ch),
-                    grid.margin + i % 2 * (cw + grid.gap), grid.top + i / 2 * (ch + grid.gap), pages)
+                tiles += videoTile(item, cw, ch, grid.margin + i % 2 * (cw + grid.gap), grid.top + i / 2 * (ch + grid.gap), pages)
             }
             pages++
         }
@@ -305,8 +341,8 @@ internal object StarterPlan {
         listOf("кладов", "storage") to ModernIcon.BOX, listOf("серверн", "server") to ModernIcon.SERVER,
         listOf("двор", "сад", "улиц", "garden", "yard") to ModernIcon.TREE, listOf("гараж", "garage") to ModernIcon.GARAGE)
 
-    private fun cameraConfig(item: Item, width: Int, height: Int) =
-        DoorbellConfig(camera = item.entity, talk = false).writeTo(TilePlacement.withSize("{}", width, height))
+    private fun videoTile(v: Video, width: Int, height: Int, x: Int, y: Int, page: Int) = TileEntity(v.id, v.type, "grid", v.title, x, y, 1, 1,
+        config = v.config.writeTo(TilePlacement.withSize("{}", width, height)), page = page)
 
     private fun gate(item: Item, all: List<Gate>): Gate = if (item.entity.startsWith("lock."))
         Gate(GateStore.newId(all), item.name, Gate.Kind.LOCK, open = item.entity, icon = Gate.Icon.DOOR)
