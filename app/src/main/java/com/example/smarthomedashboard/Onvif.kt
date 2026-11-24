@@ -20,8 +20,12 @@ import java.util.concurrent.TimeUnit
  * в журнал. Блокирующее — рабочий поток.
  */
 internal object Onvif {
-    /** Поток профиля: ссылка RTSP и разрешение. */
-    data class Stream(val uri: String, val width: Int, val height: Int, val encoding: String, val profile: String)
+    /**
+     * Поток профиля: ссылка RTSP и разрешение; для диагностики (docs/diagnostics-tz.md) — частота, битрейт и интервал
+     * ключевых кадров из настроек кодировщика (0 — камера не сообщила).
+     */
+    data class Stream(val uri: String, val width: Int, val height: Int, val encoding: String, val profile: String,
+                      val fps: Int = 0, val kbps: Int = 0, val gov: Int = 0)
 
     data class Info(
         val manufacturer: String,
@@ -32,7 +36,9 @@ internal object Onvif {
         val sub: Stream?,
         val profiles: List<Stream>,
         /** Адрес службы событий (часть 2: подписка PullPoint). */
-        val eventsAddress: String?
+        val eventsAddress: String?,
+        /** Часы камеры минус часы планшета, мс; null — камера не сообщила время. */
+        val clockOffsetMs: Long? = null
     ) {
         val title get() = listOf(manufacturer, model).filter { it.isNotBlank() }.joinToString(" ").ifBlank { "Камера ONVIF" }
     }
@@ -95,7 +101,8 @@ internal object Onvif {
     private fun probePort(host: String, port: Int, user: String, password: String): Info {
         val device = "http://$host:$port/onvif/device_service"
         // Часы камеры: подпись WS-Security действительна, только если время близко к часам камеры.
-        val offset = runCatching { cameraClockOffset(device) }.getOrDefault(0L)
+        val clock = runCatching { clockOffset(device) }.getOrNull()
+        val offset = clock ?: 0L
         val info = call(device, user, password, offset, "<GetDeviceInformation xmlns=\"$DEVICE_NS\"/>")
         val caps = call(device, user, password, offset, "<GetCapabilities xmlns=\"$DEVICE_NS\"><Category>All</Category></GetCapabilities>")
         val media = caps.find("Media")?.find("XAddr")?.text?.takeIf { it.startsWith("http") }?.let { sameHost(it, host, port) } ?: device
@@ -105,21 +112,25 @@ internal object Onvif {
             val video = p.find("VideoEncoderConfiguration")
             val w = video?.find("Width")?.text?.toIntOrNull() ?: 0
             val h = video?.find("Height")?.text?.toIntOrNull() ?: 0
-            Triple(token, w to h, video?.find("Encoding")?.text.orEmpty())
+            val rate = video?.find("RateControl")
+            val extra = Triple(rate?.find("FrameRateLimit")?.text?.toIntOrNull() ?: 0, rate?.find("BitrateLimit")?.text?.toIntOrNull() ?: 0,
+                video?.find("GovLength")?.text?.toIntOrNull() ?: 0)
+            Triple(token, w to h, video?.find("Encoding")?.text.orEmpty() to extra)
         }
         if (profiles.isEmpty()) throw OnvifException("Камера не сообщила видеопотоки (профили ONVIF)")
-        val streams = profiles.mapNotNull { (token, size, encoding) ->
+        val streams = profiles.mapNotNull { (token, size, codec) ->
+            val (encoding, extra) = codec
             val body = "<GetStreamUri xmlns=\"$MEDIA_NS\"><StreamSetup><Stream xmlns=\"$SCHEMA_NS\">RTP-Unicast</Stream>" +
                 "<Transport xmlns=\"$SCHEMA_NS\"><Protocol>RTSP</Protocol></Transport></StreamSetup>" +
                 "<ProfileToken>${escape(token)}</ProfileToken></GetStreamUri>"
             val uri = runCatching { call(media, user, password, offset, body).find("Uri")?.text }.getOrNull()
                 ?.takeIf { it.startsWith("rtsp://") } ?: return@mapNotNull null
-            Stream(withoutCredentials(uri), size.first, size.second, encoding, token)
+            Stream(withoutCredentials(uri), size.first, size.second, encoding, token, extra.first, extra.second, extra.third)
         }.distinctBy { it.uri }
         if (streams.isEmpty()) throw OnvifException("Камера не дала ссылки RTSP — введите их вручную")
         val (main, sub) = pick(streams)
         return Info(info.find("Manufacturer")?.text.orEmpty(), info.find("Model")?.text.orEmpty(),
-            info.find("FirmwareVersion")?.text.orEmpty(), port, main, sub, streams, events)
+            info.find("FirmwareVersion")?.text.orEmpty(), port, main, sub, streams, events, clock)
     }
 
     // ---- События (часть 2, docs/camera-tz.md): подписка PullPoint ----
@@ -137,7 +148,7 @@ internal object Onvif {
         for (p in ports) {
             try {
                 val device = "http://$host:$p/onvif/device_service"
-                val offset = runCatching { cameraClockOffset(device) }.getOrDefault(0L)
+                val offset = runCatching { clockOffset(device) }.getOrNull() ?: 0L
                 val caps = call(device, user, password, offset, "<GetCapabilities xmlns=\"$DEVICE_NS\"><Category>Events</Category></GetCapabilities>")
                 val events = caps.find("Events")?.find("XAddr")?.text?.takeIf { it.startsWith("http") }?.let { sameHost(it, host, p) }
                     ?: throw OnvifException("Камера не сообщила службу событий ONVIF")
@@ -206,15 +217,22 @@ internal object Onvif {
         return main to sub
     }
 
-    private fun cameraClockOffset(device: String): Long {
+    /**
+     * Часы камеры минус часы планшета, мс (точность — секунда); без пароля. null — камера не ответила или не сообщила
+     * время. Нужно для подписи WS-Security и для диагностики (К6).
+     */
+    fun clock(host: String, port: Int): Long? =
+        (if (port > 0) listOf(port) else PORTS).firstNotNullOfOrNull { runCatching { clockOffset("http://$host:$it/onvif/device_service") }.getOrNull() }
+
+    private fun clockOffset(device: String): Long? {
         val (code, text) = transport(device, envelope(null, "<GetSystemDateAndTime xmlns=\"$DEVICE_NS\"/>"))
-        if (code != 200) return 0
-        val utc = parse(text).find("UTCDateTime") ?: return 0
+        if (code != 200) return null
+        val utc = parse(text).find("UTCDateTime") ?: return null
         val date = utc.find("Date"); val time = utc.find("Time")
         val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
             clear()
-            set(date?.find("Year")?.text?.toIntOrNull() ?: return 0, (date.find("Month")?.text?.toIntOrNull() ?: return 0) - 1,
-                date.find("Day")?.text?.toIntOrNull() ?: return 0, time?.find("Hour")?.text?.toIntOrNull() ?: 0,
+            set(date?.find("Year")?.text?.toIntOrNull() ?: return null, (date.find("Month")?.text?.toIntOrNull() ?: return null) - 1,
+                date.find("Day")?.text?.toIntOrNull() ?: return null, time?.find("Hour")?.text?.toIntOrNull() ?: 0,
                 time?.find("Minute")?.text?.toIntOrNull() ?: 0, time?.find("Second")?.text?.toIntOrNull() ?: 0)
         }
         return cal.timeInMillis - now()

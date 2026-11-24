@@ -456,6 +456,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private var bufferedMin = Long.MAX_VALUE
     private var bufferedMax = 0L
     private var stalls = 0
+    /** Остановки длиннее [LONG_STALL_MS] — для диагностики ([PlaybackLog], проверка П1). */
+    private var longStalls = 0
     /** Последний показанный кадр текущего плеера (пишет поток плеера) и замеры «от прихода до экрана». */
     private var shownFrame: ShownFrame? = null
     /** Проверочный выключатель [LiveTuning.softwareHold] у текущего плеера. */
@@ -782,6 +784,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         bufferedMin = Long.MAX_VALUE
         bufferedMax = 0
         stalls = 0
+        longStalls = 0
         screenDelay.reset()
         val shown = ShownFrame()
         shownFrame = shown
@@ -873,6 +876,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 }
                 if (player === exo && state == Player.STATE_READY && stallAt != 0L) {
                     val details = stallProbe.end(exo.videoDecoderCounters)
+                    if (SystemClock.elapsedRealtime() - stallAt >= LONG_STALL_MS) longStalls++
                     Log.i(TAG, "Остановка видео на ${SystemClock.elapsedRealtime() - stallAt} мс: $stallNote" +
                         if (details.isNotEmpty()) "; $details" else "")
                     stallAt = 0
@@ -974,6 +978,11 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (seconds < 1f) return
         counters.ensureUpdated()
         val size = exo.videoSize
+        val rendered = counters.renderedOutputBufferCount
+        val dropped = counters.droppedBufferCount + counters.skippedOutputBufferCount
+        if (playingRtsp.isNotBlank() && rendered > 0) PlaybackLog.add(playingRtsp, ShowSummary(System.currentTimeMillis(), seconds,
+            decoderInUse.orEmpty(), decoderInUse?.let(::isSoftwareDecoder) == true, size.width, size.height, rendered / seconds,
+            dropped.toFloat() / (rendered + dropped), longStalls))
         Log.i(TAG, "Видео: ${decoderInUse ?: "?"} ${size.width}×${size.height}, показано ${counters.renderedOutputBufferCount} " +
             "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
                 counters.renderedOutputBufferCount / seconds, seconds) +
@@ -1296,6 +1305,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         internal val hardwareRejected = mutableSetOf<String>()
 
         internal fun isSoftwareDecoder(name: String) = name.startsWith("c2.android.") || name.startsWith("OMX.google.")
+        /** Остановка, заметная глазу: такие считает диагностика (П1). */
+        internal const val LONG_STALL_MS = 200L
 
         /** Программные декодеры — первыми (порядок внутри групп прежний). */
         private val SOFTWARE_FIRST = MediaCodecSelector { mime, secure, tunneling ->

@@ -2,6 +2,8 @@ package com.example.smarthomedashboard
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -10,6 +12,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -191,6 +194,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             val aspect = when (it) { 0 -> 4f / 3f; 1 -> 16f / 9f; else -> preview.video.videoAspect }
             update(config.copy(aspect = aspect))
         })
+        buildDiagnostics(side)
 
         side.addView(header(if (camera) "Датчики событий (Home Assistant, по желанию)" else "Датчики домофона"))
         if (!camera) side.addView(entityRow("visitor", "Кнопка звонка", "binary_sensor … visitor") { config.visitor })
@@ -255,6 +259,94 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         side.addView(slider("door_night_brightness", config.nightBrightness, 100, { "Яркость окна звонка ночью: ${it.coerceAtLeast(5)}%" }) {
             update(config.copy(nightBrightness = it.coerceAtLeast(5))) })
         side.addView(switch("door_offline_sound", "Сигнал, если домофон пропал из сети", config.offlineSound) { update(config.copy(offlineSound = it)) })
+    }
+
+    // ---- Диагностика видео (docs/diagnostics-tz.md, часть 1) ----
+
+    private lateinit var diagSummary: TextView
+    private lateinit var diagList: LinearLayout
+    private lateinit var diagRun: Button
+    private var diagResult: CameraDiagnosis.Result? = null
+    private var diagRunning = false
+    @Volatile private var diagCancelled = false
+
+    private fun buildDiagnostics(side: LinearLayout) {
+        side.addView(header("Диагностика видео"))
+        side.addView(kit.label("Что мешает видео — камера, сеть или планшет — и что с этим сделать. «Проверить сейчас» " +
+            "смотрит оба потока $diagSeconds с и читает настройки камеры по ONVIF; камере ничего не отправляется.", 13f))
+        diagSummary = kit.label("", 15f, bold = true).apply { tag = "door_diag_summary" }
+        side.addView(diagSummary)
+        diagRun = kit.button("Проверить сейчас", "door_diag_run") { runDiagnostics() }
+        side.addView(diagRun)
+        diagList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "door_diag_list" }
+        side.addView(diagList)
+        side.addView(kit.button("Скопировать отчёт", "door_diag_copy") { copyDiagnostics() })
+        showDiagnostics(CameraDiagnosis.passive(this, CameraDiagnosis.target(config, null)), checked = false)
+    }
+
+    /** [checked] — итог «Проверить сейчас»; иначе — что видно без проверки (поток записи, показы видео). */
+    private fun showDiagnostics(result: CameraDiagnosis.Result, checked: Boolean) {
+        diagResult = result
+        val summary = CameraDiagnostics.summary(result.checks)
+        diagSummary.text = when {
+            checked -> summary ?: "Проверить не удалось: камера не ответила"
+            summary != null -> "Пока видно: $summary"
+            else -> "Нажмите «Проверить сейчас»"
+        }
+        diagList.removeAllViews()
+        val order = listOf(CameraDiagnostics.Level.BAD, CameraDiagnostics.Level.IMPROVE, CameraDiagnostics.Level.OK, CameraDiagnostics.Level.UNKNOWN)
+        for (c in result.checks.sortedBy { order.indexOf(it.level) }) {
+            if (!checked && c.level == CameraDiagnostics.Level.UNKNOWN) continue
+            diagList.addView(kit.label("${c.level.mark} ${c.title}: ${c.detail}", 14f).apply {
+                tag = "door_diag_${c.id}"
+                setTextColor(when (c.level) {
+                    CameraDiagnostics.Level.BAD -> Color.rgb(255, 120, 110)
+                    CameraDiagnostics.Level.IMPROVE -> Color.rgb(255, 196, 90)
+                    CameraDiagnostics.Level.OK -> Color.rgb(140, 214, 160)
+                    CameraDiagnostics.Level.UNKNOWN -> Color.rgb(140, 150, 160)
+                })
+            })
+            if (c.advice.isNotBlank() && (c.level == CameraDiagnostics.Level.BAD || c.level == CameraDiagnostics.Level.IMPROVE)) {
+                diagList.addView(kit.label("Что сделать: ${c.advice}", 13f).apply { setPadding(kit.dp(18), 0, 0, kit.dp(6)) })
+            }
+        }
+    }
+
+    private fun runDiagnostics() {
+        if (diagRunning) return
+        diagRunning = true
+        diagRun.isEnabled = false
+        diagRun.text = "Проверяю… $diagSeconds с"
+        val context = applicationContext
+        val start = { pass: String? ->
+            val target = CameraDiagnosis.target(config, pass)
+            Thread({
+                val result = try {
+                    CameraDiagnosis.full(context, target, diagSeconds, { diagCancelled }) { left ->
+                        runOnUiThread { if (!isDestroyed && diagRunning) diagRun.text = "Проверяю… $left с" }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("DoorbellEditor", "Диагностика: ${e.javaClass.simpleName}")
+                    null
+                }
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    diagRunning = false
+                    diagRun.isEnabled = true
+                    diagRun.text = "Проверить сейчас"
+                    if (result != null) showDiagnostics(result, checked = true) else diagSummary.text = "Проверка не удалась"
+                }
+            }, "diag-run").apply { isDaemon = true; start() }
+        }
+        val typed = password
+        if (!typed.isNullOrEmpty()) start(typed) else CameraPasswords.read(this, secretKey) { saved -> start(saved) }
+    }
+
+    private fun copyDiagnostics() {
+        val result = diagResult ?: CameraDiagnosis.passive(this, CameraDiagnosis.target(config, null))
+        val text = CameraDiagnosis.report(this, result)
+        getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Диагностика камеры", text))
+        Toast.makeText(this, "Отчёт скопирован — без адресов и паролей", Toast.LENGTH_SHORT).show()
     }
 
     // ---- Камера: события по ONVIF (docs/camera-tz.md, часть 2) ----
@@ -991,6 +1083,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     }
 
     override fun onDestroy() {
+        diagCancelled = true
         settle.removeCallbacks(settlePreview)
         RecordingStatus.unlisten(statusListener)
         DirectEvents.removeListener(directListener)
@@ -1086,5 +1179,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         private const val STATE_DRAFT = "doorbell_draft"
         /** Пауза во вводе адреса потока, после которой предпросмотр подключается к новому адресу. */
         internal const val PREVIEW_SETTLE_MS = 900L
+        /** Сколько секунд «Проверить сейчас» смотрит потоки камеры (в тестах — меньше). */
+        internal var diagSeconds = 30
     }
 }

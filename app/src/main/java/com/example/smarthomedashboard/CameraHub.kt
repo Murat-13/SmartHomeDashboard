@@ -89,6 +89,10 @@ internal object CameraHub {
     fun audioAheadMs(url: String, user: String): Long? =
         streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.audioAheadMs
 
+    /** Сводка потока [url] для диагностики ([StreamStats]); null — поток не идёт (запись на этом планшете выключена). */
+    fun stats(url: String, user: String): StreamSnapshot? =
+        streams.values.firstOrNull { it.key.url == url.trim() && it.key.user == user && it.live }?.stats?.snapshot()
+
     /**
      * Сколько миллисекунд назад камера прислала последний кадр видео потока [url]; null — поток не идёт. Для журнала
      * остановок живого видео ([StallProbe]): остановка из-за камеры или сети видна по паузе здесь.
@@ -119,6 +123,10 @@ internal class SharedStream(
     @Volatile var floorJitterMs = 0L
         private set
     private val jitterMemory = JitterMemory()
+
+    /** Сводка текущей сессии для диагностики ([StreamStats]); новая сессия камеры — новая сводка. */
+    @Volatile var stats: StreamStats? = null
+        private set
 
     /** Когда пришёл последний целый кадр видео (часы [android.os.SystemClock.elapsedRealtime]); 0 — ещё не было. */
     @Volatile var lastFrameAtMs = 0L
@@ -265,6 +273,7 @@ internal class SharedStream(
                 val audioProbe = audioSetup?.track?.clockRate?.takeIf { it > 0 }?.let { ArrivalDelay(it) }
                 trace = ArrivalTrace.open(CameraHub.debugDir, key.url)
                 val frames = trace
+                val summary = StreamStats(video.track.clockRate.takeIf { it > 0 } ?: 90_000).also { stats = it }
                 s.read(object : RtspSession.Sink {
                     /** За минуту: байты и кадры видео и самое долгое время, на которое получатели кадра заняли этот поток. */
                     private var videoBytes = 0L
@@ -274,7 +283,7 @@ internal class SharedStream(
                     private var keyTs = -1L
 
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
-                        val readNs = if (frames != null && setup === video) System.nanoTime() else 0L
+                        val readNs = if (setup === video) System.nanoTime() else 0L
                         if (setup === video) {
                             // Под одним замком с подключением плеера: он получает сохранённое и дальше живое без пропуска.
                             synchronized(recent) {
@@ -285,6 +294,8 @@ internal class SharedStream(
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
                             frames?.packet(rtp.timestamp, rtp.length, readNs)
+                            summary.packet(rtp.sequence, rtp.timestamp, rtp.length, readNs,
+                                RtpKey.isKey(depacketizer.codec == VideoDepacketizer.Codec.H265, rtp.payload, rtp.offset, rtp.length))
                             videoBytes += rtp.length
                             if (rtp.marker) { videoFrames++; lastFrameAtMs = android.os.SystemClock.elapsedRealtime() }
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
@@ -311,11 +322,14 @@ internal class SharedStream(
                             }
                             val started = System.nanoTime()
                             for (frame in depacketizer.push(rtp)) {
-                                if (frame.key) keyTs = frame.timestamp
+                                // Метка кадра у разборщика — развёрнутая (64 бита), у пакета — 32 бита.
+                                if (frame.key) keyTs = frame.timestamp and 0xFFFFFFFFL
                                 recent.frame(frame.key)
                                 each { _, sink -> sink.video(frame, depacketizer) }
                             }
                             busyMaxNs = maxOf(busyMaxNs, System.nanoTime() - started)
+                            if (!summary.hasCodec && depacketizer.sps != null) summary.codec(depacketizer.codec, depacketizer.sps)
+                            if (rtp.marker) summary.frameEnd(rtp.timestamp, readNs, keyTs == rtp.timestamp)
                             if (frames != null) {
                                 frames.busy(System.nanoTime() - readNs)
                                 if (rtp.marker) frames.frame(rtp.timestamp, readNs, keyTs == rtp.timestamp)

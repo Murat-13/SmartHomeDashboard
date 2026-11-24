@@ -117,7 +117,7 @@ internal object H264LowDelay {
         out.ue(maxOf(refs, 1)) // max_dec_frame_buffering
     }
 
-    private fun scalingList(r: BitReader, size: Int) {
+    internal fun scalingList(r: BitReader, size: Int) {
         var last = 8
         var next = 8
         repeat(size) {
