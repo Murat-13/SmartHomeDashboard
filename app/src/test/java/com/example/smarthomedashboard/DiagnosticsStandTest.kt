@@ -41,6 +41,45 @@ class DiagnosticsStandTest {
         return checks.associateBy { it.id }
     }
 
+    /** Этап 4 на поддельном ONVIF камеры D: применить, вернуть, отказ и «да» без изменения. `DIAG_STAND_MEDIA` — папка роликов. */
+    @Test fun applyAndRollbackOnStandOnvif() {
+        assumeTrue("Только со стендом: DIAG_STAND=<узел>", !host.isNullOrBlank())
+        val media = System.getenv("DIAG_STAND_MEDIA")
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val config = DoorbellConfig(host = host!!, onvifPort = 8580, rtspUser = "admin",
+            rtspMain = "rtsp://$host:8557/Streaming/Channels/101", rtspSub = "rtsp://$host:8557/Streaming/Channels/102")
+        fun mainFps() = Onvif.probe(host, 8580, "admin", "x").main!!.fps
+        val info = Onvif.probe(host, 8580, "admin", "x")
+        println("== ONVIF стенда: основной ${info.main!!.width}×${info.main!!.height}, ${info.main!!.fps} к/с, GOP ${info.main!!.gov}, " +
+            "возможности ${info.main!!.options}")
+        assertEquals(20, info.main!!.fps)
+        assertEquals(100, info.main!!.options!!.govMax)
+        assertEquals(8192, info.main!!.options!!.bitrateMax)
+        val change = CameraDiagnostics.Change(true, CameraDiagnostics.Change.Field.FPS, "20", "25", "частота основного потока: 20 → 25 к/с")
+        val done = CameraApply.apply(context, "stand", config, "x", change)
+        println("   применить: ${done.ok} — ${done.text}")
+        assertTrue(done.ok)
+        assertEquals(25, mainFps())
+        val back = CameraApply.rollback(context, "stand", config, "x")
+        println("   вернуть: ${back.ok} — ${back.text}")
+        assertTrue(back.ok)
+        assertEquals(20, mainFps())
+        if (media != null) {
+            val mode = java.io.File(media, "onvif_mode")
+            try {
+                mode.writeText("refuse")
+                val refused = CameraApply.apply(context, "stand", config, "x", change)
+                println("   отказ: ${refused.text}")
+                assertTrue(!refused.ok && refused.text.startsWith("Камера не приняла"))
+                mode.writeText("ignore")
+                val ignored = CameraApply.apply(context, "stand", config, "x", change)
+                println("   «да» без изменения: ${ignored.text}")
+                assertTrue(!ignored.ok && ignored.text.contains("не сменила"))
+                assertEquals(20, mainFps())
+            } finally { mode.delete() }
+        }
+    }
+
     @Test fun eachStandCameraShowsItsOwnHabits() {
         assumeTrue("Только со стендом: DIAG_STAND=<узел>", !host.isNullOrBlank())
         // A «Hikvision»: H.265 2560×1440 — больше аппаратного предела, H.265; линия и приход в порядке.

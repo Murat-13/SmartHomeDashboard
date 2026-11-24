@@ -25,7 +25,9 @@ internal object Onvif {
      * ключевых кадров из настроек кодировщика (0 — камера не сообщила).
      */
     data class Stream(val uri: String, val width: Int, val height: Int, val encoding: String, val profile: String,
-                      val fps: Int = 0, val kbps: Int = 0, val gov: Int = 0, val options: EncoderOptions? = null)
+                      val fps: Int = 0, val kbps: Int = 0, val gov: Int = 0, val options: EncoderOptions? = null,
+                      /** Токен настроек кодировщика (для изменения, этап 4). */
+                      val config: String = "")
 
     /**
      * Что камера разрешает поставить у потока (`GetVideoEncoderConfigurationOptions`): размеры, частота кадров, есть ли
@@ -33,8 +35,18 @@ internal object Onvif {
      */
     data class EncoderOptions(val resolutions: List<Pair<Int, Int>>, val fpsMin: Int, val fpsMax: Int, val h264: Boolean,
                               /** Частоты списком (Reolink: 20, 18, 16…); пусто — любая в [fpsMin]..[fpsMax]. */
-                              val fpsList: List<Int> = emptyList()) {
+                              val fpsList: List<Int> = emptyList(),
+                              /** Наибольший интервал ключевых кадров в кадрах (0 — не известен). */
+                              val govMax: Int = 0,
+                              /** Битрейты списком (Reolink) или наибольший (ONVIF); пусто и 0 — не известны. */
+                              val bitrates: List<Int> = emptyList(), val bitrateMax: Int = 0) {
         fun allows(fps: Int) = if (fpsList.isNotEmpty()) fps in fpsList else fps in fpsMin..fpsMax
+        /** Наибольший разрешённый битрейт не выше [kbps]; null — не известно, какие можно. */
+        fun bitrateAtMost(kbps: Int): Int? = when {
+            bitrates.isNotEmpty() -> bitrates.filter { it <= kbps }.maxOrNull()
+            bitrateMax > 0 -> minOf(kbps, bitrateMax)
+            else -> null
+        }
     }
 
     data class Info(
@@ -125,17 +137,17 @@ internal object Onvif {
             val rate = video?.find("RateControl")
             val extra = Triple(rate?.find("FrameRateLimit")?.text?.toIntOrNull() ?: 0, rate?.find("BitrateLimit")?.text?.toIntOrNull() ?: 0,
                 video?.find("GovLength")?.text?.toIntOrNull() ?: 0)
-            Triple(token, w to h, video?.find("Encoding")?.text.orEmpty() to extra)
+            Triple(token, w to h, Triple(video?.find("Encoding")?.text.orEmpty(), extra, video?.attrs?.get("token").orEmpty()))
         }
         if (profiles.isEmpty()) throw OnvifException("Камера не сообщила видеопотоки (профили ONVIF)")
         val streams = profiles.mapNotNull { (token, size, codec) ->
-            val (encoding, extra) = codec
+            val (encoding, extra, configToken) = codec
             val body = "<GetStreamUri xmlns=\"$MEDIA_NS\"><StreamSetup><Stream xmlns=\"$SCHEMA_NS\">RTP-Unicast</Stream>" +
                 "<Transport xmlns=\"$SCHEMA_NS\"><Protocol>RTSP</Protocol></Transport></StreamSetup>" +
                 "<ProfileToken>${escape(token)}</ProfileToken></GetStreamUri>"
             val uri = runCatching { call(media, user, password, offset, body).find("Uri")?.text }.getOrNull()
                 ?.takeIf { it.startsWith("rtsp://") } ?: return@mapNotNull null
-            Stream(withoutCredentials(uri), size.first, size.second, encoding, token, extra.first, extra.second, extra.third)
+            Stream(withoutCredentials(uri), size.first, size.second, encoding, token, extra.first, extra.second, extra.third, config = configToken)
         }.distinctBy { it.uri }
         if (streams.isEmpty()) throw OnvifException("Камера не дала ссылки RTSP — введите их вручную")
         val (pickedMain, pickedSub) = pick(streams)
@@ -243,7 +255,57 @@ internal object Onvif {
         val min = range?.find("Min")?.text?.toIntOrNull() ?: 0
         val max = range?.find("Max")?.text?.toIntOrNull() ?: 0
         if (sizes.isEmpty() && max == 0) return null
-        return EncoderOptions(sizes, min, max, h264 != null)
+        val govMax = codec.find("GovLengthRange")?.find("Max")?.text?.toIntOrNull() ?: 0
+        // Битрейт — в Extension (Media 1): Extension/H264/BitrateRange.
+        val bitrateMax = options.children.firstOrNull { it.name == "Extension" }?.children?.firstOrNull { it.name == (if (h264 != null) "H264" else "JPEG") }
+            ?.find("BitrateRange")?.find("Max")?.text?.toIntOrNull() ?: 0
+        return EncoderOptions(sizes, min, max, h264 != null, govMax = govMax, bitrateMax = bitrateMax)
+    }
+
+    // ---- Изменение настроек кодировщика (docs/diagnostics-tz.md, этап 4) ----
+
+    /** Камера ответила «да», а читается прежнее: настройку она не сменила. */
+    class NotApplied(message: String) : java.io.IOException(message)
+
+    /**
+     * Изменить настройки кодировщика [configToken]: прочитать как есть, поменять [edits] (путь внутри
+     * VideoEncoderConfiguration, например `RateControl/FrameRateLimit` → значение), записать с ForcePersistence и
+     * прочитать снова. Возвращает прежние значения тех же путей — для «Вернуть как было». Блокирующее.
+     */
+    fun changeEncoder(host: String, port: Int, user: String, password: String, configToken: String,
+                      edits: Map<String, String>): Map<String, String> {
+        val device = "http://$host:$port/onvif/device_service"
+        val offset = runCatching { clockOffset(device) }.getOrNull() ?: 0L
+        val caps = call(device, user, password, offset, "<GetCapabilities xmlns=\"$DEVICE_NS\"><Category>All</Category></GetCapabilities>")
+        val media = caps.find("Media")?.find("XAddr")?.text?.takeIf { it.startsWith("http") }?.let { sameHost(it, host, port) } ?: device
+        fun read(): Node = call(media, user, password, offset, "<GetVideoEncoderConfiguration xmlns=\"$MEDIA_NS\">" +
+            "<ConfigurationToken>${escape(configToken)}</ConfigurationToken></GetVideoEncoderConfiguration>")
+            .find("Configuration") ?: throw OnvifException("Камера не прислала настройки кодировщика")
+        val config = read()
+        val before = edits.keys.associateWith { path -> at(config, path)?.text ?: throw OnvifException("У камеры нет настройки $path") }
+        for ((path, value) in edits) at(config, path)!!.text = value
+        val body = "<SetVideoEncoderConfiguration xmlns=\"$MEDIA_NS\"><Configuration" +
+            config.attrs.filterKeys { !it.startsWith("xmlns") }.entries.joinToString("") { " ${it.key}=\"${escape(it.value)}\"" } + ">" +
+            config.children.joinToString("") { xml(it, SCHEMA_NS) } +
+            "</Configuration><ForcePersistence>true</ForcePersistence></SetVideoEncoderConfiguration>"
+        call(media, user, password, offset, body)
+        val after = read()
+        val wrong = edits.filter { (path, value) -> at(after, path)?.text != value }
+        if (wrong.isNotEmpty()) throw NotApplied("Камера ответила «да», но не сменила: " + wrong.keys.joinToString())
+        return before
+    }
+
+    private fun at(node: Node, path: String): Node? = path.split('/').fold(node as Node?) { n, part -> n?.children?.firstOrNull { it.name == part } }
+
+    /** Узел обратно в XML ([ns] — пространство имён у первого, дальше наследуется). */
+    internal fun xml(n: Node, ns: String? = null): String = buildString {
+        append('<').append(n.name)
+        if (ns != null) append(" xmlns=\"").append(ns).append('"')
+        for ((k, v) in n.attrs) if (!k.startsWith("xmlns")) append(' ').append(k).append("=\"").append(escape(v)).append('"')
+        if (n.children.isEmpty() && n.text.isEmpty()) { append("/>"); return@buildString }
+        append('>').append(escape(n.text))
+        n.children.forEach { append(xml(it)) }
+        append("</").append(n.name).append('>')
     }
 
     /** Основной поток — наибольшее разрешение, субпоток — наименьшее (если поток один — он и то, и другое). */

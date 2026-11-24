@@ -267,6 +267,9 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     // ---- Диагностика видео (docs/diagnostics-tz.md, часть 1) ----
 
     private lateinit var diagHeader: View
+    private lateinit var diagApplyStatus: TextView
+    private lateinit var diagRollback: Button
+    private val recheck = Runnable { if (!isDestroyed && !diagRunning) runDiagnostics() }
     private lateinit var diagSummary: TextView
     private lateinit var diagList: LinearLayout
     private lateinit var diagRun: Button
@@ -286,12 +289,30 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         diagList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "door_diag_list" }
         side.addView(diagList)
         side.addView(kit.button("Скопировать отчёт", "door_diag_copy") { copyDiagnostics() })
+        // Этап 4: «Применить» меняет настройки камеры — по решению владельца выключено, пока не включат здесь.
+        side.addView(switch("door_diag_apply_enabled", "Кнопка «Применить» у советов", CameraApply.enabled(this)) { on ->
+            if (on != CameraApply.enabled(this)) {
+                if (requireAdmin()) CameraApply.setEnabled(this, on)
+                else (window.decorView.findViewWithTag<SwitchCompat>("door_diag_apply_enabled"))?.isChecked = CameraApply.enabled(this)
+            }
+            diagResult?.let { showDiagnostics(it, checked = diagChecked) }
+        })
+        side.addView(kit.label("Меняет настройки самой камеры (частоту, ключевые кадры, размер, кодек, битрейт) — только то, что " +
+            "камера разрешает. Перед изменением — подтверждение; вернуть можно неделю.", 13f))
+        diagApplyStatus = kit.label("", 14f).apply { tag = "door_diag_apply_status"; visibility = View.GONE }
+        side.addView(diagApplyStatus)
+        diagRollback = kit.button("Вернуть как было", "door_diag_rollback") { confirmRollback() }
+        side.addView(diagRollback)
+        refreshRollback()
         showDiagnostics(CameraDiagnosis.passive(this, CameraDiagnosis.target(config, null)), checked = false)
     }
 
+    private var diagChecked = false
+
     /** [checked] — итог «Проверить сейчас»; иначе — что видно без проверки (поток записи, показы видео). */
-    private fun showDiagnostics(result: CameraDiagnosis.Result, checked: Boolean) {
+    internal fun showDiagnostics(result: CameraDiagnosis.Result, checked: Boolean) {
         diagResult = result
+        diagChecked = checked
         val summary = CameraDiagnostics.summary(result.checks)
         diagSummary.text = when {
             checked -> summary ?: "Проверить не удалось: камера не ответила"
@@ -313,6 +334,10 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             })
             if (c.advice.isNotBlank() && (c.level == CameraDiagnostics.Level.BAD || c.level == CameraDiagnostics.Level.IMPROVE)) {
                 diagList.addView(kit.label("Что сделать: ${c.advice}", 13f).apply { setPadding(kit.dp(18), 0, 0, kit.dp(6)) })
+                val change = c.change
+                if (change != null && CameraApply.enabled(this)) {
+                    diagList.addView(kit.button("Применить: ${change.label}", "door_diag_apply_${c.id}") { confirmApply(c, change) })
+                }
             }
         }
     }
@@ -345,6 +370,63 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         }
         val typed = password
         if (!typed.isNullOrEmpty()) start(typed) else CameraPasswords.read(this, secretKey) { saved -> start(saved) }
+    }
+
+    /** Подтверждение перед изменением камеры (этап 4). */
+    private fun confirmApply(check: CameraDiagnostics.Check, change: CameraDiagnostics.Change) {
+        CameraApply.blocked(original.id)?.let { applyStatus(it); return }
+        AlertDialog.Builder(this)
+            .setTitle("Изменить настройку камеры?")
+            .setMessage("${change.label.replaceFirstChar { it.uppercase() }}.\n\n${check.advice}\n\nВидео и запись прервутся " +
+                "примерно на 10–60 с: камера перезапустит поток. Вернуть можно кнопкой «Вернуть как было» в течение недели.")
+            .setPositiveButton("Применить") { _, _ -> if (requireAdmin()) withPassword { pass -> runCamera("Меняю настройку камеры…") {
+                CameraApply.apply(applicationContext, original.id, config, pass, change) } } }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun confirmRollback() {
+        val saved = CameraApply.saved(this, config).ifEmpty { return }
+        AlertDialog.Builder(this)
+            .setTitle("Вернуть как было?")
+            .setMessage("Вернуть: ${saved.joinToString("; ") { it.label }}.\n\nВидео и запись прервутся примерно на 10–60 с.")
+            .setPositiveButton("Вернуть") { _, _ -> if (requireAdmin()) withPassword { pass -> runCamera("Возвращаю прежние настройки…") {
+                CameraApply.rollback(applicationContext, original.id, config, pass) } } }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun withPassword(block: (String) -> Unit) {
+        val typed = password
+        if (!typed.isNullOrEmpty()) { block(typed); return }
+        CameraPasswords.read(this, secretKey) { saved ->
+            if (saved.isNullOrEmpty()) applyStatus("Нужен пароль камеры — введите его в поле «Пароль камеры»") else block(saved)
+        }
+    }
+
+    /** Изменение камеры в фоне; итог — строкой; удалось — через 3,5 мин проверка заново (поток после перезапуска). */
+    private fun runCamera(progress: String, action: () -> CameraApply.Outcome) {
+        applyStatus(progress)
+        Thread({
+            val outcome = action()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                applyStatus(outcome.text)
+                refreshRollback()
+                if (outcome.ok) { settle.removeCallbacks(recheck); settle.postDelayed(recheck, recheckMs) }
+            }
+        }, "camera-apply").apply { isDaemon = true; start() }
+    }
+
+    private fun applyStatus(text: String) {
+        diagApplyStatus.text = text
+        diagApplyStatus.visibility = View.VISIBLE
+    }
+
+    private fun refreshRollback() {
+        val saved = CameraApply.saved(this, config)
+        diagRollback.visibility = if (saved.isEmpty()) View.GONE else View.VISIBLE
+        if (saved.isNotEmpty()) diagRollback.text = "Вернуть как было: " + saved.joinToString("; ") { it.label }
     }
 
     private fun copyDiagnostics() {
@@ -1089,6 +1171,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     override fun onDestroy() {
         diagCancelled = true
+        settle.removeCallbacks(recheck)
         settle.removeCallbacks(settlePreview)
         RecordingStatus.unlisten(statusListener)
         DirectEvents.removeListener(directListener)
@@ -1184,6 +1267,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         private const val STATE_DRAFT = "doorbell_draft"
         /** Пауза во вводе адреса потока, после которой предпросмотр подключается к новому адресу. */
         internal const val PREVIEW_SETTLE_MS = 900L
+        /** После изменения камеры — проверка заново: неровность сразу после перезапуска потока не показательна (23.11). */
+        internal var recheckMs = 210_000L
         /** Открыть сразу на разделе «Диагностика видео». */
         const val EXTRA_DIAGNOSTICS = "diagnostics"
         /** Сколько секунд «Проверить сейчас» смотрит потоки камеры (в тестах — меньше). */

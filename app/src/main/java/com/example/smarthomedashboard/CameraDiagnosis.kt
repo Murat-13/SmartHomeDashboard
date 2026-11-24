@@ -144,7 +144,9 @@ internal object CameraDiagnosis {
             s.options?.let { o ->
                 put("options", JSONObject().put("min", o.fpsMin).put("max", o.fpsMax).put("h264", o.h264)
                     .put("sizes", JSONArray().apply { o.resolutions.forEach { (w, h) -> put(JSONArray().put(w).put(h)) } })
-                    .put("rates", JSONArray().apply { o.fpsList.forEach { put(it) } }))
+                    .put("rates", JSONArray().apply { o.fpsList.forEach { put(it) } })
+                    .put("govMax", o.govMax).put("bitrateMax", o.bitrateMax)
+                    .put("bitrates", JSONArray().apply { o.bitrates.forEach { put(it) } }))
             }
         }
 
@@ -152,8 +154,10 @@ internal object CameraDiagnosis {
         val o = j.optJSONObject("options")?.let { o ->
             val sizes = o.optJSONArray("sizes") ?: JSONArray()
             val rates = o.optJSONArray("rates") ?: JSONArray()
+            val bitrates = o.optJSONArray("bitrates") ?: JSONArray()
             Onvif.EncoderOptions((0 until sizes.length()).map { sizes.getJSONArray(it).let { p -> p.getInt(0) to p.getInt(1) } },
-                o.optInt("min"), o.optInt("max"), o.optBoolean("h264"), (0 until rates.length()).map { rates.getInt(it) })
+                o.optInt("min"), o.optInt("max"), o.optBoolean("h264"), (0 until rates.length()).map { rates.getInt(it) },
+                o.optInt("govMax"), (0 until bitrates.length()).map { bitrates.getInt(it) }, o.optInt("bitrateMax"))
         }
         return Onvif.Stream("", j.optInt("w"), j.optInt("h"), j.optString("enc"), "", j.optInt("fps"), j.optInt("kbps"), j.optInt("gov"), o)
     }

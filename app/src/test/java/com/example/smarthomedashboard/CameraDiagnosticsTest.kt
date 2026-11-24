@@ -143,6 +143,30 @@ class CameraDiagnosticsTest {
         assertEquals(Level.OK, check(heavySub.copy(subEncoder = encoder(1920, 1080, 15, 1920 to 1080)), "К5").level)
     }
 
+    @Test fun adviceCarriesCameraChangeOnlyWhenCameraCanDoIt() {
+        // Камера умеет 25 к/с и 1920×1080 — у советов есть изменения для «Применить».
+        val able = healthy.copy(main = snap(baseStep = 40, doubles = 0.25, keyIntervalMs = 4000),
+            encoder = encoder(2560, 1920, 30, 2560 to 1920, 1920 to 1080).copy(fps = 20, gov = 80, kbps = 6300))
+        val rate = check(able, "К2").change!!
+        assertEquals(CameraDiagnostics.Change(true, CameraDiagnostics.Change.Field.FPS, "20", "25", "частота основного потока: 20 → 25 к/с"), rate)
+        val size = check(able, "К3").change!!
+        assertEquals("2560x1920" to "1920x1080", size.from to size.to)
+        val gop = check(able, "К1").change!!
+        assertEquals("ключевой кадр основного потока: раз в 4 с → раз в 1 с", gop.label)
+        assertEquals("80" to "20", gop.from to gop.to)
+        // Не знаем, что умеет камера, — изменения нет (только совет).
+        val unknown = healthy.copy(main = snap(baseStep = 40, doubles = 0.25, keyIntervalMs = 4000))
+        assertEquals(null, check(unknown, "К2").change)
+        assertEquals(null, check(unknown, "К1").change)
+        // Линия 10 Мбит/с и камера с битрейтами списком: снизить до 4096.
+        val slow = healthy.copy(main = snap(keySpanMs = 390, keyRate = 1000, kbps = 6300),
+            encoder = encoder(2560, 1920, 20).copy(kbps = 6144, options = Onvif.EncoderOptions(listOf(2560 to 1920), 2, 20, true,
+                bitrates = listOf(1024, 2048, 3072, 4096, 6144, 8192))))
+        assertEquals("6144" to "4096", check(slow, "С5").change!!.let { it.from to it.to })
+        // Особенность камеры — изменения нет.
+        assertEquals(null, check(healthy.copy(main = snap(baseStep = 40, doubles = 0.25), encoder = encoder(2560, 1920, 20, 2560 to 1920)), "К2").change)
+    }
+
     @Test fun heavyMainStreamDependsOnWhetherTabletKeepsUp() {
         val fitting = healthy.copy(main = snap(width = 1920, height = 1080))
         assertEquals(Level.OK, check(fitting, "К3").level)

@@ -69,6 +69,44 @@ class DiagnosticsDeepTest {
         assertTrue("кодек виден", rows.any { it.startsWith("✓ Кодек: H.264") })
     }
 
+    /**
+     * Этап 4: камера D стенда с поддельным ONVIF (порт `onvifPort`, обычно 8580) — после «Проверить сейчас» у совета о частоте
+     * есть «Применить: частота основного потока: 20 → 25 к/с» (камера разрешает до 30). Кнопку не нажимаем: изменение и
+     * возврат проверены на том же ONVIF тестом JVM (DiagnosticsStandTest).
+     */
+    @Test fun applyButtonOnStandCamera() {
+        val host = argument("rtspHost")
+        val port = argument("diagPort")
+        val onvif = argument("onvifPort")
+        assumeTrue("Нужны аргументы rtspHost, diagPort и onvifPort (камера D стенда)", host != null && port != null && onvif != null)
+        ha = FakeHomeAssistant()
+        val cam = DoorbellConfig(host = host!!, onvifPort = onvif!!.toInt(), rtspUser = "admin",
+            rtspMain = "rtsp://$host:$port/Streaming/Channels/101", rtspSub = "rtsp://$host:$port/Streaming/Channels/102")
+        val config = JSONObject(DoorbellConfig.newTileConfig(camera = true)).put(DoorbellConfig.KEY, cam.toJson()).toString()
+        prepareApp(ha, listOf(TileEntity("deep_cam", DoorbellConfig.CAMERA_TYPE, "grid", "Камера", 40, 40, 1, 1, config = config)))
+        com.example.smarthomedashboard.CameraApply.setEnabled(appContext, true)
+        DoorbellEditorActivity.diagSeconds = 20
+        scenario = ActivityScenario.launch(Intent(appContext, DoorbellEditorActivity::class.java).putExtra("tile_id", "deep_cam"))
+        fun view(tag: String): View? { val activity = resumedActivity(); return onMain { activity?.window?.decorView?.findViewWithTag<View>(tag) } }
+        try {
+            waitFor(10_000, "раздел «Диагностика»") { view("door_diag_run") != null }
+            val password = view("door_password") as TextView
+            onMain { password.text = "x" }
+            val run = view("door_diag_run")!!
+            onMain { run.requestRectangleOnScreen(android.graphics.Rect(0, 0, run.width, run.height * 12), true); run.performClick() }
+            waitFor(60_000, "конец проверки") { onMain { (run as TextView).text.toString() } == "Проверить сейчас" }
+            waitFor(5_000, "кнопка «Применить» у частоты") { view("door_diag_apply_К2") != null }
+            val button = view("door_diag_apply_К2") as TextView
+            onMain { button.requestRectangleOnScreen(android.graphics.Rect(0, 0, button.width, button.height), true) }
+            val label = onMain { button.text.toString() }
+            log("Стенд: $label")
+            assertTrue(label, label.startsWith("Применить: частота основного потока: ") && label.endsWith(" → 25 к/с"))
+            SystemClockSleep.sleep(500)
+            val shot = instrumentation.uiAutomation.takeScreenshot()
+            File(appContext.getExternalFilesDir(null), "diag_apply.png").outputStream().use { shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        } finally { com.example.smarthomedashboard.CameraApply.setEnabled(appContext, false) }
+    }
+
     /** Экран «Планшет» (этап 2): настоящие декодеры эмулятора и решение по плитке домофона. Стенд не нужен. */
     @Test fun tabletScreenShowsDecoders() {
         ha = FakeHomeAssistant()

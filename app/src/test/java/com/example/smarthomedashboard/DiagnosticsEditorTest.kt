@@ -91,6 +91,64 @@ class DiagnosticsEditorTest {
         assertEquals(merged.main!!.options, CameraDiagnosis.fromJson(CameraDiagnosis.toJson(merged.main!!)).options)
     }
 
+    @Test fun applyButtonOnlyWhenSwitchedOnThenConfirmApplyAndRollBack() {
+        val transport = Onvif.transport
+        var fps = 20
+        fun soap(body: String) = "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\" " +
+            "xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\" xmlns:tt=\"http://www.onvif.org/ver10/schema\"><s:Body>$body</s:Body></s:Envelope>"
+        fun enc(tag: String) = "<$tag token=\"v0\"><tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>2560</tt:Width><tt:Height>1920</tt:Height>" +
+            "</tt:Resolution><tt:RateControl><tt:FrameRateLimit>$fps</tt:FrameRateLimit></tt:RateControl></$tag>"
+        Onvif.transport = { _, body ->
+            when {
+                body.contains("GetCapabilities") -> 200 to soap("<tds:GetCapabilitiesResponse/>")
+                body.contains("GetDeviceInformation") -> 200 to soap("<tds:GetDeviceInformationResponse/>")
+                body.contains("GetProfiles") -> 200 to soap("<trt:GetProfilesResponse><trt:Profiles token=\"p0\">${enc("tt:VideoEncoderConfiguration")}" +
+                    "</trt:Profiles></trt:GetProfilesResponse>")
+                body.contains("GetStreamUri") -> 200 to soap("<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>rtsp://cam.local/main</tt:Uri>" +
+                    "</trt:MediaUri></trt:GetStreamUriResponse>")
+                body.contains("<GetVideoEncoderConfiguration ") -> 200 to soap("<trt:GetVideoEncoderConfigurationResponse>${enc("trt:Configuration")}" +
+                    "</trt:GetVideoEncoderConfigurationResponse>")
+                body.contains("SetVideoEncoderConfiguration") -> {
+                    fps = Regex("<FrameRateLimit>(\\d+)<").find(body)!!.groupValues[1].toInt()
+                    200 to soap("<trt:SetVideoEncoderConfigurationResponse/>")
+                }
+                else -> 500 to soap("")
+            }
+        }
+        try {
+            val activity = open("rtsp://cam.local/main")
+            val change = CameraDiagnostics.Change(true, CameraDiagnostics.Change.Field.FPS, "20", "25", "частота основного потока: 20 → 25 к/с")
+            val result = CameraDiagnosis.Result(DiagInput(), listOf(CameraDiagnostics.Check("К2", "Частота кадров", CameraDiagnostics.Level.IMPROVE,
+                "Кадры неровные", "Поставьте 25 к/с", change)), null)
+            activity.showDiagnostics(result, checked = true)
+            assertEquals("по умолчанию выключено", null, activity.view("door_diag_apply_К2"))
+            assertFalse((activity.view("door_diag_apply_enabled") as androidx.appcompat.widget.SwitchCompat).isChecked)
+            assertEquals(View.GONE, activity.view("door_diag_rollback")!!.visibility)
+            (activity.view("door_diag_apply_enabled") as androidx.appcompat.widget.SwitchCompat).isChecked = true
+            idle()
+            assertTrue(CameraApply.enabled(context))
+            val apply = activity.view("door_diag_apply_К2")!!
+            assertEquals("Применить: частота основного потока: 20 → 25 к/с", (apply as TextView).text.toString())
+            (activity.view("door_password") as TextView).text = "secret"
+            apply.performClick(); idle()
+            val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            assertTrue(shadowOf(dialog).message.toString().contains("прервутся примерно на 10–60 с"))
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            val until = System.currentTimeMillis() + 10_000
+            while (!activity.text("door_diag_apply_status").startsWith("Камера приняла")) {
+                if (System.currentTimeMillis() > until) fail(activity.text("door_diag_apply_status"))
+                Thread.sleep(50); idle()
+            }
+            assertEquals(25, fps)
+            assertEquals(View.VISIBLE, activity.view("door_diag_rollback")!!.visibility)
+            assertTrue(activity.text("door_diag_rollback").contains("20 → 25"))
+        } finally {
+            Onvif.transport = transport
+            CameraApply.setEnabled(context, false)
+            context.getSharedPreferences("camera_diagnostics", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+        }
+    }
+
     @Test fun nothingSeenYetAsksToCheck() {
         val activity = open("")
         assertEquals("Нажмите «Проверить сейчас»", activity.text("door_diag_summary"))

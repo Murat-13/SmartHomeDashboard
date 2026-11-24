@@ -107,6 +107,29 @@ internal class ReolinkDriver(
         return parseRanges(reply.optJSONObject("range"))
     }
 
+    /**
+     * Изменить настройки потока ([stream] — `mainStream` или `subStream`) по API Reolink: прочитать `GetEnc`, поменять
+     * [edits] (`frameRate`, `gop`, `size`, `vType`, `bitRate`), записать `SetEnc` и прочитать снова. Возвращает прежние
+     * значения — для «Вернуть как было». Камера записала не то — [Onvif.NotApplied].
+     */
+    /** Текущие настройки потока [stream] (`mainStream`, `subStream`) — значения строками. */
+    fun currentEnc(stream: String): Map<String, String> {
+        val s = call("GetEnc", JSONObject().put("channel", 0)).optJSONObject("Enc")?.optJSONObject(stream) ?: return emptyMap()
+        return s.keys().asSequence().associateWith { s.opt(it).toString() }
+    }
+
+    fun changeEnc(stream: String, edits: Map<String, String>): Map<String, String> {
+        val enc = call("GetEnc", JSONObject().put("channel", 0)).optJSONObject("Enc") ?: throw CameraException("GetEnc: нет настроек")
+        val target = enc.optJSONObject(stream) ?: throw CameraException("GetEnc: нет потока $stream")
+        val before = edits.keys.associateWith { key -> target.opt(key)?.toString() ?: throw CameraException("У камеры нет настройки $key") }
+        for ((key, value) in edits) target.put(key, value.toIntOrNull() ?: value)
+        call("SetEnc", JSONObject().put("Enc", enc))
+        val after = call("GetEnc", JSONObject().put("channel", 0)).optJSONObject("Enc")?.optJSONObject(stream)
+        val wrong = edits.filter { (key, value) -> after?.opt(key)?.toString() != value }
+        if (wrong.isNotEmpty()) throw Onvif.NotApplied("Камера ответила «да», но не сменила: " + wrong.keys.joinToString())
+        return before
+    }
+
     override fun ringActive(): Boolean =
         call("GetEvents", JSONObject().put("channel", 0)).optJSONObject("visitor")?.optInt("alarm_state") == 1
 
@@ -184,8 +207,11 @@ internal class ReolinkDriver(
                         ?: p.optInt("width").takeIf { it > 0 }?.let { w -> p.optInt("height").takeIf { it > 0 }?.let { h -> w to h } }
                 }.distinct()
                 val types = parts.flatMap { p -> p.optJSONArray("vType")?.let { a -> (0 until a.length()).map { a.optString(it).lowercase(Locale.ROOT) } }.orEmpty() }
+                val bitrates = parts.flatMap { p -> p.optJSONArray("bitRate")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty() }
+                    .filter { it > 0 }.distinct().sorted()
                 if (rates.isEmpty() && sizes.isEmpty()) return null
-                return Onvif.EncoderOptions(sizes, rates.minOrNull() ?: 0, rates.maxOrNull() ?: 0, types.isEmpty() || "h264" in types, rates)
+                return Onvif.EncoderOptions(sizes, rates.minOrNull() ?: 0, rates.maxOrNull() ?: 0, types.isEmpty() || "h264" in types, rates,
+                    bitrates = bitrates)
             }
             return stream("mainStream") to stream("subStream")
         }

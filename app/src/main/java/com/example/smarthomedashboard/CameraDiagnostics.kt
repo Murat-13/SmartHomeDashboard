@@ -20,8 +20,19 @@ import kotlin.math.abs
 internal object CameraDiagnostics {
     enum class Level(val mark: String) { BAD("✗"), IMPROVE("⚠"), OK("✓"), UNKNOWN("–") }
 
-    /** Одна проверка: номер из ТЗ (С1, К3…), что проверяли, итог, подробности и совет. */
-    data class Check(val id: String, val title: String, val level: Level, val detail: String, val advice: String = "")
+    /** Одна проверка: номер из ТЗ (С1, К3…), что проверяли, итог, подробности, совет и — если можно — изменение камеры. */
+    data class Check(val id: String, val title: String, val level: Level, val detail: String, val advice: String = "",
+                     val change: Change? = null)
+
+    /**
+     * Изменение настройки камеры по совету (этап 4, кнопка «Применить»): поток ([main] — основной), что меняется,
+     * было → станет (значения как у камеры: к/с, кадров, «1920x1080», «H264», кбит/с) и подпись для человека.
+     */
+    data class Change(val main: Boolean, val field: Field, val from: String, val to: String, val label: String) {
+        enum class Field { FPS, GOP, SIZE, CODEC, BITRATE }
+    }
+
+    private fun streamName(main: Boolean) = if (main) "основного потока" else "субпотока"
 
     fun evaluate(input: DiagInput): List<Check> {
         val line = lineCheck(input)
@@ -123,9 +134,15 @@ internal object CameraDiagnostics {
         val share = kbps / SLOW_LINE_KBPS.toDouble()
         val advice = "Это почти всё, что пропускает линия 10 Мбит/с. Лучше исправить линию (С1); если нельзя — снизьте битрейт " +
             "основного потока в настройках камеры"
+        // Изменение: основной поток до ≈ 4 Мбит/с, если камера сообщила допустимые битрейты (этап 4).
+        val current = input.encoder?.kbps?.takeIf { it > 0 } ?: input.main?.kbps?.toInt()
+        val target = input.encoder?.options?.bitrateAtMost(TARGET_KBPS)
+        val change = if (current != null && target != null && target < current) {
+            Change(true, Change.Field.BITRATE, current.toString(), target.toString(), "битрейт основного потока: $current → $target кбит/с")
+        } else null
         return when {
-            share >= BAD_SHARE -> Check("С5", title, Level.BAD, "$text из ≈ 10", advice)
-            share >= SOME_SHARE -> Check("С5", title, Level.IMPROVE, "$text из ≈ 10", advice)
+            share >= BAD_SHARE -> Check("С5", title, Level.BAD, "$text из ≈ 10", advice, change)
+            share >= SOME_SHARE -> Check("С5", title, Level.IMPROVE, "$text из ≈ 10", advice, change)
             else -> Check("С5", title, Level.OK, "$text из ≈ 10")
         }
     }
@@ -141,9 +158,18 @@ internal object CameraDiagnostics {
         val text = "Ключевой кадр раз в ${seconds(interval)} с"
         val advice = "Видео дольше включается и дольше восстанавливается после сбоя. В настройках камеры поставьте интервал " +
             "ключевых кадров (I-frame, GOP) равным частоте кадров — раз в 1 с"
+        // Изменение — у потока с самым редким ключевым кадром, если камера сообщила, что умеет (этап 4).
+        val main = (input.main?.keyIntervalMs ?: 0) >= (input.sub?.keyIntervalMs ?: 0)
+        val stream = if (main) input.encoder else input.subEncoder
+        val fps = (if (main) input.main?.fps else input.sub?.fps)?.let { Math.round(it).toInt() }?.takeIf { it > 0 } ?: stream?.fps?.takeIf { it > 0 }
+        val change = if (stream?.options != null && fps != null && (stream.options.govMax == 0 || fps <= stream.options.govMax)) {
+            val from = stream.gov.takeIf { it > 0 } ?: Math.round(interval / 1000.0 * fps).toInt()
+            Change(main, Change.Field.GOP, from.toString(), fps.toString(),
+                "ключевой кадр ${streamName(main)}: раз в ${seconds(interval)} с → раз в 1 с")
+        } else null
         return when {
-            interval > BAD_KEY_INTERVAL_MS -> Check("К1", title, Level.BAD, text, advice)
-            interval > SOME_KEY_INTERVAL_MS -> Check("К1", title, Level.IMPROVE, text, advice)
+            interval > BAD_KEY_INTERVAL_MS -> Check("К1", title, Level.BAD, text, advice, change)
+            interval > SOME_KEY_INTERVAL_MS -> Check("К1", title, Level.IMPROVE, text, advice, change)
             else -> Check("К1", title, Level.OK, text)
         }
     }
@@ -179,7 +205,15 @@ internal object CameraDiagnostics {
         val advice = if (fits.all { it.second != null }) "Поставьте в камере " +
             fits.filter { it.second!!.isNotEmpty() }.joinToString("; ") { (name, ok) -> "$name — ${ok!!.joinToString(" или ")} к/с" }
             else "Поставьте в камере частоту, на которую $sensor делится нацело: ${even.joinToString(" или ")} к/с — если камера позволяет"
-        return Check("К2", title, Level.IMPROVE, detail, advice)
+        val change = uneven.zip(fits).firstOrNull { it.second.second?.isNotEmpty() == true }?.let { (stream, fit) ->
+            val (s, _, name) = stream
+            val main = name == "основной поток"
+            // «Было» — настройка камеры; не знаем её — измеренная частота (при потерях она ниже настройки).
+            val from = (if (main) input.encoder?.fps else input.subEncoder?.fps)?.takeIf { it > 0 } ?: s.fps?.let { Math.round(it).toInt() } ?: 0
+            val to = fit.second!!.first()
+            Change(main, Change.Field.FPS, from.toString(), to.toString(), "частота ${streamName(main)}: $from → $to к/с")
+        }
+        return Check("К2", title, Level.IMPROVE, detail, advice, change)
     }
 
     /** К3. Основной поток больше, чем тянет аппаратный декодер планшета. Совет — размер, который камера разрешает. */
@@ -214,7 +248,10 @@ internal object CameraDiagnostics {
         if (options != null && fitting == null) {
             return Check("К3", title, Level.OK, "Особенность камеры: $software. Меньшего размера у основного потока нет")
         }
-        return Check("К3", title, Level.IMPROVE, software, advice)
+        val change = fitting?.let { (w, h) ->
+            Change(true, Change.Field.SIZE, "${m.width}x${m.height}", "${w}x$h", "размер основного потока: $size → ${w}×$h")
+        }
+        return Check("К3", title, Level.IMPROVE, software, advice, change)
     }
 
     /** К4. H.265 без аппаратного декодера нужного размера; камера без H.264 — особенность камеры. */
@@ -231,9 +268,11 @@ internal object CameraDiagnostics {
             return Check("К4", title, Level.OK, "Особенность камеры: H.265 — планшет показывает его только программно, H.264 у камеры нет")
         }
         val h264 = m.width > 0 && d.hardware(VideoDepacketizer.Codec.H264, m.width, m.height)
+        val change = if (input.encoder?.options?.h264 == true) Change(true, Change.Field.CODEC, "H265", "H264", "кодек основного потока: H.265 → H.264")
+            else null
         return Check("К4", title, if (h264) Level.BAD else Level.IMPROVE,
             "H.265 — планшет показывает его только программно",
-            "Переключите основной поток камеры на H.264" + if (h264) " — его планшет показывает аппаратно" else "")
+            "Переключите основной поток камеры на H.264" + if (h264) " — его планшет показывает аппаратно" else "", change)
     }
 
     /** К5. Субпоток не подходит плитке. */
@@ -372,6 +411,8 @@ internal object CameraDiagnostics {
     private const val FAST_KEY_MS = 100L
     private const val SLOW_LINE_KBPS = 10_000L
     private const val SOME_SHARE = 0.6
+    /** Битрейт основного потока, к которому советуем снизить на линии 10 Мбит/с. */
+    private const val TARGET_KBPS = 4096
     private const val BAD_SHARE = 0.8
     private const val MIN_PACKETS = 1_000L
     private const val SOME_LOSS = 0.1
