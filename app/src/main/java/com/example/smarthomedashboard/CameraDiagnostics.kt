@@ -148,24 +148,41 @@ internal object CameraDiagnostics {
         }
     }
 
-    /** К2. Частота не делит частоту датчика: шаги меток 40 и 80 мс при 20 к/с на датчике 25. */
+    /**
+     * К2. Частота не делит частоту датчика: шаги меток 40 и 80 мс при 20 к/с на датчике 25. Совет — только частота,
+     * которую камера разрешает ([Onvif.EncoderOptions]); нет такой — «особенность камеры», не «можно лучше».
+     */
     private fun sensorCheck(input: DiagInput): Check {
         val title = "Частота кадров"
-        val s = listOfNotNull(input.main, input.sub).firstOrNull { it.baseStepMs != null && it.doubleStepShare != null }
-            ?: return Check("К2", title, Level.UNKNOWN, "Мало данных")
-        val base = s.baseStepMs!!
-        val sensor = (1000.0 / base).let { Math.round(it).toInt() }
-        val fps = s.fps?.let { String.format(Locale.US, "%.0f", it) }
-        if (s.doubleStepShare!! >= DOUBLE_STEP_SHARE && base in 25..55) {
-            return Check("К2", title, Level.IMPROVE,
-                "Кадры идут через $base и ${2 * base} мс: датчик камеры снимает $sensor к/с, а поток — ${fps ?: "меньше"} к/с, " +
-                    "лишние кадры выбрасываются неравномерно — движение подёргивается",
-                "Поставьте в камере частоту, кратную датчику: $sensor или ${halfText(sensor)} к/с")
+        val streams = listOfNotNull(input.main?.let { Triple(it, input.encoder?.options, "основной поток") },
+            input.sub?.let { Triple(it, input.subEncoder?.options, "субпоток") })
+            .filter { (s, _, _) -> s.baseStepMs != null && s.skipStepShare != null }
+        if (streams.isEmpty()) return Check("К2", title, Level.UNKNOWN, "Мало данных")
+        val uneven = streams.filter { (s, _, _) -> s.skipStepShare!! >= SKIP_STEP_SHARE && s.baseStepMs!! in SENSOR_STEPS_MS }
+        if (uneven.isEmpty()) {
+            val fps = streams.first().first.fps?.let { ", ${fpsText(it.toFloat())} к/с" } ?: ""
+            return Check("К2", title, Level.OK, "Кадры идут ровно$fps")
         }
-        return Check("К2", title, Level.OK, "Кадры идут ровно${fps?.let { ", $it к/с" } ?: ""}")
+        val base = uneven.first().first.baseStepMs!!
+        // Шаги округлены до 10 мс (33 мс у датчика 30 к/с — это 30): датчик — ближайшая обычная частота.
+        val sensor = SENSOR_FPS.minBy { abs(1000.0 / base - it) }
+        // Ровные частоты — датчик, делённый нацело (25 → 25; 30 → 30, 15, 10), не реже MIN_EVEN_FPS.
+        val even = (1..6).filter { sensor % it == 0 }.map { sensor / it }.filter { it >= MIN_EVEN_FPS }
+        val what = uneven.joinToString(" и ") { (s, _, name) -> "$name — ${s.fps?.let { fpsText(it.toFloat()) } ?: "меньше"} к/с" }
+        val detail = "Камера снимает $sensor к/с, а отдаёт $what: лишние кадры выбрасываются неравномерно (шаги $base и " +
+            "${2 * base} мс) — движение чуть подёргивается"
+        val fits = uneven.map { (_, options, name) -> name to options?.let { o -> even.filter { it in o.fpsMin..o.fpsMax } } }
+        if (fits.all { it.second?.isEmpty() == true }) {
+            val limits = uneven.joinToString(", ") { (_, o, name) -> "$name — до ${o!!.fpsMax} к/с" }
+            return Check("К2", title, Level.OK, "Особенность камеры: $detail. Ровной частоты у неё нет ($limits)")
+        }
+        val advice = if (fits.all { it.second != null }) "Поставьте в камере " +
+            fits.filter { it.second!!.isNotEmpty() }.joinToString("; ") { (name, ok) -> "$name — ${ok!!.joinToString(" или ")} к/с" }
+            else "Поставьте в камере частоту, на которую $sensor делится нацело: ${even.joinToString(" или ")} к/с — если камера позволяет"
+        return Check("К2", title, Level.IMPROVE, detail, advice)
     }
 
-    /** К3. Основной поток больше, чем тянет аппаратный декодер планшета. */
+    /** К3. Основной поток больше, чем тянет аппаратный декодер планшета. Совет — размер, который камера разрешает. */
     private fun sizeCheck(input: DiagInput): Check {
         val title = "Размер основного потока"
         val m = input.main
@@ -176,18 +193,30 @@ internal object CameraDiagnostics {
             return Check("К3", title, Level.OK, "$size — планшет показывает его аппаратно")
         }
         val limit = d.maxSize(VideoDepacketizer.Codec.H264)?.let { "${it.first}×${it.second}" }
-        val advice = "Для HD поставьте основной поток не больше ${limit ?: "1920×1080"} — планшет будет показывать его аппаратно: " +
-            "быстрее и без нагрева"
+        val options = input.encoder?.options?.takeIf { it.resolutions.isNotEmpty() }
+        val fitting = options?.resolutions?.filter { (w, h) -> d.hardware(VideoDepacketizer.Codec.H264, w, h) }
+            ?.maxByOrNull { (w, h) -> w.toLong() * h }
+        val advice = when {
+            fitting != null -> "Поставьте основной поток ${fitting.first}×${fitting.second} — планшет будет показывать его аппаратно: " +
+                "быстрее и без нагрева"
+            options != null -> "У этой камеры основной поток бывает только ${options.resolutions.joinToString(", ") { "${it.first}×${it.second}" }}"
+            else -> "Для HD поставьте основной поток не больше ${limit ?: "1920×1080"} — планшет будет показывать его аппаратно: " +
+                "быстрее и без нагрева"
+        }
         val shows = input.mainShows.takeLast(RECENT_SHOWS)
         if (input.mainUndecodable || (shows.isNotEmpty() && shows.none { it.keepsUp })) {
             return Check("К3", title, Level.BAD, "$size — планшет не успевает его показывать" +
                 (shows.lastOrNull()?.let { ": показано ${fpsText(it.shownFps)} к/с" } ?: ""), advice)
         }
-        return Check("К3", title, Level.IMPROVE, "$size — больше предела аппаратного декодера${limit?.let { " ($it)" } ?: ""}, " +
-            "планшет показывает его программно" + (shows.lastOrNull()?.let { ", успевает: ${fpsText(it.shownFps)} к/с" } ?: ""), advice)
+        val software = "$size — больше предела аппаратного декодера${limit?.let { " ($it)" } ?: ""}, планшет показывает его программно" +
+            (shows.lastOrNull()?.let { " и успевает: ${fpsText(it.shownFps)} к/с" } ?: "")
+        if (options != null && fitting == null) {
+            return Check("К3", title, Level.OK, "Особенность камеры: $software. Меньшего размера у основного потока нет")
+        }
+        return Check("К3", title, Level.IMPROVE, software, advice)
     }
 
-    /** К4. H.265 без аппаратного декодера нужного размера. */
+    /** К4. H.265 без аппаратного декодера нужного размера; камера без H.264 — особенность камеры. */
     private fun codecCheck(input: DiagInput): Check {
         val title = "Кодек"
         val m = input.main ?: return Check("К4", title, Level.UNKNOWN, "Мало данных")
@@ -196,6 +225,9 @@ internal object CameraDiagnostics {
         val d = input.decoders ?: return Check("К4", title, Level.UNKNOWN, "H.265, декодеры планшета не известны")
         if (m.width > 0 && d.hardware(VideoDepacketizer.Codec.H265, m.width, m.height)) {
             return Check("К4", title, Level.OK, "H.265 — планшет показывает его аппаратно")
+        }
+        if (input.encoder?.options?.h264 == false) {
+            return Check("К4", title, Level.OK, "Особенность камеры: H.265 — планшет показывает его только программно, H.264 у камеры нет")
         }
         val h264 = m.width > 0 && d.hardware(VideoDepacketizer.Codec.H264, m.width, m.height)
         return Check("К4", title, if (h264) Level.BAD else Level.IMPROVE,
@@ -214,8 +246,12 @@ internal object CameraDiagnostics {
         val s = input.sub
         if (s == null || s.width <= 0) return Check("К5", title, Level.UNKNOWN, "Мало данных")
         if (s.height > MAX_SUB_HEIGHT) {
-            return Check("К5", title, Level.IMPROVE, "Субпоток ${s.width}×${s.height} — тяжеловат для плитки",
-                "Для плитки хватит 640×480 или 640×360 — меньше нагрузка на планшет и сеть")
+            val options = input.subEncoder?.options?.takeIf { it.resolutions.isNotEmpty() }
+            val smaller = options?.resolutions?.filter { it.second in MIN_SUB_HEIGHT..MAX_SUB_HEIGHT }?.maxByOrNull { (w, h) -> w.toLong() * h }
+            val text = "Субпоток ${s.width}×${s.height} — тяжеловат для плитки"
+            if (options != null && smaller == null) return Check("К5", title, Level.OK, "Особенность камеры: $text, меньшего у неё нет")
+            return Check("К5", title, Level.IMPROVE, text,
+                "Для плитки хватит " + (smaller?.let { "${it.first}×${it.second}" } ?: "640×480 или 640×360") + " — меньше нагрузка на планшет и сеть")
         }
         return Check("К5", title, Level.OK, "Субпоток ${s.width}×${s.height}")
     }
@@ -313,7 +349,6 @@ internal object CameraDiagnostics {
     private fun fpsText(fps: Float) = String.format(Locale.US, "%.0f", fps)
     private fun percentText(p: Double) = (if (p < 0.1) String.format(Locale.US, "%.2f", p) else String.format(Locale.US, "%.1f", p))
         .replace('.', ',') + " %"
-    private fun halfText(sensor: Int) = if (sensor % 2 == 0) "${sensor / 2}" else "${sensor / 2},5"
     private fun durationText(ms: Long) = when {
         ms < 120_000 -> "${ms / 1000} с"
         ms < 7_200_000 -> "${ms / 60_000} мин"
@@ -343,7 +378,13 @@ internal object CameraDiagnostics {
     private const val SLOW_WIFI_MBPS = 50
     private const val SOME_KEY_INTERVAL_MS = 2_000L
     private const val BAD_KEY_INTERVAL_MS = 5_000L
-    private const val DOUBLE_STEP_SHARE = 0.10
+    private const val SKIP_STEP_SHARE = 0.10
+    /** Шаг датчика 25–55 мс (18–40 к/с): у камер обычно 25 или 30 к/с. */
+    private val SENSOR_STEPS_MS = 25..55
+    /** Ровная частота реже этой — не совет (5 к/с с датчика 25 — не видео). */
+    private const val MIN_EVEN_FPS = 10
+    private val SENSOR_FPS = listOf(20, 25, 30)
+    private const val MIN_SUB_HEIGHT = 240
     private const val MAX_SUB_HEIGHT = 720
     private const val SOME_CLOCK_MS = 5_000L
     private const val BAD_CLOCK_MS = 60_000L
@@ -362,8 +403,9 @@ internal data class DiagInput(
     val mainShows: List<ShowSummary> = emptyList(),
     val subShows: List<ShowSummary> = emptyList(),
     val mainUndecodable: Boolean = false,
-    /** Настройки кодировщика основного потока по ONVIF. */
+    /** Настройки кодировщика основного потока и субпотока по ONVIF (с тем, что камера разрешает). */
     val encoder: Onvif.Stream? = null,
+    val subEncoder: Onvif.Stream? = null,
     /** Часы камеры минус часы планшета, мс. */
     val clockOffsetMs: Long? = null,
     val wifi: WifiFacts? = null,

@@ -49,6 +49,25 @@ class DiagnosticsEditorTest {
     private fun DoorbellEditorActivity.view(tag: String): View? = findViewById<View>(android.R.id.content).findViewWithTag(tag)
     private fun DoorbellEditorActivity.text(tag: String) = (view(tag) as TextView).text.toString()
 
+    @Test fun cameraOptionsAreParsedAndRememberedWithoutAddress() {
+        val xml = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
+            xmlns:tt="http://www.onvif.org/ver10/schema"><s:Body><trt:GetVideoEncoderConfigurationOptionsResponse><trt:Options>
+            <tt:QualityRange><tt:Min>1</tt:Min><tt:Max>6</tt:Max></tt:QualityRange>
+            <tt:JPEG><tt:ResolutionsAvailable><tt:Width>640</tt:Width><tt:Height>480</tt:Height></tt:ResolutionsAvailable></tt:JPEG>
+            <tt:H264><tt:ResolutionsAvailable><tt:Width>2560</tt:Width><tt:Height>1920</tt:Height></tt:ResolutionsAvailable>
+            <tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>400</tt:Max></tt:GovLengthRange>
+            <tt:FrameRateRange><tt:Min>2</tt:Min><tt:Max>20</tt:Max></tt:FrameRateRange></tt:H264>
+            </trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse></s:Body></s:Envelope>"""
+        val options = Onvif.parseOptions(Onvif.parse(xml))!!
+        assertEquals(listOf(2560 to 1920), options.resolutions)
+        assertEquals(20, options.fpsMax)
+        assertTrue(options.h264)
+        val stream = Onvif.Stream("rtsp://cam.local:554/main", 2560, 1920, "H264", "000", 20, 6144, 20, options)
+        val json = CameraDiagnosis.toJson(stream)
+        assertFalse("адрес не хранится", json.toString().contains("cam.local"))
+        assertEquals(stream.copy(uri = "", profile = ""), CameraDiagnosis.fromJson(json))
+    }
+
     @Test fun nothingSeenYetAsksToCheck() {
         val activity = open("")
         assertEquals("Нажмите «Проверить сейчас»", activity.text("door_diag_summary"))

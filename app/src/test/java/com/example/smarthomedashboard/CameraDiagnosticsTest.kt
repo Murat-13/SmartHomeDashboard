@@ -90,11 +90,53 @@ class CameraDiagnosticsTest {
         // Без потока — по ONVIF: GOP 80 при 20 к/с = раз в 4 с.
         val onvifOnly = healthy.copy(main = null, sub = null, encoder = Onvif.Stream("", 2560, 1920, "H264", "p", 20, 6000, 80))
         assertEquals(Level.IMPROVE, check(onvifOnly, "К1").level)
-        // Домофон 20 к/с с датчика 25: шаги 40 и 80 мс.
+        // 20 к/с с датчика 25: шаги 40 и 80 мс. Что камера умеет — не известно: совет с оговоркой.
         val jerky = check(healthy.copy(main = snap(baseStep = 40, doubles = 0.25)), "К2")
         assertEquals(Level.IMPROVE, jerky.level)
-        assertTrue(jerky.advice, jerky.advice.contains("25") && jerky.advice.contains("12,5"))
+        assertTrue(jerky.advice, jerky.advice.contains("25 к/с — если камера позволяет"))
+        assertFalse("12,5 к/с камеры не ставят", jerky.advice.contains("12,5"))
         assertEquals(Level.OK, check(healthy, "К2").level)
+    }
+
+    private fun encoder(w: Int, h: Int, maxFps: Int, vararg sizes: Pair<Int, Int>, h264: Boolean = true) =
+        Onvif.Stream("", w, h, "H264", "p", maxFps, 0, maxFps, Onvif.EncoderOptions(sizes.toList(), 1, maxFps, h264))
+
+    @Test fun doorbellLimitsAreNotAdvice() {
+        // Домофон владельца: основной до 20 к/с и только 2560×1920, субпоток до 15 к/с; датчик 25 — оба потока неровные.
+        val doorbell = healthy.copy(main = snap(baseStep = 40, doubles = 0.25), sub = sub.copy(baseStepMs = 40, skipStepShare = 0.6),
+            encoder = encoder(2560, 1920, 20, 2560 to 1920), subEncoder = encoder(640, 480, 15, 640 to 480))
+        val rate = check(doorbell, "К2")
+        assertEquals(Level.OK, rate.level)
+        assertTrue(rate.detail, rate.detail.startsWith("Особенность камеры") && rate.detail.contains("основной поток — до 20 к/с"))
+        val size = check(doorbell, "К3")
+        assertEquals(Level.OK, size.level)
+        assertTrue(size.detail, size.detail.startsWith("Особенность камеры") && size.detail.contains("Меньшего размера"))
+        assertEquals("Всё в порядке", CameraDiagnostics.summary(CameraDiagnostics.evaluate(doorbell)))
+        // Но если планшет не успевает — это «мешает» и при особенности камеры.
+        val slow = doorbell.copy(mainShows = listOf(show.copy(shownFps = 9f, droppedShare = 0.5f, longStalls = 6)))
+        assertEquals(Level.BAD, check(slow, "К3").level)
+        assertTrue(check(slow, "К3").advice.contains("только 2560×1920"))
+    }
+
+    @Test fun cameraThatCanDoBetterGetsConcreteAdvice() {
+        val able = healthy.copy(main = snap(baseStep = 40, doubles = 0.25), encoder = encoder(2560, 1920, 30, 2560 to 1920, 1920 to 1080, 1280 to 720))
+        val rate = check(able, "К2")
+        assertEquals(Level.IMPROVE, rate.level)
+        assertEquals("Поставьте в камере основной поток — 25 к/с", rate.advice)
+        val size = check(able, "К3")
+        assertEquals(Level.IMPROVE, size.level)
+        assertTrue(size.advice, size.advice.startsWith("Поставьте основной поток 1920×1080"))
+        // Датчик 30 к/с (60 Гц): ровные — 30, 15, 10.
+        val sixty = check(healthy.copy(main = snap(baseStep = 30, doubles = 0.3), encoder = encoder(2560, 1920, 20)), "К2")
+        assertEquals("Поставьте в камере основной поток — 15 или 10 к/с", sixty.advice)
+        // Камера без H.264: H.265 — особенность.
+        val hevcOnly = healthy.copy(main = snap(codec = VideoDepacketizer.Codec.H265, width = 2560, height = 1440),
+            encoder = encoder(2560, 1440, 25, 2560 to 1440, h264 = false))
+        assertEquals(Level.OK, check(hevcOnly, "К4").level)
+        // Тяжёлый субпоток: камера даёт 640×480 — совет; не даёт — особенность.
+        val heavySub = healthy.copy(sub = sub.copy(width = 1920, height = 1080))
+        assertTrue(check(heavySub.copy(subEncoder = encoder(1920, 1080, 15, 1920 to 1080, 640 to 480)), "К5").advice.contains("640×480"))
+        assertEquals(Level.OK, check(heavySub.copy(subEncoder = encoder(1920, 1080, 15, 1920 to 1080)), "К5").level)
     }
 
     @Test fun heavyMainStreamDependsOnWhetherTabletKeepsUp() {

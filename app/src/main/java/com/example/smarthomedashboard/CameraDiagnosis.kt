@@ -2,6 +2,9 @@ package com.example.smarthomedashboard
 
 import android.content.Context
 import android.util.Log
+import androidx.core.content.edit
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.URI
 import java.util.concurrent.atomic.AtomicReference
 
@@ -30,7 +33,8 @@ internal object CameraDiagnosis {
     fun passive(context: Context, t: Target): Result {
         val main = t.main.takeIf { it.isNotBlank() }?.let { CameraHub.stats(it, t.user) }
         val sub = t.sub.takeIf { it.isNotBlank() && it != t.main }?.let { CameraHub.stats(it, t.user) }
-        return result(context, t, main, sub, encoder = null, clock = null, camera = null)
+        val (encoder, subEncoder) = remembered(context, t)
+        return result(context, t, main, sub, encoder, subEncoder, clock = null, camera = null)
     }
 
     /**
@@ -61,8 +65,9 @@ internal object CameraDiagnosis {
             try { Thread.sleep(PROGRESS_MS) } catch (_: InterruptedException) { break }
         }
         val info = onvif.get()
-        val encoder = info?.main?.takeIf { it.fps > 0 || it.gov > 0 }
-        return result(context, t, mainResult.get(), subResult.get(), encoder, clock.get(),
+        if (info != null) remember(context, t, info)
+        val (encoder, subEncoder) = info?.let { it.main to it.sub?.takeIf { s -> s != it.main } } ?: remembered(context, t)
+        return result(context, t, mainResult.get(), subResult.get(), encoder, subEncoder, clock.get(),
             info?.let { listOf(it.title, it.firmware.takeIf { f -> f.isNotBlank() }?.let { f -> "прошивка $f" }).filterNotNull().joinToString(", ") })
     }
 
@@ -77,13 +82,13 @@ internal object CameraDiagnosis {
     }
 
     private fun result(context: Context, t: Target, main: StreamSnapshot?, sub: StreamSnapshot?, encoder: Onvif.Stream?,
-                       clock: Long?, camera: String?): Result {
+                       subEncoder: Onvif.Stream?, clock: Long?, camera: String?): Result {
         val input = DiagInput(
             main = main, sub = sub,
             subMissing = t.main.isNotBlank() && (t.sub.isBlank() || t.sub == t.main),
             mainShows = PlaybackLog.recent(t.main), subShows = if (t.sub != t.main) PlaybackLog.recent(t.sub) else emptyList(),
             mainUndecodable = t.main.isNotBlank() && t.main in DoorbellVideoView.undecodable,
-            encoder = encoder, clockOffsetMs = clock,
+            encoder = encoder, subEncoder = subEncoder, clockOffsetMs = clock,
             wifi = DeviceFacts.wifi(context), thermal = DeviceFacts.thermal(context), decoders = decoders()
         )
         return Result(input, CameraDiagnostics.evaluate(input), camera)
@@ -93,6 +98,44 @@ internal object CameraDiagnosis {
         val version = try { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() } catch (_: Exception) { "" }
         return CameraDiagnostics.report(result.checks, ReportFacts(version, DeviceFacts.tablet, result.camera, result.input.main,
             result.input.sub, result.input.wifi))
+    }
+
+    // ---- Что камера разрешает (ONVIF): помним между запусками, чтобы «Пока видно» не советовало невозможного ----
+
+    private const val PREFS = "camera_diagnostics"
+
+    /** Ключ — по адресу основного потока, без самого адреса в настройках. */
+    private fun key(t: Target) = "encoder_" + Integer.toHexString((t.main.ifBlank { t.sub }).hashCode())
+
+    private fun remember(context: Context, t: Target, info: Onvif.Info) {
+        val json = JSONObject()
+        info.main?.let { json.put("main", toJson(it)) }
+        info.sub?.takeIf { it != info.main }?.let { json.put("sub", toJson(it)) }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(key(t), json.toString()) }
+    }
+
+    private fun remembered(context: Context, t: Target): Pair<Onvif.Stream?, Onvif.Stream?> = try {
+        val text = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(key(t), null)
+        val json = text?.let { JSONObject(it) }
+        (json?.optJSONObject("main")?.let(::fromJson)) to (json?.optJSONObject("sub")?.let(::fromJson))
+    } catch (_: Exception) { null to null }
+
+    /** Без адреса потока: только размеры, частоты и что камера разрешает. */
+    internal fun toJson(s: Onvif.Stream): JSONObject = JSONObject().put("w", s.width).put("h", s.height).put("enc", s.encoding)
+        .put("fps", s.fps).put("kbps", s.kbps).put("gov", s.gov).apply {
+            s.options?.let { o ->
+                put("options", JSONObject().put("min", o.fpsMin).put("max", o.fpsMax).put("h264", o.h264)
+                    .put("sizes", JSONArray().apply { o.resolutions.forEach { (w, h) -> put(JSONArray().put(w).put(h)) } }))
+            }
+        }
+
+    internal fun fromJson(j: JSONObject): Onvif.Stream {
+        val o = j.optJSONObject("options")?.let { o ->
+            val sizes = o.optJSONArray("sizes") ?: JSONArray()
+            Onvif.EncoderOptions((0 until sizes.length()).map { sizes.getJSONArray(it).let { p -> p.getInt(0) to p.getInt(1) } },
+                o.optInt("min"), o.optInt("max"), o.optBoolean("h264"))
+        }
+        return Onvif.Stream("", j.optInt("w"), j.optInt("h"), j.optString("enc"), "", j.optInt("fps"), j.optInt("kbps"), j.optInt("gov"), o)
     }
 
     /** Декодеры планшета не меняются, пока работает приложение. */

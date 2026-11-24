@@ -165,18 +165,19 @@ internal class StreamStats(private val clockRate: Int = 90_000) {
         val keyKbAll = median((0 until k).map { keyBytes[(keys - k + it) % KEYS].toLong() / 1024 })
         val keySpanMs = median(big.map { keySpanUs[it] / 1000 })
         val keyRate = median(big.mapNotNull { j -> keySpanUs[j].takeIf { it > 0 }?.let { keyBytes[j] * 1_000_000L / it / 1024 } })
-        // Шаги меток.
+        // Шаги меток: шаг датчика — самый короткий из частых (от 10 %); пропуски кадров датчика — шаги в 2–3 раза длиннее.
+        // При 15 к/с с датчика 25 шаги 40 и 80 мс, и 80 встречается чаще — по самому частому датчик казался бы 12,5 к/с.
         val s = minOf(stepCount, STEPS)
         var baseStep: Int? = null
-        var doubleShare: Double? = null
+        var skipShare: Double? = null
         if (s >= MIN_STEPS) {
             val counts = HashMap<Int, Int>()
             for (j in 0 until s) { val v = (steps[j] + 5) / 10 * 10; counts[v] = (counts[v] ?: 0) + 1 }
-            val base = counts.maxByOrNull { it.value }!!.key
-            if (base > 0) {
+            val base = counts.filter { it.key > 0 && it.value * 10 >= s }.keys.minOrNull()
+            if (base != null) {
                 baseStep = base
-                val doubles = (0 until s).count { kotlin.math.abs(steps[it] - 2 * base) <= base * 15 / 100 }
-                doubleShare = doubles.toDouble() / s
+                val skips = (0 until s).count { j -> listOf(2, 3).any { k -> kotlin.math.abs(steps[j] - k * base) <= base / 4 } }
+                skipShare = skips.toDouble() / s
             }
         }
         // Неровность: медиана по полным минутам; минут ещё нет — текущий отрезок (от 10 с).
@@ -188,7 +189,7 @@ internal class StreamStats(private val clockRate: Int = 90_000) {
             observedMs = observed, codec = codec, width = width, height = height, fps = fps, kbps = kbps,
             keyIntervalMs = keyIntervalMs, keyKbAll = keyKbAll?.toInt(), keySamples = big.size, keyKb = keyKb?.toInt(), keySpanMs = keySpanMs,
             keyRateKbPerSec = keyRate, packets = total, lossPercent = if (total >= MIN_PACKETS) lost * 100.0 / total else null,
-            baseStepMs = baseStep, doubleStepShare = doubleShare, lateMs = lateMs
+            baseStepMs = baseStep, skipStepShare = skipShare, lateMs = lateMs
         )
     }
 
@@ -260,9 +261,9 @@ internal data class StreamSnapshot(
     val keyRateKbPerSec: Long?,
     val packets: Long,
     val lossPercent: Double?,
-    /** Обычный шаг меток между кадрами и доля двойных шагов (пропуски кадров датчика). */
+    /** Шаг датчика (самый короткий из частых шагов меток) и доля шагов в 2–3 раза длиннее (пропуски кадров датчика). */
     val baseStepMs: Int?,
-    val doubleStepShare: Double?,
+    val skipStepShare: Double?,
     /** Самый поздний кадр минуты позже обычного, мс. */
     val lateMs: Long?
 )

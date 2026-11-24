@@ -25,7 +25,13 @@ internal object Onvif {
      * ключевых кадров из настроек кодировщика (0 — камера не сообщила).
      */
     data class Stream(val uri: String, val width: Int, val height: Int, val encoding: String, val profile: String,
-                      val fps: Int = 0, val kbps: Int = 0, val gov: Int = 0)
+                      val fps: Int = 0, val kbps: Int = 0, val gov: Int = 0, val options: EncoderOptions? = null)
+
+    /**
+     * Что камера разрешает поставить у потока (`GetVideoEncoderConfigurationOptions`): размеры, частота кадров, есть ли
+     * H.264. Диагностика советует только то, что камера умеет (у домофона Reolink — 2560×1920 и не больше 20 к/с).
+     */
+    data class EncoderOptions(val resolutions: List<Pair<Int, Int>>, val fpsMin: Int, val fpsMax: Int, val h264: Boolean)
 
     data class Info(
         val manufacturer: String,
@@ -128,7 +134,11 @@ internal object Onvif {
             Stream(withoutCredentials(uri), size.first, size.second, encoding, token, extra.first, extra.second, extra.third)
         }.distinctBy { it.uri }
         if (streams.isEmpty()) throw OnvifException("Камера не дала ссылки RTSP — введите их вручную")
-        val (main, sub) = pick(streams)
+        val (pickedMain, pickedSub) = pick(streams)
+        // Возможности кодировщика — только для двух потоков плитки; камера не ответила — без них (советы осторожнее).
+        fun withOptions(s: Stream?) = s?.copy(options = runCatching { options(media, user, password, offset, s.profile) }.getOrNull())
+        val main = withOptions(pickedMain)
+        val sub = if (pickedSub == pickedMain) main else withOptions(pickedSub)
         return Info(info.find("Manufacturer")?.text.orEmpty(), info.find("Model")?.text.orEmpty(),
             info.find("FirmwareVersion")?.text.orEmpty(), port, main, sub, streams, events, clock)
     }
@@ -207,6 +217,29 @@ internal object Onvif {
             "motion" in t -> CameraEventType.MOTION
             else -> null
         }
+    }
+
+    private fun options(media: String, user: String, password: String, offset: Long, profile: String): EncoderOptions? {
+        val root = call(media, user, password, offset,
+            "<GetVideoEncoderConfigurationOptions xmlns=\"$MEDIA_NS\"><ProfileToken>${escape(profile)}</ProfileToken></GetVideoEncoderConfigurationOptions>")
+        return parseOptions(root)
+    }
+
+    /** Разбор ответа `GetVideoEncoderConfigurationOptions` (Media 1): H.264 — размеры и частота; без них — JPEG. */
+    internal fun parseOptions(root: Node): EncoderOptions? {
+        val options = root.find("Options") ?: return null
+        val h264 = options.children.firstOrNull { it.name == "H264" }
+        val codec = h264 ?: options.children.firstOrNull { it.name == "JPEG" } ?: return null
+        val sizes = codec.all("ResolutionsAvailable").mapNotNull { r ->
+            val w = r.find("Width")?.text?.toIntOrNull() ?: return@mapNotNull null
+            val h = r.find("Height")?.text?.toIntOrNull() ?: return@mapNotNull null
+            w to h
+        }.distinct()
+        val range = codec.find("FrameRateRange")
+        val min = range?.find("Min")?.text?.toIntOrNull() ?: 0
+        val max = range?.find("Max")?.text?.toIntOrNull() ?: 0
+        if (sizes.isEmpty() && max == 0) return null
+        return EncoderOptions(sizes, min, max, h264 != null)
     }
 
     /** Основной поток — наибольшее разрешение, субпоток — наименьшее (если поток один — он и то, и другое). */

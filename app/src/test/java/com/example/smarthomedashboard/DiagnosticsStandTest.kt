@@ -34,7 +34,7 @@ class DiagnosticsStandTest {
         val checks = CameraDiagnostics.evaluate(input)
         println("== порт $port: ${CameraDiagnostics.summary(checks)}")
         println("   основной: ${CameraDiagnostics.streamText(input.main!!)}; ключевой ${input.main.keyKb} КБ за ${input.main.keySpanMs} мс " +
-            "(${input.main.keyRateKbPerSec} КБ/с), потери ${input.main.lossPercent} %, шаг ${input.main.baseStepMs} мс, двойных ${input.main.doubleStepShare}, " +
+            "(${input.main.keyRateKbPerSec} КБ/с), потери ${input.main.lossPercent} %, шаг ${input.main.baseStepMs} мс, двойных ${input.main.skipStepShare}, " +
             "неровность ${input.main.lateMs} мс")
         println("   субпоток: ${CameraDiagnostics.streamText(input.sub!!)}; неровность ${input.sub.lateMs} мс")
         for (c in checks) println("   ${c.level.mark} ${c.id} ${c.title}: ${c.detail}")

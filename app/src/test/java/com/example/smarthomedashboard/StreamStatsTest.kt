@@ -126,10 +126,14 @@ class StreamStatsTest {
         feed(stats, 30, fps = 20, sensorFps = 25, bytesPerSec = 4_000_000)
         val s = stats.snapshot()
         assertEquals(40, s.baseStepMs)
-        assertTrue("двойных ${s.doubleStepShare}", s.doubleStepShare!! in 0.2..0.3)
+        assertTrue("двойных ${s.skipStepShare}", s.skipStepShare!! in 0.2..0.3)
+        // Субпоток 15 к/с с датчика 25: шаги 40 и 80, и 80 чаще — шаг датчика всё равно 40.
+        val sub = StreamStats().also { feed(it, 30, fps = 15, sensorFps = 25, keyBytes = 32 * 1024, bytesPerSec = 4_000_000) }.snapshot()
+        assertEquals(40, sub.baseStepMs)
+        assertTrue("пропусков ${sub.skipStepShare}", sub.skipStepShare!! in 0.6..0.7)
         val even = StreamStats().also { feed(it, 30, fps = 25, bytesPerSec = 4_000_000) }.snapshot()
         assertEquals(40, even.baseStepMs)
-        assertEquals(0.0, even.doubleStepShare!!, 0.0)
+        assertEquals(0.0, even.skipStepShare!!, 0.0)
     }
 
     @Test fun latenessIsSlowestMinusUsual() {
