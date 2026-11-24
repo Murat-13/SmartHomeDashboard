@@ -15,7 +15,10 @@
 10 Мбит/с (пакеты идут не быстрее), потеря 0,5 % пакетов видео, 20 к/с с датчика 25 к/с (шаги меток 40 и 80 мс).
 У D есть поддельный ONVIF (порт 8580, без проверки пароля): профили, возможности кодировщика, чтение и изменение
 настроек (этап 4 диагностики — «Применить»). Изменение перезапускает потоки D. Файл `onvif_mode` в папке роликов:
-`refuse` — камера отказывает, `ignore` — отвечает «да», но не меняет; иначе — меняет.
+`refuse` — камера отказывает, `ignore` — отвечает «да», но не меняет; иначе — меняет. Порт — `--onvif-port N`.
+
+`--discovery` — стенд отвечает на поиск камер (docs/setup-tz.md, часть 3): WS-Discovery (UDP 3702, групповой) от имени D и
+поиск Reolink (UDP 2000 → 3000) от имени A. Адреса в журнал не пишутся.
 """
 import base64
 import os
@@ -594,6 +597,55 @@ def serve_onvif(camera, bind, port, folder):
     http.server.ThreadingHTTPServer((bind, port), Handler).serve_forever()
 
 
+def local_for(peer):
+    """Адрес Mac на пути к спросившему."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect((peer, 9))
+        return probe.getsockname()[0]
+    finally:
+        probe.close()
+
+
+def serve_wsd(port):
+    """Ответ на WS-Discovery: камера D с поддельным ONVIF на порту port."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    s.bind(("", 3702))
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton("239.255.255.250") + socket.inet_aton("0.0.0.0"))
+    while True:
+        data, peer = s.recvfrom(65535)
+        if b"/discovery/Probe<" not in data:
+            continue
+        relates = re.search(rb"MessageID>([^<]+)<", data)
+        body = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                'xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" '
+                'xmlns:dn="http://www.onvif.org/ver10/network/wsdl"><s:Header><a:RelatesTo>%s</a:RelatesTo></s:Header><s:Body><d:ProbeMatches>'
+                '<d:ProbeMatch><d:Types>dn:NetworkVideoTransmitter</d:Types><d:Scopes>onvif://www.onvif.org/hardware/StandD '
+                'onvif://www.onvif.org/name/Stand%%20D onvif://www.onvif.org/Profile/Streaming</d:Scopes>'
+                '<d:XAddrs>http://%s:%d/onvif/device_service</d:XAddrs></d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>'
+                % (relates.group(1).decode() if relates else "", local_for(peer[0]), port))
+        s.sendto(body.encode(), peer)
+
+
+def serve_reolink():
+    """Ответ на поиск Reolink: камера A."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("", 2000))
+    while True:
+        data, peer = s.recvfrom(2048)
+        if data != bytes.fromhex("aaaa0000"):
+            continue
+        answer = bytearray(388)
+        ip = local_for(peer[0]).encode()
+        answer[108:108 + len(ip)] = ip
+        answer[132:132 + len(b"Stand A")] = b"Stand A"
+        s.sendto(bytes(answer), (peer[0], 3000))
+
+
 def serve(camera, bind):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -642,8 +694,13 @@ def main():
                 len(v.keys) / max(1, sum(v.keys)) / v.fps, s.audio.kind if s.audio else "нет"))
         threading.Thread(target=serve, args=(cam, bind), daemon=True).start()
         if cam.title == "StandD":
-            threading.Thread(target=serve_onvif, args=(cam, bind, 8580, folder), daemon=True).start()
-            log("StandD: поддельный ONVIF на порту 8580")
+            onvif_port = int(sys.argv[sys.argv.index("--onvif-port") + 1]) if "--onvif-port" in sys.argv else 8580
+            threading.Thread(target=serve_onvif, args=(cam, bind, onvif_port, folder), daemon=True).start()
+            log("StandD: поддельный ONVIF на порту %d" % onvif_port)
+            if "--discovery" in sys.argv:
+                threading.Thread(target=serve_wsd, args=(onvif_port,), daemon=True).start()
+                threading.Thread(target=serve_reolink, daemon=True).start()
+                log("стенд отвечает на поиск камер")
     signal.signal(signal.SIGUSR1, lambda *_: stall(1200))
     signal.signal(signal.SIGUSR2, lambda *_: stall(150))
     log("стенд слушает (pid %d)" % os.getpid())
