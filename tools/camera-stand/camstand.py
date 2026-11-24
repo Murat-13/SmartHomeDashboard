@@ -10,6 +10,9 @@
 
 Сбой сети по команде: `kill -USR1 <pid>` задерживает все потоки на 1,2 с (кадры потом приходят пачкой, как после
 провала Wi-Fi), `kill -USR2 <pid>` — на 0,15 с (обычная короткая заминка).
+
+Камера D (если есть ролики d_main/d_sub) — «плохие условия» для диагностики (docs/diagnostics-tz.md): линия
+10 Мбит/с (пакеты идут не быстрее), потеря 0,5 % пакетов видео, 20 к/с с датчика 25 к/с (шаги меток 40 и 80 мс).
 """
 import base64
 import os
@@ -194,9 +197,11 @@ class Stream:
 
 
 class Camera:
-    def __init__(self, title, style, port, key_late_ms=0, jitter_ms=0, rtp_info=True):
+    def __init__(self, title, style, port, key_late_ms=0, jitter_ms=0, rtp_info=True, line_kbps=0, loss=0.0, sensor_fps=0):
         self.title, self.style, self.port = title, style, port
         self.key_late_ms, self.jitter_ms, self.rtp_info = key_late_ms, jitter_ms, rtp_info
+        # Линия (кбит/с; 0 — без ограничения), доля потерянных пакетов видео, частота датчика (0 — как у ролика).
+        self.line_kbps, self.loss, self.sensor_fps = line_kbps, loss, sensor_fps
         self.streams = []
 
     def add(self, path, video, audio, with_params=True):
@@ -371,9 +376,13 @@ class Client(threading.Thread):
         n = self.first_frame
         next_report = 0.0
         rnd = random.Random(self.id)
+        line_free = time.monotonic()
         try:
             while self.open:
-                due = T0 + n / v.fps
+                # Датчик быстрее потока: кадр берётся с ближайшего кадра датчика, лишние выбрасываются неравномерно.
+                sensor = n * cam.sensor_fps // v.fps if cam.sensor_fps else n
+                rate = cam.sensor_fps or v.fps
+                due = T0 + sensor / rate
                 index = n % len(v.packets)
                 if v.keys[index]:
                     due += cam.key_late_ms / 1000.0
@@ -383,12 +392,28 @@ class Client(threading.Thread):
                 if wait > 0:
                     time.sleep(wait)
                 wait_stall()
-                stamp = s.video_base + n * 90000 // v.fps
-                out = bytearray()
-                for payload, marker in v.packets[index]:
-                    out += self.rtp(0, 96, marker, stamp, payload)
-                self.write(bytes(out))
-                s.sent += len(out)
+                stamp = s.video_base + sensor * 90000 // rate
+                if cam.line_kbps:
+                    # Медленная линия: пакет уходит не раньше, чем линия освободилась от предыдущего.
+                    for payload, marker in v.packets[index]:
+                        packet = self.rtp(0, 96, marker, stamp, payload)
+                        if cam.loss and rnd.random() < cam.loss:
+                            continue
+                        line_free = max(line_free, time.monotonic()) + len(packet) * 8 / (cam.line_kbps * 1000.0)
+                        ahead = line_free - time.monotonic()
+                        if ahead > 0.002:
+                            time.sleep(ahead)
+                        self.write(packet)
+                        s.sent += len(packet)
+                else:
+                    out = bytearray()
+                    for payload, marker in v.packets[index]:
+                        packet = self.rtp(0, 96, marker, stamp, payload)
+                        if cam.loss and rnd.random() < cam.loss:
+                            continue
+                        out += packet
+                    self.write(bytes(out))
+                    s.sent += len(out)
                 if time.monotonic() >= next_report:
                     self.report(0, 90000, s.video_base)
                     next_report = time.monotonic() + 5
@@ -462,7 +487,12 @@ def cameras(folder):
         Camera("StandC", "tapo", 8556, key_late_ms=150, jitter_ms=20, rtp_info=False)
             .add("/stream1", video("c_main"), audio("PCMU"))
             .add("/stream2", video("c_sub"), audio("PCMU"), with_params=False),
-    ]
+    ] + ([
+        # «Плохие условия» (диагностика): как домофон 24.11 до починки — линия 10 Мбит/с, 20 к/с с датчика 25, потери.
+        Camera("StandD", "hik", 8557, line_kbps=9500, loss=0.005, sensor_fps=25)
+            .add("/Streaming/Channels/101", video("d_main"), audio("PCMA"))
+            .add("/Streaming/Channels/102", video("d_sub"), audio("PCMA")),
+    ] if os.path.exists(os.path.join(folder, "d_main.cams")) else [])
 
 
 def main():
