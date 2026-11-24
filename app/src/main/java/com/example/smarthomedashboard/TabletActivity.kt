@@ -99,7 +99,8 @@ class TabletActivity : PinProtectedActivity() {
         if (record?.heavy == true && hasSub) return "субпоток — программный декодер не успевал показывать основной$since"
         if ((record?.undecodable == true || main in DoorbellVideoView.undecodable) && hasSub) return "субпоток — основной поток этот планшет не показывает$since"
         val show = PlaybackLog.recent(main).lastOrNull()
-            ?: return if (record?.software == true) "программно (аппаратный декодер не берёт)$since" else "ещё не показывался после запуска приложения"
+            ?: return if (record?.software == true) "программно — аппаратный декодер не берёт этот размер$since"
+                else "ещё не показывался после запуска приложения"
         val how = if (show.software) "программно" else "аппаратно"
         return "$how, ${show.width}×${show.height}, ${String.format(Locale.US, "%.0f", show.shownFps)} к/с" +
             if (show.keepsUp) ", успевает" else ", не успевает"
