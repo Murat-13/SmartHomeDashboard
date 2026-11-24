@@ -221,7 +221,10 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         buildRecording(side)
 
         side.addView(kit.button("Тип, размер, удаление плитки…", "door_tile_settings") { openTileSettings() })
-        body.addView(ScrollView(this).apply { addView(side) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.25f))
+        val scroll = ScrollView(this).apply { addView(side); tag = "door_side_scroll" }
+        body.addView(scroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.25f))
+        // Из «Камеры: есть советы» (боковая панель, Настройки) — сразу к разделу «Диагностика видео».
+        if (intent.getBooleanExtra(EXTRA_DIAGNOSTICS, false)) scroll.post { scroll.scrollTo(0, diagHeader.top) }
         root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(kit.footer("door", { leave() }, { save() }))
         setContentView(root)
@@ -263,6 +266,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
 
     // ---- Диагностика видео (docs/diagnostics-tz.md, часть 1) ----
 
+    private lateinit var diagHeader: View
     private lateinit var diagSummary: TextView
     private lateinit var diagList: LinearLayout
     private lateinit var diagRun: Button
@@ -271,7 +275,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     @Volatile private var diagCancelled = false
 
     private fun buildDiagnostics(side: LinearLayout) {
-        side.addView(header("Диагностика видео"))
+        diagHeader = header("Диагностика видео")
+        side.addView(diagHeader)
         side.addView(kit.label("Что мешает видео — камера, сеть или планшет — и что с этим сделать. «Проверить сейчас» " +
             "смотрит оба потока $diagSeconds с и читает настройки камеры по ONVIF; камере ничего не отправляется.", 13f))
         diagSummary = kit.label("", 15f, bold = true).apply { tag = "door_diag_summary" }
@@ -1179,6 +1184,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         private const val STATE_DRAFT = "doorbell_draft"
         /** Пауза во вводе адреса потока, после которой предпросмотр подключается к новому адресу. */
         internal const val PREVIEW_SETTLE_MS = 900L
+        /** Открыть сразу на разделе «Диагностика видео». */
+        const val EXTRA_DIAGNOSTICS = "diagnostics"
         /** Сколько секунд «Проверить сейчас» смотрит потоки камеры (в тестах — меньше). */
         internal var diagSeconds = 30
     }

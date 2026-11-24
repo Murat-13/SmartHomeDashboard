@@ -60,6 +60,17 @@ class TabletActivity : PinProtectedActivity() {
         content.addView(ModernUi.section(this, "Устройство",
             ModernUi.body(this, DeviceFacts.tablet + (if (version.isNotBlank()) " · приложение $version" else "")).apply { tag = "tablet_model" },
             ModernUi.body(this, "Нагрев: " + heatText(DeviceFacts.thermal(this))).apply { tag = "tablet_heat" }))
+        LightMode.refresh(this)
+        val choices = LightMode.Choice.entries
+        content.addView(gap())
+        content.addView(ModernUi.section(this, "Облегчённый режим",
+            ModernUi.body(this, "Сейчас: " + (LightMode.reason?.let { "включён — $it" } ?: "выключен")).apply { tag = "tablet_light_state" },
+            ModernUi.caption(this, "Раскрытие без размытия фона, короче анимации, живое видео — у двух плиток страницы, остальные " +
+                "показывают снимок Home Assistant раз в 10 с. «Сам» — включается, когда мало памяти или раскрытие запинается, " +
+                "и на время сильного нагрева."),
+            choice("tablet_light", choices.map { it.title }, choices.indexOf(LightMode.choice)) { i ->
+                if (requireAdmin()) { LightMode.set(this, choices[i]); render() } else render()
+            }))
         val decoders = CameraDiagnosis.decoderFacts()
         content.addView(gap())
         content.addView(ModernUi.section(this, "Декодеры видео",
@@ -115,6 +126,22 @@ class TabletActivity : PinProtectedActivity() {
             .setPositiveButton("Забыть") { _, _ -> TabletProfile.forget(); render() }
             .setNegativeButton("Отмена", null)
             .show()
+    }
+
+    private fun choice(tag: String, items: List<String>, selected: Int, onPick: (Int) -> Unit): View {
+        val d = resources.displayMetrics.density
+        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; this.tag = tag; setPadding(0, (8 * d).toInt(), 0, 0) }
+        items.forEachIndexed { i, item ->
+            val button = android.widget.Button(this).apply {
+                text = item; isAllCaps = false; this.tag = "${tag}_$i"; minHeight = (48 * d).toInt()
+                background = BatteryModernCard.rounded(if (i == selected) android.graphics.Color.argb(90, 95, 168, 211)
+                    else android.graphics.Color.argb(40, 30, 44, 56), 10 * d, android.graphics.Color.argb(if (i == selected) 220 else 70, 95, 168, 211))
+                setTextColor(android.graphics.Color.WHITE)
+                setOnClickListener { onPick(i) }
+            }
+            line.addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = (6 * d).toInt() })
+        }
+        return line
     }
 
     private fun limitText(size: Pair<Int, Int>?) = size?.let { "аппаратно до ${it.first}×${it.second}" } ?: "только программно"

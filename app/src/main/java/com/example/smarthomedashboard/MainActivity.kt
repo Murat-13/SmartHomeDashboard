@@ -120,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
         internal const val WEATHER_REFRESH_MS = 60 * 60 * 1000L
+        internal const val CAMERA_WATCH_MS = 60_000L
         // Короткое переподключение не показываем; при запуске даём время на первое подключение.
         private const val PILL_LOSS_DELAY_MS = 5_000L
         private const val PILL_START_DELAY_MS = 15_000L
@@ -266,6 +267,8 @@ class MainActivity : AppCompatActivity() {
         checkKioskMode()
         resetIdleTimer()
         clockHandler.post(clockRunnable)
+        clockHandler.removeCallbacks(cameraWatchRunnable)
+        clockHandler.post(cameraWatchRunnable)
     }
 
     override fun onPause() {
@@ -277,7 +280,23 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         clockHandler.removeCallbacks(clockRunnable)
         clockHandler.removeCallbacks(weatherRefreshRunnable)
+        clockHandler.removeCallbacks(cameraWatchRunnable)
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
+    }
+
+    /** Диагностика камер раз в минуту, пока панель на экране (docs/diagnostics-tz.md, решение 1). */
+    private val cameraWatchRunnable = object : Runnable {
+        override fun run() {
+            CameraWatch.tick(this@MainActivity) { if (drawer?.isOpen == true) updateSystemStatus() }
+            clockHandler.postDelayed(this, CAMERA_WATCH_MS)
+        }
+    }
+
+    /** «Камеры: есть советы» — редактор камеры с первым советом, сразу на разделе «Диагностика видео». */
+    private fun openCameraAdvice() {
+        val tileId = CameraWatch.advice.firstOrNull()?.tileId ?: return
+        startActivity(Intent(this, DoorbellEditorActivity::class.java).putExtra("tile_id", tileId)
+            .putExtra(DoorbellEditorActivity.EXTRA_DIAGNOSTICS, true))
     }
 
     // Бесплатный ключ Яндекса ограничен ~50 запросами в сутки: раз в час — 24 запроса с запасом.
@@ -458,6 +477,7 @@ class MainActivity : AppCompatActivity() {
                     .setNegativeButton("Отмена", null).show()
             }
             override fun installUpdate() = openWithPinCheck { UpdateInstallUi.start(this@MainActivity) }
+            override fun cameraAdvice() = openWithPinCheck { openCameraAdvice() }
             override fun endAdmin() {
                 PinSecurityUi.session.revoke()
                 Toast.makeText(this@MainActivity, "Админ-режим завершён", Toast.LENGTH_SHORT).show()
@@ -672,6 +692,9 @@ class MainActivity : AppCompatActivity() {
             null -> ModernUi.setStatus(side.internetRow, ModernUi.Status.UNKNOWN, "Интернет: неизвестно")
         }
         AutoBackup.statusText(this).let { (state, text) -> ModernUi.setStatus(side.backupRow, state, text) }
+        val advice = CameraWatch.text()
+        if (advice != null) ModernUi.setStatus(side.camerasRow, ModernUi.Status.WARNING, advice)
+        side.camerasRow.visibility = if (advice == null) View.GONE else View.VISIBLE
         val update = AppUpdater.drawerText(this)
         if (update != null) ModernUi.setStatus(side.updateRow, ModernUi.Status.PROGRESS, update)
         side.updateRow.visibility = if (update == null) View.GONE else View.VISIBLE

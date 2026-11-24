@@ -63,7 +63,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         val snapshotOnly: Boolean,
         val fallbackRtsp: String = "",
         /** Ключ пароля камеры ([CameraPasswords]): номер плитки «Камера»; пусто — пароль домофона. */
-        val secretKey: String = ""
+        val secretKey: String = "",
+        /** Снимок раз в столько мс (облегчённый режим — чаще: плитка вместо живого видео, [LightMode]). */
+        val snapshotEveryMs: Long = SNAPSHOT_EVERY_MS
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -286,7 +288,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (picturePath != picture) {
             picture = picturePath
             // Токен снимка HA меняется каждые несколько минут — это не новый кадр; невидимой плитке кадр не нужен.
-            if (visible && (bitmapMissing() || SystemClock.elapsedRealtime() - pictureLoadedAt >= SNAPSHOT_EVERY_MS)) loadPicture()
+            if (visible && (bitmapMissing() || SystemClock.elapsedRealtime() - pictureLoadedAt >= (source?.snapshotEveryMs ?: SNAPSHOT_EVERY_MS))) loadPicture()
         }
         update()
     }
@@ -322,8 +324,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (src.snapshotOnly || !ENABLED) {
             releasePlayer()
             status = if (bitmapMissing()) Status.CONNECTING else Status.SNAPSHOT
-            if (SystemClock.elapsedRealtime() - pictureLoadedAt >= SNAPSHOT_EVERY_MS) loadPicture()
-            main.postDelayed(snapshotTick, SNAPSHOT_EVERY_MS)
+            if (SystemClock.elapsedRealtime() - pictureLoadedAt >= src.snapshotEveryMs) loadPicture()
+            main.postDelayed(snapshotTick, src.snapshotEveryMs)
             return
         }
         if (player == null && !retryPending) start()
@@ -713,7 +715,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Основной поток, если планшет его уже не декодировал, — сразу субпоток, без новой неудачи. */
     internal fun rtspFor(src: Source) =
         if (src.fallbackRtsp.isNotBlank() && src.fallbackRtsp != src.rtsp &&
-            (src.rtsp in undecodable || TabletProfile.undecodable(src.rtsp) || TabletProfile.heavy(src.rtsp))) src.fallbackRtsp else src.rtsp
+            (src.rtsp in undecodable || TabletProfile.undecodable(src.rtsp) || TabletProfile.heavy(src.rtsp) || LightMode.hot)) src.fallbackRtsp
+        else src.rtsp
 
     /**
      * Основной поток не принял ни один декодер планшета (плеер перебирает их сам, программный — после

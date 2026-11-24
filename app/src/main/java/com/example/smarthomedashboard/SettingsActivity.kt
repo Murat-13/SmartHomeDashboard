@@ -509,6 +509,19 @@ class SettingsActivity : PinProtectedActivity() {
                     startActivity(android.content.Intent(this, GatesActivity::class.java))
                 }.apply { tag = "btnGates" }, minOf(1, section.childCount))
             }
+            // «Камеры: есть советы» (docs/diagnostics-tz.md, решение 1) — первой строкой раздела, только когда советы есть.
+            section.findViewWithTag<View>("rowCameraAdvice")?.let { section.removeView(it) }
+            CameraWatch.text()?.let { text ->
+                val tileId = CameraWatch.advice.first().tileId
+                section.addView(ModernUi.statusRow(this, ModernUi.Status.WARNING, text).apply {
+                    tag = "rowCameraAdvice"
+                    isClickable = true
+                    setOnClickListener {
+                        startActivity(android.content.Intent(this@SettingsActivity, DoorbellEditorActivity::class.java)
+                            .putExtra("tile_id", tileId).putExtra(DoorbellEditorActivity.EXTRA_DIAGNOSTICS, true))
+                    }
+                }, minOf(1, section.childCount))
+            }
             // Планшет (docs/diagnostics-tz.md, часть 2): декодеры и опыт показа видео — сразу после «Калиток и ворот».
             if (section.findViewWithTag<View>("btnTablet") == null) {
                 val after = section.findViewWithTag<View>("btnGates")?.let { section.indexOfChild(it) + 1 } ?: minOf(1, section.childCount)

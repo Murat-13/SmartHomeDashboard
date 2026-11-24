@@ -182,7 +182,9 @@ internal class BatteryModernExpansion(
         val sx = start.width / target.width.toFloat().coerceAtLeast(1f)
         val sy = start.height / target.height.toFloat().coerceAtLeast(1f)
         // [instant] — карточка уже была раскрыта и переехала с прежнего экрана (поворот): сразу на месте, без роста из плитки.
-        run(if (instant) 0L else OPEN_MS, onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null) }) { t ->
+        // Плавность раскрытия — для облегчённого режима (docs/diagnostics-tz.md, решение 4).
+        val measured = if (instant) ({}) else LightMode.measure((host.context as? android.app.Activity)?.window)
+        run(if (instant) 0L else LightMode.ms(OPEN_MS), onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null); measured() }) { t ->
             expandedCard.x = start.x + (target.x - start.x) * t
             expandedCard.y = start.y + (target.y - start.y) * t
             expandedCard.scaleX = sx + (1f - sx) * t
@@ -243,7 +245,7 @@ internal class BatteryModernExpansion(
         val layerStart = layer?.alpha ?: 0f
         val compact = source
         expandedCard.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        run(CLOSE_MS, onEnd = ::clear) { t ->
+        run(LightMode.ms(CLOSE_MS), onEnd = ::clear) { t ->
             expandedCard.x = from.x + (start.x - from.x) * t
             expandedCard.y = from.y + (start.y - from.y) * t
             expandedCard.scaleX = from.scaleX + (sx - from.scaleX) * t
@@ -362,7 +364,7 @@ internal class BatteryModernExpansion(
         next.start()
     }
 
-    private fun blurOn() = blurSupported && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    private fun blurOn() = blurSupported && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !LightMode.active
 
     private fun dimAlpha() = if (blurOn()) DIM_WITH_BLUR else DIM_ONLY
 

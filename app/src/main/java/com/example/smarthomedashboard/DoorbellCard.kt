@@ -629,10 +629,13 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         // Недописанный адрес (нет узла) плееру не отдаётся: такая плитка — «не настроена», а не «нет сигнала».
         val mainRtsp = DoorbellConfig.playableRtsp(config.rtspMain)
         val subRtsp = DoorbellConfig.playableRtsp(config.rtspSub)
+        // Облегчённый режим (docs/diagnostics-tz.md, решение 4): живое видео — у первых двух плиток страницы, остальные — снимок.
+        val limited = !expanded && !LightMode.liveAllowed(context, tileId)
         video.bind(DoorbellVideoView.Source(
             rtsp = if (expanded) mainRtsp.ifBlank { subRtsp } else subRtsp.ifBlank { mainRtsp },
             user = config.rtspUser, camera = config.camera,
-            snapshotOnly = !expanded && config.mode == DoorbellConfig.VideoMode.SNAPSHOT,
+            snapshotOnly = !expanded && (config.mode == DoorbellConfig.VideoMode.SNAPSHOT || limited),
+            snapshotEveryMs = if (limited) LightMode.SNAPSHOT_MS else DoorbellVideoView.SNAPSHOT_EVERY_MS,
             // Основной поток не по силам декодеру планшета — раскрытие показывает субпоток.
             fallbackRtsp = if (expanded) subRtsp else "",
             secretKey = if (camera) tileId.orEmpty() else ""

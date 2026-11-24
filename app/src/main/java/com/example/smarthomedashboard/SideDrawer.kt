@@ -31,6 +31,8 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
         /** Открыт диалог (PIN и т. п.): автозакрытие ждёт. */
         fun busy(): Boolean
         fun stateChanged(open: Boolean) {}
+        /** «Камеры: есть советы» — открыть диагностику камеры (через PIN). */
+        fun cameraAdvice() {}
         /** Подпись текущей страницы, например «Страница 2 из 3»; null — не показывать. */
         fun pageText(): String? = null
         /** В вертикальном положении у страницы своя раскладка — показать «Вернуть автоматическую раскладку». */
@@ -64,6 +66,13 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
     val routeRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Адрес: —")
     val internetRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Интернет: нет данных")
     val backupRow = ModernUi.statusRow(context, ModernUi.Status.UNKNOWN, "Бэкап: не настроен")
+    /** Видна, только когда у камер есть советы, которые держатся ([CameraWatch]); касание — диагностика камеры. */
+    val camerasRow = ModernUi.statusRow(context, ModernUi.Status.WARNING, "").apply {
+        visibility = View.GONE
+        isClickable = true
+        tag = "drawer_cameras"
+        setOnClickListener { close(); host.cameraAdvice() }
+    }
     /** Видна, только когда обновление скачано и проверено. */
     val updateRow = ModernUi.statusRow(context, ModernUi.Status.PROGRESS, "").apply { visibility = View.GONE }
     /** Видна вместе с [updateRow]. */
@@ -88,7 +97,7 @@ internal class SideDrawer(private val root: FrameLayout, private val host: Host)
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(16), dp(12), dp(16))
             addView(ModernUi.caption(context, "Состояние"))
-            listOf(haRow, routeRow, internetRow, backupRow, updateRow).forEach { addView(it) }
+            listOf(haRow, routeRow, internetRow, backupRow, camerasRow, updateRow).forEach { addView(it) }
             fun action(view: View) = addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
             action(updateButton)
