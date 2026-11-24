@@ -76,7 +76,7 @@ class SetupWizardTest {
         assertEquals(SetupActivity.Step.START, activity.step)
         assertTrue(activity.texts().contains("Восстановить из файла копии"))
         activity.click("setup_new")
-        assertTrue(activity.texts().contains("Шаг 2 из 4"))
+        assertTrue(activity.texts().contains("Шаг 2 из 5"))
         onChange!!(listOf(HaFound("http://192.168.77.10:8123", "Мой дом", "2026.11.3", "u1", "https://home.example.com"),
             HaFound("http://192.168.77.11:8123", "Дача", "2025.1.0", "u2")))
         idle()
@@ -141,11 +141,16 @@ class SetupWizardTest {
         await("открыт вход") { shadowOf(activity).peekNextStartedActivityForResult() != null }
         val started = shadowOf(activity).nextStartedActivityForResult
         prefs.edit().putBoolean("setup_completed", true).commit() // как HaConnector после входа
+        activity.readHome = { throw HaLogin.LoginException("Home Assistant не отвечает") }
         shadowOf(activity).receiveResult(started.intent, android.app.Activity.RESULT_OK,
             Intent().putExtra(HaLoginActivity.EXTRA_NAME, "Мой дом"))
         idle()
+        assertEquals(SetupActivity.Step.ROOMS, activity.step)
+        assertEquals("прерванный мастер продолжится здесь", SetupActivity.Step.ROOMS, SetupActivity.resumeStep(context))
+        await("комнаты не прочитались") { activity.texts().contains("Home Assistant не отвечает") }
+        assertFalse("создавать нечего", activity.view("setup_rooms_next").isEnabled)
+        activity.click("setup_rooms_skip")
         assertEquals(SetupActivity.Step.PROTECT, activity.step)
-        assertEquals("прерванный мастер продолжится здесь", SetupActivity.Step.PROTECT, SetupActivity.resumeStep(context))
         activity.click("setup_next")
         assertEquals(SetupActivity.Step.DONE, activity.step)
         assertTrue(activity.texts().contains("Home Assistant: подключён · Мой дом"))
@@ -153,6 +158,85 @@ class SetupWizardTest {
         assertEquals(MainActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
         assertTrue(activity.isFinishing)
         assertNull("мастер закончен — больше не продолжается", SetupActivity.resumeStep(context))
+    }
+
+    // ---- Комнаты ----
+
+    private fun home(): HaHome {
+        fun entity(id: String, name: String, area: String, attributes: JSONObject = JSONObject()) =
+            JSONObject().put("entity_id", id).put("area_id", area).put("original_name", name) to
+                JSONObject().put("entity_id", id).put("state", "off").put("attributes", attributes.put("friendly_name", name))
+        val all = listOf(entity("light.kitchen", "Люстра", "kit"), entity("light.led", "Подсветка", "kit"), entity("switch.kettle", "Чайник", "kit"),
+            entity("light.bed", "Ночник", "bed"), entity("lock.door", "Входная дверь", "bed"))
+        return HaHome.parse(JSONArray().put(JSONObject().put("area_id", "kit").put("name", "Кухня")).put(JSONObject().put("area_id", "bed").put("name", "Спальня")),
+            JSONArray(), JSONArray(), JSONArray(all.map { it.first }), JSONArray(all.map { it.second }))
+    }
+
+    private fun rooms(): SetupActivity {
+        prefs.edit().putBoolean("setup_completed", true).putString("setup_step", "ROOMS").putLong("setup_step_at", System.currentTimeMillis()).commit()
+        val c = Robolectric.buildActivity(SetupActivity::class.java)
+        controller = c
+        c.get().readHome = { home() }
+        val activity = c.setup().get()
+        await("комнаты прочитаны") { activity.texts().contains("Плиток:") }
+        return activity
+    }
+    private fun SetupActivity.box(tag: String) = view(tag) as android.widget.CheckBox
+    private fun SetupActivity.tileTitles() = com.example.smarthomedashboard.data.TileManager(context).loadTiles().map { it.title }.toSet()
+
+    @Test fun roomsAreOfferedCheckedAndCreatedAsTiles() {
+        val activity = rooms()
+        assertEquals(SetupActivity.Step.ROOMS, activity.step)
+        assertTrue(activity.texts(), activity.texts().contains("Плиток: 7 · страниц: 1"))
+        assertTrue(activity.box("setup_room_kit").isChecked)
+        // Отдельное устройство: раскрыть комнату и снять галочку.
+        activity.click("setup_room_open_kit")
+        activity.box("setup_item_switch.kettle").isChecked = false
+        idle()
+        assertTrue(activity.texts(), activity.texts().contains("Плиток: 6"))
+        // Вся комната сразу.
+        activity.box("setup_room_bed").isChecked = false
+        idle()
+        assertFalse(activity.box("setup_room_bed").isChecked)
+        activity.click("setup_rooms_next")
+        assertEquals(SetupActivity.Step.PROTECT, activity.step)
+        assertEquals(setOf("Часы · Погода · Климат", "Свет · Кухня", "Кухня · Люстра", "Кухня · Подсветка"), activity.tileTitles())
+        assertTrue("замок не выбран — прохода нет", GateStore.load(context).isEmpty())
+        // Назад и ещё раз: предложенное заменяется.
+        activity.onBackPressedDispatcher.onBackPressed(); idle()
+        assertEquals(SetupActivity.Step.ROOMS, activity.step)
+        assertFalse("выбор помнится", activity.box("setup_room_bed").isChecked)
+        activity.box("setup_room_bed").isChecked = true
+        idle()
+        activity.click("setup_rooms_next")
+        assertTrue(activity.tileTitles().containsAll(listOf("Входная дверь", "Спальня · Ночник")))
+        assertEquals(listOf("lock.door"), GateStore.load(context).map { it.open })
+        // Убрать на последнем шаге.
+        activity.click("setup_next")
+        assertTrue(activity.texts().contains("Плиток на панели: 6"))
+        activity.click("setup_undo")
+        assertTrue(activity.tileTitles().isEmpty())
+        assertTrue(GateStore.load(context).isEmpty())
+    }
+
+    @Test fun restoredPanelSkipsRoomsAndRotationKeepsChoice() {
+        val activity = rooms()
+        activity.box("setup_room_bed").isChecked = false
+        idle()
+        controller!!.get().readHome = { home() }
+        controller!!.configurationChange(android.content.res.Configuration(activity.resources.configuration).apply {
+            orientation = android.content.res.Configuration.ORIENTATION_PORTRAIT; screenWidthDp = 800; screenHeightDp = 1280
+        })
+        val rotated = controller!!.get()
+        rotated.readHome = { home() }
+        // Новый экран читает дом заново (подмена успевает не всегда — тогда «Повторить»).
+        await("после поворота") { idle(); rotated.texts().contains("Плиток:") || rotated.texts().contains("Повторить") }
+        if (rotated.texts().contains("Повторить")) { rotated.click("setup_rooms_again"); await("прочитано") { rotated.texts().contains("Плиток:") } }
+        assertFalse(rotated.box("setup_room_bed").isChecked)
+        assertTrue(rotated.box("setup_room_kit").isChecked)
+        // Плитки из файла копии: предлагать нечего.
+        com.example.smarthomedashboard.data.TileManager(context).saveTiles(listOf(com.example.smarthomedashboard.data.TileEntity("mine", "clock", "grid", "Моя", 0, 0, 1, 1)))
+        assertFalse(StarterTiles.canPropose(context))
     }
 
     @Test fun everythingCanBeSkippedAndPanelOpensWithoutServer() {

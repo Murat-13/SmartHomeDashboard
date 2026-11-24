@@ -16,6 +16,7 @@ import com.example.smarthomedashboard.MainActivity
 import com.example.smarthomedashboard.MainViewModel
 import com.example.smarthomedashboard.SetupActivity
 import com.example.smarthomedashboard.SplashActivity
+import com.example.smarthomedashboard.data.TileManager
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -41,6 +42,7 @@ class SetupDeepTest {
     private val stand = argument("haStand").orEmpty()
     private val user = argument("haUser").orEmpty()
     private val pass = argument("haPass").orEmpty()
+    private var checkAfter: () -> Unit = {}
     private val prefs get() = appContext.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
 
     @Before fun clean() {
@@ -78,9 +80,17 @@ class SetupDeepTest {
         return screen<HaLoginActivity>()
     }
 
+    /** Состояния устройств стенда (свет, розетки, замки, ворота): мастер ничего не переключает. */
+    private fun devices(token: String): Map<String, String> = OkHttpClient().newCall(Request.Builder().url("$stand/api/states")
+        .header("Authorization", "Bearer $token").build()).execute().use { r ->
+        val all = JSONArray(r.body!!.string())
+        (0 until all.length()).map { all.getJSONObject(it) }.filter { it.getString("entity_id").substringBefore('.') in
+            setOf("light", "switch", "fan", "lock", "cover", "input_boolean") }.associate { it.getString("entity_id") to it.getString("state") }
+    }
+
     private fun finishWizardAndCheckPanel() {
         val setup = screen<SetupActivity>()
-        waitFor(20_000, "шаг «Защита»") { onMain { setup.window.decorView.findViewWithTag<View>("setup_pin") } != null }
+        waitFor(30_000, "комнаты прочитаны") { onMain { texts(setup.window.decorView).contains("Плиток:") } }
         assertEquals(stand, prefs.getString("ha_local_host", null))
         assertTrue(prefs.getBoolean("setup_completed", false))
         val token = java.util.concurrent.Executors.newSingleThreadExecutor().let { p ->
@@ -88,12 +98,23 @@ class SetupDeepTest {
         }
         assertEquals(HaTokenAccess.Status.READY, token.status)
         assertTrue("постоянный доступ", token.value!!.length > 100)
+        val before = devices(token.value!!)
+        click(setup, "setup_rooms_next")
+        waitFor(20_000, "шаг «Защита»") { onMain { setup.window.decorView.findViewWithTag<View>("setup_pin") } != null }
+        val tiles = TileManager(appContext).loadTiles()
+        assertTrue("плитки комнат: ${tiles.map { it.title }}", tiles.map { it.title }.containsAll(listOf("Часы · Погода · Климат", "Свет · Гостиная", "Свет · Кухня",
+            "Кухня · Чайник", "Ворота", "Калитка")))
+        assertTrue(tiles.any { it.page > 0 })
+        checkAfter = { assertEquals("мастер ничего не переключил", before, devices(token.value!!)) }
         click(setup, "setup_next")
         click(setup, "setup_finish")
         val panel = screen<MainActivity>()
         // Строка состояния показывает и ошибки операций (на стенде нет weather.home) — смотрим само соединение.
         val model = onMain { ViewModelProvider(panel)[MainViewModel::class.java] }
         waitFor(30_000, "панель подключена") { model.uiState.value.connectionStatus == ConnectionStatus.Connected }
+        // Панель с предложенными плитками: страницы строятся, плитки на месте, ничего не переключилось.
+        waitFor(20_000, "плитки на панели") { onMain { texts(panel.window.decorView); panel.findViewById<android.view.ViewGroup>(com.example.smarthomedashboard.R.id.bottomPanel).childCount } >= 5 }
+        checkAfter()
         // Повторный запуск — сразу панель, мастера нет.
         appContext.startActivity(Intent(appContext, SplashActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         screen<MainActivity>()

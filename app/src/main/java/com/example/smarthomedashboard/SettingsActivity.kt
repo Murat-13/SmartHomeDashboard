@@ -247,6 +247,10 @@ class SettingsActivity : PinProtectedActivity() {
     private fun setupBackups() {
         updateBackupStatus()
         findViewById<Button?>(R.id.btnBackupRestore)?.setOnClickListener { chooseCopyToRestore() }
+        findViewById<Button?>(R.id.btnStarterUndo)?.apply {
+            visibility = if (StarterTiles.untouched(this@SettingsActivity)) View.VISIBLE else View.GONE
+            setOnClickListener { confirmStarterUndo() }
+        }
         findViewById<Button?>(R.id.btnPowerHistoryRestore)?.setOnClickListener { choosePowerHistoryCopy() }
         findViewById<Button?>(R.id.btnBackupFolder)?.setOnClickListener {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
@@ -345,6 +349,17 @@ class SettingsActivity : PinProtectedActivity() {
                 .setItems(copies.map { it.label }.toTypedArray()) { _, index -> confirmRestore(copies[index]) }
                 .setNegativeButton("Отмена", null).show()
         }
+    }
+
+    private fun confirmStarterUndo() {
+        if (!requireAdmin()) return
+        ModernUi.dangerDialog(this, "Убрать предложенные плитки?",
+            "Плитки и проходы, которые создал мастер первой настройки, будут убраны; панель перезапустится. Настройки, вход и " +
+                "устройства Home Assistant не меняются.", "Убрать") {
+            if (!requireAdmin()) return@dangerDialog
+            if (StarterTiles.undo(this)) restartAfterImport()
+            else Toast.makeText(this, "Панель уже изменили — плитки не тронуты", Toast.LENGTH_LONG).show()
+        }.show()
     }
 
     private fun confirmRestore(copy: AutoBackup.Copy) {

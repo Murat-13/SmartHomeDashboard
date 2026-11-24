@@ -2,5 +2,6 @@
 <!-- Строки состояния мастера первой настройки (docs/setup-tz.md): у строки состояния тег занят самим состоянием. -->
 <resources>
     <item name="setupServerStatus" type="id" />
+    <item name="setupRoomsStatus" type="id" />
     <item name="setupPinStatus" type="id" />
 </resources>
