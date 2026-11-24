@@ -33,7 +33,7 @@ Android-приложение на Kotlin для планшета, который
 - Отказоустойчивые групповые кнопки ([docs/group-fault-tolerance.md](docs/group-fault-tolerance.md)), график
   мощности ([docs/power-graph.md](docs/power-graph.md)), голосовые уведомления ([docs/voice-alerts.md](docs/voice-alerts.md)).
 - Домофон и камеры: живое видео RTSP/HLS, окно звонка, разговор, прямые события с камеры (вебхук, ONVIF), охрана
-  ([docs/doorbell.md](docs/doorbell.md), [docs/camera-tz.md](docs/camera-tz.md)).
+  ([docs/doorbell.md](docs/doorbell.md), [docs/camera-tz.md](docs/camera-tz.md); камеры разных марок — [docs/cameras.md](docs/cameras.md)).
 - Запись с камер на планшет: круглосуточно и события в HD, архив со шкалой ([docs/recording.md](docs/recording.md)).
 - Первая настройка: поиск Home Assistant в сети, вход на его странице или по QR с телефона, поиск камер, первые плитки по
   комнатам, проверка планшета для работы 24/7, восстановление из файла копии и копирование с другого планшета ([docs/setup-tz.md](docs/setup-tz.md)).
