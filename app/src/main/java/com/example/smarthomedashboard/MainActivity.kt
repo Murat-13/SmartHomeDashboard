@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
     private val showLoss = Runnable {
         lossShown = true
         pillHandler.removeCallbacks(hideOperationError)
-        showPill(ModernUi.Status.ERROR, "Нет связи с Home Assistant · переподключение…")
+        updateAddressPill()
     }
     // Скрывает только плашку ошибки операции: потерю связи не снимает.
     private val hideOperationError = Runnable { if (!lossShown) hidePill.run() }
@@ -281,6 +281,7 @@ class MainActivity : AppCompatActivity() {
         clockHandler.removeCallbacks(clockRunnable)
         clockHandler.removeCallbacks(weatherRefreshRunnable)
         clockHandler.removeCallbacks(cameraWatchRunnable)
+        addressWatch.stop()
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
     }
 
@@ -288,8 +289,33 @@ class MainActivity : AppCompatActivity() {
     private val cameraWatchRunnable = object : Runnable {
         override fun run() {
             CameraWatch.tick(this@MainActivity) { if (drawer?.isOpen == true) updateSystemStatus() }
+            addressWatch.tick(localRoute == true && viewModel.uiState.value.connectionStatus == ConnectionStatus.Connected)
             clockHandler.postDelayed(this, CAMERA_WATCH_MS)
         }
+    }
+
+    /** Тот же Home Assistant по другому адресу (docs/setup-tz.md, решение 6): строка в боковой панели и плашка. */
+    private val addressWatch by lazy { HaAddressWatch(this, onChange = { if (!isDestroyed) { updateAddressPill(); updateSystemStatus() } }) }
+
+    private fun offerNewAddress() {
+        val address = addressWatch.suggestion ?: return
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Home Assistant найден по новому адресу")
+            .setMessage("Тот же Home Assistant виден в домашней сети по адресу $address. Переключить панель на него? Плитки, вход и " +
+                "внешний адрес не меняются.")
+            .setPositiveButton("Переключить") { _, _ -> if (addressWatch.accept()) setupWebSocket() }
+            .setNegativeButton("Не сейчас") { _, _ -> addressWatch.decline() }
+            .show()
+    }
+
+    /** Плашка потери связи — с предложением, пока оно есть. */
+    private fun updateAddressPill() {
+        val pill = findViewById<TextView?>(R.id.statusPill) ?: return
+        val offer = lossShown && addressWatch.suggestion != null
+        if (lossShown) showPill(ModernUi.Status.ERROR, if (offer) "Нет связи · Home Assistant найден по новому адресу — коснитесь"
+            else "Нет связи с Home Assistant · переподключение…")
+        if (offer) pill.setOnClickListener { openWithPinCheck { offerNewAddress() } }
+        else { pill.setOnClickListener(null); pill.isClickable = false }
     }
 
     /** «Камеры: есть советы» — редактор камеры с первым советом, сразу на разделе «Диагностика видео». */
@@ -478,6 +504,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun installUpdate() = openWithPinCheck { UpdateInstallUi.start(this@MainActivity) }
             override fun cameraAdvice() = openWithPinCheck { openCameraAdvice() }
+            override fun newAddress() = openWithPinCheck { offerNewAddress() }
             override fun endAdmin() {
                 PinSecurityUi.session.revoke()
                 Toast.makeText(this@MainActivity, "Админ-режим завершён", Toast.LENGTH_SHORT).show()
@@ -695,6 +722,7 @@ class MainActivity : AppCompatActivity() {
         val advice = CameraWatch.text()
         if (advice != null) ModernUi.setStatus(side.camerasRow, ModernUi.Status.WARNING, advice)
         side.camerasRow.visibility = if (advice == null) View.GONE else View.VISIBLE
+        side.addressRow.visibility = if (addressWatch.suggestion == null) View.GONE else View.VISIBLE
         val update = AppUpdater.drawerText(this)
         if (update != null) ModernUi.setStatus(side.updateRow, ModernUi.Status.PROGRESS, update)
         side.updateRow.visibility = if (update == null) View.GONE else View.VISIBLE
@@ -712,6 +740,7 @@ class MainActivity : AppCompatActivity() {
             pillHandler.removeCallbacks(showLoss)
             if (lossShown) {
                 lossShown = false
+                updateAddressPill()
                 showPill(ModernUi.Status.OK, "Связь с Home Assistant восстановлена")
                 pillHandler.postDelayed(hidePill, PILL_RECOVERED_MS)
             }
