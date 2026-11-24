@@ -860,10 +860,12 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
         val total = textW + iconSide + iconGap
         val left = ((w - total) / 2f).coerceAtLeast(12 * density)
         val lineH = textPaint.descent() - textPaint.ascent()
-        val smallSize = textPaint.textSize * 0.72f
+        var smallSize = textPaint.textSize * 0.72f
         val small = hint?.let { h ->
             val size = textPaint.textSize
             textPaint.textSize = smallSize
+            val hintW = textPaint.measureText(h)
+            if (hintW > room) { smallSize *= maxOf(0.6f, room / hintW); textPaint.textSize = smallSize }
             fit(h, room).also { textPaint.textSize = size }
         }
         val blockH = if (small != null) lineH + smallSize * 1.25f else lineH
