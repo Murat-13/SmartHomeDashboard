@@ -59,6 +59,8 @@ async def main():
             await s.post(BASE + "/api/onboarding/" + step, headers=head, json={})
         await s.post(BASE + "/api/onboarding/integration", headers=head, json={"client_id": CLIENT, "redirect_uri": CLIENT})
         ws = await connect(s, tokens["access_token"])
+        # Настройки http из файла Home Assistant 2026.11 держит «на пробу» 5 минут и без подтверждения откатывает.
+        await ws.call("http/config/promote")
         # Обычный пользователь (не администратор): что панель может с его доступом.
         user = (await ws.call("config/auth/create", name="Гость стенда", group_ids=["system-users"], local_only=False))["result"]["user"]
         await ws.call("config/auth_provider/homeassistant/create", user_id=user["id"], username="guest", password=users["guest"])
