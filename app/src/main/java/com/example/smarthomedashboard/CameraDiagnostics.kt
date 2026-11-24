@@ -171,7 +171,7 @@ internal object CameraDiagnostics {
         val what = uneven.joinToString(" и ") { (s, _, name) -> "$name — ${s.fps?.let { fpsText(it.toFloat()) } ?: "меньше"} к/с" }
         val detail = "Камера снимает $sensor к/с, а отдаёт $what: лишние кадры выбрасываются неравномерно (шаги $base и " +
             "${2 * base} мс) — движение чуть подёргивается"
-        val fits = uneven.map { (_, options, name) -> name to options?.let { o -> even.filter { it in o.fpsMin..o.fpsMax } } }
+        val fits = uneven.map { (_, options, name) -> name to options?.let { o -> even.filter { o.allows(it) } } }
         if (fits.all { it.second?.isEmpty() == true }) {
             val limits = uneven.joinToString(", ") { (_, o, name) -> "$name — до ${o!!.fpsMax} к/с" }
             return Check("К2", title, Level.OK, "Особенность камеры: $detail. Ровной частоты у неё нет ($limits)")

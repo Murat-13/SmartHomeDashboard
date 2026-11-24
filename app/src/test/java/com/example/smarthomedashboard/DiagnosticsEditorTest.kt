@@ -68,6 +68,29 @@ class DiagnosticsEditorTest {
         assertEquals(stream.copy(uri = "", profile = ""), CameraDiagnosis.fromJson(json))
     }
 
+    @Test fun reolinkRangesBeatOnvif() {
+        // Как ответ GetEnc (action 1) домофона: основной — только 2560×1920 и не больше 20 к/с, субпоток — до 15.
+        val range = JSONObject("""{"Enc":[{"chnBit":1,"audio":"boolean",
+            "mainStream":{"size":"2560*1920","width":2560,"height":1920,"frameRate":[20,18,16,15,12,10,8,6,4,2],"vType":["h264"]},
+            "subStream":{"size":"640*480","width":640,"height":480,"frameRate":[15,10,7,4]}}]}""")
+        val (main, sub) = ReolinkDriver.parseRanges(range)
+        assertEquals(listOf(2560 to 1920), main!!.resolutions)
+        assertEquals(20, main.fpsMax)
+        assertFalse(main.allows(25))
+        assertTrue(main.allows(20))
+        assertEquals(listOf(15, 10, 7, 4), sub!!.fpsList)
+        // ONVIF того же домофона заявляет до 25 к/с — главнее ответ Reolink.
+        val onvifMain = Onvif.Stream("", 2560, 1920, "H264", "000", 20, 6144, 20, Onvif.EncoderOptions(listOf(2560 to 1920), 1, 25, true))
+        val info = Onvif.Info("Reolink", "Video Doorbell PoE", "v3", 8000, onvifMain, null, listOf(onvifMain), null)
+        val merged = CameraDiagnosis.merge(info, main to sub)!!
+        assertFalse(merged.main!!.options!!.allows(25))
+        assertEquals(2560, merged.main!!.width)
+        // ONVIF не ответил — только Reolink.
+        assertEquals(sub, CameraDiagnosis.merge(null, main to sub)!!.sub!!.options)
+        // Список частот переживает сохранение.
+        assertEquals(merged.main!!.options, CameraDiagnosis.fromJson(CameraDiagnosis.toJson(merged.main!!)).options)
+    }
+
     @Test fun nothingSeenYetAsksToCheck() {
         val activity = open("")
         assertEquals("Нажмите «Проверить сейчас»", activity.text("door_diag_summary"))

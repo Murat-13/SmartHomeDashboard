@@ -17,15 +17,16 @@ import java.util.concurrent.atomic.AtomicReference
  */
 internal object CameraDiagnosis {
     /** Что проверяем: потоки (как их открывает плитка), логин, пароль, узел и порт ONVIF. */
-    data class Target(val main: String, val sub: String, val user: String, val password: String?, val host: String, val onvifPort: Int)
+    data class Target(val main: String, val sub: String, val user: String, val password: String?, val host: String, val onvifPort: Int,
+                      val tileId: String = "", val config: DoorbellConfig? = null)
 
     class Result(val input: DiagInput, val checks: List<CameraDiagnostics.Check>, val camera: String?)
 
-    fun target(config: DoorbellConfig, password: String?): Target {
+    fun target(config: DoorbellConfig, password: String?, tileId: String = ""): Target {
         val main = DoorbellConfig.playableRtsp(config.rtspMain).trim()
         val sub = DoorbellConfig.playableRtsp(config.rtspSub).trim()
         val host = config.host.trim().ifBlank { hostOf(main.ifBlank { sub }) }
-        return Target(main, sub, config.rtspUser, password, host, config.onvifPort)
+        return Target(main, sub, config.rtspUser, password, host, config.onvifPort, tileId, config)
     }
 
     private fun hostOf(url: String): String = try { URI(url).host.orEmpty() } catch (_: Exception) { "" }
@@ -45,6 +46,7 @@ internal object CameraDiagnosis {
         val mainResult = AtomicReference<StreamSnapshot?>()
         val subResult = AtomicReference<StreamSnapshot?>()
         val onvif = AtomicReference<Onvif.Info?>()
+        val reolink = AtomicReference<Pair<Onvif.EncoderOptions?, Onvif.EncoderOptions?>?>()
         val clock = AtomicReference<Long?>()
         val threads = mutableListOf<Thread>()
         fun later(name: String, block: () -> Unit) = Thread({
@@ -53,6 +55,10 @@ internal object CameraDiagnosis {
         val shared = { url: String -> CameraHub.stats(url, t.user)?.takeIf { it.observedMs >= seconds * 1000L } }
         if (t.main.isNotBlank()) later("main") { mainResult.set(shared(t.main) ?: watch(t.main, t, seconds, cancelled)) }
         if (t.sub.isNotBlank() && t.sub != t.main) later("sub") { subResult.set(shared(t.sub) ?: watch(t.sub, t, seconds, cancelled)) }
+        val config = t.config
+        if (config != null && !t.password.isNullOrEmpty() && CameraLight.looksReolink(config)) {
+            later("reolink") { reolink.set(CameraLight.driver(context, t.tileId, config, t.password)?.encoderRanges()) }
+        }
         if (t.host.isNotBlank()) {
             later("onvif") {
                 if (!t.password.isNullOrEmpty()) onvif.set(Onvif.probe(t.host, t.onvifPort, t.user.ifBlank { "admin" }, t.password))
@@ -64,11 +70,21 @@ internal object CameraDiagnosis {
             progress(((until - WAIT_EXTRA_MS - System.currentTimeMillis()) / 1000).toInt().coerceAtLeast(0))
             try { Thread.sleep(PROGRESS_MS) } catch (_: InterruptedException) { break }
         }
-        val info = onvif.get()
+        val info = merge(onvif.get(), reolink.get())
         if (info != null) remember(context, t, info)
         val (encoder, subEncoder) = info?.let { it.main to it.sub?.takeIf { s -> s != it.main } } ?: remembered(context, t)
         return result(context, t, mainResult.get(), subResult.get(), encoder, subEncoder, clock.get(),
             info?.let { listOf(it.title, it.firmware.takeIf { f -> f.isNotBlank() }?.let { f -> "прошивка $f" }).filterNotNull().joinToString(", ") })
+    }
+
+    /** Возможности потоков по API Reolink точнее ONVIF — они главнее; ONVIF не ответил — только они. */
+    internal fun merge(info: Onvif.Info?, reolink: Pair<Onvif.EncoderOptions?, Onvif.EncoderOptions?>?): Onvif.Info? {
+        if (reolink == null || (reolink.first == null && reolink.second == null)) return info
+        fun bare(o: Onvif.EncoderOptions?) = o?.let { Onvif.Stream("", 0, 0, "", "", options = it) }
+        if (info == null) return Onvif.Info("Reolink", "", "", 0, bare(reolink.first), bare(reolink.second), emptyList(), null)
+        val main = info.main?.let { it.copy(options = reolink.first ?: it.options) } ?: bare(reolink.first)
+        val sub = if (info.sub == info.main) main else info.sub?.let { it.copy(options = reolink.second ?: it.options) } ?: bare(reolink.second)
+        return info.copy(main = main, sub = sub)
     }
 
     /** Свой поток для проверки, если общего нет; общий есть, но короче проверки — ждём его. */
@@ -125,15 +141,17 @@ internal object CameraDiagnosis {
         .put("fps", s.fps).put("kbps", s.kbps).put("gov", s.gov).apply {
             s.options?.let { o ->
                 put("options", JSONObject().put("min", o.fpsMin).put("max", o.fpsMax).put("h264", o.h264)
-                    .put("sizes", JSONArray().apply { o.resolutions.forEach { (w, h) -> put(JSONArray().put(w).put(h)) } }))
+                    .put("sizes", JSONArray().apply { o.resolutions.forEach { (w, h) -> put(JSONArray().put(w).put(h)) } })
+                    .put("rates", JSONArray().apply { o.fpsList.forEach { put(it) } }))
             }
         }
 
     internal fun fromJson(j: JSONObject): Onvif.Stream {
         val o = j.optJSONObject("options")?.let { o ->
             val sizes = o.optJSONArray("sizes") ?: JSONArray()
+            val rates = o.optJSONArray("rates") ?: JSONArray()
             Onvif.EncoderOptions((0 until sizes.length()).map { sizes.getJSONArray(it).let { p -> p.getInt(0) to p.getInt(1) } },
-                o.optInt("min"), o.optInt("max"), o.optBoolean("h264"))
+                o.optInt("min"), o.optInt("max"), o.optBoolean("h264"), (0 until rates.length()).map { rates.getInt(it) })
         }
         return Onvif.Stream("", j.optInt("w"), j.optInt("h"), j.optString("enc"), "", j.optInt("fps"), j.optInt("kbps"), j.optInt("gov"), o)
     }

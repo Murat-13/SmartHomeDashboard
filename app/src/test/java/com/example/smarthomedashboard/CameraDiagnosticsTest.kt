@@ -112,6 +112,10 @@ class CameraDiagnosticsTest {
         assertEquals(Level.OK, size.level)
         assertTrue(size.detail, size.detail.startsWith("Особенность камеры") && size.detail.contains("Меньшего размера"))
         assertEquals("Всё в порядке", CameraDiagnostics.summary(CameraDiagnostics.evaluate(doorbell)))
+        // По API Reolink: список частот без 25 — тоже особенность, хотя «до 20» по ONVIF могло быть «до 25».
+        val listed = doorbell.copy(encoder = doorbell.encoder!!.copy(options = Onvif.EncoderOptions(listOf(2560 to 1920), 2, 20, true,
+            listOf(20, 18, 16, 15, 12, 10, 8, 6, 4, 2))))
+        assertEquals(Level.OK, check(listed, "К2").level)
         // Но если планшет не успевает — это «мешает» и при особенности камеры.
         val slow = doorbell.copy(mainShows = listOf(show.copy(shownFps = 9f, droppedShare = 0.5f, longStalls = 6)))
         assertEquals(Level.BAD, check(slow, "К3").level)

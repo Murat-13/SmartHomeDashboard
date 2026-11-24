@@ -31,7 +31,11 @@ internal object Onvif {
      * Что камера разрешает поставить у потока (`GetVideoEncoderConfigurationOptions`): размеры, частота кадров, есть ли
      * H.264. Диагностика советует только то, что камера умеет (у домофона Reolink — 2560×1920 и не больше 20 к/с).
      */
-    data class EncoderOptions(val resolutions: List<Pair<Int, Int>>, val fpsMin: Int, val fpsMax: Int, val h264: Boolean)
+    data class EncoderOptions(val resolutions: List<Pair<Int, Int>>, val fpsMin: Int, val fpsMax: Int, val h264: Boolean,
+                              /** Частоты списком (Reolink: 20, 18, 16…); пусто — любая в [fpsMin]..[fpsMax]. */
+                              val fpsList: List<Int> = emptyList()) {
+        fun allows(fps: Int) = if (fpsList.isNotEmpty()) fps in fpsList else fps in fpsMin..fpsMax
+    }
 
     data class Info(
         val manufacturer: String,

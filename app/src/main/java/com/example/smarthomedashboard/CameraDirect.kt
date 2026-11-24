@@ -96,6 +96,17 @@ internal class ReolinkDriver(
         return listOfNotNull(event)
     }
 
+    /**
+     * Что разрешено у потоков по собственному API Reolink (`GetEnc` с диапазонами): частоты, размеры, кодек основного
+     * и субпотока. Точнее ONVIF: домофон по ONVIF заявляет основному потоку до 25 к/с, а ставит не больше 20.
+     */
+    fun encoderRanges(): Pair<Onvif.EncoderOptions?, Onvif.EncoderOptions?> {
+        if (token == null) login()
+        val reply = post("GetEnc", JSONObject().put("channel", 0), action = 1)
+        if (reply.optInt("code", -1) != 0) throw CameraException("GetEnc: отказ камеры")
+        return parseRanges(reply.optJSONObject("range"))
+    }
+
     override fun ringActive(): Boolean =
         call("GetEvents", JSONObject().put("channel", 0)).optJSONObject("visitor")?.optInt("alarm_state") == 1
 
@@ -145,9 +156,9 @@ internal class ReolinkDriver(
         throw CameraException("$cmd: ${error?.optString("detail")?.ifBlank { null } ?: "отказ камеры"}")
     }
 
-    private fun post(cmd: String, param: JSONObject): JSONObject {
+    private fun post(cmd: String, param: JSONObject, action: Int = 0): JSONObject {
         val url = "$base/cgi-bin/api.cgi?cmd=$cmd" + (token?.let { "&token=$it" } ?: "")
-        val body = JSONArray().put(JSONObject().put("cmd", cmd).put("action", 0).put("param", param)).toString()
+        val body = JSONArray().put(JSONObject().put("cmd", cmd).put("action", action).put("param", param)).toString()
         val request = Request.Builder().url(url).post(body.toRequestBody(JSON)).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw CameraException("$cmd: HTTP ${response.code}")
@@ -156,6 +167,29 @@ internal class ReolinkDriver(
     }
 
     companion object {
+        /**
+         * Диапазоны `GetEnc`: `range.Enc` — набор (или список наборов, у камер с выбором разрешения) с `mainStream` и
+         * `subStream`: `frameRate` — список частот, `size` («2560*1920») или `width`/`height`, `vType` — кодеки.
+         */
+        internal fun parseRanges(range: JSONObject?): Pair<Onvif.EncoderOptions?, Onvif.EncoderOptions?> {
+            val sets = range?.optJSONArray("Enc")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }
+                ?: listOfNotNull(range?.optJSONObject("Enc"))
+            fun stream(name: String): Onvif.EncoderOptions? {
+                val parts = sets.mapNotNull { it.optJSONObject(name) }
+                if (parts.isEmpty()) return null
+                val rates = parts.flatMap { p -> p.optJSONArray("frameRate")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty() }
+                    .filter { it > 0 }.distinct().sortedDescending()
+                val sizes = parts.mapNotNull { p ->
+                    p.optString("size").split('*', 'x', 'X').mapNotNull { it.trim().toIntOrNull() }.takeIf { it.size == 2 }?.let { it[0] to it[1] }
+                        ?: p.optInt("width").takeIf { it > 0 }?.let { w -> p.optInt("height").takeIf { it > 0 }?.let { h -> w to h } }
+                }.distinct()
+                val types = parts.flatMap { p -> p.optJSONArray("vType")?.let { a -> (0 until a.length()).map { a.optString(it).lowercase(Locale.ROOT) } }.orEmpty() }
+                if (rates.isEmpty() && sizes.isEmpty()) return null
+                return Onvif.EncoderOptions(sizes, rates.minOrNull() ?: 0, rates.maxOrNull() ?: 0, types.isEmpty() || "h264" in types, rates)
+            }
+            return stream("mainStream") to stream("subStream")
+        }
+
         private val JSON = "application/json".toMediaType()
         private const val LOGIN_FIRST = -6
         private const val TAG = "DirectEvents"

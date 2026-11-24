@@ -319,7 +319,7 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         diagRun.text = "Проверяю… $diagSeconds с"
         val context = applicationContext
         val start = { pass: String? ->
-            val target = CameraDiagnosis.target(config, pass)
+            val target = CameraDiagnosis.target(config, pass, original.id)
             Thread({
                 val result = try {
                     CameraDiagnosis.full(context, target, diagSeconds, { diagCancelled }) { left ->
