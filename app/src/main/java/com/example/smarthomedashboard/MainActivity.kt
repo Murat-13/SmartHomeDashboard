@@ -117,7 +117,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REQUEST_TILE_SETTINGS = 100
-        private const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
+        internal const val PREF_STARTER_TILES_DONE = "starter_tiles_done"
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
         internal const val WEATHER_REFRESH_MS = 60 * 60 * 1000L
         internal const val CAMERA_WATCH_MS = 60_000L

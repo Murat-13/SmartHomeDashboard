@@ -17,6 +17,61 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
+ * Одно короткое соединение WebSocket с Home Assistant и несколько команд по очереди: вход и чтение комнат мастером.
+ * Постоянное подключение панели ([HomeAssistantWebSocket]) не участвует. Блокирующее — рабочий поток.
+ */
+internal object HaCalls {
+    /** Home Assistant ответил отказом; [code] — его код («unknown_command», «unauthorized»…). */
+    class Refused(val code: String) : IOException("Home Assistant отказал: $code")
+
+    private const val WAIT_S = 30L
+
+    /** [block] получает функцию «тип команды, данные → результат»; отказ — [Refused], связь — [HaLogin.LoginException]. */
+    fun <T> open(origin: String, access: String, block: ((String, JSONObject) -> Any?) -> T): T {
+        val url = HomeAssistantAddress.webSocketUrl(origin)
+        val ready = CountDownLatch(1)
+        var failure: String? = null
+        var answer: JSONObject? = null
+        var expected = 0
+        var waiting = CountDownLatch(0)
+        val lock = Any()
+        val http = HaLogin.client.newBuilder().readTimeout(0, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
+        fun fail(text: String) { synchronized(lock) { if (failure == null) failure = text; ready.countDown(); waiting.countDown() } }
+        val socket = http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val json = try { JSONObject(text) } catch (_: JSONException) { return }
+                when (json.optString("type")) {
+                    "auth_required" -> webSocket.send(JSONObject().put("type", "auth").put("access_token", access).toString())
+                    "auth_ok" -> ready.countDown()
+                    "auth_invalid" -> fail("Home Assistant не принял вход. Попробуйте ещё раз")
+                    "result" -> synchronized(lock) { if (json.optInt("id") == expected) { answer = json; waiting.countDown() } }
+                }
+            }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = fail(HomeAssistantAddress.errorMessage(t))
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = fail("Home Assistant закрыл соединение")
+        })
+        try {
+            if (!ready.await(WAIT_S, TimeUnit.SECONDS)) throw HaLogin.LoginException("Home Assistant не отвечает")
+            synchronized(lock) { failure }?.let { throw HaLogin.LoginException(it) }
+            var id = 0
+            return block { type, data ->
+                val latch = CountDownLatch(1)
+                synchronized(lock) { answer = null; waiting = latch; expected = ++id }
+                socket.send(data.put("id", id).put("type", type).toString())
+                if (!latch.await(WAIT_S, TimeUnit.SECONDS)) throw HaLogin.LoginException("Home Assistant не отвечает")
+                val json = synchronized(lock) { failure?.let { throw HaLogin.LoginException(it) }; answer }
+                    ?: throw HaLogin.LoginException("Home Assistant не отвечает")
+                if (!json.optBoolean("success")) throw Refused(json.optJSONObject("error")?.optString("code").orEmpty())
+                json.opt("result")
+            }
+        } finally {
+            socket.close(1000, null)
+            socket.cancel()
+        }
+    }
+}
+
+/**
  * Вход в Home Assistant его собственной страницей (docs/setup-tz.md, часть 1): OAuth 2 с PKCE. Пароль вводится только
  * там; панель получает одноразовый код, меняет его на временный доступ, создаёт постоянный (тот же вид, что токен из
  * профиля) и отзывает временный. Подключение панели и хранилище токена не меняются. Блокирующее — рабочий поток.
@@ -43,7 +98,7 @@ internal object HaLogin {
     }
 
     private val random = SecureRandom()
-    private val client by lazy {
+    internal val client by lazy {
         OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.SECONDS).followRedirects(false).build()
     }
@@ -80,9 +135,9 @@ internal object HaLogin {
     fun grant(attempt: Attempt, code: String, name: String): Granted {
         val (access, refresh) = exchange(attempt, code)
         try {
-            return session(attempt.origin, access) { call ->
-                val config = call("get_config", JSONObject())
-                val user = runCatching { call("auth/current_user", JSONObject()) }.getOrNull()
+            return HaCalls.open(attempt.origin, access) { call ->
+                val config = call("get_config", JSONObject()) as? JSONObject ?: JSONObject()
+                val user = runCatching { call("auth/current_user", JSONObject()) as? JSONObject }.getOrNull()
                 val token = try { create(call, name) } catch (_: LoginException) {
                     // Такое имя уже есть (два входа в одну секунду): ещё раз с другим.
                     create(call, "$name ${secret(3)}")
@@ -91,15 +146,18 @@ internal object HaLogin {
                     config.optString("external_url").takeIf { it.startsWith("https://", true) && HaDiscovery.usableUrl(it) }.orEmpty(),
                     user?.optBoolean("is_admin") == true)
             }
+        } catch (_: HaCalls.Refused) {
+            throw LoginException(NOT_GRANTED)
         } finally {
             // Временный доступ больше не нужен; не отозвался — сам истечёт.
             runCatching { revoke(attempt.origin, refresh) }
         }
     }
 
-    private fun create(call: (String, JSONObject) -> JSONObject, name: String): String =
-        call("auth/long_lived_access_token", JSONObject().put("client_name", name).put("lifespan", LIFESPAN_DAYS)).optString(VALUE)
-            .ifBlank { throw LoginException("Home Assistant не выдал доступ панели") }
+    private fun create(call: (String, JSONObject) -> Any?, name: String): String = try {
+        (call("auth/long_lived_access_token", JSONObject().put("client_name", name).put("lifespan", LIFESPAN_DAYS)) as? String).orEmpty()
+            .ifBlank { throw LoginException(NOT_GRANTED) }
+    } catch (_: HaCalls.Refused) { throw LoginException(NOT_GRANTED) }
 
     private fun exchange(attempt: Attempt, code: String): Pair<String, String> {
         val body = FormBody.Builder().add("grant_type", "authorization_code").add("code", code)
@@ -127,56 +185,10 @@ internal object HaLogin {
             .execute().close()
     }
 
-    /** Одно соединение WebSocket: вход временным доступом и несколько команд по очереди. */
-    private fun <T> session(origin: String, access: String, block: ((String, JSONObject) -> JSONObject) -> T): T {
-        val url = HomeAssistantAddress.webSocketUrl(origin)
-        val ready = CountDownLatch(1)
-        var failure: String? = null
-        var answer: JSONObject? = null
-        var waiting = CountDownLatch(0)
-        val lock = Any()
-        val http = client.newBuilder().readTimeout(0, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
-        fun fail(text: String) { synchronized(lock) { if (failure == null) failure = text; ready.countDown(); waiting.countDown() } }
-        val socket = http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                val json = try { JSONObject(text) } catch (_: JSONException) { return }
-                when (json.optString("type")) {
-                    "auth_required" -> webSocket.send(JSONObject().put("type", "auth").put("access_token", access).toString())
-                    "auth_ok" -> ready.countDown()
-                    "auth_invalid" -> fail("Home Assistant не принял вход. Попробуйте ещё раз")
-                    "result" -> synchronized(lock) { answer = json; waiting.countDown() }
-                }
-            }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = fail(HomeAssistantAddress.errorMessage(t))
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = fail("Home Assistant закрыл соединение")
-        })
-        try {
-            if (!ready.await(WAIT_S, TimeUnit.SECONDS)) throw LoginException("Home Assistant не отвечает")
-            synchronized(lock) { failure }?.let { throw LoginException(it) }
-            var id = 0
-            return block { type, data ->
-                val latch = CountDownLatch(1)
-                synchronized(lock) { answer = null; waiting = latch }
-                socket.send(data.put("id", ++id).put("type", type).toString())
-                if (!latch.await(WAIT_S, TimeUnit.SECONDS)) throw LoginException("Home Assistant не отвечает")
-                val json = synchronized(lock) { failure?.let { throw LoginException(it) }; answer } ?: throw LoginException(BROKEN)
-                if (!json.optBoolean("success")) throw LoginException("Home Assistant не выдал доступ панели")
-                when (val result = json.opt("result")) {
-                    is JSONObject -> result
-                    else -> JSONObject().put(VALUE, if (result is String) result else "")
-                }
-            }
-        } finally {
-            socket.close(1000, null)
-            socket.cancel()
-        }
-    }
-
     private const val FLAGS = Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
     /** Как у токена из профиля Home Assistant — 10 лет. */
     private const val LIFESPAN_DAYS = 3650
     private const val MAX_CODE = 512
-    private const val WAIT_S = 15L
-    private const val VALUE = "value"
+    private const val NOT_GRANTED = "Home Assistant не выдал доступ панели"
     private const val BROKEN = "Ответ входа не подошёл. Начните вход заново"
 }

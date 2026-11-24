@@ -68,6 +68,28 @@ class HaLoginStandTest {
         }
     }
 
+    /** Выдуманный дом стенда (tools/ha-stand/house.py): комнаты по этажам, устройства, климат, проходы — обоим пользователям. */
+    @Test fun roomsOfRealHomeAssistantBecomeProposal() {
+        assumeTrue(stand.isNotEmpty())
+        for (user in listOf("owner", "guest")) {
+            val attempt = HaLogin.onTablet(stand)
+            val token = HaLogin.grant(attempt, code(attempt, user), "Комнаты ${HaLogin.secret(4)}").token
+            val p = StarterPlan.propose(HaHome.read(listOf("http://127.0.0.1:1", stand), token))
+            assertEquals("первый этаж, второй, без этажа", listOf("Гостиная", "Кухня", "Прихожая", "Детская", "Спальня", "Двор"),
+                p.rooms.filter { it.id.isNotEmpty() }.map { it.name })
+            fun count(kind: StarterPlan.Kind) = p.rooms.filter { it.id.isNotEmpty() }.flatMap { it.items }.count { it.kind == kind }
+            assertEquals(13, count(StarterPlan.Kind.LIGHT))
+            assertEquals(5, count(StarterPlan.Kind.SWITCH))
+            assertEquals(1, count(StarterPlan.Kind.FAN))
+            assertEquals(2, count(StarterPlan.Kind.GATE))
+            assertEquals(5, p.rooms.count { it.temperature.isNotEmpty() && it.humidity.isNotEmpty() })
+            assertTrue("выключатели-помощники стенда не предлагаются", p.items.none { it.entity.startsWith("input_boolean.") })
+            val plan = StarterPlan.layout(p, StarterPlan.defaults(p, 1920, 1200, 1.5f), 1920, 1200, 1.5f)
+            assertTrue("страниц: ${plan.pages}", plan.pages in 2..3)
+            assertEquals(2, plan.gates.size)
+        }
+    }
+
     @Test fun foreignVerifierUsedCodeAndTakenNameAreRefusedOrRetried() {
         assumeTrue(stand.isNotEmpty())
         val attempt = HaLogin.onTablet(stand)
