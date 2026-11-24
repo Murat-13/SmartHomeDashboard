@@ -19,7 +19,8 @@ import java.io.File
 /**
  * Диагностика камеры (docs/diagnostics-tz.md, этап 1) на эмуляторе со стендом камер: редактор домофона →
  * «Проверить сейчас» → находки камеры D «плохие условия» (линия 10 Мбит/с, потери, 20 к/с с датчика 25). Только со
- * стендом: аргументы `rtspHost` (с эмулятора — 10.0.2.2) и `diagPort` (8557). Снимок экрана — в папке приложения.
+ * стендом: аргументы `rtspHost` (с эмулятора — 10.0.2.2) и `diagPort` (8557); на RTSP-стенде CI (без `diagPort`) тест
+ * пропускается. Снимок экрана — в папке приложения.
  */
 @RunWith(AndroidJUnit4::class)
 class DiagnosticsDeepTest {
@@ -33,8 +34,9 @@ class DiagnosticsDeepTest {
 
     @Test fun checkNowFindsStandProblems() {
         val host = argument("rtspHost")
-        assumeTrue("Нужен аргумент rtspHost (стенд камер)", host != null)
-        val port = argument("diagPort") ?: "8557"
+        val port = argument("diagPort")
+        // Только со стендом tools/camera-stand и его камерой D: у RTSP-стенда CI (rtspHost без diagPort) её нет.
+        assumeTrue("Нужны аргументы rtspHost и diagPort (камера D стенда камер)", host != null && port != null)
         ha = FakeHomeAssistant()
         val door = DoorbellConfig(rtspMain = "rtsp://$host:$port/Streaming/Channels/101", rtspSub = "rtsp://$host:$port/Streaming/Channels/102")
         val config = JSONObject(DoorbellConfig.newTileConfig()).put(DoorbellConfig.KEY, door.toJson()).toString()
