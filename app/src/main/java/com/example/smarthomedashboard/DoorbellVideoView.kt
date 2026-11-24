@@ -143,6 +143,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
      * потока — только пока его слышно (раскрытая плитка, окно звонка; в разговоре звук с улицы даёт [StreetAudio]).
      */
     private var soundPlayer: ExoPlayer? = null
+    /** Подключения отдельного плеера звука ([ConnectTimeoutSocketFactory.abort] перед освобождением). */
+    private var soundConnects: ConnectTimeoutSocketFactory? = null
     /** Текущий видеоплеер создан без звуковой дорожки. */
     private var splitSound = false
     /** Звук улицы играет отдельный плеер: после приглушения он начинает с живого, без старого запаса. */
@@ -179,21 +181,24 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 else if (state == Player.STATE_BUFFERING && played) soundStalls++
             }
         })
+        val sockets = ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS, renumber = !LiveTuning.off(context, "no_seq_fix"),
+            h264 = { H264Params.forStream(rtsp, src.user, password) })
         exo.setMediaSource(RtspMediaSource.Factory()
             .setForceUseRtpTcp(true)
             .setTimeoutMs(RTSP_TIMEOUT_MS)
-            .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS, renumber = !LiveTuning.off(context, "no_seq_fix")) {
-                H264Params.forStream(rtsp, src.user, password)
-            })
+            .setSocketFactory(sockets)
             .createMediaSource(MediaItem.fromUri(Uri.parse(relay))))
         exo.playWhenReady = true
         exo.prepare()
         soundPlayer = exo
+        soundConnects = sockets
         soundLate.reset()
     }
 
     private fun stopSound() {
-        soundPlayer?.release()
+        soundConnects?.abort()
+        soundConnects = null
+        soundPlayer?.let { releaseTimed(it, "звука") }
         soundPlayer = null
         soundLate.reset()
     }
@@ -629,23 +634,27 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             soundPassword = password
             val url = relay ?: DoorbellConfig.withCredentials(rtsp, src.user, password)
             val sequenceRestarts = java.util.concurrent.atomic.AtomicInteger().also { this.sequenceRestarts = it }
+            // Media3 открывает RTSP-сокет без таймаута: недоступный адрес держал бы поток плеера минутами,
+            // а освобождение плеера ждёт этот поток в главном — отсюда «жуткие лаги» при выключенной камере.
+            val sockets = ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS,
+                renumber = !LiveTuning.off(context, "no_seq_fix"), restarts = sequenceRestarts,
+                h264 = { H264Params.forStream(rtsp, src.user, password) })
             val media = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
                 .setTimeoutMs(RTSP_TIMEOUT_MS)
-                // Media3 открывает RTSP-сокет без таймаута: недоступный адрес держал бы поток плеера минутами,
-                // а освобождение плеера ждёт этот поток в главном — отсюда «жуткие лаги» при выключенной камере.
-                .setSocketFactory(ConnectTimeoutSocketFactory(RTSP_CONNECT_TIMEOUT_MS,
-                    renumber = !LiveTuning.off(context, "no_seq_fix"), restarts = sequenceRestarts) {
-                    H264Params.forStream(rtsp, src.user, password)
-                })
+                .setSocketFactory(sockets)
                 .createMediaSource(MediaItem.fromUri(Uri.parse(url)))
             // Аппаратный декодер этот поток уже не принял — сразу программный, без лишней попытки.
-            play(software = rtsp == src.rtsp && rtsp in hardwareRejected, live = true, withSound = !splitSound) { it.setMediaSource(media) }
+            play(software = rtsp == src.rtsp && rtsp in hardwareRejected, live = true, withSound = !splitSound, connects = sockets) {
+                it.setMediaSource(media)
+            }
             syncSound()
         }
     }
 
     private var attempt = 0
+    /** Подключения текущего видеоплеера ([ConnectTimeoutSocketFactory.abort] перед освобождением). */
+    private var connects: ConnectTimeoutSocketFactory? = null
     /** Сколько раз за текущее подключение отсчёт номеров RTP-пакетов начат заново ([RtpSequenceFix]). */
     private var sequenceRestarts: java.util.concurrent.atomic.AtomicInteger? = null
     /** Адрес RTSP текущей попытки (основной или запасной); пусто — HLS через HA. */
@@ -689,7 +698,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         }
     }
 
-    private fun play(software: Boolean = false, live: Boolean = false, withSound: Boolean = true, setSource: (ExoPlayer) -> Unit) {
+    private fun play(software: Boolean = false, live: Boolean = false, withSound: Boolean = true,
+                     connects: ConnectTimeoutSocketFactory? = null, setSource: (ExoPlayer) -> Unit) {
         // Не открылся декодер — плеер пробует следующий: так основной поток выше предела аппаратного декодера
         // показывает программный декодер Android (нагрузка на процессор — только пока он на экране).
         // Живой RTSP: декодеру сообщается, что перестановки кадров нет, — иначе он держит у себя до 16 кадров.
@@ -737,6 +747,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(300, 2_000, 150, 300).build())
             .build()
         player = exo
+        this.connects = connects
         playerStarts++
         startedAt = SystemClock.elapsedRealtime()
         firstFrameRendered = false
@@ -887,9 +898,20 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         texture.animate().cancel()
         texture.alpha = 0f
         // Без clearVideoTextureView: он ждёт поток плеера до 2 с (отсоединение поверхности), release() сам
-        // отпускает поверхность. Главный поток ждёт плеер только внутри release() (не дольше 0,5 с).
-        exo.release()
+        // отпускает поверхность. Главный поток ждёт плеер только внутри release() (не дольше 0,5 с) — поэтому
+        // подключение к камере, которое ещё идёт в потоке плеера, сначала обрывается.
+        connects?.abort()
+        connects = null
+        releaseTimed(exo, "видео")
         updateQuality()
+    }
+
+    /** Освободить плеер; если главный поток ждал его заметно долго — строка в журнал (подвисание панели). */
+    private fun releaseTimed(exo: ExoPlayer, what: String) {
+        val t = SystemClock.elapsedRealtime()
+        exo.release()
+        val ms = SystemClock.elapsedRealtime() - t
+        if (ms >= SLOW_RELEASE_MS) Log.w(TAG, "Освобождение плеера $what заняло $ms мс (главный поток ждал)")
     }
 
     /** Итог показа в журнал: декодер, разрешение, кадры в секунду и пропуски — для проверки на планшете. */
@@ -1030,6 +1052,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (target == null || status != Status.PLAYING || loanedTo != null) return false
         if (!target.acceptGuest(exo, null, videoAspect)) return false
         player = null
+        connects = null
         attempt++
         updateQuality()
         return true
@@ -1192,6 +1215,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val RETRY_UNREACHABLE_MS = 60_000L
         /** Подключение к RTSP: дольше ждать нет смысла — в своей сети камера отвечает за доли секунды. */
         internal const val RTSP_CONNECT_TIMEOUT_MS = 4_000
+        /** Освобождение плеера дольше этого — в журнал. */
+        private const val SLOW_RELEASE_MS = 150L
         /** Подключение с первым кадром: в своей сети — 1–3 с, через HA (HLS) — до 10 с. Дольше — камера молчит. */
         internal const val FIRST_FRAME_TIMEOUT_MS = 20_000L
         /** После ошибки отдельного плеера звука следующая попытка — не раньше. */
@@ -1244,9 +1269,26 @@ internal class ConnectTimeoutSocketFactory(
     /** Сюда считается, сколько раз отсчёт номеров начат заново (для журнала). */
     private val restarts: java.util.concurrent.atomic.AtomicInteger? = null,
     /** Параметры видео H.264, если камера не дала их в описании ([H264Params]). */
-    private val h264: (() -> String?)? = null
+    private val h264: (() -> String?)? = null,
+    /** Только для тестов: свой сокет вместо [SdpFixingSocket]. */
+    private val newSocket: (() -> java.net.Socket)? = null
 ) : javax.net.SocketFactory() {
-    private fun socket() = SdpFixingSocket(h264, if (renumber) RtpSequenceFix(restarts) else null)
+    private fun socket() = newSocket?.invoke() ?: SdpFixingSocket(h264, if (renumber) RtpSequenceFix(restarts) else null)
+
+    /** Сокеты, которые ещё ждут ответа камеры. */
+    private val connecting = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<java.net.Socket, Boolean>())
+    @Volatile private var aborted = false
+
+    /**
+     * Плеер освобождается (ночной Deep tests 23.11.2026, docs/doorbell.md, «Освобождение плеера, пока камера не
+     * отвечает»): Media3 подключается к камере в потоке плеера, а `release()` ждёт этот поток в главном до 0,5 с.
+     * Подключение, которое ещё ждёт камеру, обрывается — поток плеера сразу свободен. Уже подключённые сокеты не
+     * трогаются: их закрывает сам плеер, как раньше. Новых подключений после этого нет.
+     */
+    fun abort() {
+        aborted = true
+        for (s in connecting.toList()) runCatching { s.close() }
+    }
 
     override fun createSocket(): java.net.Socket = socket()
 
@@ -1271,7 +1313,17 @@ internal class ConnectTimeoutSocketFactory(
     private fun connect(address: java.net.InetSocketAddress) = socket().also { connectOrClose(it, address) }
 
     private fun connectOrClose(socket: java.net.Socket, address: java.net.InetSocketAddress) {
-        try { socket.connect(address, timeoutMs) } catch (e: java.io.IOException) { socket.close(); throw e }
+        connecting += socket
+        try {
+            // Проверка после добавления: abort() между ними либо закроет сокет, либо виден здесь.
+            if (aborted) throw java.io.IOException("Плеер освобождён — подключение не нужно")
+            socket.connect(address, timeoutMs)
+        } catch (e: java.io.IOException) {
+            socket.close()
+            throw e
+        } finally {
+            connecting -= socket
+        }
     }
 }
 
