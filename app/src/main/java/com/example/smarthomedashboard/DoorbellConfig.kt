@@ -55,6 +55,8 @@ internal data class DoorbellConfig(
     val host: String = "",
     val onvifPort: Int = 0,
     val model: String = "",
+    /** Прямой снимок камеры по HTTP ([CameraSnapshot]): камера без потока RTSP или снимок, когда у Home Assistant его нет. */
+    val snapshotUrl: String = "",
     /**
      * Проходы (калитки и ворота, docs/gate-tz.md), кнопки которых показывает эта плитка: id из общего списка [GateStore].
      * null — ключа нет (плитка из 0.9.48 и раньше): тогда показывается проход из прежнего поля [lock] ([gateIds]).
@@ -83,7 +85,7 @@ internal data class DoorbellConfig(
     val entityIds: Set<String> get() = listOf(camera, visitor, person, animal, vehicle, motion, lock, light, quickReply,
         if (autoLight && light.isNotBlank()) SUN else "").filter { it.isNotBlank() }.toCollection(LinkedHashSet())
 
-    val hasVideo get() = camera.isNotBlank() || rtspMain.isNotBlank() || rtspSub.isNotBlank()
+    val hasVideo get() = camera.isNotBlank() || rtspMain.isNotBlank() || rtspSub.isNotBlank() || snapshotUrl.isNotBlank()
 
     /** Поток для разговора (обратный канал есть у обоих потоков Reolink; субпоток легче). */
     val talkRtsp get() = rtspSub.ifBlank { rtspMain }
@@ -116,6 +118,7 @@ internal data class DoorbellConfig(
         if (host.isNotBlank()) put("host", host)
         if (onvifPort > 0) put("onvif_port", onvifPort)
         if (model.isNotBlank()) put("model", model)
+        if (snapshotUrl.isNotBlank()) put("snapshot_url", snapshotUrl)
         gates?.let { put("gates", org.json.JSONArray(it)) }
     }
 
@@ -168,6 +171,7 @@ internal data class DoorbellConfig(
                 aspect = j.optDouble("aspect", DEFAULT_ASPECT.toDouble()).toFloat().takeIf { it.isFinite() && it in 0.3f..4f }
                     ?: DEFAULT_ASPECT,
                 host = str("host").take(253), onvifPort = int("onvif_port", 0, 0..65535), model = str("model").take(80),
+                snapshotUrl = str("snapshot_url").take(500),
                 gates = j.optJSONArray("gates")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).trim().ifBlank { null } }.distinct() }
             )
         }

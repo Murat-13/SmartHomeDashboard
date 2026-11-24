@@ -255,4 +255,30 @@ class RecordingHubTest {
         val SPS: ByteArray = java.util.Base64.getDecoder().decode("Z2QAM6wVFKAoAPGQ")
         val PPS: ByteArray = java.util.Base64.getDecoder().decode("aO48sA==")
     }
+
+    /** Показ своим клиентом: поток держит само видео, запись не нужна; вместе с записью — то же одно подключение. */
+    @Test fun liveViewHoldsStreamWithoutRecording() {
+        assertFalse(CameraHub.has(url, ""))
+        val key = CameraHub.Key(url, "", null)
+        val a = CameraHub.hold(key)
+        val b = CameraHub.hold(key)
+        waitFor(5_000, "поток пошёл") { CameraHub.relayUrl(url, "") != null }
+        assertTrue(CameraHub.has(url, ""))
+        assertEquals("один на всех", 1, connections.get())
+        // Запись подключается к тому же потоку и уходит — показ продолжается.
+        val r = recorder(audio = false)
+        r.start()
+        assertEquals(1, CameraHub.openStreams)
+        r.stop()
+        a.release(); a.release()
+        Thread.sleep(300)
+        assertTrue("второй ещё смотрит", CameraHub.has(url, ""))
+        assertNotNull(CameraHub.relayUrl(url, ""))
+        b.release()
+        waitFor(3_000, "поток закрыт") { !CameraHub.has(url, "") }
+        val before = sent.get()
+        waitFor(3_000, "камера отпущена") { val now = sent.get(); Thread.sleep(200); now == sent.get() }
+        assertEquals(1, connections.get())
+        assertTrue(before > 0)
+    }
 }

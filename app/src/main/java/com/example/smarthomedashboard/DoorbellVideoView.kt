@@ -65,8 +65,14 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         /** Ключ пароля камеры ([CameraPasswords]): номер плитки «Камера»; пусто — пароль домофона. */
         val secretKey: String = "",
         /** Снимок раз в столько мс (облегчённый режим — чаще: плитка вместо живого видео, [LightMode]). */
-        val snapshotEveryMs: Long = SNAPSHOT_EVERY_MS
-    )
+        val snapshotEveryMs: Long = SNAPSHOT_EVERY_MS,
+        /** Прямой снимок камеры по HTTP ([CameraSnapshot]) — когда у Home Assistant снимка нет. */
+        val snapshotUrl: String = ""
+    ) {
+        /** Камера только со снимком: ни потока, ни камеры Home Assistant. */
+        val onlySnapshot get() = rtsp.isBlank() && camera.isBlank() && snapshotUrl.isNotBlank()
+        val empty get() = rtsp.isBlank() && camera.isBlank() && snapshotUrl.isBlank()
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private val snapshot = ImageView(context).apply {
@@ -79,6 +85,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private var guest: ExoPlayer? = null
     /** Владелец одолженного плеера; null — плеер передан насовсем (освобождаем сами). */
     private var guestOwner: DoorbellVideoView? = null
+    /** Общий поток, который держал отдавший плеер вид ([handOffTo]): отпускается вместе с гостем. */
+    private var guestHold: CameraHub.Hold? = null
     private var guestAspect = DoorbellConfig.DEFAULT_ASPECT
     /** Кому одолжен свой плеер (вывод картинки сейчас там). */
     private var loanedTo: DoorbellVideoView? = null
@@ -232,7 +240,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             field = value
             failures = 0
             consecutiveFailures = 0
-            if (value) { dropGuest(); releasePlayer() }
+            if (value) { dropGuest(); releasePlayer(); releaseOwn() }
             update()
         }
 
@@ -283,7 +291,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             source = next
             failures = 0
             useHa = next.rtsp.isBlank()
+            ownTrial = false
             releasePlayer()
+            releaseOwn()
         }
         if (picturePath != picture) {
             picture = picturePath
@@ -307,22 +317,24 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         main.removeCallbacks(releaseLater)
         main.removeCallbacks(snapshotTick)
         val src = source
-        if (src == null || (src.rtsp.isBlank() && src.camera.isBlank())) {
-            releasePlayer(); status = Status.NO_SOURCE; return
+        if (src == null || src.empty) {
+            releasePlayer(); releaseOwn(); status = Status.NO_SOURCE; return
         }
         if (deviceOffline) {
             releasePlayer()
+            releaseOwn()
             status = Status.OFFLINE
             return
         }
         if (!visible) {
             // Короткая пауза: перелистывание страницы туда-обратно не рвёт соединение с домофоном. В пути на новый
             // экран (поворот) плеер не закрывается вовсе: не забрали — карточку закроет [DoorbellMove].
-            if (player != null && !moving) main.postDelayed(releaseLater, RELEASE_DELAY_MS)
+            if ((player != null || ownHold != null) && !moving) main.postDelayed(releaseLater, RELEASE_DELAY_MS)
             return
         }
-        if (src.snapshotOnly || !ENABLED) {
+        if (src.snapshotOnly || src.onlySnapshot || !ENABLED) {
             releasePlayer()
+            releaseOwn()
             status = if (bitmapMissing()) Status.CONNECTING else Status.SNAPSHOT
             if (SystemClock.elapsedRealtime() - pictureLoadedAt >= src.snapshotEveryMs) loadPicture()
             main.postDelayed(snapshotTick, src.snapshotEveryMs)
@@ -331,7 +343,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (player == null && !retryPending) start()
     }
 
-    private val releaseLater = Runnable { dropGuest(); releasePlayer(); if (status == Status.PLAYING) status = Status.IDLE }
+    private val releaseLater = Runnable { dropGuest(); releasePlayer(); releaseOwn(); if (status == Status.PLAYING) status = Status.IDLE }
     private val snapshotTick = Runnable { loadPicture(); update() }
     private var retryPending = false
     /**
@@ -667,7 +679,59 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         return true
     }
 
+    // ---- Показ своим клиентом (docs/cameras.md) ----
+
+    /** Общий поток, который держит само это видео. */
+    private var ownHold: CameraHub.Hold? = null
+    private var ownUrl = ""
+    private var ownReading = false
+    private var ownWaitSince = 0L
+    /** Встроенный плеер камеру не понял — следующая попытка своим клиентом. */
+    private var ownTrial = false
+
+    /** Встроенный плеер TLS не умеет; остальное — по прошлому опыту и неудачам. */
+    private fun wantsOwn(rtsp: String) = rtsp.startsWith("rtsps://", ignoreCase = true) || ownTrial || rtsp in ownPath
+
+    /** Держим общий поток сами и ждём его; false — он уже готов (или его держит запись), можно показывать. */
+    private fun startOwn(src: Source, rtsp: String): Boolean {
+        if (ownHold != null && ownUrl != rtsp) releaseOwn()
+        if (CameraHub.relayUrl(rtsp, src.user) != null) return false
+        skipRelay = false
+        if (ownHold == null) {
+            if (ownReading) return true
+            ownReading = true
+            val generation = attempt
+            CameraPasswords.read(context, src.secretKey) { password ->
+                ownReading = false
+                if (generation != attempt || !visible || player != null || source != src) return@read
+                ownHold = CameraHub.hold(CameraHub.Key(rtsp.trim(), src.user, password))
+                ownUrl = rtsp
+                ownWaitSince = SystemClock.elapsedRealtime()
+                Log.i(TAG, "Камеру показывает свой клиент — жду поток")
+                main.postDelayed(relayWait, RELAY_POLL_MS)
+            }
+            return true
+        }
+        if (SystemClock.elapsedRealtime() - ownWaitSince >= OWN_WAIT_MS) {
+            releaseOwn()
+            failed("камера не отдала поток своему клиенту")
+            return true
+        }
+        main.removeCallbacks(relayWait)
+        main.postDelayed(relayWait, RELAY_POLL_MS)
+        return true
+    }
+
+    private fun releaseOwn() {
+        if (ownHold != null) Log.i(TAG, "Поток своего клиента отпущен")
+        ownHold?.release()
+        ownHold = null
+        ownUrl = ""
+    }
+
     private fun startRtsp(src: Source) {
+        val wanted = rtspFor(src)
+        if (wantsOwn(wanted) && startOwn(src, wanted)) return
         if (awaitRelay(src)) return
         val generation = ++attempt
         CameraPasswords.read(context, src.secretKey) { password ->
@@ -858,6 +922,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 unreachable = false
                 skipRelay = false
                 relayWaitSince = 0
+                if (ownHold != null && viaRelay) ownPath += playingRtsp
                 status = Status.PLAYING
                 updateQuality()
                 firstFrameAt = SystemClock.elapsedRealtime()
@@ -933,6 +998,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         status = Status.ERROR
         consecutiveFailures++
         if (consecutiveFailures >= UNREACHABLE_AFTER) unreachable = true
+        // Прямой показ не выходит подряд, а общего потока нет — пробуем свой клиент; не вышло и им — снова напрямую.
+        val tried = rtspFor(src)
+        ownTrial = if (ownTrial) false else src.rtsp.isNotBlank() && consecutiveFailures >= OWN_AFTER && !CameraHub.has(tried, src.user)
+        if (!ownTrial) { ownPath.remove(tried); releaseOwn() }
         // Нарастающая пауза; адрес не отвечает — редкие проверки (раз в минуту), как у клиентов видеорегистраторов.
         val delay = if (unreachable) RETRY_UNREACHABLE_MS
             else (RETRY_BASE_MS shl (failures - 1).coerceIn(0, 4)).coerceAtMost(RETRY_MAX_MS)
@@ -1036,11 +1105,12 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
      */
     internal val canHostGuest get() = source?.let { !it.snapshotOnly && (it.rtsp.isNotBlank() || it.camera.isNotBlank()) } == true
 
-    internal fun acceptGuest(exo: ExoPlayer, owner: DoorbellVideoView?, aspect: Float): Boolean {
+    internal fun acceptGuest(exo: ExoPlayer, owner: DoorbellVideoView?, aspect: Float, hold: CameraHub.Hold? = null): Boolean {
         if (status == Status.PLAYING || !isAttachedToWindow || !canHostGuest) return false
         dropGuest()
         guest = exo
         guestOwner = owner
+        guestHold = hold
         guestAspect = aspect
         exo.setVideoTextureView(guestTexture)
         exo.volume = volume
@@ -1060,6 +1130,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         guestTexture.alpha = 0f
         exo.clearVideoTextureView(guestTexture)
         if (owner != null) owner.reclaim(exo) else exo.release()
+        guestHold?.release()
+        guestHold = null
         onStatus?.invoke(status)
         updateQuality()
     }
@@ -1131,8 +1203,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private fun handOffTo(target: DoorbellVideoView?): Boolean {
         val exo = player ?: return false
         if (target == null || status != Status.PLAYING || loanedTo != null) return false
-        if (!target.acceptGuest(exo, null, videoAspect)) return false
+        if (!target.acceptGuest(exo, null, videoAspect, ownHold)) return false
         player = null
+        ownHold = null
         connects = null
         stopPlayerTrace()
         attempt++
@@ -1180,32 +1253,43 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     }
 
     private fun loadPicture() {
-        val path = picture ?: return
-        val base = DoorbellHub.httpBase() ?: return
+        val path = picture
+        val base = DoorbellHub.httpBase()
+        if (path == null || base == null) { loadDirect(); return }
         pictureCall?.cancel()
         val call = DoorbellHub.http.newCall(Request.Builder().url(base + path).build())
         pictureCall = call
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {}
             override fun onResponse(call: Call, response: Response) {
-                val bitmap: Bitmap? = response.use { r ->
-                    if (!r.isSuccessful) null else r.body?.bytes()?.let { bytes ->
-                        // Компактной плитке не нужен полный кадр 2560×1920: уменьшаем при декодировании.
-                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                        var sample = 1
-                        while (bounds.outWidth / (sample * 2) >= 960) sample *= 2
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-                    }
-                }
-                main.post {
-                    if (pictureCall !== call || bitmap == null) return@post
-                    pictureLoadedAt = SystemClock.elapsedRealtime()
-                    snapshot.setImageBitmap(bitmap)
-                    if (status == Status.CONNECTING && source?.snapshotOnly == true) status = Status.SNAPSHOT
-                }
+                val bitmap: Bitmap? = response.use { r -> if (!r.isSuccessful) null else r.body?.bytes()?.let(CameraSnapshot::decode) }
+                main.post { if (pictureCall === call && bitmap != null) pictureReady(bitmap) }
             }
         })
+    }
+
+    private fun pictureReady(bitmap: Bitmap) {
+        pictureLoadedAt = SystemClock.elapsedRealtime()
+        snapshot.setImageBitmap(bitmap)
+        val src = source ?: return
+        if ((src.snapshotOnly || src.onlySnapshot) && status != Status.PLAYING) { status = Status.SNAPSHOT; consecutiveFailures = 0; unreachable = false }
+    }
+
+    private var directBusy = false
+
+    /** Снимок прямо с камеры (домашняя сеть, пароль камеры); один запрос за раз. */
+    private fun loadDirect() {
+        val src = source ?: return
+        if (src.snapshotUrl.isBlank() || directBusy) return
+        directBusy = true
+        CameraPasswords.read(context, src.secretKey) { password ->
+            CameraSnapshot.load(src.snapshotUrl, src.user, password.orEmpty()) { bitmap ->
+                directBusy = false
+                if (source != src) return@load
+                if (bitmap != null) pictureReady(bitmap)
+                else if (src.onlySnapshot && ++consecutiveFailures >= UNREACHABLE_AFTER) { unreachable = true; status = Status.ERROR }
+            }
+        }
     }
 
     override fun motionChanged() = update()
@@ -1239,6 +1323,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         pictureCall = null
         dropGuest()
         releasePlayer()
+        releaseOwn()
         super.onDetachedFromWindow()
     }
 
@@ -1264,6 +1349,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         // Сворачивание: поток раскрытия досматривается в плитке, пока не пойдёт её субпоток.
         if (!handOffTo(partner)) releasePlayer()
         partner = null
+        releaseOwn()
     }
 
     internal val hasPlayer get() = player != null
@@ -1319,6 +1405,10 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
          * только программным декодером. До перезапуска приложения: после смены разрешения камеры панель перезапускают.
          */
         internal val undecodable = mutableSetOf<String>()
+        /** Камеры, которых встроенный плеер не понял, а свой клиент показал (до перезапуска приложения). */
+        internal val ownPath = mutableSetOf<String>()
+        private const val OWN_AFTER = 2
+        private const val OWN_WAIT_MS = 10_000L
         internal val hardwareRejected = mutableSetOf<String>()
 
         internal fun isSoftwareDecoder(name: String) = name.startsWith("c2.android.") || name.startsWith("OMX.google.")

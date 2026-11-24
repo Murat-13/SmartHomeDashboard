@@ -51,6 +51,40 @@ internal object CameraHub {
     }
 
     /**
+     * Живое видео держит общий поток само (docs/cameras.md, «Показ своим клиентом»): камеру, которую встроенный плеер не
+     * понимает (TLS, SHA-256, свои странности), читает наш RTSP-клиент, а плеер смотрит через планшет. Записи для этого не нужны.
+     */
+    class Hold internal constructor(internal val stream: SharedStream) {
+        private val released = java.util.concurrent.atomic.AtomicBoolean()
+        /** Отпустить; последний — поток закрывается. С любого потока: прощание с камерой идёт в фоне. */
+        fun release() {
+            if (released.compareAndSet(false, true)) Thread({ unhold(stream) }, "camera-unhold").apply { isDaemon = true; start() }
+        }
+    }
+
+    @Synchronized
+    fun hold(key: Key, sessionFactory: (String, String, String?) -> RtspSession = { u, l, p -> RtspSession(u, l, p) },
+             encoderFactory: () -> AacEncoder = { AacEncoder() }): Hold {
+        val stream = streams.getOrPut(key) { SharedStream(key, sessionFactory, encoderFactory) }
+        stream.hold()
+        return Hold(stream)
+    }
+
+    private fun unhold(stream: SharedStream) {
+        val last = synchronized(this) {
+            val empty = stream.unhold()
+            if (empty) streams.remove(stream.key, stream)
+            empty
+        }
+        if (last) stream.stop(STOP_MS)
+    }
+
+    /** Поток [url] уже открыт или открывается (записью или живым видео). */
+    fun has(url: String, user: String) = streams.values.any { it.key.url == url.trim() && it.key.user == user }
+
+    private const val STOP_MS = 2_000L
+
+    /**
      * Адрес ретранслятора для живого видео: поток [url] с логином [user] уже идёт (его держит запись) — плеер
      * подключается к планшету по одноразовому адресу. null — потока нет, смотреть напрямую.
      */
@@ -185,20 +219,27 @@ internal class SharedStream(
             }
         }
         recorder.streamStatus(if (live) null else CameraRecorder.State.CONNECTING, "")
-        if (!running) {
-            running = true
-            thread = Thread({ loop() }, "cam-${RecLayout.cameraKey(recorder.camera)}").apply {
-                isDaemon = true; priority = Thread.NORM_PRIORITY - 1; start()
-            }
-        }
+        ensureRunning("cam-${RecLayout.cameraKey(recorder.camera)}")
     }
 
-    /** true — подключённых записей больше нет. */
+    private fun ensureRunning(name: String) {
+        if (running) return
+        running = true
+        thread = Thread({ loop() }, name).apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1; start() }
+    }
+
+    /** Сколько живых видео держат поток сами ([CameraHub.hold]); под замком [CameraHub]. */
+    private var holds = 0
+    internal fun hold() { holds++; ensureRunning("cam-view") }
+    /** true — поток больше никому не нужен. */
+    internal fun unhold(): Boolean { holds--; return holds <= 0 && consumers.isEmpty() }
+
+    /** true — поток больше никому не нужен. */
     fun remove(recorder: CameraRecorder): Boolean {
         consumers.firstOrNull { it.recorder === recorder }?.let { a ->
             synchronized(a) { a.gone = true; end(a); consumers.remove(a) }
         }
-        return consumers.isEmpty()
+        return consumers.isEmpty() && holds <= 0
     }
 
     fun stop(waitMs: Long) {

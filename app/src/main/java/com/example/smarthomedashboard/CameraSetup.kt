@@ -23,9 +23,9 @@ internal object CameraSetup {
         val onvif: Exception = try {
             val info = probe(found.host, found.onvifPort, login, password)
             val main = info.main?.uri.orEmpty()
-            if (main.isBlank()) throw Onvif.OnvifException("Камера не дала ссылки на видео")
+            if (main.isBlank() && info.snapshot.isBlank()) throw Onvif.OnvifException("Камера не дала ссылки на видео")
             return Ready(DoorbellConfig(host = found.host, onvifPort = info.port, model = info.title.take(MAX_MODEL), rtspUser = login,
-                rtspMain = main, rtspSub = info.sub?.uri.orEmpty()), found.title, info)
+                rtspMain = main, rtspSub = info.sub?.uri.orEmpty(), snapshotUrl = info.snapshot), found.title, info)
         } catch (e: Onvif.OnvifException) {
             if (e.auth) throw Failed("Камера не приняла логин или пароль", auth = true)
             e

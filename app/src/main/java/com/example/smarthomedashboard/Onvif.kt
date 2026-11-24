@@ -60,7 +60,9 @@ internal object Onvif {
         /** Адрес службы событий (часть 2: подписка PullPoint). */
         val eventsAddress: String?,
         /** Часы камеры минус часы планшета, мс; null — камера не сообщила время. */
-        val clockOffsetMs: Long? = null
+        val clockOffsetMs: Long? = null,
+        /** Прямой снимок камеры (`GetSnapshotUri`); пусто — камера его не даёт. */
+        val snapshot: String = ""
     ) {
         val title get() = listOf(manufacturer, model).filter { it.isNotBlank() }.joinToString(" ").ifBlank { "Камера ONVIF" }
     }
@@ -146,17 +148,32 @@ internal object Onvif {
                 "<Transport xmlns=\"$SCHEMA_NS\"><Protocol>RTSP</Protocol></Transport></StreamSetup>" +
                 "<ProfileToken>${escape(token)}</ProfileToken></GetStreamUri>"
             val uri = runCatching { call(media, user, password, offset, body).find("Uri")?.text }.getOrNull()
-                ?.takeIf { it.startsWith("rtsp://") } ?: return@mapNotNull null
-            Stream(withoutCredentials(uri), size.first, size.second, encoding, token, extra.first, extra.second, extra.third, config = configToken)
+                ?.takeIf { it.startsWith("rtsp://", true) || it.startsWith("rtsps://", true) } ?: return@mapNotNull null
+            Stream(reachable(withoutCredentials(uri), host), size.first, size.second, encoding, token, extra.first, extra.second, extra.third, config = configToken)
         }.distinctBy { it.uri }
-        if (streams.isEmpty()) throw OnvifException("Камера не дала ссылки RTSP — введите их вручную")
+        // Прямой снимок первого профиля: камера без потока или без Home Assistant.
+        val snapshot = profiles.firstOrNull()?.let { (token, _, _) ->
+            runCatching { call(media, user, password, offset, "<GetSnapshotUri xmlns=\"$MEDIA_NS\"><ProfileToken>${escape(token)}</ProfileToken></GetSnapshotUri>")
+                .find("Uri")?.text }.getOrNull()
+        }?.let { CameraSnapshot.usable(reachable(it, host)) }.orEmpty()
+        if (streams.isEmpty() && snapshot.isEmpty()) throw OnvifException("Камера не дала ссылки RTSP — введите их вручную")
+        if (streams.isEmpty()) return Info(info.find("Manufacturer")?.text.orEmpty(), info.find("Model")?.text.orEmpty(),
+            info.find("FirmwareVersion")?.text.orEmpty(), port, null, null, emptyList(), events, clock, snapshot)
         val (pickedMain, pickedSub) = pick(streams)
         // Возможности кодировщика — только для двух потоков плитки; камера не ответила — без них (советы осторожнее).
         fun withOptions(s: Stream?) = s?.copy(options = runCatching { options(media, user, password, offset, s.profile) }.getOrNull())
         val main = withOptions(pickedMain)
         val sub = if (pickedSub == pickedMain) main else withOptions(pickedSub)
         return Info(info.find("Manufacturer")?.text.orEmpty(), info.find("Model")?.text.orEmpty(),
-            info.find("FirmwareVersion")?.text.orEmpty(), port, main, sub, streams, events, clock)
+            info.find("FirmwareVersion")?.text.orEmpty(), port, main, sub, streams, events, clock, snapshot)
+    }
+
+    /** Часть камер пишет в ссылке на поток адрес, по которому их не достать (0.0.0.0, 127.0.0.1): узел — тот, куда обратились. */
+    internal fun reachable(uri: String, host: String): String {
+        val there = runCatching { java.net.URI(uri).host }.getOrNull().orEmpty()
+        if (there.isNotEmpty() && there != "0.0.0.0" && there != "localhost" && !there.startsWith("127.")) return uri
+        val port = runCatching { java.net.URI(uri).port }.getOrDefault(-1)
+        return SdpParser.sameHost(uri, uri.substringBefore("://") + "://$host" + (if (port > 0) ":$port" else ""))
     }
 
     // ---- События (часть 2, docs/camera-tz.md): подписка PullPoint ----

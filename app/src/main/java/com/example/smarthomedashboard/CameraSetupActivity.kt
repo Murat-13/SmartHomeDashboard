@@ -155,7 +155,7 @@ class CameraSetupActivity : PinProtectedActivity(), PanelIdle.Busy {
         val view = DoorbellVideoView(this).apply { muted = true }
         video = view
         frame.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        view.bind(DoorbellVideoView.Source(next.config.rtspSub.ifBlank { next.config.rtspMain }, next.config.rtspUser, "", false, secretKey = tileId), null)
+        view.bind(DoorbellVideoView.Source(next.config.rtspSub.ifBlank { next.config.rtspMain }, next.config.rtspUser, "", false, secretKey = tileId, snapshotUrl = next.config.snapshotUrl), null)
         result.addView(frame, LinearLayout.LayoutParams(dp(PICTURE_W), dp((PICTURE_W / DoorbellConfig.DEFAULT_ASPECT).toInt())).apply { topMargin = dp(8) })
         if (note.isNotEmpty()) result.addView(ModernUi.secondary(this, note).apply { tag = "camera_note" })
         result.addView(gap())
@@ -192,7 +192,7 @@ class CameraSetupActivity : PinProtectedActivity(), PanelIdle.Busy {
         if (!requireAdmin()) return
         val title = titleInput.text.toString().trim().ifEmpty { if (doorbell) DoorbellConfig.DEFAULT_TITLE else DoorbellConfig.CAMERA_TITLE }
         // У домофона — прежний набор настроек (без адреса и порта ONVIF) и прежнее место пароля.
-        val config = if (doorbell) next.config.copy(host = "", onvifPort = 0, model = "") else next.config.copy(talk = false)
+        val config = if (doorbell) next.config.copy(host = "", onvifPort = 0, model = "", snapshotUrl = "") else next.config.copy(talk = false)
         val done = { ok: Boolean ->
             if (!isFinishing && !isDestroyed) {
                 if (!ok) setStatus(ModernUi.Status.ERROR, "Не удалось сохранить пароль камеры")

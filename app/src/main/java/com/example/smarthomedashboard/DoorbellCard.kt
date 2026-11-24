@@ -635,10 +635,16 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             rtsp = if (expanded) mainRtsp.ifBlank { subRtsp } else subRtsp.ifBlank { mainRtsp },
             user = config.rtspUser, camera = config.camera,
             snapshotOnly = !expanded && (config.mode == DoorbellConfig.VideoMode.SNAPSHOT || limited),
-            snapshotEveryMs = if (limited) LightMode.SNAPSHOT_MS else DoorbellVideoView.SNAPSHOT_EVERY_MS,
+            // Камера только со снимком: раскрытая — раз в секунду, плитка — раз в 5 с.
+            snapshotEveryMs = when {
+                mainRtsp.isBlank() && subRtsp.isBlank() && config.camera.isBlank() -> if (expanded) CameraSnapshot.EXPANDED_MS else CameraSnapshot.TILE_MS
+                limited -> LightMode.SNAPSHOT_MS
+                else -> DoorbellVideoView.SNAPSHOT_EVERY_MS
+            },
             // Основной поток не по силам декодеру планшета — раскрытие показывает субпоток.
             fallbackRtsp = if (expanded) subRtsp else "",
-            secretKey = if (camera) tileId.orEmpty() else ""
+            secretKey = if (camera) tileId.orEmpty() else "",
+            snapshotUrl = config.snapshotUrl
         ), snapshot.picture)
         // HA точно знает, что домофона нет: видео не подключается, пока он не вернётся (без лишних попыток).
         video.deviceOffline = snapshot.haStatus == null && (offline || snapshot.online == false)

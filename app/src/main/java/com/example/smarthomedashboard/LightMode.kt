@@ -178,7 +178,7 @@ internal object LightMode {
             .filter { DoorbellConfig.from(it.config).mode != DoorbellConfig.VideoMode.SNAPSHOT }
             .sortedWith(compareBy({ it.y }, { it.x }))
         val index = page.indexOfFirst { it.id == tileId }
-        return index < MAX_LIVE || DoorbellConfig.from(me.config).camera.isBlank()
+        return index < MAX_LIVE || DoorbellConfig.from(me.config).let { it.camera.isBlank() && it.snapshotUrl.isBlank() }
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

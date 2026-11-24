@@ -181,6 +181,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             update(config.copy(rtspMain = it)) })
         side.addView(text("rtsp_sub", "Прямой поток для плитки (субпоток)", config.rtspSub, "rtsp://…/h264Preview_01_sub") {
             update(config.copy(rtspSub = it)) })
+        if (camera) side.addView(text("snapshot_url", "Прямой снимок — если потока RTSP нет (необязательно)", config.snapshotUrl, "http://192.168.1.50/snapshot.jpg") {
+            update(config.copy(snapshotUrl = it.trim())) })
         side.addView(text("rtsp_user", "Логин камеры", config.rtspUser, "admin") { update(config.copy(rtspUser = it)) })
         side.addView(kit.label("Пароль камеры", 15f))
         side.addView(kit.input("", "Новый пароль (хранится зашифрованно)").apply {
@@ -545,10 +547,10 @@ class DoorbellEditorActivity : PinProtectedActivity() {
     private fun applyFound(ready: CameraSetup.Ready) {
         val c = ready.config
         // У домофона — прежний набор настроек: только ссылки и логин.
-        update(if (camera) config.copy(host = c.host, onvifPort = c.onvifPort, model = c.model, rtspMain = c.rtspMain, rtspSub = c.rtspSub, rtspUser = c.rtspUser)
+        update(if (camera) config.copy(host = c.host, onvifPort = c.onvifPort, model = c.model, rtspMain = c.rtspMain, rtspSub = c.rtspSub, rtspUser = c.rtspUser, snapshotUrl = c.snapshotUrl)
             else config.copy(rtspMain = c.rtspMain, rtspSub = c.rtspSub, rtspUser = c.rtspUser))
         for ((tag, value) in listOf("door_rtsp_main" to c.rtspMain, "door_rtsp_sub" to c.rtspSub, "door_rtsp_user" to c.rtspUser) +
-            if (camera) listOf("door_onvif_port" to c.onvifPort.toString()) else emptyList())
+            if (camera) listOf("door_onvif_port" to c.onvifPort.toString(), "door_snapshot_url" to c.snapshotUrl) else emptyList())
             window.decorView.findViewWithTag<android.widget.EditText>(tag)?.setText(value)
     }
 
@@ -557,7 +559,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         val main = info.main?.uri.orEmpty()
         val sub = info.sub?.uri.orEmpty()
         update(config.copy(rtspMain = main, rtspSub = sub, onvifPort = info.port, model = info.title,
-            rtspUser = config.rtspUser.ifBlank { "admin" }))
+            rtspUser = config.rtspUser.ifBlank { "admin" }, snapshotUrl = if (camera) info.snapshot else config.snapshotUrl))
+        (window.decorView.findViewWithTag<android.widget.EditText>("door_snapshot_url"))?.setText(info.snapshot)
         (window.decorView.findViewWithTag<android.widget.EditText>("door_rtsp_main"))?.setText(main)
         (window.decorView.findViewWithTag<android.widget.EditText>("door_rtsp_sub"))?.setText(sub)
         (window.decorView.findViewWithTag<android.widget.EditText>("door_onvif_port"))?.setText(info.port.toString())
@@ -1280,6 +1283,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             config = json.toString()))
         device.setEnabled(original.id, recordHere)
         device.limitGb = limitGb; device.reserveGb = reserveGb; device.useSdCard = useSd; device.archivePin = archivePin
+        // Видео поверх TLS: камеру или её сертификат могли сменить — отпечаток запомнится заново.
+        listOf(config.rtspMain, config.rtspSub).forEach(CameraTls::forget)
         val secret = password
         val saved = config
         // Прямые события: порт и флаг — после пароля (включение входит в камеру с ним). Выключение убирает вебхук.
