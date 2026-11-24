@@ -12,17 +12,12 @@ import sys
 
 import aiohttp
 
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import house  # noqa: E402
+
 ROOT = pathlib.Path(sys.argv[1])
 BASE = sys.argv[2].rstrip("/")
 CLIENT = BASE + "/"
-ROOMS = {  # комната → какие сущности demo в неё положить (по началу имени)
-    "Гостиная": ["light.living_room", "light.ceiling", "climate.heatpump", "media_player.living_room", "sensor.outside_temperature"],
-    "Кухня": ["light.kitchen", "switch.decorative_lights", "sensor.carbon_monoxide", "binary_sensor.basement_floor_wet"],
-    "Спальня": ["light.bed_light", "climate.ecobee", "cover.living_room_window", "sensor.outside_humidity"],
-    "Двор": ["lock.", "cover.garage_door", "camera.", "binary_sensor.movement_backyard"],
-}
-
-
 class Ws:
     def __init__(self, ws):
         self.ws, self.n = ws, 0
@@ -65,18 +60,24 @@ async def main():
         user = (await ws.call("config/auth/create", name="Гость стенда", group_ids=["system-users"], local_only=False))["result"]["user"]
         await ws.call("config/auth_provider/homeassistant/create", user_id=user["id"], username="guest", password=users["guest"])
         # При первом запуске Home Assistant сам создаёт «Гостиная», «Кухня», «Спальня».
+        floors = {}
+        for name, level in (("Первый этаж", 0), ("Второй этаж", 1)):
+            floors[level] = (await ws.call("config/floor_registry/create", name=name, level=level))["result"]["floor_id"]
         areas = {a["name"]: a["area_id"] for a in (await ws.call("config/area_registry/list"))["result"]}
-        for room in ROOMS:
-            if room not in areas:
-                areas[room] = (await ws.call("config/area_registry/create", name=room))["result"]["area_id"]
-        entities = [e["entity_id"] for e in (await ws.call("config/entity_registry/list"))["result"]]
-        placed = 0
-        for room, starts in ROOMS.items():
-            for e in entities:
-                if any(e.startswith(x) for x in starts):
-                    ok = await ws.call("config/entity_registry/update", entity_id=e, area_id=areas[room])
-                    placed += ok.get("success", False)
-        print("сущностей в реестре:", len(entities), "· разложено по комнатам:", placed)
+        for room, r in house.ROOMS.items():
+            extra = {"floor_id": floors[r["floor"]]} if r["floor"] is not None else {}
+            if room in areas:
+                await ws.call("config/area_registry/update", area_id=areas[room], **extra)
+            else:
+                areas[room] = (await ws.call("config/area_registry/create", name=room, **extra))["result"]["area_id"]
+        known = {e["entity_id"] for e in (await ws.call("config/entity_registry/list"))["result"]}
+        placed, missing = 0, []
+        for room, entity, _ in house.ids():
+            if entity not in known:
+                missing.append(entity)
+                continue
+            placed += (await ws.call("config/entity_registry/update", entity_id=entity, area_id=areas[room])).get("success", False)
+        print("сущностей дома:", len(house.ids()), "· разложено по комнатам:", placed, "· нет в реестре:", missing)
 
 
 asyncio.run(main())

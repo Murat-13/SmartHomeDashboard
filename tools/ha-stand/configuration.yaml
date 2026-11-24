@@ -5,6 +5,8 @@ homeassistant:
   longitude: 0
   unit_system: metric
   time_zone: UTC
+  packages:
+    house: !include house.yaml
   # Внутренний адрес задаётся в prepare.py: его объявляет mDNS (internal_url).
 http:
   server_port: 8124
@@ -17,4 +19,3 @@ websocket_api:
 api:
 history:
 logbook:
-demo:
