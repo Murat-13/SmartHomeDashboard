@@ -127,5 +127,7 @@ class SmartHomeApp : Application() {
         TabletProfile.load(this)
         // Облегчённый режим (решение 4) и нагрев.
         LightMode.load(this)
+        // Заставка Android поверх панели (docs/setup-tz.md, часть 4).
+        PanelDream.register(this)
     }
 }

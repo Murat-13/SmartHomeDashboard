@@ -14,6 +14,10 @@
          на Android 12+ — без окна подтверждения, если система разрешит. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <!-- Запасной способ вернуть панель после включения планшета (docs/setup-tz.md, часть 4): выключен, пока человек сам не
+         попросил; разрешение «поверх других окон» даёт только он. Поверх других окон ничего не показывается. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Запись с камер на планшет (docs/recording.md): сервис переднего плана specialUse, решение владельца 18.11.2026. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -156,6 +160,16 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/archive_share_paths" />
         </provider>
+
+        <!-- Включение планшета: открыть панель запасным способом; включается из «Проверки планшета». -->
+        <receiver
+            android:name=".BootReturn$BootReceiver"
+            android:enabled="false"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Результат сессии установки обновления (PendingIntent от PackageInstaller). -->
         <receiver

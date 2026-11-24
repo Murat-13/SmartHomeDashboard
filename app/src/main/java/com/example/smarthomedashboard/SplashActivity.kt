@@ -12,6 +12,7 @@ class SplashActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BootReturn.launched(intent)
         // Кнопка «Домой» в режиме главного экрана: панель уже работает, заставка не нужна.
         if (HomeScreenMode.isHomeLaunch(intent) && MainActivity.isAlive) {
             openNextScreen()

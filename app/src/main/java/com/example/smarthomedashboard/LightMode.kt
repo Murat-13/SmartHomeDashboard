@@ -59,6 +59,8 @@ internal object LightMode {
     private var expansions = 0
     /** Почему включился бы сам по памяти (считается при загрузке); null — памяти хватает. */
     @Volatile private var memoryReason: String? = null
+    /** Нагрев аккумулятора ([TabletWatch]): «тепло» — режим, если он не выключен руками; «слишком горячо» — в любом случае. */
+    @Volatile private var batteryHeat = TabletWatch.Heat.OK
 
     fun load(context: Context) {
         choice = Choice.entries.firstOrNull { it.key == prefs(context).getString(KEY, null) } ?: Choice.AUTO
@@ -79,8 +81,10 @@ internal object LightMode {
         val auto = autoReason()
         val (on, why) = when {
             hot -> true to "планшет перегрет"
+            batteryHeat == TabletWatch.Heat.HOT -> true to "аккумулятор слишком горячий"
             choice == Choice.ON -> true to "по выбору"
             choice == Choice.OFF -> false to null
+            batteryHeat == TabletWatch.Heat.WARM -> true to "аккумулятор тёплый"
             else -> (auto != null) to auto
         }
         if (on != active) Log.i(TAG, if (on) "Облегчённый режим включён: $why" else "Облегчённый режим выключен")
@@ -136,6 +140,13 @@ internal object LightMode {
         }
     }
 
+    /** Аккумулятор нагрелся или остыл. HD при этом не меняется — только при сильном нагреве Android ([hot]). */
+    fun battery(level: TabletWatch.Heat) {
+        if (level == batteryHeat) return
+        batteryHeat = level
+        refresh()
+    }
+
     /** Нагрев (Android 10+): «сильный» и выше — режим на время нагрева. */
     private fun watchHeat(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
@@ -173,7 +184,7 @@ internal object LightMode {
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     internal fun resetForTests() {
-        choice = Choice.AUTO; active = false; reason = null; hot = false; memoryReason = null
+        choice = Choice.AUTO; active = false; reason = null; hot = false; memoryReason = null; batteryHeat = TabletWatch.Heat.OK
         synchronized(this) { frames = 0; late = 0; expansions = 0 }
     }
 
