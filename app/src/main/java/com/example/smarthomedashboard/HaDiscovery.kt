@@ -109,7 +109,7 @@ internal interface HaBrowser {
 }
 
 /** mDNS Android (`NsdManager`). Разбор служб — по одной: старые Android отвечают «уже занят» на вторую. */
-internal class NsdBrowser(context: Context) : HaBrowser {
+internal class NsdBrowser(context: Context, private val type: String = HOME_ASSISTANT) : HaBrowser {
     private val app = context.applicationContext
     private val nsd = app.getSystemService(NsdManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
@@ -131,7 +131,7 @@ internal class NsdBrowser(context: Context) : HaBrowser {
             } catch (_: RuntimeException) { null }
             val listener = object : NsdManager.DiscoveryListener {
                 override fun onStartDiscoveryFailed(type: String, code: Int) {
-                    Log.w(TAG, "Поиск Home Assistant: Android отказал (код $code)")
+                    Log.w(TAG, "Поиск в сети: Android отказал (код $code)")
                     handler.post { if (discovery === this) discovery = null }
                 }
                 override fun onStopDiscoveryFailed(type: String, code: Int) {}
@@ -141,7 +141,7 @@ internal class NsdBrowser(context: Context) : HaBrowser {
                 override fun onServiceLost(info: NsdServiceInfo) {}
             }
             try {
-                nsd?.discoverServices(TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+                nsd?.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
                 discovery = listener
             } catch (_: RuntimeException) { release() }
         }
@@ -191,7 +191,7 @@ internal class NsdBrowser(context: Context) : HaBrowser {
     }
 
     private companion object {
-        const val TYPE = "_home-assistant._tcp"
+        const val HOME_ASSISTANT = "_home-assistant._tcp"
         const val TAG = "HaDiscovery"
     }
 }
