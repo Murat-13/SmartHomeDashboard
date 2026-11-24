@@ -442,11 +442,15 @@ internal object DeviceFacts {
                 else !DoorbellVideoView.isSoftwareDecoder(info.name)
         }.mapNotNull { info -> try { info.getCapabilitiesForType(codec.mime).videoCapabilities } catch (_: RuntimeException) { null } }
         val caps = VideoDepacketizer.Codec.entries.associateWith { hardware(it) }
-        val max = caps.mapNotNull { (codec, list) ->
-            list.maxByOrNull { it.supportedWidths.upper.toLong() * it.supportedHeights.upper }?.let { codec to (it.supportedWidths.upper to it.supportedHeights.upper) }
-        }.toMap()
-        return DecoderFacts(max) { codec, w, h -> caps[codec].orEmpty().any { it.isSizeSupported(w, h) || it.isSizeSupported(h, w) } }
+        val supports = { codec: VideoDepacketizer.Codec, w: Int, h: Int -> caps[codec].orEmpty().any { it.isSizeSupported(w, h) || it.isSizeSupported(h, w) } }
+        // Предел — наибольший обычный размер, который декодер берёт целиком: ширина и высота у него ограничены порознь
+        // (Samsung SM-X216B: до 1920 и до 1920), но вместе — только 1920×1088.
+        val max = caps.keys.mapNotNull { codec -> STANDARD_SIZES.firstOrNull { (w, h) -> supports(codec, w, h) }?.let { codec to it } }.toMap()
+        return DecoderFacts(max, supports)
     }
 
     val tablet: String get() = "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}"
+
+    /** Обычные размеры видео, от большего к меньшему: по ним пишется предел аппаратного декодера. */
+    private val STANDARD_SIZES = listOf(3840 to 2160, 2560 to 1920, 2560 to 1440, 2304 to 1296, 1920 to 1080, 1280 to 720, 640 to 480)
 }
