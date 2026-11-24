@@ -28,6 +28,9 @@ internal object CameraHub {
 
     private val streams = ConcurrentHashMap<Key, SharedStream>()
 
+    /** Папка проверочных выключателей `video_debug` ([LiveTuning]); null — неизвестна (тесты, служба не запускалась). */
+    @Volatile var debugDir: java.io.File? = null
+
     /** Подключить запись к общему потоку камеры (поток создаётся при первой). Поток управления записью. */
     @Synchronized
     fun attach(key: Key, recorder: CameraRecorder,
@@ -220,6 +223,7 @@ internal class SharedStream(
             val started = System.nanoTime()
             broadcast(CameraRecorder.State.CONNECTING)
             var encoder: AacEncoder? = null
+            var trace: ArrivalTrace? = null
             try {
                 val s = sessionFactory(key.url, key.user, key.password)
                 session = s
@@ -259,13 +263,18 @@ internal class SharedStream(
                 val enc = encoder
                 val probe = ArrivalDelay(video.track.clockRate.takeIf { it > 0 } ?: 90_000)
                 val audioProbe = audioSetup?.track?.clockRate?.takeIf { it > 0 }?.let { ArrivalDelay(it) }
+                trace = ArrivalTrace.open(CameraHub.debugDir, key.url)
+                val frames = trace
                 s.read(object : RtspSession.Sink {
                     /** За минуту: байты и кадры видео и самое долгое время, на которое получатели кадра заняли этот поток. */
                     private var videoBytes = 0L
                     private var videoFrames = 0
                     private var busyMaxNs = 0L
+                    /** Метка последнего ключевого кадра — для [ArrivalTrace]. */
+                    private var keyTs = -1L
 
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
+                        val readNs = if (frames != null && setup === video) System.nanoTime() else 0L
                         if (setup === video) {
                             // Под одним замком с подключением плеера: он получает сохранённое и дальше живое без пропуска.
                             synchronized(recent) {
@@ -275,6 +284,7 @@ internal class SharedStream(
                         } else relay(setup.rtpChannel, rtcp = false, packet, length)
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
+                            frames?.packet(rtp.timestamp, rtp.length, readNs)
                             videoBytes += rtp.length
                             if (rtp.marker) { videoFrames++; lastFrameAtMs = android.os.SystemClock.elapsedRealtime() }
                             if (rtp.marker) probe.frame(rtp.timestamp)?.let {
@@ -301,10 +311,15 @@ internal class SharedStream(
                             }
                             val started = System.nanoTime()
                             for (frame in depacketizer.push(rtp)) {
+                                if (frame.key) keyTs = frame.timestamp
                                 recent.frame(frame.key)
                                 each { _, sink -> sink.video(frame, depacketizer) }
                             }
                             busyMaxNs = maxOf(busyMaxNs, System.nanoTime() - started)
+                            if (frames != null) {
+                                frames.busy(System.nanoTime() - readNs)
+                                if (rtp.marker) frames.frame(rtp.timestamp, readNs, keyTs == rtp.timestamp)
+                            }
                         } else if (setup === audioSetup && aac != null) {
                             audioProbe?.frame(rtp.timestamp)?.let {
                                 audioArrivalMs = it
@@ -320,7 +335,10 @@ internal class SharedStream(
                     }
 
                     override fun onRtcp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
-                        if (setup === video) probe.senderReport(packet, length)
+                        if (setup === video) {
+                            probe.senderReport(packet, length)
+                            frames?.senderReport(System.nanoTime(), probe.srRtp, probe.srWallMs)
+                        }
                         else if (setup === audioSetup) audioProbe?.senderReport(packet, length)
                         relay(setup.rtpChannel, rtcp = true, packet, length)
                     }
@@ -345,6 +363,7 @@ internal class SharedStream(
                 session?.close()
                 session = null
                 encoder?.release()
+                trace?.close()
             }
             if (!running) break
             // Сессия держалась дольше минуты — начинаем отсчёт заново.
@@ -686,8 +705,11 @@ internal class RecentVideo(capacity: Int = CAPACITY) {
  * сверены (NTP); итог — медиана за минуту, в журнал (для разбора задержки живого видео).
  */
 internal class ArrivalDelay(private val clockRate: Int, private val now: () -> Long = System::currentTimeMillis) {
-    private var srWallMs = 0L
-    private var srRtp = 0L
+    /** Последний отчёт отправителя: часы камеры (мс) и метка RTP того же момента. */
+    var srWallMs = 0L
+        private set
+    var srRtp = 0L
+        private set
     private val samples = ArrayList<Long>()
     private var since = 0L
 

@@ -412,6 +412,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     main.postDelayed(this, LiveCatchUp.CHECK_MS)
                     return
                 }
+                trough?.let { ctl ->
+                    val now = exo.playbackParameters.speed
+                    val next = ctl.speed(SystemClock.elapsedRealtime(), now)
+                    if (next != now) exo.setPlaybackSpeed(next)
+                    main.postDelayed(this, LiveCatchUp.CHECK_MS)
+                    return
+                }
                 val current = exo.playbackParameters.speed
                 // Программный декодер большого кадра 1,5× не тянет, но опоздавшие кадры он показывает сразу
                 // ([LiveTuning]): часы плеера уходят вперёд, декодер догоняет в полную силу. В прежнем режиме
@@ -491,6 +498,43 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     /** Что делали декодер, камера и главный поток во время остановки (только журнал, пункт F аудита 23.11). */
     private val stallProbe = StallProbe()
     private var lastBuffered = 0L
+    /** Запас плеера 20 раз в секунду — только по выключателю `video_debug/arrival_trace` ([PlayerTrace]). */
+    private var playerTrace: PlayerTrace? = null
+    private val traceTick = object : Runnable {
+        override fun run() {
+            val trace = playerTrace ?: return
+            val exo = player
+            val counters = exo?.videoDecoderCounters?.also { it.ensureUpdated() }
+            val now = SystemClock.elapsedRealtime()
+            val control = trough?.let { "${it.targetMs},${it.low(now, TroughControl.SHORT_MS) ?: -1},${it.low(now, TroughControl.LONG_MS) ?: -1}," +
+                "${if (firstFrameRendered) 1 else 0},${if (burstUntil != 0L) 1 else 0},${if (loanedTo != null) 1 else 0}" } ?: ""
+            if (exo != null) trace.sample(System.nanoTime(), exo.totalBufferedDuration, exo.playbackParameters.speed, exo.playbackState,
+                counters?.renderedOutputBufferCount ?: -1, counters?.droppedBufferCount ?: -1, control)
+            main.postDelayed(this, PlayerTrace.PERIOD_MS)
+        }
+    }
+
+    /** Запас «по дну» ([TroughControl]); null — прежнее правило ([LiveCatchUp]). Проверочный выключатель `video_debug/trough`. */
+    private var trough: TroughControl? = null
+    private val troughTick = object : Runnable {
+        override fun run() {
+            val ctl = trough ?: return
+            // Плеер на мгновение у раскрытой карточки (смена потока) — замер пропускается, но не прекращается.
+            val exo = player
+            // Пока плеер не показывает или идёт рывок к живому — не замер: дно было бы ложным.
+            if (exo != null && firstFrameRendered && burstUntil == 0L && exo.playbackState == Player.STATE_READY) {
+                ctl.software = decoderInUse?.let(::isSoftwareDecoder) == true
+                ctl.add(SystemClock.elapsedRealtime(), exo.totalBufferedDuration)
+            }
+            main.postDelayed(this, TroughControl.SAMPLE_MS)
+        }
+    }
+
+    private fun stopPlayerTrace() {
+        main.removeCallbacks(traceTick)
+        playerTrace?.close()
+        playerTrace = null
+    }
 
     /** До какого запаса идёт рывок: цель догоняющего режима этого плеера и ещё [LiveCatchUp.BURST_MARGIN_MS]. */
     private fun burstTo() = LiveCatchUp.TARGET_MS + LiveCatchUp.shiftFor(catchUpFloor) + LiveCatchUp.BURST_MARGIN_MS
@@ -748,6 +792,12 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             .build()
         player = exo
         this.connects = connects
+        stopPlayerTrace()
+        if (live) playerTrace = PlayerTrace.open(context.getExternalFilesDir(null)?.let { java.io.File(it, "video_debug") }, playingRtsp)
+        if (playerTrace != null) main.postDelayed(traceTick, PlayerTrace.PERIOD_MS)
+        main.removeCallbacks(troughTick)
+        trough = if (live && LiveTuning.off(context, "trough")) TroughControl() else null
+        if (trough != null) main.postDelayed(troughTick, TroughControl.SAMPLE_MS)
         playerStarts++
         startedAt = SystemClock.elapsedRealtime()
         firstFrameRendered = false
@@ -815,6 +865,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 if (player === exo && state == Player.STATE_BUFFERING && firstFrameRendered) {
                     stalls++
                     stallAt = SystemClock.elapsedRealtime()
+                    trough?.stalled(stallAt)
                     stallNote = "${exo.videoSize.height}p, запас ${exo.totalBufferedDuration} мс (за секунду до неё $lastBuffered), скорость ${exo.playbackParameters.speed}, " +
                         "${stallAt - firstFrameAt} мс после первого кадра" + if (burstUntil != 0L) ", во время рывка" else ""
                     stallProbe.begin(exo.videoDecoderCounters, liveFactory?.video?.decoderNote(),
@@ -827,7 +878,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     stallAt = 0
                     if (burstInterrupted) { burstInterrupted = false; startBurst(exo) }
                 }
-                if (player === exo && state == Player.STATE_BUFFERING && firstFrameRendered && exo.playbackParameters.speed > 1f) {
+                if (player === exo && trough == null && state == Player.STATE_BUFFERING && firstFrameRendered && exo.playbackParameters.speed > 1f) {
                     // Остановка во время рывка — не «пол» плеера: рывок просто заканчивается.
                     if (burstUntil != 0L) { finishBurst(); burstNotBefore = 0; burstInterrupted = true }
                     else hitFloor(exo, minOf(exo.totalBufferedDuration, catchUpBest))
@@ -885,6 +936,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         main.removeCallbacks(endBurst)
         main.removeCallbacks(revealLater)
         main.removeCallbacks(settleProbe)
+        main.removeCallbacks(troughTick)
+        stopPlayerTrace()
         burstUntil = 0
         revealPending = false
         retryPending = false
@@ -925,6 +978,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             "(%.1f к/с), пропущено ${counters.droppedBufferCount + counters.skippedOutputBufferCount} за %.0f с".format(
                 counters.renderedOutputBufferCount / seconds, seconds) +
             (if (bufferedMax > 0) "; запас плеера $bufferedMin–$bufferedMax мс (нужен от $catchUpFloor), остановок $stalls" else "") +
+            (trough?.let { "; запас по дну: цель ${it.targetMs} мс, дно от ${it.lowestMs.takeIf { v -> v != Long.MAX_VALUE } ?: "—"} мс, " +
+                "быстрее ${it.fasterMs / 1000} с, медленнее ${it.slowerMs / 1000} с" } ?: "") +
             (if (splitSound) "; звук отдельно" + (soundLead.summary()?.let { ": $it" } ?: "") +
                 (if (soundCatchUps > 0) ", догонял картинку $soundCatchUps раз" else "") +
                 (if (soundStalls > 0) ", прерывался $soundStalls раз" else "") else "") +
@@ -1053,6 +1108,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (!target.acceptGuest(exo, null, videoAspect)) return false
         player = null
         connects = null
+        stopPlayerTrace()
         attempt++
         updateQuality()
         return true
