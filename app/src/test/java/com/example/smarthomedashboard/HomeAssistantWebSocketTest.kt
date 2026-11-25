@@ -249,6 +249,72 @@ class HomeAssistantWebSocketTest {
         assertEquals(2, server.requestCount)
     }
 
+    /** Аудит 25.11.2026, HA-05: отозванный токен пробуется всё реже — 10 минут, час, 6 часов (при блокировке по IP в HA частые попытки — бан). */
+    @Test fun revokedTokenIsRetriedLessAndLessOften() {
+        val server = server(Peer(accept = false))
+        server.enqueue(MockResponse().withWebSocketUpgrade(Peer(accept = false)))
+        server.enqueue(MockResponse().withWebSocketUpgrade(Peer(accept = false)))
+        var status = ""
+        val socket = client(server.url("/").toString(), status = { status = it })
+        socket.connect()
+        await { status.contains("10 минут") }
+        shadowOf(Looper.getMainLooper()).idleFor(10, TimeUnit.MINUTES)
+        await { status.contains("через 60 минут") || status.contains("через 1 ч") }
+        assertEquals(2, server.requestCount)
+        shadowOf(Looper.getMainLooper()).idleFor(59, TimeUnit.MINUTES)
+        assertEquals(2, server.requestCount)
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MINUTES)
+        await { status.contains("через 6 ч") }
+        assertEquals(3, server.requestCount)
+        socket.disconnect()
+    }
+
+    /** HA-05: сервер принимает вход и сразу рвёт связь — паузы между попытками растут, а не обнуляются каждым «удачным» входом. */
+    @Test fun connectionDroppedRightAfterLoginBacksOff() {
+        class Dropping : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { webSocket.send("""{"type":"auth_required"}""") }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (JSONObject(text).optString("type") == "auth") { webSocket.send("""{"type":"auth_ok"}"""); webSocket.close(1011, "restart") }
+            }
+        }
+        val server = MockWebServer().also { servers.add(it) }
+        repeat(4) { server.enqueue(MockResponse().withWebSocketUpgrade(Dropping())) }
+        server.start()
+        val delays = CopyOnWriteArrayList<String>()
+        val socket = client(server.url("/").toString(), status = { if (it.startsWith("Переподключение через")) delays += it.substringBefore(":") })
+        socket.connect()
+        awaitAdvancing { delays.size >= 3 }
+        socket.disconnect()
+        assertEquals(listOf("Переподключение через 2 сек.", "Переподключение через 4 сек.", "Переподключение через 8 сек."), delays.take(3))
+    }
+
+    /** HA-05: сеть вернулась — отложенная попытка делается сразу, а не через минуту; ожидание после отказа токена не сокращается. */
+    @Test fun returnedNetworkRetriesAtOnce() {
+        val server = MockWebServer().also { servers.add(it) }
+        server.enqueue(MockResponse().setResponseCode(500))
+        server.enqueue(MockResponse().withWebSocketUpgrade(Peer()))
+        server.start()
+        var status = ""
+        var connected = false
+        val socket = client(server.url("/").toString(), connected = { connected = true }, status = { status = it })
+        socket.connect()
+        await { status.contains("Переподключение через 2") }
+        assertEquals(1, server.requestCount)
+        socket.networkReturned()
+        await { connected }
+        assertEquals(2, server.requestCount)
+        socket.disconnect()
+
+        val denied = server(Peer(accept = false))
+        val second = client(denied.url("/").toString(), status = { status = it })
+        second.connect()
+        await { status.contains("10 минут") }
+        second.networkReturned()
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MINUTES)
+        assertEquals("после отказа токена сеть попытку не ускоряет", 1, denied.requestCount)
+        second.disconnect()
+    }
+
     @Test fun handshakeUnauthorizedAndForbiddenRetryAsTransientFailures() {
         for (code in listOf(401, 403)) {
             val server = MockWebServer().also { servers.add(it) }

@@ -1018,10 +1018,14 @@ internal class DoorbellTalk(
     fun dispose() {
         if (disposed) return
         DoorChime.unlisten(chimeListener)
-        if (inCall) { inCall = false; communication(false); onCall?.invoke(false) }
+        // Карточку закрыли посреди разговора: «идёт разговор» снимается и здесь — иначе самопроверка звука отказывала до перезапуска
+        // приложения (аудит 25.11.2026, REC-06).
+        if (inCall) { inCall = false; active = false; communication(false); onCall?.invoke(false) }
         stopStreet()
         stopDuplex()
         disposed = true
+        // Канал открылся в этот самый миг, а сообщение о нём сейчас будет снято с очереди — закрыть его некому, кроме нас.
+        justOpened?.let { justOpened = null; closeLater(it) }
         pressed = false
         playing = false
         mic.stop()
@@ -1065,8 +1069,10 @@ internal class DoorbellTalk(
                     if (disposed) return@execute
                     val talk = TalkChannels.open(target, login, password.orEmpty(), readTimeoutMs = 30_000)
                     opened = talk
+                    justOpened = talk
                     Log.i(TAG, "Обратный канал открыт")
                     main.post {
+                        if (justOpened === talk) justOpened = null
                         // Карточку закрыли (или сменили камеру), пока канал открывался: он лишний. Очередь фоновой работы
                         // после закрытия карточки задач уже не берёт — раньше приложение на этом падало.
                         if (disposed || target != url) { closeLater(talk); return@post }
@@ -1120,6 +1126,9 @@ internal class DoorbellTalk(
         closeSession()
         set(State.ERROR, text)
     }
+
+    /** Только что открытый канал, о котором главный поток ещё не узнал. */
+    @Volatile private var justOpened: TalkChannel? = null
 
     private fun closeSession() {
         val s = session ?: return
@@ -1187,14 +1196,16 @@ internal object TalkCheck {
                     val pcm = tone()
                     val frame = ShortArray(TalkSession.FRAME)
                     var i = 0
+                    // Канал оборвался посреди сигнала — очередь не опустеет никогда: поток проверки не ждёт вечно (аудит, REC-06).
+                    val until = System.nanoTime() + 15_000_000_000L
                     while (i < pcm.size) {
                         val n = minOf(TalkSession.FRAME, pcm.size - i)
                         System.arraycopy(pcm, i, frame, 0, n)
                         opened.send(frame, n)
                         i += n
-                        while (opened.queued > 5) Thread.sleep(10)
+                        while (opened.queued > 5) { if (System.nanoTime() > until) throw java.io.IOException("канал не принимает звук"); Thread.sleep(10) }
                     }
-                    while (opened.queued > 0) Thread.sleep(10)
+                    while (opened.queued > 0) { if (System.nanoTime() > until) throw java.io.IOException("канал не принимает звук"); Thread.sleep(10) }
                     Thread.sleep(1_500) // камера доигрывает свой буфер — TEARDOWN раньше обрезал бы звук
                     Log.i("Talk", "Проверка звука: отправлено ${opened.sentPackets} пакетов, из них звука ${opened.sentVoice}")
                     "Сигнал отправлен ($codec) — его должно быть слышно у домофона"

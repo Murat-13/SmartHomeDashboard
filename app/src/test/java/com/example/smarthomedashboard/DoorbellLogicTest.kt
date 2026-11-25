@@ -227,6 +227,22 @@ class DoorbellLogicTest {
         assertEquals("позже картинки на 200 мс (от -220 до -190; плюс — звук раньше; без поправки на приход)", lead.summary())
     }
 
+    /** Аудит 25.11.2026, REC-06: часы планшета ушли назад — минута замеров начинается заново, замеры не копятся без конца. */
+    @Test fun arrivalDelaySurvivesClockGoingBack() {
+        var now = 1_795_000_000_000L
+        val probe = ArrivalDelay(90_000) { now }
+        val sr = ByteArray(28)
+        sr[0] = 0x80.toByte(); sr[1] = 200.toByte(); sr[3] = 6
+        fun put(o: Int, v: Long) { for (i in 0..3) sr[o + i] = (v shr (24 - 8 * i)).toByte() }
+        put(8, now / 1000 + 2_208_988_800L); put(16, 1_000L)
+        probe.senderReport(sr, sr.size)
+        assertNull(probe.frame(1_000L))
+        now -= 3_600_000L // часы перевели на час назад
+        assertNull(probe.frame(1_000L))
+        now += ArrivalDelay.REPORT_MS
+        assertNotNull("отчёт выходит через минуту после перевода, а не через час", probe.frame(1_000L))
+    }
+
     /** Задержка камеры по RTCP: отчёт отправителя связывает метку RTP с часами камеры. */
     @Test fun arrivalDelayFromSenderReport() {
         var now = 1_795_000_000_000L

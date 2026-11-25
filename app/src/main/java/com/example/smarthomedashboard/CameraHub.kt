@@ -281,6 +281,7 @@ internal class SharedStream(
 
     private fun loop() {
         var backoffMs = 2_000L
+        var refused = false
         while (running) {
             val started = System.nanoTime()
             broadcast(CameraRecorder.State.CONNECTING)
@@ -421,6 +422,7 @@ internal class SharedStream(
                     }
                 })
             } catch (e: Exception) {
+                refused = e is RtspException && e.status == 401
                 if (running) {
                     Log.w(TAG, "${e.javaClass.simpleName}: ${e.message}")
                     broadcast(CameraRecorder.State.RETRYING, e.message ?: e.javaClass.simpleName)
@@ -445,6 +447,9 @@ internal class SharedStream(
             if (!running) break
             // Сессия держалась дольше минуты — начинаем отсчёт заново.
             if (System.nanoTime() - started > 60_000_000_000L) backoffMs = 2_000L
+            // Камера не приняла пароль: пробовать его каждые 30 с незачем (часть камер за это блокирует вход) — раз в 5 минут.
+            // Новый пароль из редактора запускает запись заново сразу (аудит 25.11.2026, REC-06).
+            if (refused) { backoffMs = REFUSED_RETRY_MS; refused = false }
             try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { if (!running) break }
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
@@ -474,6 +479,7 @@ internal class SharedStream(
     private companion object {
         /** Больше — уже не неровность прихода, а сбой связи. */
         const val MAX_JITTER_MS = 1_000L
+        const val REFUSED_RETRY_MS = 300_000L
         const val TAG = "CameraHub"
     }
 }
@@ -862,6 +868,8 @@ internal class ArrivalDelay(private val clockRate: Int, private val now: () -> L
         val diff = ((rtpTimestamp - srRtp) shl 32) shr 32 // разница по модулю 2^32 со знаком
         val shot = srWallMs + diff * 1000 / clockRate
         val t = now()
+        // Часы планшета ушли назад: минута «не кончалась» бы, а замеры копились бы в памяти (аудит 25.11.2026, REC-06).
+        if (t < since || samples.size >= MAX_SAMPLES) { samples.clear(); since = t }
         samples += t - shot
         if (since == 0L) since = t
         if (t - since < REPORT_MS) return null
@@ -879,5 +887,6 @@ internal class ArrivalDelay(private val clockRate: Int, private val now: () -> L
     companion object {
         private const val NTP_TO_UNIX_S = 2_208_988_800L
         const val REPORT_MS = 60_000L
+        const val MAX_SAMPLES = 20_000
     }
 }

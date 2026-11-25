@@ -131,6 +131,28 @@ class PowerGraphTest {
         assertEquals(GraphPeriod.DAY.window(now - PowerHistory.DAY_MS, zone), state.statsWindow(now))
     }
 
+    /** Аудит 25.11.2026, STAB-08: часы прыгнули вперёд и вернулись — новые записи идут по настоящему времени, а не «+1 мс» к метке из будущего. */
+    @Test fun samplesAfterClockJumpBackKeepRealTime() {
+        // Свой регистратор без записи в базу: очередь остаётся на месте.
+        val recorder = PowerHistoryRecorder(store, worker = { }, post = { }, clock = { now })
+        fun pending() = org.robolectric.util.ReflectionHelpers.getField<List<Pair<String, PowerSample>>>(recorder, "pending").map { it.second.ts }
+        recorder.setSources(setOf("sensor.inv"))
+        val unit = JSONObject().put("unit_of_measurement", "W")
+        val real = now
+        try {
+            now = real + 3 * hour
+            recorder.onState("sensor.inv", "100", unit)
+            now = real + 1_000
+            recorder.onState("sensor.inv", "200", unit)
+            now = real + 61_000
+            recorder.onState("sensor.inv", "300", unit)
+            assertEquals(listOf(real + 3 * hour, real + 1_000, real + 61_000), pending().takeLast(3))
+            // Обычный случай прежний: то же время — следующая миллисекунда.
+            recorder.onState("sensor.inv", "400", unit)
+            assertEquals(real + 61_001, pending().last())
+        } finally { now = real; recorder.stop() }
+    }
+
     @Test fun statsAreForWholePeriodAndNowIsLatestReading() {
         val data = seed()
         val p = panel()

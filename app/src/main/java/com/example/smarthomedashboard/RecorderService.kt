@@ -102,7 +102,12 @@ class RecorderService : Service() {
         mine = ++generation
         val notification = notification()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+        // Android перезапустил службу, когда приложение в фоне (Android 12+ это запрещает): без записи до возврата панели, но без
+        // закрытия приложения (аудит 25.11.2026, REC-06).
+        try { ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type) } catch (e: Exception) {
+            Log.w(TAG, "Запись: служба не стала службой переднего плана: ${e.javaClass.simpleName}")
+            stopSelf()
+        }
         // Карту извлекают или вернули: файлы на ней закрываются сразу (иначе Android завершит приложение), запись идёт дальше.
         androidx.core.content.ContextCompat.registerReceiver(this, media, android.content.IntentFilter().apply {
             MEDIA_ACTIONS.forEach(::addAction)

@@ -634,7 +634,8 @@ class MainActivity : AppCompatActivity() {
         pageDots = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER; visibility = View.GONE }
         root.addView(pageDots, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(10) })
-        internet = InternetMonitor(this) { updateSystemStatus() }
+        // Сеть вернулась — попытка связи с Home Assistant, отложенная на минуту, делается сразу (аудит 25.11.2026, HA-05).
+        internet = InternetMonitor(this) { ok -> updateSystemStatus(); if (ok == true) viewModel.getWebSocket()?.networkReturned() }
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -1175,9 +1176,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun cacheEntities(e: List<HaEntity>) {
-        getSharedPreferences("dashboard_prefs", MODE_PRIVATE).edit {
-            putString("cached_entities", com.google.gson.Gson().toJson(e))
-            putLong("cached_entities_time", System.currentTimeMillis())
+        // Тысячи сущностей в текст — не в главном потоке (аудит 25.11.2026, STAB-08).
+        val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            val json = com.google.gson.Gson().toJson(e)
+            prefs.edit { putString("cached_entities", json); putLong("cached_entities_time", System.currentTimeMillis()) }
         }
     }
 

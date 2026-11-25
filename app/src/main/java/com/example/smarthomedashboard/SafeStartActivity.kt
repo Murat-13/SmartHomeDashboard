@@ -35,6 +35,18 @@ class SafeStartActivity : AppCompatActivity() {
         main.postDelayed(retry, RETRY_MS)
     }
 
+    /** Поверх открыты Настройки (панель чинят): попытка открыть панель их не перебивает; вернулись — отсчёт заново (STAB-08). */
+    override fun onStop() {
+        main.removeCallbacks(retry)
+        super.onStop()
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        main.removeCallbacks(retry)
+        main.postDelayed(retry, RETRY_MS)
+    }
+
     override fun onDestroy() {
         main.removeCallbacks(retry)
         super.onDestroy()

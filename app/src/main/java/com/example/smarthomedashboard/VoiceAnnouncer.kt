@@ -203,6 +203,8 @@ internal class VoiceAnnouncer(
         if (mp == null) { sayPhrase(sound); return }
         player = mp
         mp.start()
+        // Плеер не сообщил ни о конце, ни об ошибке (повреждённый файл, сбой звука Android) — очередь не ждёт вечно (STAB-08).
+        main.postDelayed({ if (player === mp) { Log.w(TAG, "Сигнал не закончился за ${TONE_MAX_MS / 1000} с — дальше"); releasePlayer(); sayPhrase(sound) } }, TONE_MAX_MS)
     }
 
     private fun sayPhrase(sound: Sound) {
@@ -315,6 +317,7 @@ internal class VoiceAnnouncer(
 
     companion object {
         private const val TAG = "VoiceAnnouncer"
+        private const val TONE_MAX_MS = 60_000L
 
         /** Один фоновый поток на процесс: новые экземпляры (после пересоздания панели) не плодят потоки. */
         private val ttsWorker by lazy {

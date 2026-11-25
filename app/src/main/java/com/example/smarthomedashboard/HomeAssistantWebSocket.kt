@@ -86,6 +86,9 @@ class HomeAssistantWebSocket(
         const val ADOPT_RETRY_MS = 500L
         /** Основной адрес отвалился раньше этого после перехода — проверки становятся реже. */
         const val FLAP_WINDOW_MS = 3 * 60_000L
+        const val STABLE_MS = 30_000L
+        const val NETWORK_KICK_MS = 5_000L
+        val TOKEN_RETRY_MS = longArrayOf(10 * 60_000L, 60 * 60_000L, 6 * 3_600_000L)
         const val MAX_PROBE_DELAY_MS = 30 * 60_000L
         /** Сколько ждать ответного кадра закрытия от прежнего сокета. */
         const val CLOSE_GRACE_MS = 5_000L
@@ -143,6 +146,13 @@ class HomeAssistantWebSocket(
     private val rejectedHosts = mutableSetOf<String>()
     private val tokenRejectedHosts = mutableSetOf<String>()
     private var reconnectTask: Runnable? = null
+    /** Отложенная обычная попытка (не ожидание после отказа токена) — её может ускорить вернувшаяся сеть. */
+    private var waitingReconnect = false
+    private var kickedAt = -NETWORK_KICK_MS
+    /** Сколько раз подряд связь рвалась сразу после входа. */
+    private var flaps = 0
+    private var tokenRejectedAt = 0L
+    private var tokenRetries = 0
     private var timeoutTask: Runnable? = null
     private var probeTask: Runnable? = null
     private var probeSocket: WebSocket? = null
@@ -172,6 +182,9 @@ class HomeAssistantWebSocket(
         if (!running) {
             running = true
             failures = 0
+            flaps = 0
+            tokenRetries = 0
+            tokenRejectedAt = 0L
             rejectedHosts.clear()
             tokenRejectedHosts.clear()
             endpointIndex = 0
@@ -291,20 +304,35 @@ class HomeAssistantWebSocket(
             probeBackoff = if (SystemClock.elapsedRealtime() - switchedAt < FLAP_WINDOW_MS) probeBackoff + 1 else 0
             switchedAt = 0L
         }
+        // Сервер принимает вход и тут же рвёт связь: счётчик неудач при входе сбрасывается, и при двух адресах попытки шли бы без
+        // паузы. Связь, не прожившая [STABLE_MS], — неудача (аудит 25.11.2026, HA-05).
+        val now = SystemClock.elapsedRealtime()
+        if (authenticated) flaps = if (now - authenticatedAt < STABLE_MS) flaps + 1 else 0
         teardown()
         if (permanent || tokenRejected) rejectedHosts.add(getHost())
-        if (tokenRejected) tokenRejectedHosts.add(getHost())
+        if (tokenRejected) { tokenRejectedHosts.add(getHost()); if (tokenRejectedAt == 0L) tokenRejectedAt = now }
         failures++
         onDisconnected()
         onConnectionError(message)
+        // Адрес, отказавший токену, пробуется снова и тогда, когда остальные адреса просто недоступны: раньше — только после
+        // перезапуска. Паузы те же, что ниже.
+        if (tokenRejectedHosts.isNotEmpty() && tokenRejectedHosts.size < hosts.size && now - tokenRejectedAt >= tokenRetryMs()) {
+            rejectedHosts.removeAll(tokenRejectedHosts)
+            tokenRejectedHosts.clear()
+            tokenRejectedAt = 0L
+            tokenRetries++
+        }
         val available = hosts.indices.filter { hosts[it] !in rejectedHosts }
         if (available.isEmpty() && autoReconnect && tokenRejectedHosts.isNotEmpty()) {
-            // A revoked token must not cause a tight loop, but may become usable again later.
-            val delay = TimeUnit.MINUTES.toMillis(10)
-            onStatus("Неверный или отозванный токен HA. Повторная проверка через 10 минут")
+            // Отозванный токен не пробуется часто (при включённой в Home Assistant блокировке по IP это бан), но может снова стать
+            // рабочим: 10 минут → час → 6 часов.
+            val delay = tokenRetryMs()
+            onStatus("Неверный или отозванный токен HA. Повторная проверка через ${if (delay < 3_600_000L) "${delay / 60_000} минут" else "${delay / 3_600_000} ч"}")
             reconnectTask = Runnable {
                 rejectedHosts.removeAll(tokenRejectedHosts)
                 tokenRejectedHosts.clear()
+                tokenRejectedAt = 0L
+                tokenRetries++
                 failures = 0
                 endpointIndex = hosts.indices.first { hosts[it] !in rejectedHosts }
                 openConnection()
@@ -318,9 +346,27 @@ class HomeAssistantWebSocket(
         }
         endpointIndex = (1..hosts.size).map { (endpointIndex + it) % hosts.size }
             .first { it in available }
-        val delay = if (failures < hosts.size) 0L else HomeAssistantAddress.retryDelay(failures - hosts.size)
+        val usual = if (failures < hosts.size) 0L else HomeAssistantAddress.retryDelay(failures - hosts.size)
+        val delay = maxOf(usual, if (flaps > 0) HomeAssistantAddress.retryDelay(flaps - 1) else 0L)
         onStatus("Переподключение через ${delay / 1000} сек.: $message")
         reconnectTask = Runnable { openConnection() }.also { handler.postDelayed(it, delay) }
+        waitingReconnect = delay > 0
+    }
+
+    private fun tokenRetryMs() = TOKEN_RETRY_MS[minOf(tokenRetries, TOKEN_RETRY_MS.lastIndex)]
+
+    /**
+     * Сеть вернулась (Wi-Fi снова с интернетом): попытка, отложенная на минуту, делается сразу — не чаще раза в [NETWORK_KICK_MS].
+     * Ожидание после отказа токена не сокращается (аудит 25.11.2026, HA-05).
+     */
+    fun networkReturned() = onMain {
+        val task = reconnectTask ?: return@onMain
+        val now = SystemClock.elapsedRealtime()
+        if (!running || !waitingReconnect || now - kickedAt < NETWORK_KICK_MS) return@onMain
+        kickedAt = now
+        waitingReconnect = false
+        handler.removeCallbacks(task)
+        handler.post(task)
     }
 
     /**
@@ -354,6 +400,7 @@ class HomeAssistantWebSocket(
                 authenticated = true
                 authenticatedAt = SystemClock.elapsedRealtime()
                 failures = 0
+                tokenRetries = 0
                 timeoutTask?.let { handler.removeCallbacks(it) }
                 timeoutTask = null
                 // Восстанавливаем только актуальные желаемые источники до вызова владельца.

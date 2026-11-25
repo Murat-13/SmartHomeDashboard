@@ -254,7 +254,7 @@ class SettingsActivity : PinProtectedActivity() {
         }
         findViewById<Button?>(R.id.btnPowerHistoryRestore)?.setOnClickListener { choosePowerHistoryCopy() }
         findViewById<Button?>(R.id.btnBackupFolder)?.setOnClickListener {
-            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+            pickFile(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
                     Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), REQUEST_BACKUP_FOLDER)
         }
@@ -1057,7 +1057,7 @@ class SettingsActivity : PinProtectedActivity() {
                     type = "application/json"
                     putExtra(Intent.EXTRA_TITLE, "smarthome_config.json")
                 }
-                startActivityForResult(intent, 200)
+                pickFile(intent, 200)
             }
             .setNegativeButton("Отмена", null)
             .show()
@@ -1098,7 +1098,14 @@ class SettingsActivity : PinProtectedActivity() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/json"
         }
-        startActivityForResult(intent, 201)
+        pickFile(intent, 201)
+    }
+
+    /** На планшете может не быть программы выбора файлов (урезанная прошивка): сообщение вместо закрытия приложения (STAB-08). */
+    private fun pickFile(intent: Intent, code: Int) {
+        try { startActivityForResult(intent, code) } catch (_: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, "На планшете нет программы выбора файлов — установите «Файлы»", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

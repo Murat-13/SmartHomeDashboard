@@ -236,7 +236,7 @@ class SetupActivity : AppCompatActivity() {
         content.addView(gap())
         content.addView(ModernUi.secondaryButton(this, "Восстановить из файла копии") {
             // Панель могла быть уже настроена в обход мастера: с включённым PIN — только с ним (аудит 25.11.2026, SEC-05).
-            PinSecurityUi.authorize(this, onSuccess = { openFile.launch(arrayOf("application/json", "application/octet-stream")) }, access = pinAccess(this))
+            PinSecurityUi.authorize(this, onSuccess = { try { openFile.launch(arrayOf("application/json", "application/octet-stream")) } catch (_: android.content.ActivityNotFoundException) { note("На планшете нет программы выбора файлов") } }, access = pinAccess(this))
         }
             .apply { tag = "setup_restore" })
         content.addView(ModernUi.caption(this, "Копия — это плитки и настройки. Токен, пароли и PIN в ней не хранятся — после восстановления нужно " +
@@ -739,7 +739,7 @@ class SetupActivity : AppCompatActivity() {
             ModernUi.secondary(this, "Копия настроек создаётся каждую ночь. В выбранной папке она переживёт удаление приложения."),
             ModernUi.statusRow(this, if (folder) ModernUi.Status.OK else ModernUi.Status.UNKNOWN,
                 if (folder) "Папка выбрана" else "Пока внутри приложения"),
-            ModernUi.secondaryButton(this, "Выбрать папку") { openFolder.launch(null) }.apply { tag = "setup_folder" }))
+            ModernUi.secondaryButton(this, "Выбрать папку") { try { openFolder.launch(null) } catch (_: android.content.ActivityNotFoundException) { note("На планшете нет программы выбора файлов") } }.apply { tag = "setup_folder" }))
         buttons(ModernUi.secondaryButton(this, "Назад") { back() },
             ModernUi.primaryButton(this, "Дальше") { show(Step.DONE) }.apply { tag = "setup_next" })
         refreshPin()

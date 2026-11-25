@@ -172,7 +172,9 @@ internal class PowerHistoryRecorder(
 
     /** Время записей источника строго возрастает: разрыв и новое значение в одну мс не вытесняют друг друга. */
     private fun queue(entityId: String, raw: PowerSample) {
-        val sample = lastTs[entityId]?.takeIf { raw.ts <= it }?.let { raw.copy(ts = it + 1) } ?: raw
+        // Часы планшета прыгнули вперёд и вернулись: прежняя метка осталась в будущем — подгонять к ней каждую новую запись нельзя,
+        // иначе все они лягут в одну секунду (аудит 25.11.2026, STAB-08).
+        val sample = lastTs[entityId]?.takeIf { raw.ts <= it && it - raw.ts < CLOCK_BACK_MS }?.let { raw.copy(ts = it + 1) } ?: raw
         lastTs[entityId] = sample.ts
         pending += entityId to sample
         if (pending.size > MAX_PENDING) pending.subList(0, pending.size - MAX_PENDING).clear()
@@ -358,6 +360,7 @@ internal class PowerHistoryRecorder(
         const val FLUSH_MS = 2_000L
         const val HEARTBEAT_MS = 60_000L
         const val MAX_PENDING = 20_000
+        const val CLOCK_BACK_MS = 5 * 60_000L
         const val MIN_GAP_MS = 30_000L
         /** Последние секунды не запрашиваем: данные о них уже идут живым потоком. */
         const val IMPORT_RECENT_MS = 5_000L

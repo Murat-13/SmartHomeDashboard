@@ -169,6 +169,7 @@ internal object RecLayout {
     const val ROOT = "records"
     private val SAFE = Regex("[^A-Za-z0-9_-]")
     private const val REMUX = ".remux"
+    private const val KEEP_UNREAD_MS = 3 * 86_400_000L
     private val NAME = Regex("^([ce])_(\\d{10,15})(?:_(\\d{1,10}))?(_s)?(\\.part)?\\.mp4$")
 
     fun cameraKey(tileId: String) = tileId.replace(SAFE, "_").take(64).ifEmpty { "camera" }
@@ -269,7 +270,12 @@ internal object RecLayout {
             if (!f.open || f.path.path in skip) continue
             // Время последней записи — до обрезки: обрезка сама меняет время изменения файла.
             val modified = f.path.lastModified()
-            val ok = try { Mp4Repair.truncateToLastFragment(f.path) > 0 } catch (_: Exception) { false }
+            val ok = try { Mp4Repair.truncateToLastFragment(f.path) > 0 } catch (_: java.io.IOException) {
+                // Файл не прочитался (носитель занят, сбой чтения) — это ещё не «в нём ничего нет»: попробуем при следующем запуске.
+                // Старше трёх суток — уже не прочитается (аудит 25.11.2026, REC-06).
+                if (System.currentTimeMillis() - modified in 0 until KEEP_UNREAD_MS) continue
+                false
+            } catch (_: Exception) { false }
             if (!ok) { f.path.delete(); continue }
             val duration = (modified - f.startMs).coerceIn(0, 24 * 3_600_000L)
             val done = File(f.path.parentFile, closedName(f.kind, f.startMs, duration))

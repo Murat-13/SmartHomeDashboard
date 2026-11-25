@@ -249,6 +249,16 @@ class HaLoginActivity : PinProtectedActivity(), PanelIdle.Busy {
                 "Войдите на странице Home Assistant")
         }
 
+        /** Android закрыл процесс страницы (мало памяти): без этого закрылось бы всё приложение (аудит 25.11.2026, STAB-08). */
+        @androidx.annotation.RequiresApi(26)
+        override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+            if (web === view) web = null
+            (view.parent as? android.view.ViewGroup)?.removeView(view)
+            view.destroy()
+            if (webAttempt === attempt && !isDestroyed) failed("Страница входа закрылась — попробуйте ещё раз")
+            return true
+        }
+
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
             handler.cancel()
             if (webAttempt === attempt) failed("Сертификат этого адреса не прошёл проверку Android. Войдите с телефона или исправьте адрес")
