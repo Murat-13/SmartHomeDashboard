@@ -108,6 +108,7 @@ Workflow: [.github/workflows/deep-tests.yml](../.github/workflows/deep-tests.yml
 
 ```bash
 adb -s emulator-5554 root
+adb -s emulator-5554 shell sm set-virtual-disk false   # после перезагрузки эмулятор снова делает карту 512 МБ
 adb -s emulator-5554 shell "truncate -s 3G /data/misc/vold/virtual_disk && restorecon /data/misc/vold/virtual_disk"
 adb -s emulator-5554 shell sm set-virtual-disk true
 adb -s emulator-5554 shell sm partition disk:7,424 public   # номер — из sm list-disks
