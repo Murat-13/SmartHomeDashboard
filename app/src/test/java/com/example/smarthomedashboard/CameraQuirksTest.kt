@@ -7,9 +7,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.io.File
 import java.io.InputStream
 import java.net.ServerSocket
@@ -23,10 +20,9 @@ import kotlin.concurrent.thread
 
 /**
  * Особенности камер разных марок (docs/cameras.md): каждая — поддельная камера со своей странностью, клиент обязан получить
- * видео. Списки странностей — из открытых клиентов (go2rtc, ffmpeg) и стандартов; на GitHub — при каждом изменении.
+ * видео. Списки странностей — из открытых клиентов (go2rtc, ffmpeg) и стандартов; на GitHub — при каждом изменении. Без Robolectric:
+ * его TLS (Conscrypt) на Java 21 серверной стороной не работает.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
 class CameraQuirksTest {
     private val sessions = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<RtspSession>())
     private val servers = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<ServerSocket>())
@@ -399,19 +395,6 @@ class CameraQuirksTest {
         assertTrue(AnnexB.strip(code + sps + byteArrayOf(0)).contentEquals(sps))
     }
 
-    /** Стартовые коды и лишние наборы в sprop: плеер получает ровно SPS и PPS, запись — чистые параметры. */
-    @Test fun dirtyParametersInDescription() {
-        val code = byteArrayOf(0, 0, 0, 1)
-        fun sdp(sprop: String) = "v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=$sprop\r\na=control:t1\r\n"
-        val clean = RecBase64.encode(sps) + "," + RecBase64.encode(pps)
-        assertTrue(Media3Sdp.compatible(sdp(RecBase64.encode(code + sps) + "," + RecBase64.encode(code + pps))).contains("sprop-parameter-sets=$clean"))
-        assertTrue(Media3Sdp.compatible(sdp("$clean," + RecBase64.encode(byteArrayOf(0x6D, 1)))).contains("sprop-parameter-sets=$clean\r\n"))
-        assertEquals("чистое — как есть", sdp(clean), Media3Sdp.compatible(sdp(clean)))
-        assertTrue("без PPS — взять из потока", Media3Sdp.lacksH264Params(SdpParser.parse(sdp(RecBase64.encode(sps))).single()))
-        val d = VideoDepacketizer.create(SdpParser.parse(sdp(RecBase64.encode(code + sps) + "," + RecBase64.encode(code + pps))).single())!!
-        assertTrue(d.sps!!.contentEquals(sps) && d.pps!!.contentEquals(pps))
-    }
-
     /** Пробелы, порядок строк, незнакомые дорожки. */
     @Test fun oddDescriptions() {
         val tracks = SdpParser.parse("v=0\no=- broken\ns=\ns=two\nm=video 0 RTP/AVP 96\na=fmtp: 96 profile-level-id=640033; sprop-parameter-sets=Z2QAMw==,aO4=\n" +
@@ -432,9 +415,8 @@ class CameraQuirksTest {
         p.waitFor(30, TimeUnit.SECONDS)
         val store = KeyStore.getInstance("PKCS12").apply { file.inputStream().use { load(it, "camera".toCharArray()) } }
         file.delete()
-        // Камера — на обычном TLS Java, а не на Conscrypt из Robolectric: его серверной стороне на JDK 21 (CI) закрыт java.net.
-        val keys = KeyManagerFactory.getInstance("SunX509", "SunJSSE").apply { init(store, "camera".toCharArray()) }
-        return SSLContext.getInstance("TLS", "SunJSSE").apply { init(keys.keyManagers, null, null) }.serverSocketFactory.createServerSocket()
+        val keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(store, "camera".toCharArray()) }
+        return SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }.serverSocketFactory.createServerSocket()
             .apply { reuseAddress = true; bind(java.net.InetSocketAddress("127.0.0.1", port)) }
     }
 

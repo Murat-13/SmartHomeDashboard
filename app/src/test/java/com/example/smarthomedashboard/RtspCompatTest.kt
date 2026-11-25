@@ -248,4 +248,21 @@ class RtspCompatTest {
         assertFalse(view(main).fallBackFromDecoder(error(PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES)))
         assertTrue(DoorbellVideoView.undecodable.isEmpty())
     }
+
+    private val cleanSps = byteArrayOf(0x67, 0x64, 0x00, 0x33, 1, 2, 3)
+    private val cleanPps = byteArrayOf(0x68, 0x11, 0x22)
+
+    /** Стартовые коды и лишние наборы в sprop: плеер получает ровно SPS и PPS, запись — чистые параметры. */
+    @Test fun dirtyParametersInDescription() {
+        val code = byteArrayOf(0, 0, 0, 1)
+        fun sdp(sprop: String) = "v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=$sprop\r\na=control:t1\r\n"
+        val clean = RecBase64.encode(cleanSps) + "," + RecBase64.encode(cleanPps)
+        assertTrue(Media3Sdp.compatible(sdp(RecBase64.encode(code + cleanSps) + "," + RecBase64.encode(code + cleanPps))).contains("sprop-parameter-sets=$clean"))
+        assertTrue(Media3Sdp.compatible(sdp("$clean," + RecBase64.encode(byteArrayOf(0x6D, 1)))).contains("sprop-parameter-sets=$clean\r\n"))
+        assertEquals("чистое — как есть", sdp(clean), Media3Sdp.compatible(sdp(clean)))
+        assertTrue("без PPS — взять из потока", Media3Sdp.lacksH264Params(SdpParser.parse(sdp(RecBase64.encode(cleanSps))).single()))
+        val d = VideoDepacketizer.create(SdpParser.parse(sdp(RecBase64.encode(code + cleanSps) + "," + RecBase64.encode(code + cleanPps))).single())!!
+        assertTrue(d.sps!!.contentEquals(cleanSps) && d.pps!!.contentEquals(cleanPps))
+    }
+
 }

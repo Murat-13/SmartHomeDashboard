@@ -81,7 +81,7 @@ class HaLoginTest {
             }
         }
 
-        override fun close() { server.shutdown() }
+        override fun close() { runCatching { server.shutdown() } }
     }
 
     @Test fun authorizeAddressCarriesPkceAndState() {

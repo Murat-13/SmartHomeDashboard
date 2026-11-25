@@ -2,7 +2,6 @@ package com.example.smarthomedashboard
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
 import androidx.core.content.edit
 import java.net.Socket
 import java.net.URI
@@ -43,10 +42,7 @@ internal object CameraTls {
     fun wrap(socket: Socket, host: String, port: Int): Socket {
         val key = "$host:$port"
         val trust = PinnedTrust(pins[key]) { pin ->
-            if (pins.putIfAbsent(key, pin) == null) {
-                Log.i(TAG, "Сертификат камеры запомнен")
-                store?.edit { putString(key, pin) }
-            }
+            if (pins.putIfAbsent(key, pin) == null) store?.edit { putString(key, pin) }
         }
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), SecureRandom()) }
             .socketFactory.createSocket(socket, host, port, true) as SSLSocket
@@ -55,6 +51,4 @@ internal object CameraTls {
     }
 
     internal fun clearForTests() { pins.clear(); store = null }
-
-    private const val TAG = "CameraTls"
 }
