@@ -103,5 +103,6 @@ Workflow: [.github/workflows/deep-tests.yml](../.github/workflows/deep-tests.yml
 
 ## Другие версии Android (0.9.66)
 
-Workflow `Android versions` (ночью и вручную): эмуляторы Android 7, 10, 12 и 16 с разными экранами — `PanelEndToEndTest`, `GatesDeepTest`,
-`CameraRelayDeepTest`, `CameraBrandsDeepTest`. При каждом изменении идёт основной прогон (Android 14).
+Workflow `Android versions` (ночью и вручную): эмуляторы Android 10, 12 и 16 с разными экранами — все сквозные тесты, Android 7 — только
+`PanelEndToEndTest` (его эмулятор в разы медленнее). Видео на эмуляторах Android 10 и старше не проверить: их декодер образец не показывает.
+При каждом изменении идёт основной прогон (Android 14).

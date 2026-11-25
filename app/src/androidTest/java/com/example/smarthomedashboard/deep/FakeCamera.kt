@@ -8,6 +8,9 @@ import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
+/** Декодер эмулятора Android 10 и старше образец не показывает (DECODING_FAILED): видео там не проверить. */
+internal const val OLD_EMULATOR = "Эмулятор Android 10 и старше не декодирует образец"
+
 /**
  * Поддельная камера RTSP в процессе теста: настоящий H.264 из образца ffmpeg (160×120, 10 кадров/с, ключевой раз в секунду), по
  * кругу, без сети и камер владельца. Со странностями других марок (docs/cameras.md): [sha256] — вход только Digest SHA-256,

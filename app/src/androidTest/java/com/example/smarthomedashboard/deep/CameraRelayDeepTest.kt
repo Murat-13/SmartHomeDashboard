@@ -78,6 +78,7 @@ class CameraRelayDeepTest {
         onSegment = { _: RecFile -> }, onStatus = { _, _ -> })
 
     @Test fun livePlayerShowsRecordedStreamThroughTabletWithOneCameraConnection() {
+        assumeTrue(OLD_EMULATOR, android.os.Build.VERSION.SDK_INT > 29)
         val camera = FakeCamera().also { camera = it }
         val url = camera.url
         val r = recorder(url)
