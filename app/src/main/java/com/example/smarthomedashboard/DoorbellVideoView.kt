@@ -746,7 +746,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private fun awaitFast(src: Source, rtsp: String): Boolean {
         val url = ReolinkVideo.urlFor(rtsp) ?: return false
         if (skipRelay || LiveTuning.off(context, "no_bc") || ReolinkVideo.held(url) || CameraHub.relayUrl(rtsp, src.user) == null) { fastWaitSince = 0; return false }
-        if (ownHold != null && ownUrl != url) releaseOwn()
+        // Поток RTSP держит сам этот показ (записи нет) — он же и запасной путь: вторым не подменяем.
+        if (ownHold != null && ownUrl != url) return false
         if (ownHold != null && CameraHub.ready(url, src.user)) { fastWaitSince = 0; return false }
         val now = SystemClock.elapsedRealtime()
         if (ownHold == null) {
@@ -1463,7 +1464,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         /** Камеры, которых встроенный плеер не понял, а свой клиент показал (до перезапуска приложения). */
         internal val ownPath = mutableSetOf<String>()
         /** Сколько ждать картинку по протоколу Reolink, прежде чем показать как раньше. */
-        private const val FAST_WAIT_MS = 1_500L
+        private const val FAST_WAIT_MS = 900L
         private const val FAST_POLL_MS = 40L
         private const val OWN_AFTER = 2
         private const val OWN_WAIT_MS = 10_000L
