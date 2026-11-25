@@ -47,6 +47,10 @@ class DoorbellStreamTest {
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
     }
 
+    /** Потоки стенда CI; на стенде камер Mac — аргументы rtspPort, rtspMain, rtspSub (docs/camera-stand.md). */
+    private fun standMain() = "rtsp://$host:${argument("rtspPort") ?: "8554"}/${argument("rtspMain") ?: "main1080"}"
+    private fun standSub() = "rtsp://$host:${argument("rtspPort") ?: "8554"}/${argument("rtspSub") ?: "sub"}"
+
     private fun panel(): MainActivity? = resumedActivity() as? MainActivity
 
     private fun card(): DoorbellCard? = panel()?.let { a ->
@@ -56,13 +60,13 @@ class DoorbellStreamTest {
     private fun status(): DoorbellVideoView.Status? = card()?.let { c -> onMain { c.video.status } }
 
     @Test fun subStreamPlaysOnTile() {
-        open("rtsp://$host:8554/main1080", "rtsp://$host:8554/sub")
+        open(standMain(), standSub())
         waitFor(40_000, "картинка субпотока на плитке (статус ${status()})") { status() == DoorbellVideoView.Status.PLAYING }
         log("Субпоток на плитке: PLAYING")
     }
 
     @Test fun mainStreamAfterExpandIsHd() {
-        open("rtsp://$host:8554/main1080", "rtsp://$host:8554/sub")
+        open(standMain(), standSub())
         waitFor(40_000, "субпоток") { status() == DoorbellVideoView.Status.PLAYING }
         val activity = panel()
         val tile = onMain { activity!!.window.decorView.findViewWithTag<View>("deep_door") }
