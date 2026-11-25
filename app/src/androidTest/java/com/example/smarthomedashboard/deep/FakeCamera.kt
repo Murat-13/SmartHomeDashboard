@@ -8,13 +8,11 @@ import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
-/** Декодер эмулятора Android 10 и старше образец не показывает (DECODING_FAILED): видео там не проверить. */
-internal const val OLD_EMULATOR = "Эмулятор Android 10 и старше не декодирует образец"
-
 /**
- * Поддельная камера RTSP в процессе теста: настоящий H.264 из образца ffmpeg (160×120, 10 кадров/с, ключевой раз в секунду), по
- * кругу, без сети и камер владельца. Со странностями других марок (docs/cameras.md): [sha256] — вход только Digest SHA-256,
- * [wrongHost] — в описании чужой адрес, [asks] — камера сама спрашивает внутри потока и без ответа рвёт сессию.
+ * Поддельная камера RTSP в процессе теста: настоящий H.264 (образец — tools/camera-stand/sample.swift: 160×120, 10 кадров/с,
+ * ключевой раз в секунду, Baseline 4:2:0 — его понимают и эмуляторы Android 7 и 10), по кругу, без сети и камер владельца. Со
+ * странностями других марок (docs/cameras.md): [sha256] — вход только Digest SHA-256, [wrongHost] — в описании чужой адрес,
+ * [asks] — камера сама спрашивает внутри потока и без ответа рвёт сессию.
  */
 internal class FakeCamera(private val sha256: Boolean = false, private val wrongHost: Boolean = false, private val asks: Boolean = false, path: String = "cam") : Closeable {
     private val server = ServerSocket(0)

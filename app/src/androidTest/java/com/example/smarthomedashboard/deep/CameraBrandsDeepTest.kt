@@ -51,7 +51,6 @@ class CameraBrandsDeepTest {
     }
 
     private fun open(config: DoorbellConfig) {
-        assumeTrue(OLD_EMULATOR, android.os.Build.VERSION.SDK_INT > 29 || config.rtspMain.isBlank())
         assumeTrue("Только эмулятор: тест заменяет данные приложения", isEmulator())
         ha = FakeHomeAssistant()
         val size = JSONObject().put("button_size", 480).put("widget_height", 360).toString()

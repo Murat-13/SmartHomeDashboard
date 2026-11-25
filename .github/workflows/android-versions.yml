@@ -29,7 +29,7 @@ jobs:
         run: |
           cat > all.json <<'JSON'
           [
-            {"name": "Android 7, 10 дюймов", "api": 24, "target": "default", "arch": "x86_64", "profile": "Nexus 10", "what": "class=com.example.smarthomedashboard.deep.PanelEndToEndTest"},
+            {"name": "Android 7, 10 дюймов", "api": 24, "target": "default", "arch": "x86_64", "profile": "Nexus 10", "what": "package=com.example.smarthomedashboard.deep"},
             {"name": "Android 10, 10 дюймов", "api": 29, "target": "default", "arch": "x86_64", "profile": "pixel_c", "what": "package=com.example.smarthomedashboard.deep"},
             {"name": "Android 12, 1024 на 768", "api": 31, "target": "default", "arch": "x86_64", "profile": "Nexus 9", "what": "package=com.example.smarthomedashboard.deep"},
             {"name": "Android 16, планшет", "api": 36, "target": "google_apis", "arch": "x86_64", "profile": "pixel_tablet", "what": "package=com.example.smarthomedashboard.deep"}
