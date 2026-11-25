@@ -421,6 +421,28 @@ class GateDirectTest {
         assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("gs")?.phase)
     }
 
+    /**
+     * Ревью 26.11.2026: «Открыть» ещё ждёт ответа устройства, а человек нажал «Стоп» — прежний запрос обрывается, иначе устройство
+     * могло получить «Стоп», а следом «Открыть».
+     */
+    @Test fun newCommandCancelsOneStillOnTheWay() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("{}").setHeadersDelay(8, java.util.concurrent.TimeUnit.SECONDS))
+        server.start()
+        try {
+            val gate = Gate("g_cancel", "Ворота", Gate.Kind.COVER, link = Gate.Link.DIRECT, direct = Gate.Direct(host = "127.0.0.1:${server.port}"))
+            var result: GateDirect.Result? = null
+            val started = System.nanoTime()
+            val thread = Thread { result = GateDirect.send(gate, Gate.Action.OPEN, null) }.apply { start() }
+            assertNotNull(server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS))
+            GateDirect.cancel(gate.id)
+            thread.join(5_000)
+            assertTrue("прежняя команда оборвана сразу", (System.nanoTime() - started) / 1_000_000 < 4_000)
+            assertEquals(false, result?.ok)
+            assertEquals("исход оборванной команды неизвестен", true, result?.unclear)
+        } finally { runCatching { server.shutdown() } } // сервер ещё держит отложенный ответ
+    }
+
     /** Второй аудит, NEW-GATE-1: «Стоп» не ждёт опрос молчащего соседнего устройства. */
     @Test fun commandsDoNotQueueBehindPolls() {
         val drive = Gate("ga", "Ворота", Gate.Kind.COVER, link = Gate.Link.DIRECT, direct = Gate.Direct(host = "192.0.2.1"))

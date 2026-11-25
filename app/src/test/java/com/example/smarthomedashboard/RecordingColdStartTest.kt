@@ -193,6 +193,36 @@ class RecordingColdStartTest {
         context.deleteDatabase(RecIndex.DB_NAME)
     }
 
+    /**
+     * Ревью 26.11.2026: ★ поставили, пока очистка уже идёт, — служба о ней ещё не знает и «удаляет» файл под прежним именем. Файла под
+     * этим именем нет, но он же со ★ лежит рядом: это не удаление, метки остаются.
+     */
+    @Test fun starSetDuringCleanupKeepsLabels() {
+        context.deleteDatabase(RecIndex.DB_NAME)
+        val cam = tile("cam_star2", RecordingConfig(mode = always, remoteMode = always, keepContinuousDays = 90, keepEventDays = 90))
+        TileManager(context).saveTiles(listOf(cam))
+        RecordingDevice(context).setEnabled(cam.id, true)
+        val camera = RecLayout.cameraKey(cam.id)
+        val event = RecLayout.parse(put(cam.id, RecFile.Kind.EVENT, 3.0), camera)!!
+        RecIndex(context).use { it.add(event, setOf("person")) }
+        val marker = put(cam.id, RecFile.Kind.CONTINUOUS, 400.0)
+        coldStart(marker)
+        val until = System.currentTimeMillis() + 5_000
+        while (RecCatalog.camera(listOf(root), camera)?.any { it.path == event.path } != true && System.currentTimeMillis() < until) Thread.sleep(50)
+        // Переименование уже случилось, а сообщение о нём до службы ещё не дошло.
+        val starred = File(event.path.parentFile, RecLayout.closedName(event.kind, event.startMs, event.durationMs, starred = true))
+        assertTrue(event.path.renameTo(starred))
+        ShadowStatFs.registerStats(root, 100_000, 100_000, 100_000)
+        val newer = RecLayout.parse(put(cam.id, RecFile.Kind.CONTINUOUS, 0.2), camera)!!
+        RecorderService::class.java.getDeclaredMethod("segmentClosed", RecFile::class.java).apply { isAccessible = true }.let { m ->
+            val control = RecorderService::class.java.getDeclaredField("control").apply { isAccessible = true }.get(service!!.get()) as java.util.concurrent.ExecutorService
+            control.submit { m.invoke(service!!.get(), newer) }.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        assertTrue(starred.exists())
+        RecIndex(context).use { assertEquals("метки ролика со ★ на месте", setOf("person"), it.labels(camera, event.startMs)) }
+        context.deleteDatabase(RecIndex.DB_NAME)
+    }
+
     /** Нехватка места по-прежнему важнее срока: удаляется самое старое, ★ не трогается. */
     @Test fun lowSpaceStillDeletesOldestButKeepsStarred() {
         val cam = tile("cam_full", RecordingConfig(mode = always, remoteMode = always, keepContinuousDays = 90))

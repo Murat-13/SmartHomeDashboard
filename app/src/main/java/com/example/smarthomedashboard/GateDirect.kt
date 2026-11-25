@@ -50,7 +50,7 @@ internal object GateDirect {
     }
 
     /** Метка запроса команды: ушла ли она устройству (соединение открыто, запрос отправляется). */
-    private class Sent { @Volatile var sent = false }
+    private class Sent(val gateId: String? = null) { @Volatile var sent = false; @Volatile var call: okhttp3.Call? = null }
 
     /** Ключ пароля прохода в зашифрованном хранилище. */
     fun secretKey(gateId: String) = "gate_$gateId"
@@ -112,9 +112,14 @@ internal object GateDirect {
         }
     }
 
+    /** Идущие команды по проходам — чтобы новая команда могла оборвать прежнюю ([cancel]). */
+    private val running = java.util.concurrent.ConcurrentHashMap<String, okhttp3.Call>()
+
+    fun cancel(gateId: String) { running[gateId]?.cancel() }
+
     fun send(gate: Gate, action: Gate.Action, password: String?): Result {
         val d = gate.direct ?: return Result(false, "связь напрямую не настроена")
-        val sent = Sent()
+        val sent = Sent(gate.id)
         return try {
             when (d.protocol) {
                 Gate.Direct.Protocol.SHELLY -> {
@@ -132,6 +137,8 @@ internal object GateDirect {
             Result(false, "устройство не отвечает", unclear = sent.sent)
         } catch (e: IllegalArgumentException) {
             Result(false, "неверный адрес")
+        } finally {
+            sent.call?.let { running.remove(gate.id, it) }
         }
     }
 
@@ -221,7 +228,8 @@ internal object GateDirect {
     /** Запрос; на 401 с Digest — повтор с ответом на вызов (пароль не уходит по сети открытым). */
     private fun call(command: Request, password: String?, sent: Sent? = null): Response {
         val request = if (sent == null) command else command.newBuilder().tag(Sent::class.java, sent).build()
-        val first = http.newCall(request).execute()
+        fun run(r: Request): Response = http.newCall(r).also { c -> sent?.gateId?.let { running[it] = c; sent.call = c } }.execute()
+        val first = run(request)
         // Логин и пароль в адресе своего запроса (http://логин:пароль@…) важнее сохранённого пароля Shelly.
         val user = request.url.username.ifEmpty { USER }
         val secret = request.url.password.ifEmpty { password.orEmpty() }
@@ -234,7 +242,7 @@ internal object GateDirect {
         val uri = request.url.encodedPath + (request.url.encodedQuery?.let { "?$it" } ?: "")
         // Basic — в прежней кодировке (ISO-8859-1): контроллеры с паролем не из латиницы работают как раньше.
         val header = if (auth.scheme == "Basic") okhttp3.Credentials.basic(user, secret) else auth.header(user, secret, request.method, uri)
-        return http.newCall(request.newBuilder().header("Authorization", header).build()).execute()
+        return run(request.newBuilder().header("Authorization", header).build())
     }
 
     /** Разбор заголовка Digest — для поддельных устройств в тестах; сам ответ на вызов считает [DigestAuth]. */

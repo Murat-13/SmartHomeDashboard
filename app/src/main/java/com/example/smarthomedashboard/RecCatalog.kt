@@ -38,7 +38,8 @@ internal object RecCatalog {
         val cameras = HashMap<String, LinkedHashMap<String, RecFile>>()
         for (f in upToDate(root.path, null, files, since)) if (!f.open) cameras.getOrPut(f.camera) { LinkedHashMap() }[f.path.path] = f
         roots[root.path] = cameras
-        complete += root.path
+        // Обход начат раньше, чем кончается память правок: полным он не считается — следующий исправит.
+        if (since > forgotten) complete += root.path else complete -= root.path
         if (withSizes) sized += root.path else sized -= root.path
         listed.removeAll { it.first == root.path }
     }

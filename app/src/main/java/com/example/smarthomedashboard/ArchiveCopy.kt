@@ -36,6 +36,7 @@ internal object ArchiveCopy {
         val lastRef: String? get() = null
         /** Размер файла по его адресу; null — файла нет или узнать нельзя. */
         fun sizeAt(ref: String): Long? = null
+        fun deleteAt(ref: String) {}
     }
 
     data class Result(val copied: Int, val skipped: Int, val failed: Int, val bytes: Long)
@@ -60,6 +61,8 @@ internal object ArchiveCopy {
             val size = file.path.length()
             if (existing[name] == size || refs[name]?.let(folder::sizeAt) == size) { skipped++; continue }
             if (name in existing) folder.delete(name) // недописанная прошлой ночью копия
+            // Она же, когда список папки пуст: по запомненному адресу — иначе рядом легла бы «… (1).mp4», а оборванная осталась бы.
+            else refs[name]?.let { if (folder.sizeAt(it) != null) folder.deleteAt(it) }
             val ok = try {
                 val input = synchronized(Mp4Finalize.LOCK) { open(file) } ?: throw java.io.IOException("нет файла")
                 input.use { src -> (folder.create(name) ?: throw java.io.IOException("папка не принимает файл")).use { src.copyTo(it, 1 shl 16) } }
@@ -133,6 +136,8 @@ internal object ArchiveCopy {
                 ?: throw java.io.IOException("подпапка не создана")
             if (dir != known) prefs.edit { putString(PREF_DIR, "$tree\n$dir") }
         }
+
+        override fun deleteAt(ref: String) { runCatching { DocumentsContract.deleteDocument(resolver, ref.toUri()) } }
 
         override fun sizeAt(ref: String): Long? = try {
             resolver.query(ref.toUri(), arrayOf(DocumentsContract.Document.COLUMN_SIZE), null, null, null)?.use { c ->

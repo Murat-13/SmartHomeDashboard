@@ -33,6 +33,8 @@ internal object CameraHub {
 
     /** Папка проверочных выключателей `video_debug` ([LiveTuning]); null — неизвестна (тесты, служба не запускалась). */
     @Volatile var debugDir: java.io.File? = null
+    /** Проверочный режим включён сейчас (спрашивается при каждом подключении к камере). */
+    @Volatile var debugAllowed: () -> Boolean = { false }
 
     /** Подключить запись к общему потоку камеры (поток создаётся при первой). Поток управления записью. */
     @Synchronized
@@ -323,7 +325,7 @@ internal class SharedStream(
                 val enc = encoder
                 val probe = ArrivalDelay(video.track.clockRate.takeIf { it > 0 } ?: 90_000)
                 val audioProbe = audioSetup?.track?.clockRate?.takeIf { it > 0 }?.let { ArrivalDelay(it) }
-                trace = ArrivalTrace.open(CameraHub.debugDir, key.url)
+                trace = ArrivalTrace.open(CameraHub.debugDir?.takeIf { CameraHub.debugAllowed() }, key.url)
                 val frames = trace
                 val summary = StreamStats(video.track.clockRate.takeIf { it > 0 } ?: 90_000).also { stats = it }
                 val watch = VideoWatch(CameraHub.videoStallMs)

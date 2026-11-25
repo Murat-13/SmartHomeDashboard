@@ -42,6 +42,8 @@ internal object GateHub {
     interface DirectLink {
         fun send(gate: Gate, action: Gate.Action): GateDirect.Result
         fun poll(gate: Gate): DirectState?
+        /** Оборвать ещё идущую команду проходу (ей на смену пришла другая). */
+        fun cancel(gateId: String) {}
     }
 
     private val shellyLink = object : DirectLink {
@@ -68,6 +70,7 @@ internal object GateHub {
             return if (!loaded.sure && result.detail == GateDirect.WRONG_PASSWORD) result.copy(detail = "пароль не прочитан, повторите") else result
         }
         /** Проверке связи «своего HTTP» пароль не нужен. */
+        override fun cancel(gateId: String) = GateDirect.cancel(gateId)
         override fun poll(gate: Gate) =
             GateDirect.poll(gate, if (gate.direct?.protocol == Gate.Direct.Protocol.HTTP) null else load(gate).value)
     }
@@ -230,6 +233,8 @@ internal object GateHub {
         val link = direct
         // Команда не стоит в очереди за опросами молчащих устройств («Стоп» ждал бы до 6 с) и не уходит, если её время вышло
         // (второй аудит 25.11.2026, NEW-GATE-1).
+        // Прежняя команда ещё в пути (ждёт соединения) — обрываем: иначе «Стоп» пришёл бы раньше «Открыть» (ревью 26.11.2026).
+        if (current.containsKey(gate.id)) link.cancel(gate.id)
         current[gate.id] = started
         commands.execute {
             if (current[gate.id] != started) { Log.i(TAG, "${gate.name}: команда устарела — не отправлена"); return@execute }

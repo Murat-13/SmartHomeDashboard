@@ -449,9 +449,11 @@ class RecordingArchiveTest {
         val folder = object : ArchiveCopy.Folder {
             override var lastRef: String? = null
             override fun sizes() = if (listed) stored.mapValues { it.value.size().toLong() } else emptyMap()
-            override fun create(name: String) = java.io.ByteArrayOutputStream().also { stored[name] = it; lastRef = "ref:$name"; created++ }
+            // Как хранилище Android: имя занято — файл ложится рядом как «имя (1)».
+            override fun create(name: String) = java.io.ByteArrayOutputStream().also { val key = if (name in stored) "$name (1)" else name; stored[key] = it; lastRef = "ref:$key"; created++ }
             override fun delete(name: String) { stored.remove(name) }
             override fun sizeAt(ref: String) = stored[ref.removePrefix("ref:")]?.size()?.toLong()
+            override fun deleteAt(ref: String) { stored.remove(ref.removePrefix("ref:")) }
         }
         val files = listOf("Домофон" to f1, "Домофон" to f2)
         val refs = HashMap<String, String>()
@@ -461,6 +463,10 @@ class RecordingArchiveTest {
         assertEquals(2, created)
         stored.remove(ArchiveCopy.nameFor("Домофон", f1))
         assertEquals("удалённая владельцем копия делается заново", 1, ArchiveCopy.copy(files, folder, refs).copied)
+        // Оборванная копия при пустом списке папки: заменяется по своему адресу, второй файл рядом не появляется.
+        stored[ArchiveCopy.nameFor("Домофон", f2)] = java.io.ByteArrayOutputStream().apply { write(ByteArray(7)) }
+        assertEquals(1, ArchiveCopy.copy(files, folder, refs).copied)
+        assertEquals(listOf(100, 100), stored.values.map { it.size() })
         ArchiveCopy.copy(files.take(1), folder, refs)
         assertEquals("сняли ★ — адрес забыт", setOf(ArchiveCopy.nameFor("Домофон", f1)), refs.keys)
     }

@@ -109,7 +109,10 @@ class RecorderService : Service() {
             addDataScheme("file")
         }, null, Handler(mediaThread.looper), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         RecCatalog.onEdit = catalogEdits
-        control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.takeIf { DebugSwitches.allowed(this) }?.let { java.io.File(it, "video_debug") } } }
+        // Папка известна всегда, а разрешение (проверочный режим) спрашивается при каждом открытии записи прихода кадров.
+        val app = applicationContext
+        CameraHub.debugAllowed = { DebugSwitches.allowed(app) }
+        control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.let { java.io.File(it, "video_debug") } } }
         // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
         control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
         control.scheduleWithFixedDelay({ safe { refreshStorage() } }, 0, STORAGE_REFRESH_S, TimeUnit.SECONDS)
@@ -420,7 +423,9 @@ class RecorderService : Service() {
         }, now, free, limit, device.reserveGb * RecRetention.GB)
         // Файла нет — удалён, только если сам носитель на месте: на вынутой карте он недоступен, и его метки ещё нужны.
         val present = File(root, RecLayout.ROOT).isDirectory
-        val deleted = plan.delete.filter { f -> (f.path.delete() || present && !f.path.exists()).also { if (it) files.remove(f) } }
+        // Файла под прежним именем нет, а рядом лежит он же со ★ (её только что поставили в архиве): это не удаление — метки остаются.
+        fun starredNow(f: RecFile) = File(f.path.parentFile, RecLayout.closedName(f.kind, f.startMs, f.durationMs, starred = true)).exists()
+        val deleted = plan.delete.filter { f -> (f.path.delete() || present && !f.path.exists() && !starredNow(f)).also { if (it) files.remove(f) } }
         RecCatalog.remove(deleted)
         try { index.remove(deleted) } catch (e: Exception) { Log.w(TAG, "Запись: индекс событий: ${e.javaClass.simpleName}") }
         if (plan.delete.isNotEmpty()) {
