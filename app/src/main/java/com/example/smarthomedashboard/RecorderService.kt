@@ -276,6 +276,7 @@ class RecorderService : Service() {
     private fun segmentClosed(file: RecFile) {
         // Обход носителя мог уже найти этот файл (закрылся, пока шёл обход после запуска) — не считать дважды.
         if (files.none { it.path == file.path }) files += file
+        RecCatalog.add(file)
         retention(forceScan = false)
     }
 
@@ -294,7 +295,9 @@ class RecorderService : Service() {
         val now = System.currentTimeMillis()
         if (forceScan || now - lastScan > 6 * 3_600_000L) {
             files.clear()
+            val since = RecCatalog.mark()
             files += RecLayout.scan(root)
+            RecCatalog.publish(root, files, since)
             lastScan = now
             try { reconcileIndex(root) } catch (e: Exception) { Log.w(TAG, "Запись: сверка индекса: ${e.javaClass.simpleName}") }
         }
@@ -308,6 +311,7 @@ class RecorderService : Service() {
             RecRetention.Rules(c.keepContinuousDays * 86_400_000L, c.keepEventDays * 86_400_000L)
         }, now, free, limit, device.reserveGb * RecRetention.GB)
         val deleted = plan.delete.filter { f -> (f.path.delete() || !f.path.exists()).also { if (it) files.remove(f) } }
+        RecCatalog.remove(deleted)
         try { index.remove(deleted) } catch (e: Exception) { Log.w(TAG, "Запись: индекс событий: ${e.javaClass.simpleName}") }
         if (plan.delete.isNotEmpty()) {
             Log.i(TAG, "Запись: удалено отрезков ${plan.delete.size}")
@@ -331,7 +335,12 @@ class RecorderService : Service() {
             Log.i(TAG, "Запись: не все носители доступны — сверка индекса меток отложена")
             return
         }
-        val others = dirs.filterNotNull().filter { it.absolutePath != root.absolutePath }.flatMap { RecLayout.scan(it) }
+        val others = dirs.filterNotNull().filter { it.absolutePath != root.absolutePath }
+            .flatMap { dir ->
+                // Размеры второго носителя не нужны: сверке меток и архиву хватает имён.
+                val since = RecCatalog.mark()
+                RecLayout.scan(dir, sized = false).also { RecCatalog.publish(dir, it, since, withSizes = false) }
+            }
         index.reconcile(files + others)
     }
 

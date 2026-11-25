@@ -92,6 +92,29 @@ class RecordingColdStartTest {
         assertTrue("записи открыты до обхода носителя: потоков $streamsAtWalk", streamsAtWalk > 0)
     }
 
+    /** Архив открывается сразу (25.11.2026): служба отдаёт список записей в память и дальше ведёт его сама. */
+    @Test fun serviceKeepsCatalogOfRecordings() {
+        RecCatalog.clear()
+        val cam = tile("cam_list", RecordingConfig(mode = always, remoteMode = always))
+        TileManager(context).saveTiles(listOf(cam))
+        RecordingDevice(context).setEnabled(cam.id, true)
+        val kept = put(cam.id, RecFile.Kind.EVENT, 2.0)
+        val marker = put(cam.id, RecFile.Kind.CONTINUOUS, 400.0)
+        coldStart(marker)
+        val camera = RecLayout.cameraKey(cam.id)
+        fun known() = RecCatalog.camera(listOf(root), camera)?.map { it.path.path }
+        val until = System.currentTimeMillis() + 5_000
+        while (known() != listOf(kept.path) && System.currentTimeMillis() < until) Thread.sleep(50)
+        assertEquals("удалённого очисткой нет, остальное есть", listOf(kept.path), known())
+        assertEquals("размеры — для оценки места", listOf(100L), RecCatalog.files(root)?.map { it.bytes })
+        // Закончился ролик события — он в списке без нового обхода.
+        val clip = put(cam.id, RecFile.Kind.EVENT, 0.1)
+        val file = RecLayout.parse(clip, camera)!!
+        val method = RecorderService::class.java.getDeclaredMethod("segmentClosed", RecFile::class.java).apply { isAccessible = true }
+        method.invoke(service!!.get(), file)
+        assertEquals(setOf(kept.path, clip.path), known()?.toSet())
+    }
+
     @Test fun lowSpaceCleansBeforeRecording() {
         ShadowStatFs.registerStats(root, 1_000_000, 1_000, 1_000) // свободно меньше остатка
         val cam = streamingTile("cam_low")

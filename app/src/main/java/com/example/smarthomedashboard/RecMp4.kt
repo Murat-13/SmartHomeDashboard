@@ -222,6 +222,17 @@ internal object Mp4Finalize {
         }
     }
 
+    /** Уже проверенные файлы: обычный MP4, повторно не открываются (путь меняется вместе с ★ и длительностью). */
+    private val checked = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Поставить в очередь, если файл ещё без оглавления; проверенный в этом запуске не открывается снова. */
+    fun enqueueIfNeeded(file: File) {
+        if (file.path in checked) return
+        // Файл могла удалить очистка, пока до него дошла очередь.
+        val fragmented = try { isFragmented(file) } catch (_: java.io.IOException) { return }
+        if (fragmented) enqueue(file) else checked.add(file.path)
+    }
+
     /** Файл сейчас в очереди или перекладывается (его временный `.remux` трогать нельзя). */
     fun pending(file: File) = file.path in pending
 

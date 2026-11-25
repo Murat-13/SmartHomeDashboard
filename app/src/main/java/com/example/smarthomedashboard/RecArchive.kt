@@ -24,13 +24,51 @@ internal class RecArchive(private val context: Context, private val roots: () ->
     }
 
     data class Snapshot(val continuous: List<RecFile>, val events: List<Event>) {
-        /** Дни (локальное начало суток), где есть хоть что-то; новые первыми. */
-        val days: List<Long> get() = (continuous.map { it.startMs } + events.map { it.file.startMs })
-            .map(::dayStart).distinct().sortedDescending()
+        /** Дни (локальное начало суток), где есть хоть что-то; новые первыми. Считается один раз — календарь только на смене дня. */
+        val days: List<Long> by lazy {
+            val out = ArrayList<Long>()
+            var until = Long.MIN_VALUE
+            for (t in (continuous.map { it.startMs } + events.map { it.file.startMs }).sorted()) {
+                if (t < until) continue
+                val day = dayStart(t)
+                if (out.lastOrNull() != day) out += day
+                until = ArchiveTimeline.nextDay(day)
+            }
+            out.reversed()
+        }
     }
 
+    /** Записи камеры из памяти ([RecCatalog]), без носителя; null — он ещё не обойдён. */
+    fun known(camera: String): Snapshot? = RecCatalog.camera(roots(), camera)?.let { snapshot(camera, it) }
+
+    /** Записи последних дней камеры — по именам файлов: первое, что видно, пока читается остальное. */
+    fun recent(camera: String): Snapshot {
+        val days = roots().flatMap { RecLayout.dayDirs(it, camera) }
+        val last = days.map { it.name }.distinct().sortedDescending().take(RECENT_DAYS)
+        return snapshot(camera, days.filter { it.name in last }.flatMap { RecLayout.names(it, camera) })
+    }
+
+    /** Все записи камеры с носителей — по именам файлов (размеры архиву не нужны). */
     fun load(camera: String): Snapshot {
-        val files = roots().flatMap { RecLayout.scan(it) }.filter { it.camera == camera && !it.open && it.durationMs > 0 }
+        val roots = roots()
+        val files = roots.flatMap { root ->
+            val since = RecCatalog.mark()
+            RecLayout.dayDirs(root, camera).flatMap { RecLayout.names(it, camera) }.also { RecCatalog.publishCamera(root, camera, it, since) }
+        }
+        // Из памяти — с учётом удалений и ★, сделанных за время чтения.
+        return snapshot(camera, RecCatalog.camera(roots, camera) ?: files)
+    }
+
+    /** Сверить память с носителем; true — записи камеры изменились. Нечего сверять — false. */
+    fun verify(camera: String): Boolean {
+        val since = RecCatalog.mark()
+        val roots = roots()
+        val listed = roots.flatMap { root -> RecLayout.dayDirs(root, camera).flatMap { RecLayout.names(it, camera) } }
+        return RecCatalog.reconcile(roots, camera, listed, since)
+    }
+
+    private fun snapshot(camera: String, all: List<RecFile>): Snapshot {
+        val files = all.filter { !it.open && it.durationMs > 0 }
         val labels = try { index()?.events(camera)?.associate { it.startMs to it.labels } } catch (_: Exception) { null }.orEmpty()
         return Snapshot(
             continuous = files.filter { it.kind == RecFile.Kind.CONTINUOUS }.sortedBy { it.startMs },
@@ -44,11 +82,13 @@ internal class RecArchive(private val context: Context, private val roots: () ->
         if (file.starred == starred) return file
         val target = File(file.path.parentFile, RecLayout.closedName(file.kind, file.startMs, file.durationMs, starred))
         val ok = synchronized(Mp4Finalize.LOCK) { file.path.renameTo(target) }
-        return if (ok) file.copy(path = target, starred = starred) else null
+        if (!ok) return null
+        return file.copy(path = target, starred = starred).also { RecCatalog.replace(file, it) }
     }
 
     fun delete(file: RecFile): Boolean {
         val ok = synchronized(Mp4Finalize.LOCK) { file.path.delete() || !file.path.exists() }
+        if (ok) RecCatalog.remove(listOf(file))
         if (ok) try { index()?.remove(listOf(file)) } catch (_: Exception) {}
         thumbFile(file).delete()
         return ok
@@ -118,6 +158,8 @@ internal class RecArchive(private val context: Context, private val roots: () ->
 
     companion object {
         const val SHARE_DIR = "archive_share"
+        /** Дней (UTC) в первой порции: местные сутки лежат в двух папках. */
+        private const val RECENT_DAYS = 2
 
         fun shareName(title: String, startMs: Long): String {
             val safe = title.ifBlank { DoorbellConfig.DEFAULT_TITLE }.replace(Regex("[\\\\/:*?\"<>|]"), " ").trim()

@@ -110,6 +110,7 @@ import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -254,32 +255,84 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         super.onDestroy()
     }
 
-    /** Прочитать диск; [latest] — сразу открыть последний ролик (из окна звонка); [at] — встать на этот момент. */
+    /** Готовое к показу (считается в фоне): записи, дни и шкала. */
+    private class Prepared(val snapshot: RecArchive.Snapshot, val filter: String?) {
+        val days = snapshot.days
+        val timeline = timelineOf(snapshot, filter)
+    }
+
+    /**
+     * Показать записи; [latest] — сразу открыть последний ролик (из окна звонка); [at] — встать на этот момент. Список — из памяти
+     * ([RecCatalog]), сразу; в первые секунды после запуска приложения её ещё нет — тогда сначала последние дни, остальное следом.
+     * Живой поток списка не ждёт (25.11.2026: при 7,5 тысячи файлов всё ждало обхода 5–10 с).
+     */
     private fun reload(latest: Boolean = false, keepDay: Long? = ui.value.day, at: Long? = null, now: Boolean = false) {
         ui.value = ui.value.copy(loading = true)
         loadRings()
         loadJob?.cancel()
         storageJob?.cancel()
+        // Решение владельца 23.11.2026: «при переходе в архив пусть сразу показывает текущий поток».
+        if (now && liveSource != null) goLive()
+        val started = android.os.SystemClock.elapsedRealtime()
         loadJob = lifecycleScope.launch {
             val camera = RecLayout.cameraKey(tileId)
-            snapshot = withContext(Dispatchers.IO) { loadHook?.invoke(camera) { archive.load(camera) } ?: archive.load(camera) }
-            val days = snapshot.days
-            val selected = (at?.let(RecArchive::dayStart) ?: keepDay)?.takeIf { it in days } ?: days.firstOrNull()
-            ui.value = ui.value.copy(timeline = timelineOf(ui.value.filter))
-            selectDay(selected, days, recenter = ui.value.center == null)
-            when {
-                at != null -> openMoment(at)
-                latest -> snapshot.events.firstOrNull()?.let { play(it) }
-                // Решение владельца 23.11.2026: «при переходе в архив пусть сразу показывает текущий поток».
-                now -> if (liveSource != null) goLive()
-                    else ArchiveTimeline.latest(snapshot.continuous, snapshot.events)?.let { goTo(it - NOW_BACK_MS, true) }
+            var shown = false
+            var placed = false
+            fun show(p: Prepared, complete: Boolean) {
+                snapshot = p.snapshot
+                if (!shown) {
+                    shown = true
+                    val selected = (at?.let(RecArchive::dayStart) ?: keepDay)?.takeIf { it in p.days } ?: p.days.firstOrNull()
+                    ui.value = ui.value.copy(timeline = if (p.filter == ui.value.filter) p.timeline else timelineOf(p.snapshot, ui.value.filter))
+                    selectDay(selected, p.days, recenter = ui.value.center == null && !ui.value.live)
+                } else refresh(p)
+                // Момент мог быть в ещё не прочитанном дне; последний ролик и «Сейчас» — в последних днях.
+                if (placed || !complete && (at != null || latest && p.snapshot.events.isEmpty())) return
+                placed = true
+                when {
+                    at != null -> {
+                        RecArchive.dayStart(at).takeIf { it in p.days && it != ui.value.day }?.let { selectDay(it, p.days) }
+                        openMoment(at)
+                    }
+                    latest -> p.snapshot.events.firstOrNull()?.let { play(it) }
+                    now && liveSource == null -> ArchiveTimeline.latest(p.snapshot.continuous, p.snapshot.events)?.let { goTo(it - NOW_BACK_MS, true) }
+                }
+            }
+            val filter = ui.value.filter
+            var memory = false
+            val all = withContext(Dispatchers.IO) {
+                archive.known(camera)?.let { memory = true; return@withContext Prepared(it, filter) }
+                val part = Prepared(archive.recent(camera), filter)
+                // Показывается раньше остального: блок закончится только после него.
+                if (part.days.isNotEmpty()) launch(Dispatchers.Main) { show(part, complete = false) }
+                Prepared(loadHook?.invoke(camera) { archive.load(camera) } ?: archive.load(camera), filter)
+            }
+            show(all, complete = true)
+            android.util.Log.i("Archive", "Список записей через ${android.os.SystemClock.elapsedRealtime() - started} мс: файлов " +
+                "${all.snapshot.continuous.size + all.snapshot.events.size}, ${if (memory) "из памяти" else "с носителя"}")
+            loadStorage()
+            // Память сверяется с носителем в фоне, не чаще раза в [VERIFY_EVERY_MS]: файл могли убрать не из приложения.
+            if (memory && verifyDue(camera)) {
+                delay(VERIFY_DELAY_MS)
+                val now = ui.value.filter
+                withContext(Dispatchers.IO) {
+                    if (try { archive.verify(camera) } catch (_: Exception) { false }) archive.known(camera)?.let { Prepared(it, now) } else null
+                }?.let(::refresh)
             }
             // Ролики, записанные до появления оглавления (или если оно не успело записаться), — в очередь: после
             // этого в них работает перемотка. Сначала события (новые первыми), затем 24/7 выбранного дня.
-            val files = snapshot.events.map { it.file } + snapshot.continuous.filter { RecArchive.dayStart(it.startMs) == selected }.reversed()
-            withContext(Dispatchers.IO) { files.forEach { f -> if (Mp4Finalize.isFragmented(f.path)) Mp4Finalize.enqueue(f.path) } }
-            loadStorage()
+            val day = ui.value.day?.let { it until ArchiveTimeline.nextDay(it) }
+            val files = snapshot.events.map { it.file } + snapshot.continuous.filter { day != null && it.startMs in day }.reversed()
+            withContext(Dispatchers.IO) { for (f in files) { ensureActive(); Mp4Finalize.enqueueIfNeeded(f.path) } }
         }
+    }
+
+    /** Список изменился, пока архив открыт: то же место, тот же день или неделя, плеер не трогается. */
+    private fun refresh(p: Prepared) {
+        snapshot = p.snapshot
+        val day = ui.value.day?.takeIf { it in p.days } ?: p.days.firstOrNull()
+        ui.value = ui.value.copy(loading = false, days = p.days, day = day, events = filtered(day, ui.value.filter),
+            timeline = if (p.filter == ui.value.filter) p.timeline else timelineOf(p.snapshot, ui.value.filter))
     }
 
     private fun loadStorage() {
@@ -317,32 +370,16 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
             events = filtered(selected, ui.value.filter, week = false), center = center)
     }
 
-    private fun filtered(dayStart: Long?, filter: String?, week: Boolean = ui.value.week) = snapshot.events.filter { e ->
-        val inRange = if (week) e.file.startMs >= weekStart() else (dayStart == null || RecArchive.dayStart(e.file.startMs) == dayStart)
-        inRange && (filter == null || filter in e.labels)
+    private fun filtered(dayStart: Long?, filter: String?, week: Boolean = ui.value.week): List<RecArchive.Event> {
+        val range = if (week) weekStart()..Long.MAX_VALUE else dayStart?.let { it until ArchiveTimeline.nextDay(it) }
+        return snapshot.events.filter { e -> (range == null || e.file.startMs in range) && (filter == null || filter in e.labels) }
     }
 
     /** Начало недели для «Неделя»: полночь шесть дней назад (сегодня и 6 дней до него). */
     private fun weekStart(): Long = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_MONTH, -6) }
         .let { RecArchive.dayStart(it.timeInMillis) }
 
-    /** Шкала целиком (все дни): участки 24/7 и ролики событий с их длительностью. */
-    private fun timelineOf(filter: String?): ArchiveUi.Timeline {
-        val segments = snapshot.continuous.sortedBy { it.startMs }
-        val coverage = buildList {
-            var start = -1L
-            var end = -1L
-            for (s in segments) {
-                if (start >= 0 && s.startMs - end <= ArchiveDay.GAP_MS) { end = maxOf(end, s.endMs); continue }
-                if (start >= 0) add(start until end)
-                start = s.startMs; end = s.endMs
-            }
-            if (start >= 0) add(start until end)
-        }
-        val events = snapshot.events.filter { filter == null || filter in it.labels }
-            .map { ArchiveUi.Mark(it.file.startMs, it.file.endMs, it.labels.firstOrNull() ?: "") }
-        return ArchiveUi.Timeline(coverage, events)
-    }
+    private fun timelineOf(filter: String?) = timelineOf(snapshot, filter)
 
     // ---- Плеер ----
 
@@ -817,6 +854,36 @@ class ArchiveActivity : AppCompatActivity(), PanelIdle.Busy {
         /** Для тестов: обёртка чтения диска камеры на фоновом потоке (задать порядок завершения чтений). */
         @VisibleForTesting @Volatile
         internal var loadHook: ((camera: String, load: () -> RecArchive.Snapshot) -> RecArchive.Snapshot)? = null
+
+        /** Когда память камеры последний раз сверена с носителем (этим запуском приложения). */
+        private val verified = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        private const val VERIFY_EVERY_MS = 10 * 60_000L
+        private const val VERIFY_DELAY_MS = 3_000L
+        private fun verifyDue(camera: String): Boolean {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val last = verified[camera]
+            if (last != null && now - last < VERIFY_EVERY_MS) return false
+            verified[camera] = now
+            return true
+        }
+
+        /** Шкала целиком (все дни): участки 24/7 и ролики событий с их длительностью. */
+        private fun timelineOf(snapshot: RecArchive.Snapshot, filter: String?): ArchiveUi.Timeline {
+            val segments = snapshot.continuous.sortedBy { it.startMs }
+            val coverage = buildList {
+                var start = -1L
+                var end = -1L
+                for (s in segments) {
+                    if (start >= 0 && s.startMs - end <= ArchiveDay.GAP_MS) { end = maxOf(end, s.endMs); continue }
+                    if (start >= 0) add(start until end)
+                    start = s.startMs; end = s.endMs
+                }
+                if (start >= 0) add(start until end)
+            }
+            val events = snapshot.events.filter { filter == null || filter in it.labels }
+                .map { ArchiveUi.Mark(it.file.startMs, it.file.endMs, it.labels.firstOrNull() ?: "") }
+            return ArchiveUi.Timeline(coverage, events)
+        }
 
         /** Миниатюра ролика — с камерой: имена файлов у разных камер могут совпасть. */
         internal fun thumbKey(file: RecFile) = "${file.camera}/${file.path.name}"

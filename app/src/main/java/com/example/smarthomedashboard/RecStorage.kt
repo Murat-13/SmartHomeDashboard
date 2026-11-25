@@ -187,13 +187,14 @@ internal object RecLayout {
     fun closedName(kind: RecFile.Kind, startMs: Long, durationMs: Long, starred: Boolean = false) =
         "${kind.prefix}_${startMs}_${durationMs.coerceAtLeast(0)}${if (starred) "_s" else ""}.mp4"
 
-    fun parse(file: File, camera: String): RecFile? {
+    /** [sized] = false — без обращения к файлу (только имя): тысячи обращений на SD-карте — секунды; размер тогда 0. */
+    fun parse(file: File, camera: String, sized: Boolean = true): RecFile? {
         val m = NAME.matchEntire(file.name) ?: return null
         val kind = if (m.groupValues[1] == "e") RecFile.Kind.EVENT else RecFile.Kind.CONTINUOUS
         val start = m.groupValues[2].toLongOrNull() ?: return null
         val open = m.groupValues[5].isNotEmpty()
         val duration = m.groupValues[3].toLongOrNull() ?: 0L
-        return RecFile(file, camera, kind, start, duration, file.length(), m.groupValues[4].isNotEmpty(), open)
+        return RecFile(file, camera, kind, start, duration, if (sized) file.length() else 0L, m.groupValues[4].isNotEmpty(), open)
     }
 
     /**
@@ -222,18 +223,26 @@ internal object RecLayout {
     }
 
     /** Все файлы записей под [root] (по всем камерам и дням). */
-    fun scan(root: File): List<RecFile> {
+    fun scan(root: File, sized: Boolean = true): List<RecFile> {
         val base = File(root, ROOT)
         val out = mutableListOf<RecFile>()
         base.listFiles()?.forEach { camDir ->
             if (!camDir.isDirectory) return@forEach
             camDir.listFiles()?.forEach { dayDir ->
                 if (!dayDir.isDirectory) return@forEach
-                dayDir.listFiles()?.forEach { f -> parse(f, camDir.name)?.let { out += it } }
+                dayDir.listFiles()?.forEach { f -> parse(f, camDir.name, sized)?.let { out += it } }
             }
         }
         return out.sortedBy { it.startMs }
     }
+
+    /** Папки дней камеры под [root] (имя — день UTC), без обращения к файлам. */
+    fun dayDirs(root: File, camera: String): List<File> =
+        File(File(root, ROOT), camera).listFiles()?.filter { DAY.matches(it.name) }.orEmpty()
+    private val DAY = Regex("\\d{4}-\\d{2}-\\d{2}")
+
+    /** Записи папки дня — по одним именам. */
+    fun names(dayDir: File, camera: String): List<RecFile> = dayDir.listFiles()?.mapNotNull { parse(it, camera, sized = false) }.orEmpty()
 
     /**
      * Недописанные отрезки после падения: обрезать по последнему целому фрагменту и переименовать в закрытые.
@@ -248,7 +257,7 @@ internal object RecLayout {
             }
         } }
         var fixed = 0
-        for (f in scan(root)) {
+        for (f in scan(root, sized = false)) {
             if (!f.open || f.path.path in skip) continue
             // Время последней записи — до обрезки: обрезка сама меняет время изменения файла.
             val modified = f.path.lastModified()
@@ -515,7 +524,7 @@ internal object RecVolumes {
     fun snapshot(context: Context, useSd: Boolean): Snapshot {
         val target = target(context, useSd)
         val root = target.root ?: return Snapshot(emptyList(), 0, target.fallback)
-        return Snapshot(RecLayout.scan(root), freeBytes(root), target.fallback)
+        return Snapshot(RecCatalog.files(root) ?: RecLayout.scan(root), freeBytes(root), target.fallback)
     }
 
     /** Оценка места при лимите [limitGb] и остатке [reserveGb] (настройки этого планшета или ещё не сохранённые). */
