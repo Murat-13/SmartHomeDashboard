@@ -14,7 +14,7 @@ import org.robolectric.annotation.Config
 
 /** Подписка на сеть не держит экран: сервис берётся у приложения (Android 12, утечка при повороте 25.11.2026). */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [31])
+@Config(sdk = [34])
 class InternetMonitorTest {
     @Test fun connectivityBelongsToApplicationNotScreen() {
         val app: Context = RuntimeEnvironment.getApplication()
