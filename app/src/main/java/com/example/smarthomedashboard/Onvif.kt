@@ -422,7 +422,15 @@ internal object Onvif {
         fun texts(): List<String> = listOf(text) + children.flatMap { it.texts() }
     }
 
-    fun parse(xml: String): Node {
+    /**
+     * Испорченный ответ — всегда [OnvifException]: разборщик Android на части документов бросает не свою ошибку разбора, а обычный
+     * RuntimeException («Undefined Prefix»), и поток, ждущий только ошибку связи, закрыл бы приложение (фаззинг 26.11.2026).
+     */
+    fun parse(xml: String): Node = try { parseTree(xml) } catch (e: OnvifException) { throw e
+    } catch (_: org.xmlpull.v1.XmlPullParserException) { throw OnvifException("Ответ камеры не разобран")
+    } catch (_: RuntimeException) { throw OnvifException("Ответ камеры не разобран") }
+
+    private fun parseTree(xml: String): Node {
         val parser = android.util.Xml.newPullParser()
         parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
         parser.setInput(java.io.StringReader(xml))

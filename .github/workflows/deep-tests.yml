@@ -49,7 +49,7 @@ jobs:
 
       - name: Хаос панели и фальшивый HA с мусором
         run: >
-          ./gradlew testDebugUnitTest --tests '*PanelChaosTest*' --tests '*HaProtocolFuzzTest*' --tests '*EditorChaosTest*'
+          ./gradlew testDebugUnitTest --tests '*PanelChaosTest*' --tests '*HaProtocolFuzzTest*' --tests '*EditorChaosTest*' --tests '*ParserFuzzTest*'
           --tests '*DataCompatibilityTest*' -Ptest.maxHeap=3g
           -Pchaos.iterations=${{ github.event_name == 'schedule' && '1500' || inputs.chaos_iterations || '300' }} --stacktrace
       # Известные уязвимости библиотек рабочей сборки по базе OSV (docs/ci.md); принятые — в .github/osv-ignore.txt.

@@ -478,6 +478,7 @@ internal class ImaAdpcm {
     companion object {
         /** Как блок услышит домофон: декодирование DVI4 (состояние — из заголовка блока) в [out]. */
         fun decode(block: ByteArray, out: ShortArray) {
+            if (block.size < 4) return
             var predictor = ((block[1].toInt() shl 8) or (block[0].toInt() and 0xFF)).toShort().toInt()
             var index = (block[2].toInt() and 0xFF).coerceIn(0, 88)
             var o = 0

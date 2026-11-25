@@ -137,7 +137,8 @@ internal object WsDiscovery {
         var ok = true
         while (ok && parser.next() != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) ok = parser.depth <= MAX_DEPTH
         ok
-    } catch (_: org.xmlpull.v1.XmlPullParserException) { false } catch (_: java.io.IOException) { false }
+    } catch (_: org.xmlpull.v1.XmlPullParserException) { false } catch (_: java.io.IOException) { false
+    } catch (_: RuntimeException) { false } // разборщик Android на части испорченных документов бросает и такое (фаззинг 26.11.2026)
 
     private const val MAX_NAME = 60
     private const val MAX_DEPTH = 32
