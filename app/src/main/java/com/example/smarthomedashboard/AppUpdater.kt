@@ -171,7 +171,8 @@ internal object AppUpdater {
     const val CHECK_HOURS = 6L
     private const val WORK = "update_check"
 
-    enum class State { NONE, UP_TO_DATE, READY, ERROR }
+    /** [WAITING] — новая версия есть, но до этого планшета постепенный выпуск ещё не дошёл. */
+    enum class State { NONE, UP_TO_DATE, WAITING, READY, ERROR }
 
     data class Status(
         val state: State,
@@ -255,11 +256,51 @@ internal object AppUpdater {
 
     private val lock = ReentrantLock()
 
-    /** Одна проверка. Параллельный вызов (фон + кнопка) не запускает вторую загрузку, а возвращает текущий статус. */
-    fun check(context: Context, deps: Deps = deps(context), now: Long = System.currentTimeMillis()): Status {
+    /**
+     * Постепенный выпуск стабильного канала (решение владельца 25.11.2026: 10 → 50 → 100 % за три дня): первые сутки после того, как
+     * планшет увидел версию, её берёт каждый десятый, вторые — половина, дальше — все. Доля — случайное число планшета, ни к чему не
+     * привязанное. «Проверить сейчас» — сразу; тестовый канал — сразу всем. Выпуск отозвали — до остальных он не дойдёт.
+     */
+    internal object Rollout {
+        private const val KEY_BUCKET = "update_bucket"
+        private const val KEY_SEEN = "update_seen_"
+        private const val DAY_MS = 24 * 3_600_000L
+        private const val FIRST = 10
+        private const val SECOND = 50
+        internal var random: () -> Int = { java.security.SecureRandom().nextInt(100) }
+
+        fun share(sinceMs: Long) = when { sinceMs < DAY_MS -> FIRST; sinceMs < 2 * DAY_MS -> SECOND; else -> 100 }
+
+        fun bucket(context: Context): Int {
+            val p = prefs(context)
+            val saved = p.getInt(KEY_BUCKET, -1)
+            if (saved in 0..99) return saved
+            return random().coerceIn(0, 99).also { p.edit { putInt(KEY_BUCKET, it) } }
+        }
+
+        /** Сколько ещё ждать версию [code]; 0 — можно. Первая встреча запоминается. */
+        fun waitMs(context: Context, code: Long, now: Long): Long {
+            val p = prefs(context)
+            val key = KEY_SEEN + code
+            var seen = p.getLong(key, 0)
+            // Часы планшета перевели назад — считать заново.
+            if (seen <= 0 || seen > now) {
+                seen = now
+                p.edit { p.all.keys.filter { it.startsWith(KEY_SEEN) && it != key }.forEach { remove(it) }; putLong(key, now) }
+            }
+            val mine = when { bucket(context) < FIRST -> 0L; bucket(context) < SECOND -> DAY_MS; else -> 2 * DAY_MS }
+            return (seen + mine - now).coerceAtLeast(0)
+        }
+    }
+
+    /**
+     * Одна проверка. Параллельный вызов (фон + кнопка) не запускает вторую загрузку, а возвращает текущий статус.
+     * [manual] — «Проверить сейчас»: постепенный выпуск ([Rollout]) не ждёт.
+     */
+    fun check(context: Context, deps: Deps = deps(context), now: Long = System.currentTimeMillis(), manual: Boolean = false): Status {
         if (!lock.tryLock()) return status(context)
         return try {
-            runCheck(context, deps, now)
+            runCheck(context, deps, now, manual)
         } catch (_: Exception) {
             fail(context, now, "непредвиденная ошибка проверки")
         } finally {
@@ -267,7 +308,7 @@ internal object AppUpdater {
         }
     }
 
-    private fun runCheck(context: Context, deps: Deps, now: Long): Status {
+    private fun runCheck(context: Context, deps: Deps, now: Long, manual: Boolean): Status {
         val prefs = prefs(context)
         val installed = deps.apk.installed() ?: return fail(context, now, "не удалось прочитать установленную версию")
         val previous = status(context)
@@ -290,6 +331,17 @@ internal object AppUpdater {
         if (release == null) {
             clean(deps.dir)
             return save(context, Status(State.UP_TO_DATE, "установлена последняя версия", lastCheck = now), sha = null)
+        }
+        // Уже скачанное по кнопке постепенный выпуск не отбирает.
+        val mine = previous.state == State.READY && previous.versionCode == release.versionCode
+        if (!manual && !mine && channel(context) == UpdateChannel.STABLE) {
+            val wait = Rollout.waitMs(context, release.versionCode, now)
+            if (wait > 0) {
+                clean(deps.dir)
+                val hours = ((wait + 3_599_999) / 3_600_000).coerceAtLeast(1)
+                return save(context, Status(State.WAITING, "версия ${release.versionName} дойдёт до этого планшета через $hours ч (постепенный выпуск), «Проверить сейчас» — сразу",
+                    release.versionName, release.versionCode, now), sha = null)
+            }
         }
         if (release.apkSize > MAX_APK_BYTES) return fail(context, now, "файл обновления ${release.versionName} слишком большой")
         val expected = release.sha256 ?: release.sha256Url?.let { url ->
@@ -383,6 +435,7 @@ internal object AppUpdater {
         return when (status.state) {
             State.READY -> ModernUi.Status.PROGRESS to "Обновление ${status.versionName} скачано и проверено$time"
             State.UP_TO_DATE -> ModernUi.Status.OK to "Обновлений нет$time"
+            State.WAITING -> ModernUi.Status.OK to status.message.replaceFirstChar { it.uppercase() } + time
             State.ERROR -> ModernUi.Status.WARNING to "Обновления: ${status.message}$time"
             State.NONE -> ModernUi.Status.UNKNOWN to "Обновления ещё не проверялись"
         }

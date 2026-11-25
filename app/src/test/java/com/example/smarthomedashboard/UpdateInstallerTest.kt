@@ -43,7 +43,7 @@ class UpdateInstallerTest {
     private val deps = AppUpdater.Deps(UpdateHttp(OkHttpClient(), "http://127.0.0.1:9/releases"), apk, dir)
 
     @Before fun setUp() {
-        prefs.edit().clear().commit()
+        prefs.edit().clear().putInt("update_bucket", 0).commit()
         dir.deleteRecursively()
         backups.deleteRecursively()
         File(context.filesDir, "update_log.txt").delete()

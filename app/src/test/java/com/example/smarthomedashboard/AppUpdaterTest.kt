@@ -56,7 +56,8 @@ class AppUpdaterTest {
     }
 
     @Before fun setUp() {
-        prefs.edit().clear().commit()
+        // Постепенный выпуск — своими тестами ниже; здесь планшет из первых десяти процентов.
+        prefs.edit().clear().putInt("update_bucket", 0).commit()
         dir.deleteRecursively()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -206,10 +207,10 @@ class AppUpdaterTest {
         releasesJson = "[${release("v0.9.1")}]"
         archiveFacts = ApkFacts("com.example.other", 901, setOf("cert-release"))
         assertTrue(AppUpdater.check(context, deps()).message.contains("другого приложения"))
-        prefs.edit().clear().commit()
+        prefs.edit().clear().putInt("update_bucket", 0).commit()
         archiveFacts = ApkFacts(context.packageName, 950, setOf("cert-release"))
         assertTrue(AppUpdater.check(context, deps()).message.contains("версия в файле"))
-        prefs.edit().clear().commit()
+        prefs.edit().clear().putInt("update_bucket", 0).commit()
         archiveFacts = null
         assertTrue(AppUpdater.check(context, deps()).message.contains("не является приложением"))
     }
@@ -262,5 +263,80 @@ class AppUpdaterTest {
         val http = UpdateHttp(OkHttpClient(), server.url("/releases").toString(), requireHttps = false)
         dir.mkdirs()
         assertThrows(IOException::class.java) { http.download(server.url("/apk/x").toString(), File(dir, "x"), 1000) }
+    }
+
+    // ---- Постепенный выпуск (docs/updates.md) ----
+
+    private val day = 24 * 3_600_000L
+
+    @Test fun stableReleaseReachesTabletsOverThreeDays() {
+        assertEquals(listOf(10, 10, 50, 50, 100, 100), listOf(0L, day - 1, day, 2 * day - 1, 2 * day, 30 * day).map { AppUpdater.Rollout.share(it) })
+        releasesJson = "[${release("v0.9.1")}]"
+        // Планшет из последней половины: в первые сутки и во вторые — ждёт, на третьи — берёт.
+        prefs.edit().putInt("update_bucket", 73).commit()
+        val start = 1_000_000_000L
+        val first = AppUpdater.check(context, deps(), start)
+        assertEquals(AppUpdater.State.WAITING, first.state)
+        assertEquals(0, downloads())
+        assertTrue(first.message, "через 48 ч" in first.message)
+        assertTrue(AppUpdater.statusText(context).second, AppUpdater.statusText(context).second.startsWith("Версия 0.9.1 дойдёт до этого планшета"))
+        assertNull("в боковой панели не мигает", AppUpdater.drawerText(context))
+        assertEquals(AppUpdater.State.WAITING, AppUpdater.check(context, deps(), start + day + 1).state)
+        assertEquals(AppUpdater.State.READY, AppUpdater.check(context, deps(), start + 2 * day).state)
+    }
+
+    @Test fun bucketsTakeTheirTurn() {
+        releasesJson = "[${release("v0.9.1")}]"
+        val start = 1_000_000_000L
+        fun state(bucket: Int, after: Long): AppUpdater.State {
+            prefs.edit().clear().putInt("update_bucket", bucket).commit(); dir.deleteRecursively()
+            AppUpdater.check(context, deps(), start)
+            return AppUpdater.check(context, deps(), start + after).state
+        }
+        assertEquals(AppUpdater.State.READY, state(9, 0))
+        assertEquals(AppUpdater.State.WAITING, state(10, day - 1))
+        assertEquals(AppUpdater.State.READY, state(10, day))
+        assertEquals(AppUpdater.State.READY, state(49, day))
+        assertEquals(AppUpdater.State.WAITING, state(50, 2 * day - 1))
+        assertEquals(AppUpdater.State.READY, state(99, 2 * day))
+    }
+
+    @Test fun buttonAndTestChannelDoNotWait() {
+        prefs.edit().putInt("update_bucket", 99).commit()
+        releasesJson = "[${release("v0.9.1")}]"
+        assertEquals(AppUpdater.State.READY, AppUpdater.check(context, deps(), 1_000, manual = true).state)
+        // Скачанное по кнопке следующая обычная проверка не отбирает.
+        assertEquals(AppUpdater.State.READY, AppUpdater.check(context, deps(), 2_000).state)
+        assertNotNull(AppUpdater.readyFile(context, deps()))
+        prefs.edit().clear().putInt("update_bucket", 99).commit(); dir.deleteRecursively()
+        AppUpdater.setChannel(context, UpdateChannel.TEST)
+        releasesJson = "[${release("v0.9.1", pre = true)}]"
+        assertEquals(AppUpdater.State.READY, AppUpdater.check(context, deps(), 1_000).state)
+    }
+
+    @Test fun recalledReleaseNeverReachesTheRest() {
+        prefs.edit().putInt("update_bucket", 60).commit()
+        releasesJson = "[${release("v0.9.1")}]"
+        AppUpdater.check(context, deps(), 1_000)
+        // Выпуск отозвали (снова pre-release): ждавшие его не получат; вышла следующая — отсчёт заново.
+        releasesJson = "[${release("v0.9.1", pre = true)}]"
+        assertEquals(AppUpdater.State.UP_TO_DATE, AppUpdater.check(context, deps(), 1_000 + 3 * day).state)
+        releasesJson = "[${release("v0.9.2")}, ${release("v0.9.1", pre = true)}]"
+        archiveFacts = ApkFacts(context.packageName, 902, setOf("cert-release"))
+        assertEquals(AppUpdater.State.WAITING, AppUpdater.check(context, deps(), 1_000 + 3 * day).state)
+        assertEquals(AppUpdater.State.READY, AppUpdater.check(context, deps(), 1_000 + 5 * day).state)
+    }
+
+    @Test fun bucketIsRandomOnceAndClockGoingBackIsNotForever() {
+        prefs.edit().clear().commit()
+        val previous = AppUpdater.Rollout.random
+        try {
+            AppUpdater.Rollout.random = { 42 }
+            assertEquals(42, AppUpdater.Rollout.bucket(context))
+            AppUpdater.Rollout.random = { 7 }
+            assertEquals("запомнено", 42, AppUpdater.Rollout.bucket(context))
+        } finally { AppUpdater.Rollout.random = previous }
+        assertEquals(day, AppUpdater.Rollout.waitMs(context, 950, 10 * day))
+        assertEquals("часы перевели назад — не дольше обычного", day, AppUpdater.Rollout.waitMs(context, 950, 5 * day))
     }
 }
