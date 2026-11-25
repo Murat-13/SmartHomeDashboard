@@ -816,6 +816,15 @@ class TalkTest {
             // Штатный случай 16/16: работает своё эхоподавление, микрофон защитой не закрывается.
             val wide = sent { true }
             assertTrue("микрофон 16 кГц: голос не глушится защитой «говорит кто-то один»", wide.any { it > 0 })
+            // Самопроверка звука этого планшета решила «по очереди» — та же защита и при 16 кГц.
+            val context = org.robolectric.RuntimeEnvironment.getApplication()
+            TalkTablet.save(context, TalkTablet.Profile(TalkTablet.Mode.TURNS, 1f, 8, 200, 0, 1))
+            val turns = sent { true }
+            assertTrue("по очереди: ушло до ${turns.max()}", turns.all { it == 0 })
+            // «Вместе с подавлением эха Android» — своё эхоподавление остаётся.
+            TalkTablet.save(context, TalkTablet.Profile(TalkTablet.Mode.SYSTEM, 0.5f, 30, 200, 70, 1))
+            assertTrue(sent { true }.any { it > 0 })
+            TalkTablet.clear(context)
         } finally {
             org.robolectric.shadows.ShadowAudioRecord.clearSource()
             TalkChannels.reolink = { h, u, p -> BaichuanTalkSession(h, u, p) }

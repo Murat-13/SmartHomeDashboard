@@ -3,8 +3,6 @@ package com.example.smarthomedashboard
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
-import kotlin.math.PI
-import kotlin.math.cos
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -38,34 +36,7 @@ class EchoReplayTest {
         return sqrt(s / (to - from).coerceAtLeast(1))
     }
 
-    /**
-     * Мощность той части [signal], что повторяет опору [ref] (совпадает с ней по спектрам, усреднённым за отрезок):
-     * так эхо отделяется от фона и чужого голоса. [shift] — на сколько отсчётов сигнал отстаёт от опоры.
-     */
-    private fun coherent(ref: ShortArray, signal: ShortArray, shift: Int, from: Int, to: Int, rate: Int): Double {
-        val n = 4_096
-        val fft = Fft(n)
-        val window = DoubleArray(n) { 0.5 - 0.5 * cos(2 * PI * it / n) }
-        val sxx = DoubleArray(n / 2); val sre = DoubleArray(n / 2); val sim = DoubleArray(n / 2)
-        val xr = DoubleArray(n); val xi = DoubleArray(n); val dr = DoubleArray(n); val di = DoubleArray(n)
-        var t = from
-        while (t + n <= minOf(to, signal.size)) {
-            val r0 = t - shift
-            if (r0 >= 0 && r0 + n <= ref.size) {
-                for (i in 0 until n) { xr[i] = ref[r0 + i] * window[i]; xi[i] = 0.0; dr[i] = signal[t + i] * window[i]; di[i] = 0.0 }
-                fft.forward(xr, xi); fft.forward(dr, di)
-                for (k in 0 until n / 2) {
-                    sxx[k] += xr[k] * xr[k] + xi[k] * xi[k]
-                    sre[k] += dr[k] * xr[k] + di[k] * xi[k]
-                    sim[k] += di[k] * xr[k] - dr[k] * xi[k]
-                }
-            }
-            t += n / 2
-        }
-        var sum = 0.0
-        for (k in 300 * n / rate until 4_000 * n / rate) if (sxx[k] > 0) sum += (sre[k] * sre[k] + sim[k] * sim[k]) / sxx[k]
-        return sum
-    }
+    private fun coherent(ref: ShortArray, signal: ShortArray, shift: Int, from: Int, to: Int, rate: Int) = TalkSelfCheck.coherent(ref, signal, shift, from, to, rate)
 
     private class Result(val out: ShortArray, val loop: EchoLoop)
 

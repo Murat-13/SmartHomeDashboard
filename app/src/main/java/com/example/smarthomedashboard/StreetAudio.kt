@@ -51,6 +51,8 @@ internal class StreetAudio : StreetSource {
     private fun alive(run: Run) = current === run
     /** Только принимать (измерение [TalkProbe], мелодия домофона): динамик планшета молчит. */
     @Volatile var silent = false
+    /** Во сколько раз убавить звук улицы в динамике планшета ([TalkTablet]); 1 — как пришёл. */
+    @Volatile var gain = 1f
     /** Писать звук в проверочную запись разговора ([TalkDebug]); у прослушивания мелодии ([DoorChime]) — нет. */
     @Volatile var debug = true
     /**
@@ -276,6 +278,8 @@ internal class StreetAudio : StreetSource {
                 } else {
                     val n = fifo.pop(buf, chunk)
                     if (n < chunk) buf.fill(0, n, chunk)
+                    val g = gain
+                    if (g != 1f) for (i in 0 until n) buf[i] = (buf[i] * g).toInt().toShort()
                     if (debug) TalkDebug.write("street_raw", buf, chunk, rate)
                     // Наш голос, вернувшийся из микрофона домофона (его подавление эха не справляется), — тишина.
                     val muted = System.nanoTime() < mutedUntil

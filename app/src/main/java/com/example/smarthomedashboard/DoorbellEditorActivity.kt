@@ -588,6 +588,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             TalkCheck.chime(this, config.talkRtsp, config.rtspUser, secretKey) { if (!isDestroyed) result.text = it }
         })
         side.addView(result)
+        // Динамик и микрофон самого планшета (docs/talk-tz.md, «Самопроверка звука»): домофон не участвует.
+        side.addView(kit.button("Звук разговора на этом планшете…", "door_talk_tablet") { startActivity(Intent(this, TabletActivity::class.java)) })
         if (!camera) buildPhrases(side)
     }
 

@@ -15,56 +15,8 @@ import kotlin.math.tanh
 internal object EchoSim {
     const val RATE = 16_000
 
-    /** Искусственная речь: [seconds] секунд, основной тон около [pitch] Гц, громкость слогов [rms]. */
-    fun voice(seconds: Double, seed: Long, pitch: Double, rms: Double, pause: Double = 1.0): DoubleArray {
-        val rnd = java.util.Random(seed)
-        val n = (seconds * RATE).toInt()
-        val out = DoubleArray(n)
-        val phase = DoubleArray(48)
-        var t = (rnd.nextDouble() * 0.3 * RATE).toInt()
-        while (t < n) {
-            repeat(4 + rnd.nextInt(7)) {
-                val dur = ((0.10 + 0.18 * rnd.nextDouble()) * RATE).toInt()
-                val voiced = rnd.nextDouble() < 0.8
-                val f0 = pitch * (0.85 + 0.3 * rnd.nextDouble())
-                val formants = doubleArrayOf(300 + 500 * rnd.nextDouble(), 900 + 1_400 * rnd.nextDouble(), 2_400 + 800 * rnd.nextDouble())
-                val widths = doubleArrayOf(80.0, 120.0, 160.0)
-                val amp = 0.5 + 0.5 * rnd.nextDouble()
-                val harmonics = minOf(phase.size, (3_800 / f0).toInt())
-                val weights = DoubleArray(harmonics) { h ->
-                    val f = (h + 1) * f0
-                    var a = 0.0
-                    for (j in 0..2) { val d = (f - formants[j]) / widths[j]; a += 1.0 / (1.0 + d * d) }
-                    a / sqrt(h + 1.0)
-                }
-                var prevNoise = 0.0
-                for (i in 0 until dur) {
-                    if (t + i >= n) break
-                    val env = sin(PI * i / dur).let { it * it }
-                    var s = 0.0
-                    if (voiced) {
-                        val f = f0 * (1 + 0.03 * sin(2 * PI * 5 * i / RATE))
-                        for (h in 0 until harmonics) {
-                            phase[h] += 2 * PI * (h + 1) * f / RATE
-                            s += weights[h] * sin(phase[h])
-                        }
-                    } else {
-                        val w = rnd.nextGaussian()
-                        s = 0.6 * (w - prevNoise)
-                        prevNoise = w
-                    }
-                    out[t + i] = env * amp * s
-                }
-                t += dur + ((0.02 + 0.06 * rnd.nextDouble()) * RATE).toInt()
-            }
-            t += ((0.3 + 0.6 * rnd.nextDouble()) * pause * RATE).toInt()
-        }
-        var sum = 0.0; var count = 0
-        for (v in out) if (v != 0.0) { sum += v * v; count++ }
-        val scale = if (count == 0) 0.0 else rms / sqrt(sum / count)
-        for (i in out.indices) out[i] *= scale
-        return out
-    }
+    /** Искусственная речь — та же, что играет самопроверка звука ([TalkSignal]). */
+    fun voice(seconds: Double, seed: Long, pitch: Double, rms: Double, pause: Double = 1.0) = TalkSignal.voice(seconds, seed, pitch, rms, pause)
 
     /** Отклик пути: главный отклик на [direct]-м отсчёте, после него затухающие отражения (все вместе — [reverbDb] к прямому звуку); общее усиление [gain]. */
     fun room(seed: Long, direct: Int, gain: Double, rt60Ms: Int, reverbDb: Double, length: Int): DoubleArray {

@@ -461,6 +461,8 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
         private set
     /** Эхоподавление разговора: из микрофона вычитается звук улицы, сыгранный динамиком планшета ([DuplexEcho.near]). */
     @Volatile var echo: DuplexEcho? = null
+    /** Самопроверка звука ([TalkSelfCheck]): кадр до (`false`) и после (`true`) эхоподавления, из потока микрофона. */
+    @Volatile var monitor: ((Boolean, ShortArray, Int) -> Unit)? = null
     private var thread: Thread? = null
 
     @SuppressLint("MissingPermission") // разрешение проверяется в start() перед созданием AudioRecord
@@ -516,10 +518,12 @@ internal class MicCapture(private val onFrame: (ShortArray, Int) -> Unit, privat
                     shape.apply(out, count)
                     // Эхоподавление — до усиления: из микрофона убирается то, что играет динамик планшета.
                     val duplex = echo?.takeIf { it.active && rate == DuplexEcho.RATE }
+                    monitor?.invoke(false, out, count)
                     if (duplex != null) {
                         duplex.near.process(out, count)
                         TalkDebug.write("mic_aec", out, count, rate)
                     }
+                    monitor?.invoke(true, out, count)
                     var sum = 0.0
                     for (i in 0 until count) sum += out[i] * out[i].toDouble()
                     val rms = sqrt(sum / count.coerceAtLeast(1))
@@ -693,6 +697,10 @@ internal class DoorbellTalk(
             return false
         }
         inCall = true
+        active = true
+        TalkSelfCheck.cancel()
+        tablet = TalkTablet.profile(context)
+        (street as? StreetAudio)?.gain = tablet?.gain ?: 1f
         playing = false
         callStarted = clock()
         lastVoiceAt = callStarted
@@ -710,6 +718,7 @@ internal class DoorbellTalk(
     fun endCall() {
         if (!inCall) return
         inCall = false
+        active = false
         channelLostAt = 0
         main.removeCallbacks(callWatch)
         main.removeCallbacks(testBreak)
@@ -814,8 +823,11 @@ internal class DoorbellTalk(
      */
     private val cancelling get() = duplex?.active == true && mic.rate == DuplexEcho.RATE
 
+    /** Что решила самопроверка звука этого планшета; null — не проверялся, всё как раньше. */
+    private var tablet: TalkTablet.Profile? = null
+
     private fun startDuplex(s: TalkChannel) {
-        if (!s.wideband || TalkDebug.flag(context, "no_aec")) return
+        if (!s.wideband || TalkDebug.flag(context, "no_aec") || tablet?.mode == TalkTablet.Mode.TURNS) return
         val host = runCatching { java.net.URI(url.trim()).host }.getOrNull().orEmpty()
         val d = DuplexEcho(key = host)
         queueTrim = QueueTrim() // счёт убранного — у каждого канала свой
@@ -857,7 +869,7 @@ internal class DoorbellTalk(
         // и сам голос (у калитки «слышно отвратительно», 20.11.2026; то же у разработчиков на форуме Samsung). Эхо
         // убирает своё эхоподавление ([DuplexEcho]); где оно не работает (канал ONVIF, другая частота звука) — прежние
         // защиты: пока говорит улица — микрофон молчит, пока говорим мы — улица приглушена ([EchoGate]).
-        if (!mic.start(context, duplex = false, wideband = s.wideband)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
+        if (!mic.start(context, duplex = duplex != null && tablet?.mode == TalkTablet.Mode.SYSTEM, wideband = s.wideband)) { endCall(); set(State.ERROR, "Микрофон недоступен"); return }
         (street as? StreetAudio)?.breakAfterMs = if (TalkDebug.flag(context, "drop_street")) STREET_TEST_BREAK_MS else 0
         startStreet()
         set(State.TALKING, "Идёт разговор — говорите")
@@ -936,6 +948,7 @@ internal class DoorbellTalk(
             return false
         }
         pressed = true
+        TalkSelfCheck.cancel()
         playing = false
         val s = session
         if (s == null || !s.alive) { if (state != State.CONNECTING) connect(); return true }
@@ -1136,6 +1149,9 @@ internal class DoorbellTalk(
     }
 
     companion object {
+        /** Идёт разговор (на этом планшете он один): самопроверка звука ([TalkSelfCheck]) ждёт. */
+        @Volatile var active = false
+            private set
         const val REQUEST_MIC = 4711
         const val CALL_SILENCE_MS = 120_000L
         /** Через сколько повторять запуск отдельного звука улицы, если он не пошёл или оборвался посреди разговора. */

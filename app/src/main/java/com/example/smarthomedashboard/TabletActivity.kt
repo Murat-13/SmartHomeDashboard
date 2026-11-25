@@ -86,6 +86,8 @@ class TabletActivity : PinProtectedActivity() {
                 if (requireAdmin()) TabletWatch.setOled(this, on) else render()
             }.apply { tag = "tablet_oled" },
             ModernUi.caption(this, "Раз в ${PanelCooling.SHIFT_MINUTES} минуты панель сдвигается на пару пикселей — защита OLED от выгорания. На обычном (LCD) экране не нужно.")))
+        content.addView(gap())
+        content.addView(talkSection())
         val decoders = CameraDiagnosis.decoderFacts()
         content.addView(gap())
         content.addView(ModernUi.section(this, "Декодеры видео",
@@ -114,6 +116,68 @@ class TabletActivity : PinProtectedActivity() {
             rows.ifEmpty { listOf(ModernUi.body(this@TabletActivity, "Плиток с видео нет")) }.forEach { addView(it) }
         }
         content.addView(ModernUi.section(this, "Камеры", list))
+    }
+
+    // ---- Звук разговора (docs/talk-tz.md, «Самопроверка звука») ----
+
+    private var talkText: Pair<ModernUi.Status, String>? = null
+
+    private fun talkSection(): View {
+        val profile = TalkTablet.profile(this)
+        val (status, text) = talkText ?: talkState(profile)
+        val row = ModernUi.statusRow(this, status, text).apply { id = R.id.tabletTalk; tag = "tablet_talk_state" }
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        buttons.addView(ModernUi.primaryButton(this, "Проверить звук") { if (requireAdmin()) checkTalk() }.apply { tag = "tablet_talk_check"; isEnabled = !TalkSelfCheck.busy })
+        if (profile != null) buttons.addView(ModernUi.secondaryButton(this, "Забыть проверку звука") { if (requireAdmin()) { TalkTablet.clear(this); talkText = null; render() } }
+            .apply { tag = "tablet_talk_forget" })
+        return ModernUi.section(this, "Звук разговора", row, ModernUi.caption(this, "Планшет около 12 секунд играет своим динамиком сигнал, похожий на речь, слушает " +
+            "микрофоном и подбирает, как убрать эхо в разговоре. Домофон в этом не участвует: у калитки ничего не слышно. Проверяйте в тишине."), buttons)
+    }
+
+    private fun talkState(profile: TalkTablet.Profile?): Pair<ModernUi.Status, String> {
+        if (profile == null) return ModernUi.Status.UNKNOWN to "Не проверялся — разговор работает как обычно"
+        val date = SimpleDateFormat("d MMM, HH:mm", Locale("ru")).format(Date(profile.atMs))
+        return when (profile.mode) {
+            TalkTablet.Mode.TURNS -> ModernUi.Status.WARNING to "Есть эхо — разговор по очереди (проверено $date)"
+            TalkTablet.Mode.SYSTEM -> ModernUi.Status.OK to "Хорошо, вместе с подавлением эха Android (проверено $date)"
+            TalkTablet.Mode.OWN -> ModernUi.Status.OK to "Хорошо (проверено $date)" + (if (profile.gain < 1f) " — звук улицы убавлен" else "")
+        }
+    }
+
+    internal fun checkTalk() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            androidx.core.app.ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            return
+        }
+        if (DoorbellTalk.active) { talkStatus(ModernUi.Status.WARNING, "Сейчас идёт разговор — проверьте после него"); return }
+        val started = TalkSelfCheck.start(this, { text -> runOnUiThread { talkStatus(ModernUi.Status.PROGRESS, text) } }) { result ->
+            result.profile?.let { TalkTablet.save(applicationContext, it) }
+            val status = when (result.verdict) {
+                TalkSelfCheck.Verdict.GOOD, TalkSelfCheck.Verdict.GOOD_QUIETER, TalkSelfCheck.Verdict.GOOD_SYSTEM -> ModernUi.Status.OK
+                TalkSelfCheck.Verdict.CANCELLED -> ModernUi.Status.UNKNOWN
+                else -> ModernUi.Status.WARNING
+            }
+            runOnUiThread { talkText = status to result.text; if (!isFinishing && !isDestroyed) render() }
+        }
+        if (started) content.findViewWithTag<View>("tablet_talk_check")?.isEnabled = false
+    }
+
+    private fun talkStatus(status: ModernUi.Status, text: String) {
+        talkText = status to text
+        if (!isFinishing && !isDestroyed) content.findViewById<View>(R.id.tabletTalk)?.let { ModernUi.setStatus(it as LinearLayout, status, text) }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_MIC) return
+        if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) checkTalk()
+        else talkStatus(ModernUi.Status.WARNING, "Нужно разрешение на микрофон")
+    }
+
+    /** Ушли с экрана — проверка останавливается (поворот — нет: она в фоне и доиграет сама). */
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) TalkSelfCheck.cancel()
     }
 
     /** Факты читаются в фоне: список причин закрытия и настройки Android — не в главном потоке. */
@@ -188,6 +252,8 @@ class TabletActivity : PinProtectedActivity() {
     }
 
     private fun seconds(ms: Long) = String.format(Locale.US, "%.2f", ms / 1000.0).trimEnd('0').trimEnd('.').replace('.', ',')
+
+    private companion object { const val REQUEST_MIC = 4712 }
 
     private fun gap() = View(this).apply { layoutParams = LinearLayout.LayoutParams(1, resources.getDimensionPixelSize(R.dimen.modern_space_m)) }
 }

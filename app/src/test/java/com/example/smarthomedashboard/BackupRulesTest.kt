@@ -73,6 +73,7 @@ class BackupRulesTest {
             assertFalse("Пароли камер — не в облако", rulesPermit(root, "camera_secrets.xml"))
             assertFalse("Отпечатки сертификатов камер — только этого планшета", rulesPermit(root, "camera_tls.xml"))
             assertFalse("Проверка планшета — только этого планшета", rulesPermit(root, "tablet_watch.xml"))
+            assertFalse("Звук разговора — только этого планшета", rulesPermit(root, "tablet_talk.xml"))
         }
     }
 
