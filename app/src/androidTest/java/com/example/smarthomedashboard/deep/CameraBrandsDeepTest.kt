@@ -111,6 +111,8 @@ class CameraBrandsDeepTest {
     @Test fun reolinkProtocolWithInstantFallback() {
         val cam = FakeCamera(path = "h264Preview_01_main").also { camera = it }
         val reolink = FakeReolink(cam.units)
+        // Эмулятор CI медленный: сам путь проверяется, а не его скорость.
+        DoorbellVideoView.fastWaitMs = 15_000
         val hold = CameraHub.hold(CameraHub.Key(cam.url, FakeCamera.USER, FakeCamera.PASSWORD))
         try {
             waitFor(10_000, "поток RTSP через планшет") { CameraHub.relayUrl(cam.url, FakeCamera.USER) != null }
@@ -124,7 +126,7 @@ class CameraBrandsDeepTest {
             playing("после пропажи протокола")
             assertEquals("к камере по RTSP — одно подключение", 1, cam.connections.get())
             log("Reolink: пропал протокол — показ через планшет, подключений по RTSP ${cam.connections.get()}")
-        } finally { hold.release(); reolink.close() }
+        } finally { hold.release(); reolink.close(); DoorbellVideoView.fastWaitMs = 900 }
     }
 
     @Test fun reolinkWithoutItsPortStartsAsBefore() {

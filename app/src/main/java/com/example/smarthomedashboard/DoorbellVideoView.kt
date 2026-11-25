@@ -740,7 +740,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
     private val arrivalUrl get() = if (viaFast) ReolinkVideo.urlFor(playingRtsp) ?: playingRtsp else playingRtsp
 
     /**
-     * Ждать ли картинку по протоколу Reolink (недолго, [FAST_WAIT_MS]): камера Reolink, её поток RTSP уже идёт через планшет — от него звук
+     * Ждать ли картинку по протоколу Reolink (недолго, [fastWaitMs]): камера Reolink, её поток RTSP уже идёт через планшет — от него звук
      * и мгновенный запасной путь, — и этот путь недавно не подводил. false — показывать (по Reolink, если готов, иначе как раньше).
      */
     private fun awaitFast(src: Source, rtsp: String): Boolean {
@@ -766,7 +766,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             return true
         }
         if (fastWaitSince == 0L) fastWaitSince = now
-        if (now - fastWaitSince >= FAST_WAIT_MS) {
+        if (now - fastWaitSince >= fastWaitMs) {
             fastWaitSince = 0
             ReolinkVideo.refused(url)
             releaseOwn()
@@ -1463,8 +1463,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         internal val undecodable = mutableSetOf<String>()
         /** Камеры, которых встроенный плеер не понял, а свой клиент показал (до перезапуска приложения). */
         internal val ownPath = mutableSetOf<String>()
-        /** Сколько ждать картинку по протоколу Reolink, прежде чем показать как раньше. */
-        private const val FAST_WAIT_MS = 900L
+        /** Сколько ждать картинку по протоколу Reolink, прежде чем показать как раньше (в тесте на медленном эмуляторе — дольше). */
+        internal var fastWaitMs = 900L
         private const val FAST_POLL_MS = 40L
         private const val OWN_AFTER = 2
         private const val OWN_WAIT_MS = 10_000L

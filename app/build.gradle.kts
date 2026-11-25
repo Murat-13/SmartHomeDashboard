@@ -103,6 +103,9 @@ tasks.withType<Test>().configureEach {
     (project.findProperty("test.heapDump") as String?)?.let { dir ->
         jvmArgs("-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=$dir")
     }
+    // TLS из Robolectric (Conscrypt) остаётся в процессе тестов поставщиком по умолчанию, а на Java 21 (CI) его серверной стороне нужен
+    // закрытый java.net — поддельная камера rtsps не принимала подключение (25.11.2026). Только тесты.
+    jvmArgs("--add-opens=java.base/java.net=ALL-UNNAMED")
     // Robolectric копит память от класса к классу (экраны, ресурсы): к ~1450-му тесту куча 512 МБ (по умолчанию
     // Gradle) кончалась на CI — OutOfMemoryError, и падали следующие тесты (погода, 20.11.2026). Куча 1 ГБ и новый
     // процесс каждые 300 тестов: память не копится весь прогон.
