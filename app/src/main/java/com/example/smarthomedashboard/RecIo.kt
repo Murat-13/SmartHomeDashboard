@@ -33,23 +33,38 @@ internal object RecIo {
     const val LIMIT_BYTES = 24L * 1024 * 1024
     private const val TAG = "Recording"
     private const val REPORT_MS = 60_000L
+    private const val STORAGE = "/storage/"
 
-    private val executor = Executors.newSingleThreadExecutor {
-        Thread(it, "rec-io").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+    /**
+     * У каждого носителя — своя очередь и свой поток (второй аудит 25.11.2026, AUD-05): зависшая карта памяти держит только свою
+     * очередь, и запись, перешедшая в память планшета, идёт. Порядок внутри носителя прежний.
+     */
+    private class Lane(name: String) {
+        val executor: java.util.concurrent.ExecutorService = Executors.newSingleThreadExecutor {
+            Thread(it, name).apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+        }
+        val lock = Object()
+        /** Байты в очереди; под [lock]. */
+        var queued = 0L
+        /** Когда носитель последний раз что-то принял (или очередь была пуста); под [lock]. */
+        var progressNs = System.nanoTime()
+        var queuedMax = 0L
     }
-    private val lock = Object()
+    private val lanes = ConcurrentHashMap<String, Lane>()
+    /** Носитель файла: том общей памяти (`/storage/<том>`) или «всё остальное». В тестах — подмена. */
+    @Volatile internal var volumeOf: (File) -> String = { f ->
+        val p = f.path
+        if (p.startsWith(STORAGE)) STORAGE + p.substring(STORAGE.length).substringBefore('/') else ""
+    }
+    private fun lane(file: File?): Lane = (if (file == null) "" else volumeOf(file)).let { key -> lanes.computeIfAbsent(key) { Lane("rec-io" + if (lanes.isEmpty()) "" else "-${lanes.size + 1}") } }
     /** Носитель не принимает ничего дольше этого, а очередь полна — ошибка записи: поток камеры и живое видео его не ждут. */
     @Volatile internal var stuckMs = 10_000L
-    /** Байты в очереди; под [lock]. */
-    private var queued = 0L
-    /** Когда носитель последний раз что-то принял (или очередь была пуста); под [lock]. */
-    private var progressNs = System.nanoTime()
-    private var queuedMax = 0L
     /** Файлы, открытые через очередь и ещё не закрытые до конца: их не трогает восстановление после падения. */
     private val busy = ConcurrentHashMap.newKeySet<String>()
     private val channels = ConcurrentHashMap.newKeySet<QueuedFileChannel>()
 
-    // Итоги за минуту для журнала — только поток записи.
+    // Итоги за минуту для журнала — под замком [stats].
+    private val stats = Any()
     private var reportSince = 0L
     private var writes = 0
     private var writtenBytes = 0L
@@ -57,17 +72,17 @@ internal object RecIo {
     private var closes = 0
     private var closeMaxNs = 0L
 
-    /** Задача в потоке записи; ошибка задачи не останавливает очередь. */
-    fun execute(task: () -> Unit) = executor.execute {
+    /** Задача в потоке записи носителя [on] (null — память приложения); ошибка задачи не останавливает очередь. */
+    fun execute(on: File? = null, task: () -> Unit) = lane(on).executor.execute {
         try { task() } catch (e: Exception) { Log.w(TAG, "Запись на носитель: ${e.javaClass.simpleName}: ${e.message}") }
     }
 
     /**
-     * Выполнить [task] в потоке записи — после всего, что уже в очереди, — и дождаться результата не дольше [waitMs].
-     * null — не дождались (задача всё равно выполнится) или она упала.
+     * Выполнить [task] в потоке записи носителя [on] — после всего, что уже в его очереди, — и дождаться результата не дольше
+     * [waitMs]. null — не дождались (задача всё равно выполнится) или она упала.
      */
-    fun <T> call(waitMs: Long, task: () -> T): T? = try {
-        executor.submit(Callable { task() }).get(waitMs, TimeUnit.MILLISECONDS)
+    fun <T> call(waitMs: Long, on: File? = null, task: () -> T): T? = try {
+        lane(on).executor.submit(Callable { task() }).get(waitMs, TimeUnit.MILLISECONDS)
     } catch (e: InterruptedException) {
         // Поток остановили (запись выключают) — признак прерывания остаётся для того, кто его ждёт.
         Thread.currentThread().interrupt()
@@ -77,14 +92,24 @@ internal object RecIo {
         null
     }
 
-    /** Дождаться, пока записано и закрыто всё, что уже в очереди (не дольше [waitMs]). */
-    fun flush(waitMs: Long): Boolean = call(waitMs) { true } == true
+    /** Дождаться, пока записано и закрыто всё, что уже в очередях всех носителей (не дольше [waitMs] на все). */
+    fun flush(waitMs: Long): Boolean {
+        val until = System.nanoTime() + waitMs * 1_000_000
+        val waits = (lanes.values.toList().ifEmpty { listOf(lane(null)) }).map { it.executor.submit(Callable { true }) }
+        return waits.all { f ->
+            try { f.get(maxOf(0, until - System.nanoTime()), TimeUnit.NANOSECONDS) } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt(); false
+            } catch (e: Exception) {
+                Log.w(TAG, "Запись на носитель: не дождались (${e.javaClass.simpleName})"); false
+            }
+        }
+    }
 
     /** Файлы, которые пишутся сейчас (живой набор). */
     fun busyFiles(): Set<String> = busy
 
-    /** Байты в очереди сейчас (для тестов и журнала). */
-    val queuedBytes: Long get() = synchronized(lock) { queued }
+    /** Байты в очередях сейчас (для тестов и журнала). */
+    val queuedBytes: Long get() = lanes.values.sumOf { synchronized(it.lock) { it.queued } }
 
     internal fun opened(file: File, channel: QueuedFileChannel) { busy += file.path; channels += channel }
 
@@ -94,47 +119,52 @@ internal object RecIo {
         channels.filterNot { it.abandonIfEjected(wait = false) }.forEach { it.abandonIfEjected(wait = true) }
     }
 
-    /** Поставить в очередь запись [bytes] байт; поток камеры ждёт, только если очередь полна. */
-    internal fun write(bytes: Int, task: () -> Unit) {
+    /** Поставить в очередь запись [bytes] байт в [file]; поток камеры ждёт, только если очередь его носителя полна. */
+    internal fun write(file: File, bytes: Int, task: () -> Unit) {
         val started = System.nanoTime()
-        synchronized(lock) {
-            if (queued == 0L) progressNs = System.nanoTime()
-            while (queued > 0 && queued + bytes > LIMIT_BYTES) {
-                if (System.nanoTime() - progressNs > stuckMs * 1_000_000) throw IOException("Носитель не отвечает")
-                try { lock.wait(1_000) } catch (_: InterruptedException) {
+        val lane = lane(file)
+        synchronized(lane.lock) {
+            if (lane.queued == 0L) lane.progressNs = System.nanoTime()
+            while (lane.queued > 0 && lane.queued + bytes > LIMIT_BYTES) {
+                if (System.nanoTime() - lane.progressNs > stuckMs * 1_000_000) throw IOException("Носитель не отвечает")
+                try { lane.lock.wait(1_000) } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     throw InterruptedIOException("Запись остановлена")
                 }
             }
-            queued += bytes
-            if (queued > queuedMax) queuedMax = queued
+            lane.queued += bytes
+            if (lane.queued > lane.queuedMax) lane.queuedMax = lane.queued
         }
         RecBusy.queueWait(System.nanoTime() - started)
-        executor.execute {
+        lane.executor.execute {
             val t = System.nanoTime()
             try { task() } finally {
-                synchronized(lock) { queued -= bytes; progressNs = System.nanoTime(); lock.notifyAll() }
-                writes++
-                writtenBytes += bytes
-                writeMaxNs = maxOf(writeMaxNs, System.nanoTime() - t)
-                report()
+                synchronized(lane.lock) { lane.queued -= bytes; lane.progressNs = System.nanoTime(); lane.lock.notifyAll() }
+                synchronized(stats) {
+                    writes++
+                    writtenBytes += bytes
+                    writeMaxNs = maxOf(writeMaxNs, System.nanoTime() - t)
+                    report()
+                }
             }
         }
     }
 
     /** Закрыть файл в потоке записи после всех его байтов; [then] — там же, сразу после закрытия. */
-    internal fun close(file: File, channel: QueuedFileChannel, closeStream: () -> Unit, then: (() -> Unit)?) = execute {
+    internal fun close(file: File, channel: QueuedFileChannel, closeStream: () -> Unit, then: (() -> Unit)?) = execute(file) {
         val t = System.nanoTime()
         try {
             try { closeStream() } catch (e: IOException) { Log.w(TAG, "Файл записи не закрыт: ${e.message}") }
             then?.invoke()
         } finally {
-            synchronized(lock) { progressNs = System.nanoTime() }
+            lane(file).let { synchronized(it.lock) { it.progressNs = System.nanoTime() } }
             busy -= file.path
             channels -= channel
-            closes++
-            closeMaxNs = maxOf(closeMaxNs, System.nanoTime() - t)
-            report()
+            synchronized(stats) {
+                closes++
+                closeMaxNs = maxOf(closeMaxNs, System.nanoTime() - t)
+                report()
+            }
         }
     }
 
@@ -143,7 +173,7 @@ internal object RecIo {
         val now = System.currentTimeMillis()
         if (reportSince == 0L) { reportSince = now; return }
         if (now - reportSince < REPORT_MS) return
-        val peak = synchronized(lock) { queuedMax.also { queuedMax = queued } }
+        val peak = lanes.values.sumOf { l -> synchronized(l.lock) { l.queuedMax.also { l.queuedMax = l.queued } } }
         Log.i(TAG, "Запись на носитель за минуту: ${writtenBytes / 1024} КБ, записей $writes — самая долгая " +
             "${writeMaxNs / 1_000_000} мс; закрытий файлов $closes — до ${closeMaxNs / 1_000_000} мс; " +
             "очередь до ${peak / 1024} КБ (в потоке камеры не ждут)")
@@ -193,7 +223,7 @@ internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
         val n = src.remaining()
         if (n == 0) return 0
         val copy = ByteArray(n).also { src.get(it) }
-        RecIo.write(n) {
+        RecIo.write(file, n) {
             if (failure == null) {
                 try { stream()?.write(copy) } catch (e: Exception) {
                     // Любая ошибка носителя — как раньше, ошибка записи; поток записи не падает (ревью 24.11.2026).

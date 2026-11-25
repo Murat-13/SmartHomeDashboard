@@ -23,6 +23,8 @@ internal object ArchiveCopy {
     const val FOLDER = "Домофон — сохранённые ролики"
     private const val PREF_LAST = "clips_copy_last"
     private const val PREF_RESULT = "clips_copy_result"
+    private const val PREF_REFS = "clips_copy_refs"
+    private const val PREF_DIR = "clips_copy_dir"
     private const val TAG = "ArchiveCopy"
 
     /** Папка с файлами: список «имя → размер», запись нового файла. Подменяется в тестах. */
@@ -30,6 +32,10 @@ internal object ArchiveCopy {
         fun sizes(): Map<String, Long>
         fun create(name: String): OutputStream?
         fun delete(name: String)
+        /** Адрес только что созданного файла — по нему копия потом находится без списка папки. */
+        val lastRef: String? get() = null
+        /** Размер файла по его адресу; null — файла нет или узнать нельзя. */
+        fun sizeAt(ref: String): Long? = null
     }
 
     data class Result(val copied: Int, val skipped: Int, val failed: Int, val bytes: Long)
@@ -41,13 +47,18 @@ internal object ArchiveCopy {
     }
 
     /** Скопировать [files] (со звёздочкой) в [folder]; [open] — чтение исходника. */
-    fun copy(files: List<Pair<String, RecFile>>, folder: Folder, open: (RecFile) -> InputStream? = { it.path.inputStream() }): Result {
+    /**
+     * [refs] — своя память «имя → адрес копии»: список папки на планшете бывает пустым или неполным (ночи 20 и 21.11.2026), и по одному
+     * списку все ролики копировались бы заново каждую ночь под именами «… (1)» (второй аудит 25.11.2026, NEW-DATA-1).
+     */
+    fun copy(files: List<Pair<String, RecFile>>, folder: Folder, refs: MutableMap<String, String> = HashMap(),
+             open: (RecFile) -> InputStream? = { it.path.inputStream() }): Result {
         val existing = folder.sizes()
         var copied = 0; var skipped = 0; var failed = 0; var bytes = 0L
         for ((title, file) in files) {
             val name = nameFor(title, file)
             val size = file.path.length()
-            if (existing[name] == size) { skipped++; continue }
+            if (existing[name] == size || refs[name]?.let(folder::sizeAt) == size) { skipped++; continue }
             if (name in existing) folder.delete(name) // недописанная прошлой ночью копия
             val ok = try {
                 val input = synchronized(Mp4Finalize.LOCK) { open(file) } ?: throw java.io.IOException("нет файла")
@@ -58,13 +69,14 @@ internal object ArchiveCopy {
                 folder.delete(name)
                 false
             }
-            if (ok) { copied++; bytes += size } else failed++
+            if (ok) { copied++; bytes += size; folder.lastRef?.let { refs[name] = it } } else { failed++; refs.remove(name) }
         }
+        refs.keys.retainAll(files.map { (title, file) -> nameFor(title, file) }.toSet())
         return Result(copied, skipped, failed, bytes)
     }
 
     /** Ночной запуск: все ролики со ★ всех камер этого планшета. */
-    fun run(context: Context, now: Long = System.currentTimeMillis()): Result? {
+    @Synchronized fun run(context: Context, now: Long = System.currentTimeMillis()): Result? {
         val prefs = context.getSharedPreferences("dashboard_prefs", Context.MODE_PRIVATE)
         val tree = prefs.getString(AutoBackup.PREF_TREE, null)?.toUri()
         val starred = RecArchive.defaultRoots(context).flatMap { RecLayout.scan(it) }.filter { it.starred && !it.open }
@@ -75,16 +87,23 @@ internal object ArchiveCopy {
         }
         val titles = com.example.smarthomedashboard.data.TileManager(context).loadTiles()
             .associate { RecLayout.cameraKey(it.id) to it.title }
-        val folder = try { SafFolder(context, tree) } catch (e: Exception) {
+        val folder = try { SafFolder(context, tree, prefs) } catch (e: Exception) {
             Log.w(TAG, "Папка копий недоступна: ${e.javaClass.simpleName}")
             prefs.edit { putString(PREF_RESULT, "error").putLong(PREF_LAST, now) }
             return null
         }
-        val result = copy(starred.map { (titles[it.camera] ?: DoorbellConfig.DEFAULT_TITLE) to it }, folder)
+        val refs = loadRefs(prefs.getString(PREF_REFS, null))
+        val result = copy(starred.map { (titles[it.camera] ?: DoorbellConfig.DEFAULT_TITLE) to it }, folder, refs)
+        prefs.edit { putString(PREF_REFS, org.json.JSONObject(refs as Map<*, *>).toString()) }
         Log.i(TAG, "Сохранённые ролики: скопировано ${result.copied}, уже были ${result.skipped}, ошибок ${result.failed}")
         prefs.edit { putString(PREF_RESULT, if (result.failed > 0) "error" else "ok").putLong(PREF_LAST, now) }
         return result
     }
+
+    internal fun loadRefs(json: String?): MutableMap<String, String> = try {
+        val o = org.json.JSONObject(json ?: "{}")
+        o.keys().asSequence().associateWithTo(HashMap()) { o.getString(it) }
+    } catch (_: org.json.JSONException) { HashMap() }
 
     /** Строка для архива: как копируются ролики со ★. */
     fun statusText(context: Context): String {
@@ -100,16 +119,26 @@ internal object ArchiveCopy {
     }
 
     /** Подпапка [FOLDER] в выбранной владельцем папке копий (SAF). */
-    private class SafFolder(private val context: Context, private val tree: Uri) : Folder {
+    private class SafFolder(private val context: Context, private val tree: Uri, prefs: android.content.SharedPreferences) : Folder {
         private val resolver get() = context.contentResolver
         private val dir: Uri
+        override var lastRef: String? = null
 
         init {
+            // Подпапка — по запомненному адресу (пока она есть в той же папке копий); по списку папки — только в первый раз.
+            val known = prefs.getString(PREF_DIR, null)?.split('\n')?.takeIf { it.size == 2 && it[0] == tree.toString() }?.get(1)?.toUri()
             val rootId = DocumentsContract.getTreeDocumentId(tree)
-            dir = children(rootId)[FOLDER]?.first ?: DocumentsContract.createDocument(resolver,
+            dir = known?.takeIf { sizeAt(it.toString()) != null } ?: children(rootId)[FOLDER]?.first ?: DocumentsContract.createDocument(resolver,
                 DocumentsContract.buildDocumentUriUsingTree(tree, rootId), DocumentsContract.Document.MIME_TYPE_DIR, FOLDER)
                 ?: throw java.io.IOException("подпапка не создана")
+            if (dir != known) prefs.edit { putString(PREF_DIR, "$tree\n$dir") }
         }
+
+        override fun sizeAt(ref: String): Long? = try {
+            resolver.query(ref.toUri(), arrayOf(DocumentsContract.Document.COLUMN_SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getLong(0) else null
+            }
+        } catch (_: Exception) { null }
 
         private fun children(parentId: String): Map<String, Pair<Uri, Long>> {
             val list = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -123,7 +152,7 @@ internal object ArchiveCopy {
 
         override fun sizes() = files().mapValues { it.value.second }
         override fun create(name: String): OutputStream? =
-            DocumentsContract.createDocument(resolver, dir, "video/mp4", name)?.let { resolver.openOutputStream(it, "wt") }
+            DocumentsContract.createDocument(resolver, dir, "video/mp4", name)?.let { lastRef = it.toString(); resolver.openOutputStream(it, "wt") }
         override fun delete(name: String) {
             files()[name]?.let { runCatching { DocumentsContract.deleteDocument(resolver, it.first) } }
         }

@@ -93,8 +93,13 @@ class RecorderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** Служба уничтожена: её отложенные задачи ничего не делают. */
+    @Volatile private var destroyed = false
+    private var mine = 0
+
     override fun onCreate() {
         super.onCreate()
+        mine = ++generation
         val notification = notification()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
@@ -120,9 +125,21 @@ class RecorderService : Service() {
         if (RecCatalog.onEdit === catalogEdits) RecCatalog.onEdit = null
         mediaThread.quitSafely()
         // Остановка камер (закрытие отрезков, до 3 с на камеру) — на потоке управления: главный поток не ждёт.
-        // После shutdown() поток дорабатывает уже поставленные задачи и завершается сам.
-        control.execute { safe { stopAll() }; RecordingStatus.clear() }
-        control.shutdown()
+        // Поток управления закрывается последней своей задачей: закрытые при остановке файлы ещё сообщают о себе (метки роликов,
+        // каталог), а отложенные задачи после этого не выполняются (второй аудит 25.11.2026, AUD-08, NEW-REC-2).
+        destroyed = true
+        val finish = Runnable {
+            // Состояния уже могла выставить новая служба — её не стираем.
+            if (generation == mine) RecordingStatus.clear()
+            control.shutdownNow()
+        }
+        try {
+            control.execute {
+                safe { stopAll() }
+                RecIo.flush(STOP_FLUSH_MS)
+                try { control.execute(finish) } catch (_: java.util.concurrent.RejectedExecutionException) { finish.run() }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {}
         synced = false
         super.onDestroy()
     }
@@ -133,6 +150,7 @@ class RecorderService : Service() {
 
     /** Сверить нужные записи с идущими (поток управления). */
     private fun sync() {
+        if (destroyed) return
         val device = RecordingDevice(this)
         // Безопасный запуск (docs/reliability.md): записей нет, сроки хранения — по-прежнему по всем камерам.
         val tiles = TileManager(this).loadTiles().filter { it.type in CameraSource.TYPES }
@@ -230,7 +248,7 @@ class RecorderService : Service() {
         cleanupProbe?.invoke()
         val started = android.os.SystemClock.elapsedRealtime()
         storageRoot()?.let { root ->
-            val fixed = RecIo.call(RECOVER_WAIT_MS) { RecLayout.recover(root, skip = RecIo.busyFiles()) } ?: 0
+            val fixed = RecIo.call(RECOVER_WAIT_MS, root) { RecLayout.recover(root, skip = RecIo.busyFiles()) } ?: 0
             if (fixed > 0) Log.i(TAG, "Запись: восстановлено отрезков после перезапуска: $fixed")
         }
         retention(forceScan = true)
@@ -322,12 +340,13 @@ class RecorderService : Service() {
      * кадре.
      */
     private fun storageChanged(mounted: String? = null) {
+        if (destroyed) return
         if (mounted != null) cardErrors.clear()
         if (mounted != null && RecVolumes.brokenCard?.startsWith("$mounted/") == true) RecVolumes.brokenCard = null
         refreshStorage()
         // Отрезки, недописанные из-за извлечения.
         storageRoot()?.takeIf { mounted != null && it.path.startsWith("$mounted/") }?.let { root ->
-            RecIo.call(RECOVER_WAIT_MS) { RecLayout.recover(root, skip = RecIo.busyFiles()) }
+            RecIo.call(RECOVER_WAIT_MS, root) { RecLayout.recover(root, skip = RecIo.busyFiles()) }
         }
         retention(forceScan = false)
     }
@@ -367,6 +386,7 @@ class RecorderService : Service() {
 
     /** Очистка по сроку, лимиту и остатку (поток управления). */
     private fun retention(forceScan: Boolean) {
+        if (destroyed) return
         checkSdCard()
         val root = storageRoot() ?: return
         val now = System.currentTimeMillis()
@@ -477,6 +497,9 @@ class RecorderService : Service() {
 
         /** Сервис уже сверил записи с настройками и открыл их потоки. */
         @Volatile private var synced = false
+        /** Номер последней созданной службы (главный поток пишет, поток управления читает). */
+        @Volatile private var generation = 0
+        private const val STOP_FLUSH_MS = 5_000L
         private const val STARTING_MS = 15_000L
         /** Для тестов: вызывается в начале первого обхода носителя после запуска (видно, открыты ли уже записи). */
         @androidx.annotation.VisibleForTesting @Volatile internal var cleanupProbe: (() -> Unit)? = null

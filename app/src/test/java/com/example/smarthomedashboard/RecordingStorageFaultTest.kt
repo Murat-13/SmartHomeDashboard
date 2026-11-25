@@ -31,6 +31,7 @@ import org.robolectric.shadows.ShadowStatFs
 import java.io.File
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -210,6 +211,83 @@ class RecordingStorageFaultTest {
             assertEquals(1, RecLayout.recover(card, skip = RecIo.busyFiles()))
             assertTrue("восстановлен", closed(card).single().bytes > 0)
         } finally { RecEject.returned(File(card, "x")) }
+    }
+
+    /**
+     * Второй аудит 25.11.2026, AUD-05: карта зависла (не отказала) — раньше её ждала единственная очередь записи, и в память планшета
+     * тоже ничего не писалось. У каждого носителя своя очередь.
+     */
+    @Test fun stuckCardDoesNotBlockTabletMemory() {
+        val card = tmp.newFolder("card"); val tablet = tmp.newFolder("tablet")
+        val realVolume = RecIo.volumeOf; val realStuck = RecIo.stuckMs
+        RecIo.volumeOf = { f -> if (f.path.startsWith(card.path)) "card" else if (f.path.startsWith(tablet.path)) "tablet" else "" }
+        RecIo.stuckMs = 300
+        val free = CountDownLatch(1)
+        RecIo.execute(File(card, "x")) { free.await() }
+        try {
+            val onCard = QueuedFileChannel(File(card, "c_1.part.mp4"))
+            var failed: String? = null
+            try { repeat(60) { onCard.write(java.nio.ByteBuffer.wrap(ByteArray(1024 * 1024))) } } catch (e: java.io.IOException) { failed = e.message }
+            assertEquals("Носитель не отвечает", failed)
+            val file = File(tablet, "c_2.part.mp4")
+            val onTablet = QueuedFileChannel(file)
+            repeat(3) { onTablet.write(java.nio.ByteBuffer.wrap(ByteArray(1024 * 1024))) }
+            onTablet.close()
+            assertEquals("в память планшета записано, пока карта висит", true, RecIo.call(5_000, file) { true })
+            assertEquals(3L * 1024 * 1024, file.length())
+            onCard.close()
+        } finally {
+            free.countDown(); RecIo.stuckMs = realStuck
+            assertTrue(RecIo.flush(20_000))
+            RecIo.volumeOf = realVolume
+        }
+    }
+
+    /**
+     * Второй аудит 25.11.2026, AUD-08: при остановке службы файл закрывается в потоке записи и только потом сообщает о себе потоку
+     * управления (метки ролика, каталог). Раньше поток управления к этому мигу уже не принимал задач — сообщение пропадало.
+     */
+    @Test fun fileClosedDuringStopStillReportsToService() {
+        startService()
+        val control = control()
+        val reported = CountDownLatch(1)
+        RecIo.execute { Thread.sleep(400); control.execute { reported.countDown() } }
+        service!!.destroy()
+        assertTrue(control.awaitTermination(20, TimeUnit.SECONDS))
+        assertEquals("сообщение о закрытом файле дошло до службы", 0L, reported.count)
+        service = null
+    }
+
+    /** AUD-08: остановленная служба дорабатывает дольше, чем запускается новая, — и не стирает её состояния. */
+    @Test fun oldServiceDoesNotWipeStateOfNewOne() {
+        startService()
+        val old = service!!; val oldControl = control()
+        val busy = CountDownLatch(1)
+        oldControl.execute { busy.await() }
+        old.destroy()
+        service = Robolectric.buildService(RecorderService::class.java).create()
+        RecordingStatus.set("cam_new", CameraRecorder.Status(CameraRecorder.State.RECORDING))
+        busy.countDown()
+        assertTrue(oldControl.awaitTermination(20, TimeUnit.SECONDS))
+        assertEquals("состояние новой службы на месте", CameraRecorder.State.RECORDING, RecordingStatus.of("cam_new")?.state)
+    }
+
+    /** NEW-REC-2: отложенный повтор сверки не доживает до своего срока в уничтоженной службе (он запустил бы вторую запись). */
+    @Test fun delayedRetryDiesWithService() {
+        startService()
+        val control = control()
+        control.submit { RecorderService::class.java.getDeclaredMethod("retrySoon").apply { isAccessible = true }.invoke(service!!.get()) }.get(5, TimeUnit.SECONDS)
+        service!!.destroy()
+        assertTrue("поток управления не ждёт отложенных задач", control.awaitTermination(15, TimeUnit.SECONDS))
+        service = null
+    }
+
+    /** Тома общей памяти различаются по второму звену пути; всё остальное — одна очередь. */
+    @Test fun volumesAreTakenFromStoragePath() {
+        val v = RecIo.volumeOf
+        assertEquals("/storage/emulated", v(File("/storage/emulated/0/Android/data/x/files/records/a.mp4")))
+        assertEquals("/storage/1A2B-3C4D", v(File("/storage/1A2B-3C4D/Android/data/x/files/records/a.mp4")))
+        assertEquals("", v(File("/data/user/0/x/files/records/a.mp4")))
     }
 
     /** Один файл как раз открывается на медленном носителе — остальные закрываются, не дожидаясь его. */

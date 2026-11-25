@@ -431,9 +431,38 @@ class RecordingArchiveTest {
         assertEquals(listOf(100, 100), stored.values.map { it.size() })
         val second = ArchiveCopy.copy(listOf("Домофон" to f1, "Домофон" to f2), folder)
         assertEquals("уже скопированные — пропуск", ArchiveCopy.Result(0, 2, 0, 0), second)
-        val broken = ArchiveCopy.copy(listOf("Домофон" to f1.copy(startMs = day + 999_000)), folder) { null }
+        val broken = ArchiveCopy.copy(listOf("Домофон" to f1.copy(startMs = day + 999_000)), folder, open = { null })
         assertEquals(1, broken.failed)
         assertEquals("за неудачей не остаётся пустого файла", 2, stored.size)
+    }
+
+    /**
+     * Второй аудит 25.11.2026, NEW-DATA-1: ночью список папки копий бывает пустым — по нему одному все ★-ролики копировались бы заново
+     * (под именами «… (1)»). Копия находится по своему адресу; удалённая владельцем — копируется снова.
+     */
+    @Test fun starredCopyDoesNotRepeatWhenFolderListIsEmpty() {
+        val root = tmp.newFolder("root")
+        val f1 = RecLayout.parse(file(root, "door", RecFile.Kind.EVENT, day + 1_000, 20_000, starred = true), "door")!!
+        val f2 = RecLayout.parse(file(root, "door", RecFile.Kind.EVENT, day + 61_000, 20_000, starred = true), "door")!!
+        val stored = linkedMapOf<String, java.io.ByteArrayOutputStream>()
+        var listed = true; var created = 0
+        val folder = object : ArchiveCopy.Folder {
+            override var lastRef: String? = null
+            override fun sizes() = if (listed) stored.mapValues { it.value.size().toLong() } else emptyMap()
+            override fun create(name: String) = java.io.ByteArrayOutputStream().also { stored[name] = it; lastRef = "ref:$name"; created++ }
+            override fun delete(name: String) { stored.remove(name) }
+            override fun sizeAt(ref: String) = stored[ref.removePrefix("ref:")]?.size()?.toLong()
+        }
+        val files = listOf("Домофон" to f1, "Домофон" to f2)
+        val refs = HashMap<String, String>()
+        assertEquals(2, ArchiveCopy.copy(files, folder, refs).copied)
+        listed = false
+        assertEquals("список пуст — копии находятся по адресу", ArchiveCopy.Result(0, 2, 0, 0), ArchiveCopy.copy(files, folder, ArchiveCopy.loadRefs(org.json.JSONObject(refs as Map<*, *>).toString())))
+        assertEquals(2, created)
+        stored.remove(ArchiveCopy.nameFor("Домофон", f1))
+        assertEquals("удалённая владельцем копия делается заново", 1, ArchiveCopy.copy(files, folder, refs).copied)
+        ArchiveCopy.copy(files.take(1), folder, refs)
+        assertEquals("сняли ★ — адрес забыт", setOf(ArchiveCopy.nameFor("Домофон", f1)), refs.keys)
     }
 
     @Test fun storageTextAndCalendarDates() {
