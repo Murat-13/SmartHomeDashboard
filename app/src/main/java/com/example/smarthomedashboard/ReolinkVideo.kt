@@ -30,7 +30,10 @@ internal object ReolinkVideo {
     private class Hold(val failures: Int, val until: Long)
     private val holds = ConcurrentHashMap<String, Hold>()
     internal var clock: () -> Long = SystemClock::elapsedRealtime
-    private val PAUSES = longArrayOf(60_000L, 10 * 60_000L, 30 * 60_000L)
+    // Первая пауза короткая: камера изредка не успевает отдать картинку за отведённое время (на планшете — 2 раза за сутки 25.11.2026,
+    // оба — вместе с открытием канала голоса), а минута показа запасным путём — это первый кадр через ≈ 1 с вместо 0,2 с при
+    // каждом раскрытии. Подводит снова — паузы растут, как раньше.
+    private val PAUSES = longArrayOf(15_000L, 60_000L, 10 * 60_000L, 30 * 60_000L)
 
     /**
      * Адрес основного потока по протоколу Reolink; null — не Reolink или субпоток: у плитки запас держит сам аппаратный декодер, и
@@ -52,11 +55,12 @@ internal object ReolinkVideo {
     /** Путь недавно подвёл — пока показываем как раньше. */
     fun held(url: String) = holds[url]?.let { clock() < it.until } == true
 
-    fun refused(url: String) {
+    fun refused(url: String, why: String = "") {
         val failures = (holds[url]?.failures ?: 0) + 1
         val pause = PAUSES[minOf(failures, PAUSES.size) - 1]
         holds[url] = Hold(failures, clock() + pause)
-        Log.i("ReolinkVideo", "Видео по протоколу Reolink не вышло ($failures) — следующая попытка через ${pause / 60_000} мин")
+        Log.i("ReolinkVideo", "Видео по протоколу Reolink не вышло ($failures${if (why.isEmpty()) "" else ", $why"}) — следующая попытка через " +
+            if (pause < 60_000L) "${pause / 1000} с" else "${pause / 60_000} мин")
     }
 
     fun worked(url: String) { holds.remove(url) }

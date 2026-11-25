@@ -218,8 +218,11 @@ class ReolinkVideoTest {
         val url = "baichuan://192.0.2.5/main"
         assertFalse(ReolinkVideo.held(url))
         ReolinkVideo.refused(url); assertTrue(ReolinkVideo.held(url))
-        t += 61_000; assertFalse("через минуту — снова", ReolinkVideo.held(url))
-        ReolinkVideo.refused(url); t += 61_000; assertTrue("второй отказ подряд — 10 минут", ReolinkVideo.held(url))
+        // Одна заминка камеры — 15 секунд запасным путём, а не минута (разбор 26.11.2026); подводит снова — паузы растут.
+        t += 16_000; assertFalse("через 15 секунд — снова", ReolinkVideo.held(url))
+        ReolinkVideo.refused(url); t += 16_000; assertTrue("второй отказ подряд — минута", ReolinkVideo.held(url))
+        t += 45_000; assertFalse(ReolinkVideo.held(url))
+        ReolinkVideo.refused(url); t += 61_000; assertTrue("третий — 10 минут", ReolinkVideo.held(url))
         ReolinkVideo.worked(url); assertFalse(ReolinkVideo.held(url))
         assertTrue(ReolinkVideo.feed(url, "a", "b") is ReolinkVideoSession)
         assertTrue(ReolinkVideo.feed("rtsp://192.0.2.5/x", "a", "b") is RtspSession)

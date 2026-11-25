@@ -768,7 +768,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         if (fastWaitSince == 0L) fastWaitSince = now
         if (now - fastWaitSince >= fastWaitMs) {
             fastWaitSince = 0
-            ReolinkVideo.refused(url)
+            ReolinkVideo.refused(url, "картинки нет за $fastWaitMs мс")
             releaseOwn()
             return false
         }
