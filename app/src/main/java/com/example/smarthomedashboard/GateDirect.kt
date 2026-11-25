@@ -13,8 +13,6 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.security.MessageDigest
-import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 
 /**
@@ -36,6 +34,11 @@ internal object GateDirect {
             .writeTimeout(4, TimeUnit.SECONDS)
             .callTimeout(6, TimeUnit.SECONDS)
             .retryOnConnectionFailure(false)
+            // Один запрос — одна команда (аудит 25.11.2026, AUD-01): за перенаправлением не идём (контроллер, ответивший им на команду,
+            // получил бы её ещё раз — до 21 раза в петле) и «занят, повторите» (503 с Retry-After) сами не повторяем.
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .addNetworkInterceptor { chain -> chain.proceed(chain.request()).let { if (it.code == 503) it.newBuilder().removeHeader("Retry-After").build() else it } }
             // Каждое обращение — новое соединение: простые устройства (и стенд) закрывают его после ответа, а
             // повторное использование закрытого давало IOException на каждом опросе (найдено на планшете 22.11).
             // Повтор запроса не включаем: команда («импульс») не должна уйти дважды.
@@ -135,6 +138,9 @@ internal object GateDirect {
     private fun describe(response: Response): Result = when {
         response.isSuccessful -> Result(true)
         response.code == 401 -> Result(false, WRONG_PASSWORD)
+        // Команда дошла, а выполнена ли — неизвестно: повторять её панель не будет, человек проверит глазами.
+        response.code in 300..399 -> Result(false, "устройство перенаправило запрос", unclear = true)
+        response.code == 503 -> Result(false, "устройство занято", unclear = true)
         else -> Result(false, "устройство отказало (${response.code})")
     }
 
@@ -220,45 +226,23 @@ internal object GateDirect {
         val user = request.url.username.ifEmpty { USER }
         val secret = request.url.password.ifEmpty { password.orEmpty() }
         if (first.code != 401 || secret.isEmpty()) return first
-        val challenge = first.header("WWW-Authenticate").orEmpty()
+        // Лучший из предложенных способов: Digest раньше Basic, в каком бы порядке устройство их ни назвало (AUD-02). Незнакомый
+        // способ — второго запроса нет.
+        val auth = DigestAuth.choose(first.headers("WWW-Authenticate")) ?: return first
         first.close()
         sent?.sent = false // «нужен пароль» — команда не выполнена
-        val header = if (challenge.startsWith("Basic", ignoreCase = true)) okhttp3.Credentials.basic(user, secret)
-        else Digest.authorization(challenge, request.method, request.url.encodedPath +
-            (request.url.encodedQuery?.let { "?$it" } ?: ""), user, secret) ?: return http.newCall(request).execute()
+        val uri = request.url.encodedPath + (request.url.encodedQuery?.let { "?$it" } ?: "")
+        // Basic — в прежней кодировке (ISO-8859-1): контроллеры с паролем не из латиницы работают как раньше.
+        val header = if (auth.scheme == "Basic") okhttp3.Credentials.basic(user, secret) else auth.header(user, secret, request.method, uri)
         return http.newCall(request.newBuilder().header("Authorization", header).build()).execute()
     }
 
-    /** HTTP Digest (RFC 7616): SHA-256 или MD5, qop=auth. */
+    /** Разбор заголовка Digest — для поддельных устройств в тестах; сам ответ на вызов считает [DigestAuth]. */
     internal object Digest {
-        private val random = SecureRandom()
-
         fun fields(challenge: String): Map<String, String> {
             if (!challenge.startsWith("Digest", ignoreCase = true)) return emptyMap()
             return Regex("""(\w+)=(?:"([^"]*)"|([^\s,]+))""").findAll(challenge.substring(6))
                 .associate { it.groupValues[1].lowercase() to it.groupValues[2].ifEmpty { it.groupValues[3] } }
         }
-
-        fun authorization(challenge: String, method: String, uri: String, user: String, password: String,
-                          cnonce: String = newCnonce()): String? {
-            val f = fields(challenge)
-            val realm = f["realm"] ?: return null
-            val nonce = f["nonce"] ?: return null
-            val algorithm = f["algorithm"] ?: "MD5"
-            val digest = when (algorithm.uppercase()) { "SHA-256" -> "SHA-256"; "MD5" -> "MD5"; else -> return null }
-            fun h(s: String) = MessageDigest.getInstance(digest).digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-            val ha1 = h("$user:$realm:$password")
-            val ha2 = h("$method:$uri")
-            val qop = f["qop"]?.split(',')?.map { it.trim() }?.firstOrNull { it == "auth" }
-            val nc = "00000001"
-            val response = if (qop != null) h("$ha1:$nonce:$nc:$cnonce:$qop:$ha2") else h("$ha1:$nonce:$ha2")
-            return buildString {
-                append("Digest username=\"$user\", realm=\"$realm\", nonce=\"$nonce\", uri=\"$uri\", algorithm=$algorithm, response=\"$response\"")
-                if (qop != null) append(", qop=$qop, nc=$nc, cnonce=\"$cnonce\"")
-                f["opaque"]?.let { append(", opaque=\"$it\"") }
-            }
-        }
-
-        private fun newCnonce() = ByteArray(8).also(random::nextBytes).joinToString("") { "%02x".format(it) }
     }
 }

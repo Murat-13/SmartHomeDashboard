@@ -167,7 +167,8 @@ class HaLoginActivity : PinProtectedActivity(), PanelIdle.Busy {
             listOf("1. Телефон — в той же домашней сети, что и планшет.",
                 "2. Наведите камеру телефона на QR и откройте ссылку.",
                 "3. Войдите в Home Assistant на телефоне.",
-                "Панель подключится сама. Пароль вводится только на странице Home Assistant.").forEach {
+                "Панель подключится сама. Пароль вводится только на странице Home Assistant.",
+                PHONE_NETWORK_NOTE).forEach {
                 addView(ModernUi.body(this@HaLoginActivity, it).apply { setPadding(0, dp(4), 0, dp(4)) })
             }
         }
@@ -429,6 +430,8 @@ class HaLoginActivity : PinProtectedActivity(), PanelIdle.Busy {
         const val EXTRA_ADMIN = "login_admin"
         private const val STATE_MODE = "login_mode"
         private const val QR_SCALE = 8
+        /** Код входа идёт к планшету по Wi-Fi без шифрования (решение владельца 25.11.2026: оставить и предупреждать). */
+        internal const val PHONE_NETWORK_NOTE = "В чужой или гостевой сети входите на самом планшете: код входа идёт по Wi-Fi без шифрования."
 
         internal fun intent(context: Context, target: HaConnector.Target, name: String) = Intent(context, HaLoginActivity::class.java)
             .putExtra(EXTRA_LOCAL, target.local).putExtra(EXTRA_EXTERNAL, target.external)

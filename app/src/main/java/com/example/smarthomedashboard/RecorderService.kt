@@ -93,7 +93,7 @@ class RecorderService : Service() {
             MEDIA_ACTIONS.forEach(::addAction)
             addDataScheme("file")
         }, null, Handler(mediaThread.looper), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
-        control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.let { java.io.File(it, "video_debug") } } }
+        control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.takeIf { DebugSwitches.allowed(this) }?.let { java.io.File(it, "video_debug") } } }
         // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
         control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
         control.scheduleWithFixedDelay({ safe { refreshStorage() } }, 0, STORAGE_REFRESH_S, TimeUnit.SECONDS)

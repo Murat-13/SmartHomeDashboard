@@ -920,7 +920,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         player = exo
         this.connects = connects
         stopPlayerTrace()
-        if (live) playerTrace = PlayerTrace.open(context.getExternalFilesDir(null)?.let { java.io.File(it, "video_debug") }, playingRtsp)
+        if (live) playerTrace = PlayerTrace.open(context.getExternalFilesDir(null)?.takeIf { DebugSwitches.allowed(context) }?.let { java.io.File(it, "video_debug") }, playingRtsp)
         if (playerTrace != null) main.postDelayed(traceTick, PlayerTrace.PERIOD_MS)
         main.removeCallbacks(troughTick)
         trough = if (live && LiveTuning.off(context, "trough")) TroughControl() else null

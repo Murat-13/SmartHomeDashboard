@@ -70,6 +70,8 @@ internal object SupportReport {
 /** «Сбои и отчёт» (Настройки → «О приложении»): последние сбои этого планшета и обезличенный отчёт, который человек отправляет сам. */
 class SupportActivity : PinProtectedActivity() {
     private lateinit var content: LinearLayout
+    private lateinit var debugButton: android.widget.TextView
+    private fun renderDebug() { debugButton.text = if (DebugSwitches.allowed(this)) "Проверочный режим: включён — выключить" else "Проверочный режим: выключен — включить" }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,6 +93,13 @@ class SupportActivity : PinProtectedActivity() {
         column.addView(gap())
         column.addView(ModernUi.primaryButton(this, "Собрать отчёт") { showReport() }.apply { tag = "support_report" })
         column.addView(ModernUi.secondaryButton(this, "Очистить") { clear() }.apply { tag = "support_clear" })
+        column.addView(gap())
+        debugButton = ModernUi.secondaryButton(this, "") { DebugSwitches.set(this, !DebugSwitches.allowed(this)); renderDebug() }.apply { tag = "support_debug" }
+        column.addView(debugButton)
+        column.addView(ModernUi.secondary(this, "Проверочный режим — для замеров и разбора звука по просьбе разработчика: файлы-выключатели в папке приложения " +
+            "действуют, только пока он включён. Через ${DebugSwitches.HOURS} ч выключается сам."))
+        renderDebug()
+        column.addView(gap())
         column.addView(ModernUi.secondaryButton(this, "Готово") { finish() }.apply { tag = "support_done" })
         return FrameLayout(this).apply {
             setBackgroundColor(ContextCompat.getColor(this@SupportActivity, R.color.modern_background))

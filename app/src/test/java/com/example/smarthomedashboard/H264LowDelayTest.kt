@@ -147,11 +147,15 @@ class H264LowDelayTest {
         assertFalse(LiveTuning.softwareHold(context))
         val dir = java.io.File(context.getExternalFilesDir(null), "video_debug").apply { mkdirs() }
         java.io.File(dir, "sw_hold").writeText("")
+        // С 0.9.72 файл действует, только пока включён проверочный режим (DebugSwitches, аудит 25.11.2026).
+        assertFalse(LiveTuning.softwareHold(context))
+        DebugSwitches.set(context, true)
         assertTrue(LiveTuning.softwareHold(context))
         assertFalse("у каждого выключателя свой файл", LiveTuning.off(context, "no_golive"))
         java.io.File(dir, "no_golive").writeText("")
         assertTrue(LiveTuning.off(context, "no_golive"))
         assertFalse(LiveTuning.off(context, "no_retime"))
         assertFalse(LiveTuning.off(context, "player_audio"))
+        DebugSwitches.set(context, false)
     }
 }

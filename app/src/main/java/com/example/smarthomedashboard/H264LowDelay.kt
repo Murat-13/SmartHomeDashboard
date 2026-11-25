@@ -446,7 +446,7 @@ internal object LiveTuning {
      * - `player_audio` — звук тем же плеером, что и видео (без отдельного плеера звука).
      */
     fun off(context: Context, name: String): Boolean =
-        context.getExternalFilesDir(null)?.let { File(File(it, "video_debug"), name).exists() } == true
+        DebugSwitches.allowed(context) && context.getExternalFilesDir(null)?.let { File(File(it, "video_debug"), name).exists() } == true
 
     fun softwareHold(context: Context): Boolean = off(context, "sw_hold")
 }

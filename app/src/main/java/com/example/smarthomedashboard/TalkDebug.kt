@@ -23,7 +23,7 @@ internal object TalkDebug {
     /** Начать новую запись (прежняя затирается), если проверочная запись включена. */
     @Synchronized fun begin(context: Context) {
         end()
-        val d = context.getExternalFilesDir(null)?.let { File(it, "talk_debug") } ?: return
+        val d = context.getExternalFilesDir(null)?.takeIf { DebugSwitches.allowed(context) }?.let { File(it, "talk_debug") } ?: return
         dir = if (File(d, "on").exists()) d else null
     }
 
@@ -45,7 +45,7 @@ internal object TalkDebug {
 
     /** Есть ли в папке проверочных записей файл-переключатель [name] (создаётся через adb для измерений). */
     fun flag(context: Context, name: String): Boolean =
-        context.getExternalFilesDir(null)?.let { File(File(it, "talk_debug"), name).exists() } == true
+        DebugSwitches.allowed(context) && context.getExternalFilesDir(null)?.let { File(File(it, "talk_debug"), name).exists() } == true
 
     @Synchronized fun end() {
         files.values.forEach { runCatching { it.close() } }

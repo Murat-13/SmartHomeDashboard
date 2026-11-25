@@ -33,6 +33,7 @@ internal object TalkProbe {
 
     /** Проверить, просили ли измерение; [tiles] читаются, только если просили. */
     fun maybeRun(context: Context, tiles: () -> List<TileEntity>) {
+        if (!DebugSwitches.allowed(context)) return
         val dir = context.getExternalFilesDir(null)?.let { File(it, "talk_debug") } ?: return
         val asked = TRIGGERS.firstOrNull { File(dir, it).exists() } ?: return
         if (running) return

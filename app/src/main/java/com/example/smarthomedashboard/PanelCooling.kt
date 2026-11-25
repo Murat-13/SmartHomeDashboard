@@ -29,7 +29,7 @@ internal object PanelCooling {
     }
 
     /** Проверочные выключатели для замера: файлы `tablet_debug/dim` (на четверть ниже) и `full` (полная яркость) в папке приложения. */
-    fun debug(context: Context, name: String) = try { File(context.getExternalFilesDir(null), "tablet_debug/$name").exists() }
+    fun debug(context: Context, name: String) = try { DebugSwitches.allowed(context) && File(context.getExternalFilesDir(null), "tablet_debug/$name").exists() }
         catch (_: RuntimeException) { false }
 
     // ---- OLED ----

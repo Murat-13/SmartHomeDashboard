@@ -433,6 +433,71 @@ class GateDirectTest {
         assertEquals("устройство не ответило", GateHub.op("gd")!!.detail)
     }
 
+    // ---- Второй аудит 25.11.2026: один запрос — одна команда (AUD-01), Digest раньше Basic (AUD-02) ----
+
+    private fun answering(seen: MutableList<String>, f: (RecordedRequest) -> MockResponse) {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                seen += "${request.method} ${request.path} ${request.getHeader("Authorization")?.substringBefore(' ') ?: "-"}"
+                return f(request)
+            }
+        }
+    }
+
+    /** Контроллер ответил на команду перенаправлением: панель за ним не идёт — иначе команда ушла бы ещё раз (в петле — 21 раз). */
+    @Test fun commandIsNeverResentAfterRedirect() {
+        val other = MockWebServer().apply { start() }
+        val seen = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            for (code in listOf(301, 302, 303, 307, 308)) for (post in listOf(false, true)) for (target in listOf("http://127.0.0.1:${other.port}/x", "/open")) {
+                seen.clear()
+                answering(seen) { MockResponse().setResponseCode(code).setHeader("Location", target) }
+                val gate = httpGate("http://127.0.0.1:${server.port}/open").let { it.copy(direct = it.direct!!.copy(post = post)) }
+                val result = GateDirect.send(gate, Gate.Action.OPEN, null)
+                assertEquals("$code post=$post → $target", GateDirect.Result(false, "устройство перенаправило запрос", unclear = true), result)
+                assertEquals("$code: один запрос", 1, seen.size)
+            }
+            assertEquals("на другой узел не ходили", 0, other.requestCount)
+            // Shelly — то же.
+            seen.clear()
+            assertTrue(GateDirect.send(device(), Gate.Action.OPEN, null).unclear)
+            assertEquals(1, seen.size)
+        } finally { other.shutdown() }
+    }
+
+    /** «Занят, повторите через 0 с» — сама панель не повторяет. */
+    @Test fun busyAnswerIsNotRepeated() {
+        val seen = Collections.synchronizedList(mutableListOf<String>())
+        answering(seen) { MockResponse().setResponseCode(503).setHeader("Retry-After", "0") }
+        assertEquals(GateDirect.Result(false, "устройство занято", unclear = true), GateDirect.send(httpGate("http://127.0.0.1:${server.port}/open"), Gate.Action.OPEN, null))
+        assertEquals(1, seen.size)
+    }
+
+    /** Устройство предлагает Digest и Basic: пароль открытым текстом не уходит, в каком бы порядке они ни были названы. */
+    @Test fun digestIsPreferredOverBasicInAnyOrder() {
+        val digest = "Digest realm=\"x\", nonce=\"n\", algorithm=SHA-256, qop=\"auth\""
+        val basic = "Basic realm=\"x\""
+        for (order in listOf(listOf(digest, basic), listOf(basic, digest), listOf("$basic, $digest"))) {
+            val seen = Collections.synchronizedList(mutableListOf<String>())
+            answering(seen) { r -> if (r.getHeader("Authorization") == null) MockResponse().setResponseCode(401).apply { order.forEach { addHeader("WWW-Authenticate", it) } } else MockResponse().setBody("ok") }
+            assertTrue(GateDirect.send(httpGate("http://127.0.0.1:${server.port}/open"), Gate.Action.OPEN, "secret").ok)
+            assertEquals("$order", listOf("GET /open -", "GET /open Digest"), seen.toList())
+        }
+        // Только Basic (простые контроллеры) — как раньше.
+        val seen = Collections.synchronizedList(mutableListOf<String>())
+        answering(seen) { r -> if (r.getHeader("Authorization") == null) MockResponse().setResponseCode(401).addHeader("WWW-Authenticate", basic) else MockResponse().setBody("ok") }
+        assertTrue(GateDirect.send(httpGate("http://vasya@127.0.0.1:${server.port}/open"), Gate.Action.OPEN, "secret").ok)
+        assertEquals(listOf("GET /open -", "GET /open Basic"), seen.toList())
+    }
+
+    /** Незнакомый способ входа: второго запроса без пароля нет. */
+    @Test fun unknownAuthSchemeIsNotRetried() {
+        val seen = Collections.synchronizedList(mutableListOf<String>())
+        answering(seen) { MockResponse().setResponseCode(401).setHeader("WWW-Authenticate", "Digest realm=\"x\", nonce=\"n\", algorithm=SHA-512-256, qop=\"auth\"") }
+        assertEquals(GateDirect.Result(false, GateDirect.WRONG_PASSWORD), GateDirect.send(httpGate("http://127.0.0.1:${server.port}/open"), Gate.Action.OPEN, "secret"))
+        assertEquals(1, seen.size)
+    }
+
     // ---- Исполнение через GateHub ----
 
     @Test fun relayWithoutSensorSaysReactedNotOpened() {
