@@ -208,11 +208,18 @@ class RecorderService : Service() {
         recorders.clear()
     }
 
-    private fun readPassword(secretKey: String): String? = try {
-        CameraPasswords.blocking(applicationContext, secretKey)
-    } catch (e: Exception) {
-        Log.w(TAG, "Запись: пароль камеры недоступен: ${e.javaClass.simpleName}")
-        null
+    /** Последние прочитанные пароли камер (поток управления). */
+    private val knownPasswords = HashMap<String, String?>()
+
+    /** Сбой хранилища — не «пароля нет»: запись идёт с прежним паролем, через минуту читаем снова (аудит 25.11.2026, REC-04). */
+    private fun readPassword(secretKey: String): String? {
+        val loaded = try { CameraPasswords.load(applicationContext, secretKey) } catch (e: Exception) {
+            Log.w(TAG, "Запись: пароль камеры недоступен: ${e.javaClass.simpleName}"); null
+        }
+        if (loaded?.sure == true) { knownPasswords[secretKey] = loaded.value; return loaded.value }
+        Log.w(TAG, "Запись: пароль камеры не прочитан — ${if (secretKey in knownPasswords) "идёт с прежним" else "пробую без него"}, повтор через минуту")
+        retrySoon()
+        return knownPasswords[secretKey]
     }
 
     /** Папка записей: SD-карта, если выбрана и вставлена, иначе память планшета ([RecVolumes]). */

@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.example.smarthomedashboard.data.TileEntity
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -32,7 +33,10 @@ internal object OnvifEvents {
 
     /** Куда уходят события (в тестах — запись вызовов). */
     internal var sink: (tileId: String, events: List<CameraEventType>) -> Unit = { tileId, events -> DirectEvents.external(tileId, events, "ONVIF") }
-    internal var password: (Context, String) -> String? = { context, tileId -> CameraPasswords.blocking(context, tileId) }
+    internal var password: (Context, String) -> String? = { context, tileId ->
+        // Сбой хранилища — не «пароля нет»: обычный повтор через секунды, а не через 5 минут (аудит 25.11.2026, REC-04).
+        CameraPasswords.load(context, tileId).let { if (it.sure) it.value else throw IOException("Пароль камеры не прочитан") }
+    }
 
     fun attach(context: Context) {
         if (app != null) return

@@ -79,6 +79,8 @@ class SetupActivity : AppCompatActivity() {
 
     /** Поиск и проверка адреса (в тестах — подмена). */
     internal var newDiscovery: (Context, (List<HaFound>) -> Unit) -> HaDiscovery = { context, onChange -> HaDiscovery(context, onChange) }
+    /** Состояние PIN (в тестах — подмена). */
+    internal var pinAccess: (Context) -> PinAccess = { AndroidPinAccess.create(it) }
     internal var checkServer: (String) -> HaServer.Check = HaServer::check
 
     private val login = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -232,7 +234,10 @@ class SetupActivity : AppCompatActivity() {
         content.addView(ModernUi.secondaryButton(this, "Скопировать с другого планшета") { copyIn.launch(Intent(this, CopyInActivity::class.java)) }
             .apply { tag = "setup_copy" })
         content.addView(gap())
-        content.addView(ModernUi.secondaryButton(this, "Восстановить из файла копии") { openFile.launch(arrayOf("application/json", "application/octet-stream")) }
+        content.addView(ModernUi.secondaryButton(this, "Восстановить из файла копии") {
+            // Панель могла быть уже настроена в обход мастера: с включённым PIN — только с ним (аудит 25.11.2026, SEC-05).
+            PinSecurityUi.authorize(this, onSuccess = { openFile.launch(arrayOf("application/json", "application/octet-stream")) }, access = pinAccess(this))
+        }
             .apply { tag = "setup_restore" })
         content.addView(ModernUi.caption(this, "Копия — это плитки и настройки. Токен, пароли и PIN в ней не хранятся — после восстановления нужно " +
             "войти в Home Assistant."))

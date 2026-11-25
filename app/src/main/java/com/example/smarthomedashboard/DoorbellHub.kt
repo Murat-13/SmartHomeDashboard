@@ -357,18 +357,25 @@ internal object DoorbellHub {
     @Volatile private var password: String? = null
     @Volatile private var passwordLoaded = false
 
-    /** Пароль RTSP: читается из защищённого хранилища один раз в фоне, хранится в памяти процесса. */
+    /** Чтение пароля RTSP из защищённого хранилища (в тестах — подмена). */
+    internal var passwordStore: (Context) -> SecretStore.ReadResult = { AndroidSecretStore.create(it).read(SecretStore.Slot.CAMERA_PASSWORD) }
+
+    /** Блокирующее. Сбой хранилища — не «пароля нет» ([CameraSecrets.Loaded.sure]). */
+    internal fun loadPassword(context: Context): CameraSecrets.Loaded = passwordStore(context).let { r ->
+        CameraSecrets.Loaded(r.value.takeIf { r.status == SecretStore.Status.SUCCESS }, r.status == SecretStore.Status.SUCCESS || r.status == SecretStore.Status.ABSENT)
+    }
+
+    /** Пароль RTSP: читается из защищённого хранилища один раз в фоне, хранится в памяти процесса; сбой — прочитается снова. */
     fun cameraPassword(context: Context, result: (String?) -> Unit) {
         if (passwordLoaded) { result(password); return }
         val application = context.applicationContext
         io.execute {
-            val value = try {
-                AndroidSecretStore.create(application).read(SecretStore.Slot.CAMERA_PASSWORD)
-                    .takeIf { it.status == SecretStore.Status.SUCCESS }?.value
-            } catch (e: Exception) { Log.w(TAG, "Пароль камеры недоступен: ${e.javaClass.simpleName}"); null }
-            password = value
-            passwordLoaded = true
-            main.post { result(value) }
+            val loaded = try { loadPassword(application) } catch (e: Exception) {
+                Log.w(TAG, "Пароль камеры недоступен: ${e.javaClass.simpleName}"); CameraSecrets.Loaded(null, sure = false)
+            }
+            password = loaded.value
+            passwordLoaded = loaded.sure
+            main.post { result(loaded.value) }
         }
     }
 

@@ -22,8 +22,18 @@ internal class CameraSecrets(
 ) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun read(tileId: String): String? = synchronized(LOCK) {
-        val stored = prefs.getString(tileId, null) ?: return null
+    /** Итог чтения: [sure] — хранилище ответило (пароль есть или его точно нет); нет — сбой, «пароля нет» значить не может. */
+    class Loaded(val value: String?, val sure: Boolean)
+
+    fun read(tileId: String): String? = load(tileId).value
+
+    fun load(tileId: String): Loaded = synchronized(LOCK) {
+        val stored = prefs.getString(tileId, null) ?: return Loaded(null, sure = true)
+        val value = decrypt(tileId, stored)
+        Loaded(value, sure = value != null)
+    }
+
+    private fun decrypt(tileId: String, stored: String): String? {
         return try {
             val bytes = Base64.decode(stored, Base64.NO_WRAP)
             if (bytes.size < IV + 16) return null
@@ -57,6 +67,9 @@ internal class CameraSecrets(
 
     fun has(tileId: String) = prefs.contains(tileId)
 
+    /** Ключа нет, а записанное им есть: новый ключ сделал бы прежние пароли нечитаемыми. */
+    fun keyMissing(): Boolean = synchronized(LOCK) { prefs.all.isNotEmpty() && try { keys.existing() == null } catch (_: Exception) { true } }
+
     private fun aad(tileId: String) = "SmartHomeDashboard/camera-password/v1/$tileId".toByteArray(Charsets.UTF_8)
 
     companion object {
@@ -86,24 +99,42 @@ internal object CameraPasswords {
         synchronized(cache) { if (secretKey in cache) { result(cache[secretKey]); return } }
         val app = context.applicationContext
         io.execute {
-            val value = secrets(app).read(secretKey)
-            synchronized(cache) { cache[secretKey] = value }
-            main.post { result(value) }
+            val loaded = secrets(app).load(secretKey)
+            // Сбой хранилища не запоминаем: следующее обращение прочитает снова (аудит 25.11.2026, REC-04).
+            if (loaded.sure) synchronized(cache) { cache[secretKey] = loaded.value }
+            main.post { result(loaded.value) }
         }
     }
 
     /** Блокирующее — для службы записи (рабочий поток). */
-    fun blocking(context: Context, secretKey: String): String? =
+    fun blocking(context: Context, secretKey: String): String? = load(context, secretKey).value
+
+    /** То же, с признаком «хранилище ответило» ([CameraSecrets.Loaded.sure]). */
+    fun load(context: Context, secretKey: String): CameraSecrets.Loaded =
         if (secretKey.isEmpty()) try {
-            AndroidSecretStore.create(context).read(SecretStore.Slot.CAMERA_PASSWORD).takeIf { it.status == SecretStore.Status.SUCCESS }?.value
-        } catch (_: Exception) { null }
-        else secrets(context.applicationContext).read(secretKey)
+            DoorbellHub.loadPassword(context)
+        } catch (_: Exception) { CameraSecrets.Loaded(null, sure = false) }
+        else secrets(context.applicationContext).load(secretKey)
 
     fun save(context: Context, secretKey: String, value: String, done: (Boolean) -> Unit) {
         if (secretKey.isEmpty()) { DoorbellHub.savePassword(context, value, done); return }
         val app = context.applicationContext
         io.execute {
             val ok = secrets(app).write(secretKey, value)
+            synchronized(cache) { cache.remove(secretKey) }
+            main.post { done(ok) }
+        }
+    }
+
+    /** Есть ли записанный пароль (читается ли — не важно). У домофона ([secretKey] пуст) — неизвестно, считается, что есть. */
+    fun has(context: Context, secretKey: String): Boolean = secretKey.isEmpty() || secrets(context.applicationContext).has(secretKey)
+
+    /** Записать и убедиться, что читается обратно (перенос из открытого места); [done] — на главном потоке. */
+    fun move(context: Context, secretKey: String, value: String, done: (Boolean) -> Unit) {
+        val app = context.applicationContext
+        io.execute {
+            val store = secrets(app)
+            val ok = !store.keyMissing() && store.write(secretKey, value) && store.read(secretKey) == value
             synchronized(cache) { cache.remove(secretKey) }
             main.post { done(ok) }
         }

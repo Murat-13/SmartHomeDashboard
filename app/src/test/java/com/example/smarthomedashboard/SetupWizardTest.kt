@@ -95,6 +95,28 @@ class SetupWizardTest {
         assertFalse(prefs.getBoolean("setup_completed", false))
     }
 
+    /** SEC-05 (аудит 25.11.2026): панель настроили в обход мастера и включили PIN — восстановление из файла только с PIN. */
+    @Test fun restoreFromFileAsksForPinWhenItIsSet() {
+        var pin: String? = null
+        val activity = open()
+        activity.pinAccess = { PinAccess(object : PinAccess.Storage {
+            override fun read() = PinAccess.State(pin, null)
+            override fun write(state: PinAccess.State) = true
+        }, object : PinAccess.Legacy { override fun read(): String? = null; override fun remove() = true },
+            clock = object : PinAccess.Clock { override fun elapsed() = 0L; override fun boot() = "test" }, worker = {}) }
+        activity.click("setup_restore")
+        await("без PIN — как раньше, сразу выбор файла") { shadowOf(activity).peekNextStartedActivityForResult() != null }
+        assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, shadowOf(activity).nextStartedActivityForResult.intent.action)
+        pin = "record"
+        PinSecurityUi.session.revoke()
+        activity.click("setup_restore")
+        await("спрошен PIN") { org.robolectric.shadows.ShadowDialog.getLatestDialog()?.isShowing == true }
+        assertEquals("файл не открыт", null, shadowOf(activity).peekNextStartedActivityForResult())
+        org.robolectric.shadows.ShadowDialog.getLatestDialog().cancel()
+        idle()
+        assertEquals(null, shadowOf(activity).peekNextStartedActivityForResult())
+    }
+
     /** SEC-01 (аудит 25.11.2026): внешний адрес из объявления по сети никто не проверял — скрытно он не берётся. */
     @Test fun externalAddressFromNetworkAnnouncementIsNotTrusted() {
         val activity = open()

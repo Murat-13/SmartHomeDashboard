@@ -524,6 +524,36 @@ internal object GateStore {
         GateHub.invalidate()
     }
 
+    /**
+     * Пароли, вписанные в адреса «своего HTTP», — в зашифрованное хранилище ([GateDirect.splitPassword]; аудит 25.11.2026,
+     * SEC-02). Адрес в настройках меняется только после того, как пароль записан и прочитан обратно, и только если проход за
+     * это время не изменили. Остальные записи списка не трогаются.
+     */
+    fun hidePasswords(context: Context) {
+        val app = context.applicationContext
+        val raw = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null)
+        if (raw.isNullOrBlank() || '@' !in raw) return
+        for (gate in parse(raw)) {
+            val (clean, password) = GateDirect.splitPassword(gate) ?: continue
+            CameraPasswords.move(app, GateDirect.secretKey(gate.id), password) { stored -> if (stored) replaceAddresses(app, gate, clean) }
+        }
+    }
+
+    private fun replaceAddresses(context: Context, gate: Gate, clean: Gate) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val was = gate.direct ?: return
+        val now = clean.direct ?: return
+        try {
+            val array = JSONArray(prefs.getString(KEY, null) ?: return)
+            val direct = (0 until array.length()).mapNotNull { array.optJSONObject(it) }.firstOrNull { it.optString("id").trim() == gate.id }
+                ?.optJSONObject("direct") ?: return
+            if (direct.optString("open_url").trim() != was.openUrl || direct.optString("close_url").trim() != was.closeUrl) return
+            direct.put("open_url", now.openUrl).put("close_url", now.closeUrl)
+            prefs.edit { putString(KEY, array.toString()) }
+            GateHub.invalidate()
+        } catch (_: org.json.JSONException) { return }
+    }
+
     fun pin(context: Context): GatePin = GatePin.of(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PIN, null))
 
     fun setPin(context: Context, pin: GatePin) =

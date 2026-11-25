@@ -182,6 +182,162 @@ class GateDirectTest {
         assertEquals(1, server.requestCount)
     }
 
+    // ---- SEC-02 (аудит 25.11.2026): пароль, вписанный в адрес своего запроса ----
+
+    private fun httpGate(open: String, close: String = "", id: String = "gp") = Gate(id, "Ворота", Gate.Kind.SCRIPT, link = Gate.Link.DIRECT,
+        direct = Gate.Direct(protocol = Gate.Direct.Protocol.HTTP, openUrl = open, closeUrl = close))
+
+    @Test fun passwordIsSplitFromAddressOnlyWhenNothingElseChanges() {
+        val (gate, secret) = GateDirect.splitPassword(httpGate("http://vasya:p%40ss@192.168.1.9:8080/o?pulse=1#x"))!!
+        assertEquals("http://vasya@192.168.1.9:8080/o?pulse=1#x", gate.direct!!.openUrl)
+        assertEquals("p@ss", secret)
+        val both = GateDirect.splitPassword(httpGate("http://a:p@192.168.1.9/open", "http://b:p@192.168.1.10/close"))!!
+        assertEquals("http://a@192.168.1.9/open" to "http://b@192.168.1.10/close", both.first.direct!!.let { it.openUrl to it.closeUrl })
+        assertNull("пароля нет", GateDirect.splitPassword(httpGate("http://vasya@192.168.1.9/o")))
+        assertNull("без логина и пароля", GateDirect.splitPassword(httpGate("http://192.168.1.9/o?a=b@c")))
+        assertNull("пароли разные — сохранённый один на проход", GateDirect.splitPassword(httpGate("http://a:p@h/o", "http://a:q@h/c")))
+        assertNull("у второго адреса пароля нет — ему ушёл бы чужой", GateDirect.splitPassword(httpGate("http://a:p@h/o", "http://other/c")))
+        assertNull("адрес испорчен", GateDirect.splitPassword(httpGate("не адрес a:p@h")))
+        val shelly = httpGate("http://a:p@h/o").let { it.copy(direct = it.direct!!.copy(protocol = Gate.Direct.Protocol.SHELLY, host = "192.168.1.9")) }
+        assertNull("Shelly — свой пароль", GateDirect.splitPassword(shelly))
+    }
+
+    private class SoftKeys : SecretKeyProvider {
+        var broken = false
+        /** Ключа «нет», но новый создаётся. */
+        var hidden = false
+        private var key: javax.crypto.SecretKey? = null
+        override fun existing() = key.takeUnless { broken || hidden }
+        override fun create(): javax.crypto.SecretKey = if (broken) throw java.security.KeyStoreException("нет") else
+            javax.crypto.KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { key = it }
+    }
+
+    private fun prefs() = context.getSharedPreferences("dashboard_prefs", 0)
+    private fun awaitTrue(what: String, condition: () -> Boolean) {
+        val until = System.nanoTime() + 5_000_000_000
+        while (!condition() && System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(10) }
+        assertTrue(what, condition())
+    }
+
+    @Test fun addressPasswordMovesToEncryptedStorageAndCommandStillWorks() {
+        val keys = SoftKeys()
+        val previous = CameraPasswords.secrets
+        CameraPasswords.secrets = { CameraSecrets(it, keys) }
+        try {
+            val address = "http://vasya:s%C3%A9cret@$host/open"
+            // Повреждённая запись и незнакомое поле рядом остаются как были.
+            val damaged = JSONObject().put("id", "x").put("kind", "неизвестный")
+            val stored = org.json.JSONArray().put(damaged).put(httpGate(address).toJson().put("future", 7))
+            prefs().edit().putString(GateStore.KEY, stored.toString()).commit()
+            GateHub.invalidate()
+            // Хранилище не пишет — адрес не трогаем: пароль не должен пропасть.
+            keys.broken = true
+            GateStore.hidePasswords(context)
+            Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(stored.toString(), prefs().getString(GateStore.KEY, null))
+            keys.broken = false
+            GateStore.hidePasswords(context)
+            awaitTrue("пароль убран из настроек") { "cret" !in prefs().getString(GateStore.KEY, "")!! }
+            val now = org.json.JSONArray(prefs().getString(GateStore.KEY, null))
+            assertEquals(damaged.toString(), now.getJSONObject(0).toString())
+            assertEquals(7, now.getJSONObject(1).getInt("future"))
+            val gate = GateStore.load(context).single()
+            assertEquals("http://vasya@$host/open", gate.direct!!.openUrl)
+            assertEquals("sécret", CameraPasswords.load(context, GateDirect.secretKey("gp")).value)
+            assertFalse("в копию настроек пароль не попадает", ConfigBackup.hasAddressSecrets(ConfigBackup.build(context)))
+            // Команда — с тем же логином и паролем.
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.getHeader("Authorization") == okhttp3.Credentials.basic("vasya", "sécret")) { calls += request.path.orEmpty(); MockResponse().setBody("ok") }
+                    else MockResponse().setResponseCode(401).setHeader("WWW-Authenticate", "Basic realm=\"gate\"")
+            }
+            assertTrue(GateDirect.send(gate, Gate.Action.OPEN, CameraPasswords.load(context, GateDirect.secretKey("gp")).value).ok)
+            assertEquals(listOf("/open"), calls.toList())
+        } finally {
+            CameraPasswords.secrets = previous
+            CameraPasswords.clearCache()
+            prefs().edit().remove(GateStore.KEY).commit()
+            context.getSharedPreferences(CameraSecrets.PREFS, 0).edit().clear().commit()
+            GateHub.invalidate()
+        }
+    }
+
+    /** Калитка открывается и при сбое хранилища ключей: пароль, прочитанный раньше, остаётся в памяти. */
+    @Test fun storageFailureDoesNotKeepGateClosed() {
+        val keys = SoftKeys()
+        val previous = CameraPasswords.secrets
+        CameraPasswords.secrets = { CameraSecrets(it, keys) }
+        try {
+            GateHub.reset()
+            GateHub.attach(context)
+            val gate = httpGate("http://vasya@$host/open")
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.getHeader("Authorization") == okhttp3.Credentials.basic("vasya", "parol")) { calls += request.path.orEmpty(); MockResponse().setBody("ok") }
+                    else MockResponse().setResponseCode(401).setHeader("WWW-Authenticate", "Basic realm=\"gate\"")
+            }
+            assertTrue(CameraSecrets(context, keys).write(GateDirect.secretKey("gp"), "parol"))
+            keys.broken = true
+            assertEquals("пароль ещё не читали — честная причина", "пароль не прочитан, повторите", GateHub.direct.send(gate, Gate.Action.OPEN).detail)
+            keys.broken = false
+            assertTrue(GateHub.direct.send(gate, Gate.Action.OPEN).ok)
+            keys.broken = true
+            assertTrue("сбой хранилища — пароль, прочитанный раньше", GateHub.direct.send(gate, Gate.Action.OPEN).ok)
+            assertEquals(listOf("/open", "/open"), calls.toList())
+            keys.broken = false
+            assertTrue(CameraSecrets(context, keys).write(GateDirect.secretKey("gp"), ""))
+            assertEquals("пароль удалили — это не сбой", GateDirect.WRONG_PASSWORD, GateHub.direct.send(gate, Gate.Action.OPEN).detail)
+            assertEquals("связь проверяется без пароля и без запроса", DirectState(true), GateHub.direct.poll(gate))
+        } finally {
+            CameraPasswords.secrets = previous
+            CameraPasswords.clearCache()
+            context.getSharedPreferences(CameraSecrets.PREFS, 0).edit().clear().commit()
+            GateHub.reset()
+        }
+    }
+
+    /** Ключ временно недоступен: перенос не создаёт новый — иначе пароли камер стали бы нечитаемыми. */
+    @Test fun moveNeverReplacesMissingKey() {
+        val keys = SoftKeys()
+        val previous = CameraPasswords.secrets
+        CameraPasswords.secrets = { CameraSecrets(it, keys) }
+        try {
+            assertTrue(CameraSecrets(context, keys).write("cam", "camera-pass"))
+            keys.hidden = true
+            var done: Boolean? = null
+            CameraPasswords.move(context, GateDirect.secretKey("gp"), "p") { done = it }
+            awaitTrue("ответ") { done != null }
+            assertEquals(false, done)
+            keys.hidden = false
+            assertEquals("camera-pass", CameraSecrets(context, keys).read("cam"))
+        } finally {
+            CameraPasswords.secrets = previous
+            CameraPasswords.clearCache()
+            context.getSharedPreferences(CameraSecrets.PREFS, 0).edit().clear().commit()
+        }
+    }
+
+    @Test fun gateChangedMeanwhileIsNotOverwritten() {
+        val keys = SoftKeys()
+        val previous = CameraPasswords.secrets
+        CameraPasswords.secrets = { CameraSecrets(it, keys) }
+        try {
+            GateStore.save(context, listOf(httpGate("http://a:p@192.168.1.9/open")))
+            GateStore.hidePasswords(context)
+            // Пока пароль записывался, адрес поменяли в редакторе.
+            GateStore.save(context, listOf(httpGate("http://192.168.1.77/open")))
+            awaitTrue("пароль записан") { CameraPasswords.load(context, GateDirect.secretKey("gp")).value == "p" }
+            Thread.sleep(200); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("http://192.168.1.77/open", GateStore.load(context).single().direct!!.openUrl)
+        } finally {
+            CameraPasswords.secrets = previous
+            CameraPasswords.clearCache()
+            prefs().edit().remove(GateStore.KEY).commit()
+            context.getSharedPreferences(CameraSecrets.PREFS, 0).edit().clear().commit()
+            GateHub.invalidate()
+        }
+    }
+
     @Test fun deviceGoneIsUnreachableNotCrash() {
         val gate = relay().copy(direct = Gate.Direct(host = "127.0.0.1:1"))
         assertEquals(GateDirect.Result(false, "устройство не отвечает"), GateDirect.send(gate, Gate.Action.OPEN, null))

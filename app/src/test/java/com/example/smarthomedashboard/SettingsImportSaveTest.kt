@@ -170,6 +170,53 @@ class SettingsImportSaveTest {
         assertEquals("FAKE-TOKEN", storedToken())
     }
 
+    /** HA-06, SEC-05 (аудит 25.11.2026): первый адрес не отвечает — проверяется второй; панель, подключённая отсюда, настроена. */
+    @Test fun secondAddressIsTriedAndSuccessfulSaveMarksPanelConfigured() {
+        val external = ha()
+        weatherWorker { tokens.replace("FAKE-TOKEN") }
+        assertFalse(prefs.getBoolean(HaConnector.KEY_DONE, false))
+        val activity = settings()
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText(unreachable)
+        activity.findViewById<EditText>(R.id.etHaRemoteHost).setText(external)
+        activity.findViewById<android.view.View>(R.id.btnSave).performClick()
+        await("сохранено через второй адрес") { activity.isFinishing }
+        assertEquals(unreachable, prefs.getString("ha_local_host", null))
+        assertEquals(external, prefs.getString("ha_remote_host", null))
+        assertTrue("мастер первой настройки больше не открывается", prefs.getBoolean(HaConnector.KEY_DONE, false))
+    }
+
+    @Test fun bothAddressesFailingKeepsPreviousConnection() {
+        val current = ha()
+        setUpHa(current)
+        val activity = settings()
+        activity.findViewById<EditText>(R.id.etHaLocalHost).setText(unreachable)
+        activity.findViewById<EditText>(R.id.etHaRemoteHost).setText("http://127.0.0.1:2")
+        activity.findViewById<android.view.View>(R.id.btnSave).performClick()
+        val status = activity.findViewById<android.widget.TextView>(R.id.tvHaConnectionStatus)
+        await("итог: ${status.text}") { status.text.contains("Прежнее подключение не изменено") }
+        assertFalse(status.text.startsWith("Ошибка:"))
+        assertFalse(activity.isFinishing)
+        assertEquals(current, prefs.getString("ha_local_host", null))
+    }
+
+    /** SEC-02 (аудит 25.11.2026): пароль, вписанный в адрес, попадёт в файл открытым текстом — об этом сказано до экспорта. */
+    @Test fun exportWarnsAboutPasswordsInsideAddresses() {
+        setUpHa(ha())
+        fun message(config: String): String {
+            // Через настоящее хранилище плиток: Gson экранирует «=» и «&» по-своему.
+            com.example.smarthomedashboard.data.TileManager(context).saveTiles(listOf(com.example.smarthomedashboard.data.TileEntity("t",
+                DoorbellConfig.CAMERA_TYPE, "grid", "Камера", 0, 0, 1, 1, config = config)))
+            val activity = settings()
+            weatherInvoke(activity, "exportConfig")
+            return shadowOf(latestDialog()!!).message.toString()
+        }
+        val plain = DoorbellConfig(rtspMain = "rtsp://192.168.1.5:554/Streaming/Channels/101?transportmode=unicast", rtspUser = "admin").writeTo("{}")
+        assertFalse(message(plain).contains("Внимание"))
+        assertTrue(message(DoorbellConfig(rtspMain = "rtsp://192.168.1.5:554/user=admin_password=abc_channel=1.sdp").writeTo("{}")).contains("открытым текстом"))
+        assertTrue(message(DoorbellConfig(snapshotUrl = "http://u:p@192.168.1.5/snap.jpg").writeTo("{}")).contains("открытым текстом"))
+        assertTrue(message(DoorbellConfig(snapshotUrl = "http://192.168.1.5/snap.jpg?usr=a&pwd=b").writeTo("{}")).contains("открытым текстом"))
+    }
+
     @Test fun exportDialogTextMatchesCurrentFileContents() {
         setUpHa(ha())
         val activity = settings()

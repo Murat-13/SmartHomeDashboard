@@ -80,7 +80,8 @@ internal object HomeAssistantAddress {
      */
     fun unsafeRedirect(address: String, final: HttpUrl, allowInsecureRemote: Boolean): Boolean {
         if (final.isHttps) return false
-        return !isCleartext(address) || !allowInsecureRemote && needsInsecureConsent(final.toString())
+        val place = final.newBuilder().username("").password("").build().toString()
+        return !isCleartext(address) || !allowInsecureRemote && !isPrivateNetwork(place)
     }
 
     /** Предупреждение для формы адресов: только про внешний адрес без шифрования; локальный http — норма. */

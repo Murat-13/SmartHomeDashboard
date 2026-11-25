@@ -28,6 +28,7 @@ import com.example.smarthomedashboard.data.TileEntity
 import com.example.smarthomedashboard.data.TileManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 
 /**
@@ -1275,6 +1276,16 @@ class DoorbellEditorActivity : PinProtectedActivity() {
         if (main != config.rtspMain || sub != config.rtspSub) {
             config = config.copy(rtspMain = main, rtspSub = sub, rtspUser = config.rtspUser.ifBlank { mainUser ?: subUser.orEmpty() })
             if (password.isNullOrEmpty()) (mainPass ?: subPass)?.let { password = it }
+        }
+        // Снимок спрашивается с логином и паролем плитки; вписанные в его адрес не нужны — кроме случая, когда своих нет.
+        val snapshot = DoorbellConfig.splitCredentials(config.snapshotUrl).first
+        if (snapshot != config.snapshotUrl) {
+            val address = config.snapshotUrl.toHttpUrlOrNull()
+            val user = address?.username.orEmpty()
+            if (password == null && !CameraPasswords.has(this, secretKey) && (config.rtspUser.isBlank() || config.rtspUser == user)) {
+                address?.password?.ifEmpty { null }?.let { password = it }
+            }
+            config = config.copy(snapshotUrl = snapshot, rtspUser = config.rtspUser.ifBlank { user })
         }
         val (w, h) = DoorbellConfig.fit(
             JSONObject(latest.config).optInt("button_size", DoorbellConfig.DEFAULT_WIDTH),

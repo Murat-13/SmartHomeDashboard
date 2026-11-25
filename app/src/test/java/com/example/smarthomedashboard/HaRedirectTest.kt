@@ -102,6 +102,10 @@ class HaRedirectTest {
         assertFalse("без перенаправления, дома", unsafe("http://192.168.1.5:8123", "http://192.168.1.5:8123/api/websocket"))
         assertFalse("без перенаправления, https", unsafe("ha.example.com", "https://ha.example.com/api/websocket"))
         assertTrue("дома → наружу без шифрования", unsafe("192.168.1.5:8123", "http://ha.example.com/api/websocket"))
+        assertTrue("логин в адресе проверке не мешает", unsafe("192.168.1.5:8123", "http://user@ha.example.com/api/websocket"))
+        assertTrue("IPv6 снаружи", unsafe("192.168.1.5:8123", "http://[2001:db8::1]:8123/api/websocket"))
+        assertFalse("IPv6 дома", unsafe("192.168.1.5:8123", "http://[fe80::1]:8123/api/websocket"))
+        assertFalse("имя в домашней сети", unsafe("192.168.1.5:8123", "http://homeassistant.local:8123/api/websocket"))
         assertFalse("разрешено явно", unsafe("http://ha.example.com", "http://ha.example.com/api/websocket", allow = true))
     }
 }

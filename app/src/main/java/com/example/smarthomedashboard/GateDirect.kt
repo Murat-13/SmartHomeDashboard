@@ -1,12 +1,14 @@
 package com.example.smarthomedashboard
 
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
@@ -24,6 +26,7 @@ import java.util.concurrent.TimeUnit
 internal object GateDirect {
     private const val USER = "admin"
     private const val PING_MS = 3_000
+    const val WRONG_PASSWORD = "неверный пароль устройства"
     private val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(3, TimeUnit.SECONDS)
@@ -40,6 +43,32 @@ internal object GateDirect {
 
     /** Ключ пароля прохода в зашифрованном хранилище. */
     fun secretKey(gateId: String) = "gate_$gateId"
+
+    /**
+     * Пароль, вписанный прямо в адрес «своего HTTP» (`http://логин:пароль@…`), — отдельно от адреса: в настройках и копиях он
+     * лежит открытым текстом (аудит 25.11.2026, SEC-02). Логин остаётся в адресе, команда идёт с тем же логином и паролем
+     * ([call]). null — переносить нечего или нельзя: пароль есть не во всех адресах прохода или они разные — сохранённый один
+     * на проход.
+     */
+    fun splitPassword(gate: Gate): Pair<Gate, String>? {
+        val d = gate.direct?.takeIf { it.protocol == Gate.Direct.Protocol.HTTP } ?: return null
+        val urls = listOf(d.openUrl, d.closeUrl).filter { it.isNotBlank() }
+        val password = urls.map { it.toHttpUrlOrNull()?.password ?: return null }.distinct().singleOrNull()?.ifEmpty { null } ?: return null
+        val clean = d.copy(openUrl = withoutPassword(d.openUrl) ?: return null, closeUrl = withoutPassword(d.closeUrl) ?: return null)
+        return gate.copy(direct = clean) to password
+    }
+
+    /** Тот же адрес без пароля, посимвольно; null — не вышло без иных изменений. */
+    private fun withoutPassword(url: String): String? {
+        if (url.isBlank()) return url
+        val start = url.indexOf("://") + 3
+        val end = url.indexOfAny(charArrayOf('/', '\\', '?', '#'), start).let { if (it < 0) url.length else it }
+        val at = url.lastIndexOf('@', end - 1)
+        val colon = url.indexOf(':', start)
+        if (at < start || colon !in start until at) return null
+        val clean = url.removeRange(colon, at)
+        return clean.takeIf { it.toHttpUrlOrNull() == url.toHttpUrlOrNull()?.newBuilder()?.password("")?.build() }
+    }
 
     /** Итог команды: принята / отказ (с причиной для кнопки). */
     data class Result(val ok: Boolean, val detail: String = "")
@@ -96,7 +125,7 @@ internal object GateDirect {
 
     private fun describe(response: Response): Result = when {
         response.isSuccessful -> Result(true)
-        response.code == 401 -> Result(false, "неверный пароль устройства")
+        response.code == 401 -> Result(false, WRONG_PASSWORD)
         else -> Result(false, "устройство отказало (${response.code})")
     }
 
@@ -134,8 +163,11 @@ internal object GateDirect {
      */
     private fun pingHttp(d: Gate.Direct): DirectState? = try {
         val url = d.openUrl.toHttpUrl()
-        Socket().use { it.connect(InetSocketAddress(url.host, url.port), PING_MS) }
-        DirectState(true)
+        // У имени может быть несколько адресов (IPv6 и IPv4) — команда тоже пробует все.
+        val reached = InetAddress.getAllByName(url.host).take(2).any { address ->
+            try { Socket().use { it.connect(InetSocketAddress(address, url.port), PING_MS) }; true } catch (e: IOException) { false }
+        }
+        if (reached) DirectState(true) else null
     } catch (e: IOException) {
         null
     } catch (e: IllegalArgumentException) {

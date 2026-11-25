@@ -85,6 +85,11 @@ class HomeAssistantWebSocket(
         const val MAX_PROBE_DELAY_MS = 30 * 60_000L
         /** Сколько ждать ответного кадра закрытия от прежнего сокета. */
         const val CLOSE_GRACE_MS = 5_000L
+        /** Снимок состояний не получен: повтор через 2, 5, 15, 30 с, дальше раз в минуту. */
+        val STATES_RETRY_MS = longArrayOf(2_000L, 5_000L, 15_000L, 30_000L, 60_000L)
+        /** Подписка на прогноз отклонена (интеграция погоды ещё не загрузилась): повтор через 30 с, 2 и 10 минут. */
+        val FORECAST_RETRY_MS = longArrayOf(30_000L, 120_000L, 600_000L)
+        const val FORECAST_NOT_SUPPORTED = "forecast_not_supported"
         const val DAILY = "daily"
         const val HOURLY = "hourly"
         /**
@@ -116,6 +121,11 @@ class HomeAssistantWebSocket(
         val timeout: Runnable
     )
     private var stateRequest: StateRequest? = null
+    private var statesFailures = 0
+    private var statesRetry: Runnable? = null
+    /** Отклонённая подписка на прогноз: сколько раз подряд и запланированный повтор — по типу и сущности. */
+    private class ForecastRetry(var failures: Int = 0, var task: Runnable? = null)
+    private val forecastRetries = mutableMapOf<Pair<String, String>, ForecastRetry>()
     /** Разовые запросы чтения ([read]): ответ или null при ошибке/разрыве/тайм-ауте. */
     private data class ReadRequest(val result: (Any?) -> Unit, val timeout: Runnable)
     private val readRequests = mutableMapOf<Int, ReadRequest>()
@@ -174,7 +184,7 @@ class HomeAssistantWebSocket(
         authSent = false
         stateSubscriptionSent = false
         actionSubscriptionSent = false
-        forecastSubscriptions.clear()
+        clearForecasts()
         // ID не сбрасываются: HA требует лишь рост в пределах соединения, а сквозная нумерация
         // исключает совпадение ID запроса прошлого соединения с ответом нового.
         retiredServiceIds.clear()
@@ -321,7 +331,7 @@ class HomeAssistantWebSocket(
         authenticated = false
         finishServiceRequests()
         finishReadRequests()
-        forecastSubscriptions.clear()
+        clearForecasts()
     }
 
     private fun handleMessage(message: HaInboundMessage) {
@@ -368,9 +378,10 @@ class HomeAssistantWebSocket(
                     stateRequest = null
                     handler.removeCallbacks(request.timeout)
                     if (!json.optBoolean("success", false) || json.optJSONArray("result") == null) {
-                        onError("Не удалось получить состояния Home Assistant")
+                        statesFailed("Не удалось получить состояния Home Assistant")
                         return
                     }
+                    statesFailures = 0
                     val states = message.states.filter { it.entityId !in request.changed }.map { state ->
                         if (state.entityId !in request.forecasts || !state.attributes.has("forecast")) state
                         else state.copy(attributes = JSONObject().also { copy ->
@@ -454,6 +465,8 @@ class HomeAssistantWebSocket(
         inboundGate = null
         stateRequest?.timeout?.let { handler.removeCallbacks(it) }
         stateRequest = null
+        cancelStatesRetry()
+        statesFailures = 0
         registryTimeout?.let { handler.removeCallbacks(it) }
         registryTimeout = null
         registryRequests.clear()
@@ -486,18 +499,39 @@ class HomeAssistantWebSocket(
             actionSubscriptionSent = true
             command("subscribe_events").put("event_type", HaEvents.NOTIFICATION_ACTION).let { sendMessage(it) }
         }
+        cancelStatesRetry()
         stateRequest?.timeout?.let { handler.removeCallbacks(it) }
         val message = command("get_states")
         val id = message.getInt("id")
         val timeout = Runnable {
             if (stateRequest?.id == id) {
                 stateRequest = null
-                onError("Нет ответа на запрос состояний Home Assistant")
+                statesFailed("Нет ответа на запрос состояний Home Assistant")
             }
         }
         stateRequest = StateRequest(id, serviceRequests.values.mapTo(HashSet()) { it.entityId }, HashSet(), timeout)
         if (sendMessage(message)) handler.postDelayed(timeout, 30_000L)
         else stateRequest = null
+    }
+
+    /**
+     * Снимок состояний не получен: связь есть, а данных нет. Повтор, пока живо это соединение; об ошибке говорим один раз
+     * подряд (аудит 25.11.2026, HA-01: раньше запрос не повторялся до переподключения).
+     */
+    private fun statesFailed(message: String) {
+        val id = generation
+        val delay = STATES_RETRY_MS[statesFailures.coerceAtMost(STATES_RETRY_MS.lastIndex)]
+        statesFailures++
+        statesRetry = Runnable {
+            statesRetry = null
+            if (running && generation == id && authenticated && stateRequest == null) ensureStates()
+        }.also { handler.postDelayed(it, delay) }
+        if (statesFailures == 1) onError(message)
+    }
+
+    private fun cancelStatesRetry() {
+        statesRetry?.let { handler.removeCallbacks(it) }
+        statesRetry = null
     }
 
     /** Адрес сервера текущего подключения (локальный или внешний) для REST и потоков; null — нет авторизации. */
@@ -543,7 +577,10 @@ class HomeAssistantWebSocket(
         entities.clear()
         entities.addAll(desired)
         forecastSubscriptions.toMap().forEach { (id, request) ->
-            if (request.type == type && request.wanted && request.entityId !in desired) retireForecast(id, request)
+            if (request.type == type && request.wanted && request.entityId !in desired) {
+                forgetForecastRetry(request)
+                retireForecast(id, request)
+            }
         }
         ensureForecasts()
     }
@@ -563,6 +600,33 @@ class HomeAssistantWebSocket(
             .put("entity_id", entityId).put("forecast_type", type)
         forecastSubscriptions[message.getInt("id")] = ForecastRequest(entityId, type = type)
         sendMessage(message)
+    }
+
+    private fun clearForecasts() {
+        forecastSubscriptions.clear()
+        forecastRetries.values.forEach { retry -> retry.task?.let { handler.removeCallbacks(it) } }
+        forecastRetries.clear()
+    }
+
+    private fun forgetForecastRetry(request: ForecastRequest) {
+        forecastRetries.remove(request.type to request.entityId)?.task?.let { handler.removeCallbacks(it) }
+    }
+
+    /**
+     * Home Assistant отклонил подписку, но не потому, что прогноз не поддерживается: после его перезапуска связь появляется
+     * раньше, чем загрузится интеграция погоды. Пробуем ещё раз, пока источник нужен (аудит 25.11.2026, HA-02).
+     */
+    private fun retryForecast(id: Int, request: ForecastRequest) {
+        val retry = forecastRetries.getOrPut(request.type to request.entityId) { ForecastRetry() }
+        val delay = FORECAST_RETRY_MS[retry.failures.coerceAtMost(FORECAST_RETRY_MS.lastIndex)]
+        val owner = generation
+        retry.failures++
+        retry.task = Runnable {
+            retry.task = null
+            if (generation != owner || forecastSubscriptions[id] !== request || !request.wanted) return@Runnable
+            forecastSubscriptions.remove(id)
+            sendForecast(request.entityId, request.type)
+        }.also { handler.postDelayed(it, delay) }
     }
 
     private fun retireForecast(id: Int, request: ForecastRequest) {
@@ -586,17 +650,23 @@ class HomeAssistantWebSocket(
             request.status = ForecastStatus.COMPLETE
             if (!request.wanted) {
                 forecastSubscriptions.remove(id)
-            } else if (request.type == HOURLY) {
-                // Почасовой тип поддерживают не все интеграции: отказ — состояние данных, а не статус ошибки.
-                if (request.entityId in hourlyForecastEntities) onHourlyForecastChanged(request.entityId, null, false)
             } else {
-                onDailyForecastUnavailable(request.entityId)
                 val code = json.optJSONObject("error")?.optString("code")
-                if (code != "forecast_not_supported") onError(HomeAssistantDiagnostics.commandError(code, forecast = true))
+                val temporary = code != FORECAST_NOT_SUPPORTED
+                val first = (request.type to request.entityId) !in forecastRetries
+                if (temporary) retryForecast(id, request)
+                if (request.type == HOURLY) {
+                    // Почасовой тип поддерживают не все интеграции: отказ — состояние данных, а не статус ошибки.
+                    if (request.entityId in hourlyForecastEntities) onHourlyForecastChanged(request.entityId, null, false)
+                } else {
+                    onDailyForecastUnavailable(request.entityId)
+                    if (temporary && first) onError(HomeAssistantDiagnostics.commandError(code, forecast = true))
+                }
             }
             return
         }
 
+        if (request.wanted) forgetForecastRetry(request)
         if (!json.has("result") || json.isNull("result")) {
             // Официальный subscribe_forecast подтверждается пустым result;
             // его id становится id подписки, данные затем приходят через event.
@@ -847,7 +917,7 @@ class HomeAssistantWebSocket(
         authenticated = false
         finishServiceRequests()
         finishReadRequests()
-        forecastSubscriptions.clear()
+        clearForecasts()
         retireSocket(previous)
         listener.owner = generation
         listener.probing = false

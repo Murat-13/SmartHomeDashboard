@@ -45,17 +45,36 @@ internal object GateHub {
     }
 
     private val shellyLink = object : DirectLink {
-        /** Пароль не прочитался (хранилище ключей) — пробуем без него: устройство без пароля всё равно ответит. */
-        private fun password(gate: Gate) = passwordOverride[gate.id] ?: try {
-            app?.let { CameraPasswords.blocking(it, GateDirect.secretKey(gate.id)) }
-        } catch (e: Exception) {
-            Log.w(TAG, "${gate.name}: пароль устройства не прочитан (${e.javaClass.simpleName})"); null
+        /** Хранилище ответило или пароль известен с прошлого раза; нет — сбой хранилища, и пароль неизвестен. */
+        private fun load(gate: Gate): CameraSecrets.Loaded {
+            passwordOverride[gate.id]?.let { return CameraSecrets.Loaded(it, sure = true) }
+            val context = app ?: return CameraSecrets.Loaded(null, sure = true)
+            // Сбой хранилища ключей не должен оставить калитку закрытой: ещё попытка, затем — пароль, прочитанный раньше.
+            repeat(2) {
+                val loaded = try { CameraPasswords.load(context, GateDirect.secretKey(gate.id)) } catch (e: Exception) {
+                    Log.w(TAG, "${gate.name}: пароль устройства не прочитан (${e.javaClass.simpleName})"); null
+                }
+                if (loaded?.sure == true) {
+                    if (loaded.value == null) knownPasswords.remove(gate.id) else knownPasswords[gate.id] = loaded.value
+                    return loaded
+                }
+            }
+            return knownPasswords[gate.id]?.let { CameraSecrets.Loaded(it, sure = true) } ?: CameraSecrets.Loaded(null, sure = false)
         }
-        override fun send(gate: Gate, action: Gate.Action) = GateDirect.send(gate, action, password(gate))
-        override fun poll(gate: Gate) = GateDirect.poll(gate, password(gate))
+        /** Пароль не прочитался — пробуем без него: устройство без пароля всё равно ответит. */
+        override fun send(gate: Gate, action: Gate.Action): GateDirect.Result {
+            val loaded = load(gate)
+            val result = GateDirect.send(gate, action, loaded.value)
+            return if (!loaded.sure && result.detail == GateDirect.WRONG_PASSWORD) result.copy(detail = "пароль не прочитан, повторите") else result
+        }
+        /** Проверке связи «своего HTTP» пароль не нужен. */
+        override fun poll(gate: Gate) =
+            GateDirect.poll(gate, if (gate.direct?.protocol == Gate.Direct.Protocol.HTTP) null else load(gate).value)
     }
     /** Пароль, который вводят в редакторе прохода прямо сейчас (для «Проверить» до «Сохранить»). */
     internal val passwordOverride = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Пароли устройств, прочитанные раньше (только в памяти). */
+    private val knownPasswords = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile var direct: DirectLink = shellyLink
         internal set
 
@@ -105,6 +124,7 @@ internal object GateHub {
         app = context.applicationContext
         HaEvents.onNotificationAction = { GatePhone.onAction(it) }
         HaEvents.wanted = { gates().any { it.phone } }
+        GateStore.hidePasswords(context)
     }
 
     val context: Context? get() = app
@@ -441,6 +461,7 @@ internal object GateHub {
         directStates.clear(); directMisses.clear(); polling.clear(); lastPoll.clear()
         direct = shellyLink
         passwordOverride.clear()
+        knownPasswords.clear()
         GateWatch.reset()
         GatePhone.reset()
         HaEvents.wanted = { false }

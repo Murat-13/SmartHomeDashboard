@@ -103,6 +103,11 @@ class CameraTileTest {
         assertEquals(big to small, Onvif.pick(listOf(small, big)))
         assertEquals("один поток — и основной, и субпоток", big to big, Onvif.pick(listOf(big)))
         assertEquals("rtsp://h:554/x", Onvif.withoutCredentials("rtsp://u:p@h:554/x"))
+        // SEC-02 (аудит 25.11.2026): rtsps, другой регистр и «@» в пароле — тоже без логина и пароля.
+        assertEquals("rtsps://h:322/x", Onvif.withoutCredentials("rtsps://u:p@h:322/x"))
+        assertEquals("RTSP://h/x", Onvif.withoutCredentials("RTSP://u:p@ss@h/x"))
+        assertEquals("rtsp://h/x?a=b@c", Onvif.withoutCredentials("rtsp://h/x?a=b@c"))
+        assertEquals("rtsp://h?a=b@c", Onvif.withoutCredentials("rtsp://h?a=b@c"))
     }
 
     // ---- Пароль камеры ----
@@ -111,6 +116,78 @@ class CameraTileTest {
         var key: SecretKey? = null
         override fun existing() = key
         override fun create(): SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { key = it }
+    }
+
+    /** REC-04 (аудит 25.11.2026): хранилище не ответило — это не «пароля нет»: не запоминается, прочитается снова. */
+    @Test fun storageFailureIsNotRememberedAsNoPassword() {
+        val keys = SoftKeys()
+        assertTrue(CameraSecrets(context, keys).write("cam_fail", "pass-one"))
+        val key = keys.key
+        val previous = CameraPasswords.secrets
+        CameraPasswords.secrets = { CameraSecrets(it, keys) }
+        CameraPasswords.clearCache()
+        fun ask(secretKey: String): String? {
+            var answered = false
+            var value: String? = null
+            CameraPasswords.read(context, secretKey) { value = it; answered = true }
+            val until = System.nanoTime() + 5_000_000_000
+            while (!answered && System.nanoTime() < until) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5) }
+            assertTrue(answered)
+            return value
+        }
+        try {
+            keys.key = null
+            assertNull("ключ недоступен", ask("cam_fail"))
+            assertFalse(CameraPasswords.load(context, "cam_fail").sure)
+            assertTrue("пароля точно нет", CameraPasswords.load(context, "cam_none").sure)
+            keys.key = key
+            assertEquals("сбой прошёл — пароль есть", "pass-one", ask("cam_fail"))
+            // Служба записи: сбой посреди работы — прежний пароль, а не запись без пароля.
+            val service = org.robolectric.Robolectric.buildService(RecorderService::class.java).get()
+            fun recorder(k: String) = org.robolectric.util.ReflectionHelpers.callInstanceMethod<String?>(service, "readPassword",
+                org.robolectric.util.ReflectionHelpers.ClassParameter.from(String::class.java, k))
+            assertEquals("pass-one", recorder("cam_fail"))
+            keys.key = null
+            assertEquals("сбой — идёт с прежним", "pass-one", recorder("cam_fail"))
+            keys.key = key
+            assertTrue(CameraSecrets(context, keys).write("cam_fail", ""))
+            assertNull("пароль удалили — это не сбой", recorder("cam_fail"))
+        } finally {
+            CameraPasswords.secrets = previous
+            CameraPasswords.clearCache()
+        }
+    }
+
+    @Test fun doorbellPasswordIsReadAgainAfterStorageFailure() {
+        val previous = DoorbellHub.passwordStore
+        var reads = 0
+        var answer = SecretStore.ReadResult(SecretStore.Status.KEY_UNAVAILABLE)
+        DoorbellHub.passwordStore = { reads++; answer }
+        org.robolectric.util.ReflectionHelpers.setField(DoorbellHub, "passwordLoaded", false)
+        fun ask(): String? {
+            var answered = false
+            var value: String? = null
+            DoorbellHub.cameraPassword(context) { value = it; answered = true }
+            val until = System.nanoTime() + 5_000_000_000
+            while (!answered && System.nanoTime() < until) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5) }
+            assertTrue(answered)
+            return value
+        }
+        try {
+            assertNull(ask())
+            answer = SecretStore.ReadResult(SecretStore.Status.SUCCESS, "secret")
+            assertEquals("после сбоя читается снова", "secret", ask())
+            assertEquals("secret", ask())
+            assertEquals("успех запоминается", 2, reads)
+            org.robolectric.util.ReflectionHelpers.setField(DoorbellHub, "passwordLoaded", false)
+            answer = SecretStore.ReadResult(SecretStore.Status.ABSENT)
+            assertNull(ask()); assertNull(ask())
+            assertEquals("«пароля нет» запоминается", 3, reads)
+        } finally {
+            DoorbellHub.passwordStore = previous
+            org.robolectric.util.ReflectionHelpers.setField(DoorbellHub, "passwordLoaded", false)
+            org.robolectric.util.ReflectionHelpers.setField(DoorbellHub, "password", null)
+        }
     }
 
     @Test fun eachCameraHasOwnPasswordBoundToItsTile() {

@@ -400,7 +400,7 @@ internal object Onvif {
     private fun escape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
     /** Ссылка без логина и пароля (их подставляет плеер из настроек плитки). */
-    fun withoutCredentials(uri: String): String = uri.replace(Regex("^(rtsp://)[^/@]*@"), "$1")
+    fun withoutCredentials(uri: String): String = uri.replace(Regex("^(rtsps?://)[^/?]*@", RegexOption.IGNORE_CASE), "$1")
 
     /**
      * Камеры за NAT и с «внутренним» адресом в ответе (0.0.0.0, другой IP) — адрес службы приводится к тому, по которому

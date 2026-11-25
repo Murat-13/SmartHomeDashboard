@@ -42,6 +42,16 @@ internal object ConfigBackup {
         }
     }
 
+    private val ADDRESS_SECRET = Regex("""://[^/\s"?#:@]*:[^/\s"?#]+@|(?<![a-z])(?:pass(?:word|wd)?|pwd|psw|token|api_?key|secret)=[^&\s"]""", RegexOption.IGNORE_CASE)
+
+    /**
+     * В адресах плиток или проходов есть пароль (`http://логин:пароль@…`, `?password=…`): в файле он открытым текстом, перед
+     * экспортом об этом надо сказать (аудит 25.11.2026, SEC-02). Косые черты JSON экранирует, вложенный — несколько раз, а Gson
+     * (плитки) ещё и «=», «&».
+     */
+    fun hasAddressSecrets(config: JSONObject): Boolean =
+        ADDRESS_SECRET.containsMatchIn(config.toString().replace("\\", "").replace("u003d", "=").replace("u0026", "&"))
+
     /** Отпечаток значимого содержимого: статус связи, кеш погоды и сущностей в файл не входят вовсе. */
     fun fingerprint(json: String): String =
         MessageDigest.getInstance("SHA-256").digest(json.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

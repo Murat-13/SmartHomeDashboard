@@ -118,6 +118,38 @@ class GatesUiTest {
         assertEquals("binary_sensor.drive_closed", saved.sensor)
     }
 
+    /** SEC-02 (аудит 25.11.2026): пароль, вписанный в адрес, после «Сохранить» — в зашифрованном хранилище. */
+    @Test fun passwordTypedIntoAddressIsStoredEncrypted() {
+        val previous = CameraPasswords.secrets
+        val keys = object : SecretKeyProvider {
+            private var key: javax.crypto.SecretKey? = null
+            override fun existing() = key
+            override fun create(): javax.crypto.SecretKey = javax.crypto.KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { key = it }
+        }
+        CameraPasswords.secrets = { CameraSecrets(it, keys) }
+        try {
+            val e = editor()
+            val root = e.findViewById<View>(android.R.id.content)
+            root.findViewWithTag<View>("gate_link_direct").performClick()
+            root.findViewWithTag<View>("gate_proto_http").performClick()
+            assertTrue("подсказка больше не предлагает вписать пароль в адрес", allTexts(root).none { it.contains("логин:пароль") })
+            (root.findViewWithTag<View>("gate_direct_open") as android.widget.EditText).setText("http://vasya:parol@10.0.0.9/open")
+            e.nameField.setText("Калитка")
+            assertTrue(e.save())
+            weatherAwait { "parol" !in context.getSharedPreferences("dashboard_prefs", 0).getString(GateStore.KEY, "")!! }
+            val saved = GateStore.load(context).single()
+            assertEquals("http://vasya@10.0.0.9/open", saved.direct!!.openUrl)
+            assertEquals("parol", CameraPasswords.load(context, GateDirect.secretKey(saved.id)).value)
+        } finally {
+            CameraPasswords.secrets = previous
+            CameraPasswords.clearCache()
+            context.getSharedPreferences(CameraSecrets.PREFS, 0).edit().clear().commit()
+        }
+    }
+
+    private fun allTexts(view: View): List<String> = (if (view is TextView) listOf(view.text.toString()) else emptyList()) +
+        (if (view is ViewGroup) (0 until view.childCount).flatMap { allTexts(view.getChildAt(it)) } else emptyList())
+
     @Test fun editAndDeleteExisting() {
         GateStore.save(context, listOf(wicket, drive))
         val e = editor("gate_1")

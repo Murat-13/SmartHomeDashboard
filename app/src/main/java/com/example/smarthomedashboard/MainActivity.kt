@@ -122,6 +122,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_WELCOME_SHOWN = "welcome_shown"
         internal const val WEATHER_REFRESH_MS = 60 * 60 * 1000L
         internal const val CAMERA_WATCH_MS = 60_000L
+        private val TOKEN_RETRY_MS = longArrayOf(5_000L, 30_000L, 60_000L)
         // Короткое переподключение не показываем; при запуске даём время на первое подключение.
         private const val PILL_LOSS_DELAY_MS = 5_000L
         private const val PILL_START_DELAY_MS = 15_000L
@@ -325,6 +326,8 @@ class MainActivity : AppCompatActivity() {
         clockHandler.removeCallbacks(clockRunnable)
         clockHandler.removeCallbacks(weatherRefreshRunnable)
         clockHandler.removeCallbacks(cameraWatchRunnable)
+        clockHandler.removeCallbacks(tokenRetry)
+        tokenFailures = 0
         addressWatch.stop()
         if (::yandexWeatherManager.isInitialized) yandexWeatherManager.cancelPendingRequests()
     }
@@ -1045,7 +1048,17 @@ class MainActivity : AppCompatActivity() {
     private var connectedTokenRevision = -1L
     private fun tokens() = haTokens ?: HaTokenAccess.create(this).also { haTokens = it }
 
+    /** Токен не прочитался (сбой хранилища, а не «токена нет»): повтор через 5, 30 и дальше каждые 60 с, пока панель на экране. */
+    private val tokenRetry = Runnable { setupWebSocket() }
+    private var tokenFailures = 0
+    private fun retryToken() {
+        clockHandler.removeCallbacks(tokenRetry)
+        clockHandler.postDelayed(tokenRetry, TOKEN_RETRY_MS[tokenFailures.coerceAtMost(TOKEN_RETRY_MS.lastIndex)])
+        tokenFailures++
+    }
+
     private fun setupWebSocket() {
+        clockHandler.removeCallbacks(tokenRetry)
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         val local = prefs.getString("ha_local_host", "").orEmpty().trim()
         val remote = prefs.getString("ha_remote_host", "").orEmpty().trim()
@@ -1058,21 +1071,34 @@ class MainActivity : AppCompatActivity() {
             viewModel.disconnectWebSocket()
             haConfiguration = null
         }
-        if (webSocket == null) viewModel.publishStatus("Чтение токена HA...")
+        if (webSocket == null && tokenFailures == 0) viewModel.publishStatus("Чтение токена HA...")
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { tokens().read() }
             if (request != haTokenRequest || isFinishing || isDestroyed || !HaTokenAccess.isCurrent(result)) return@launch
             if (prefs.getString("ha_local_host", "").orEmpty().trim() != local ||
                 prefs.getString("ha_remote_host", "").orEmpty().trim() != remote) return@launch
             if (result.status != HaTokenAccess.Status.READY) {
-                haGeneration++
-                viewModel.disconnectWebSocket()
-                haConfiguration = null
-                viewModel.publishStatus(result.message)
+                val failure = result.status != HaTokenAccess.Status.ABSENT
+                // Живое соединение с теми же настройками из-за сбоя чтения не закрываем (аудит 25.11.2026, STAB-01).
+                if (!failure || !sameLiveConnection(local, remote)) {
+                    haGeneration++
+                    viewModel.disconnectWebSocket()
+                    haConfiguration = null
+                    viewModel.publishStatus(result.message)
+                }
+                if (failure) retryToken()
                 return@launch
             }
+            tokenFailures = 0
             connectWithHaToken(local, remote, result.value.orEmpty().trim())
         }
+    }
+
+    private fun sameLiveConnection(local: String, remote: String): Boolean {
+        val current = haConfiguration ?: return false
+        val allowInsecure = getSharedPreferences("dashboard_prefs", MODE_PRIVATE).getBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, false)
+        return webSocket != null && connectedTokenRevision == HaTokenAccess.revision && current[0] == local && current[1] == remote &&
+            current[3] == allowInsecure.toString()
     }
 
     private fun connectWithHaToken(local: String, remote: String, token: String) {

@@ -694,8 +694,11 @@ class SettingsActivity : PinProtectedActivity() {
                     }
                 },
                 onDisconnected = {},
-                onError = { fail(it) },
-                onStatus = { if (it.startsWith("Ошибка:")) fail(it) else if (active()) tvHaConnectionStatus.text = it }
+                // Ошибка одного адреса — ещё не итог: дальше пробуется второй; конец — «Ошибка: …», как в мастере (HaConnector).
+                onError = { if (active()) tvHaConnectionStatus.text = it },
+                onStatus = {
+                    if (it.startsWith("Ошибка:")) fail(it.removePrefix("Ошибка:").trim()) else if (active()) tvHaConnectionStatus.text = it
+                }
             )
             probe?.connect()
             probeHandler.postDelayed({ fail("Нет ответа от Home Assistant") }, PROBE_TIMEOUT_MS)
@@ -967,6 +970,8 @@ class SettingsActivity : PinProtectedActivity() {
                 putString("ha_local_host", haLocal)
                 putString("ha_remote_host", haRemote)
                 putBoolean(HomeAssistantAddress.PREF_ALLOW_INSECURE_REMOTE, allowInsecure)
+                // Панель подключена отсюда, в обход мастера первой настройки: он больше не нужен (аудит 25.11.2026, SEC-05).
+                if (result.status == HaTokenAccess.Status.READY && (haLocal.isNotEmpty() || haRemote.isNotEmpty())) putBoolean(HaConnector.KEY_DONE, true)
                 putInt("pin_session_minutes", sessionMinutes)
                 putInt("screen_timeout_minutes", screenTimeout)
                 putString("temp_unit", tempUnit)
@@ -1040,7 +1045,8 @@ class SettingsActivity : PinProtectedActivity() {
             .setMessage("В файл входят плитки (названия и связанные устройства дома), адреса Home Assistant (локальный и " +
                 "внешний), координаты погоды и настройки панели. Не входят: токен Home Assistant, ключ Яндекса и PIN — " +
                 "на новом планшете их нужно ввести заново. Храните файл как личные данные: по адресам и координатам можно " +
-                "найти дом.")
+                "найти дом." + if (ConfigBackup.hasAddressSecrets(buildExportConfig())) "\n\nВнимание: в адресах плиток или калиток есть " +
+                "пароль (или ключ) — в файл он попадёт открытым текстом." else "")
             .setPositiveButton("Продолжить") { _, _ ->
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -1162,6 +1168,6 @@ class SettingsActivity : PinProtectedActivity() {
         const val EXTRA_SECTION = "settings_section_extra"
         const val SECTION_DEVICE = 3
         private const val SESSION_RANGE_ERROR = "Время сессии — от 1 до 1000 минут"
-        private const val PROBE_TIMEOUT_MS = 20_000L
+        private const val PROBE_TIMEOUT_MS = 30_000L
     }
 }

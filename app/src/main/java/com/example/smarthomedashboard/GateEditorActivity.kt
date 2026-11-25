@@ -352,8 +352,8 @@ class GateEditorActivity : PinProtectedActivity() {
                 link.addView(result)
             }
             Gate.Direct.Protocol.HTTP -> {
-                link.addView(ModernUi.secondary(this, "Адрес, который открывает калитку: его даёт инструкция контроллера. Логин и пароль, " +
-                    "если нужны, — в адресе (http://логин:пароль@…) или полем ниже."))
+                link.addView(ModernUi.secondary(this, "Адрес, который открывает калитку: его даёт инструкция контроллера. Логин, " +
+                    "если нужен, — в адресе (http://логин@…), пароль — полем ниже: он хранится зашифрованным."))
                 link.addView(field("Адрес «Открыть»", d.openUrl, "http://…", "gate_direct_open") { v -> setDirect { it.copy(openUrl = v.trim()) } })
                 if (draft.kind == Gate.Kind.COVER || draft.kind == Gate.Kind.SCRIPT) {
                     link.addView(field("Адрес «Закрыть» (необязательно)", d.closeUrl, "http://…", "gate_direct_close") { v ->
@@ -503,6 +503,8 @@ class GateEditorActivity : PinProtectedActivity() {
         val all = GateHub.gates(this)
         if (original == null && all.size >= Gate.MAX) { Toast.makeText(this, "Не больше ${Gate.MAX} проходов", Toast.LENGTH_SHORT).show(); return false }
         GateStore.save(this, if (all.any { it.id == draft.id }) all.map { if (it.id == draft.id) draft else it } else all + draft)
+        // Пароль, вписанный в адрес, — в зашифрованное хранилище.
+        GateStore.hidePasswords(this)
         Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
         setResult(RESULT_OK)
         finish()

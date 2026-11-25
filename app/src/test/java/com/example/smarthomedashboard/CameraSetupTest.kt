@@ -313,6 +313,38 @@ class CameraSetupTest {
         assertEquals("прежнее не тронуто", "rtsp://192.168.77.60:554/h264Preview_01_main", e.input("door_rtsp_main").text.toString())
     }
 
+    /** SEC-02 (аудит 25.11.2026): логин и пароль, вписанные в адрес снимка, в настройках плитки не остаются. */
+    @Test fun credentialsInSnapshotAddressAreMovedOnSave() {
+        val e = editor(DoorbellConfig.CAMERA_TYPE)
+        await("пароль плитки прочитан") { ReflectionHelpers.getField<Boolean?>(e, "savedPassword") == false }
+        e.input("door_snapshot_url").setText("http://viewer:s%40fe@192.168.77.60/snap.jpg")
+        assertTrue(e.save())
+        await("сохранено") { e.isFinishing }
+        val saved = TileManager(context).loadTiles().single().config
+        assertEquals("http://192.168.77.60/snap.jpg", DoorbellConfig.from(saved).snapshotUrl)
+        assertEquals("viewer", DoorbellConfig.from(saved).rtspUser)
+        assertFalse(saved.contains("fe@"))
+        assertEquals("s@fe", CameraPasswords.load(context, "tile").value)
+        // Плюс в пароле — плюс, а не пробел.
+        CameraPasswords.clearCache()
+        context.getSharedPreferences(CameraSecrets.PREFS, 0).edit().clear().commit()
+        val plus = editor(DoorbellConfig.CAMERA_TYPE)
+        plus.input("door_snapshot_url").setText("http://viewer:a+b@192.168.77.60/snap.jpg")
+        assertTrue(plus.save())
+        await("сохранено") { plus.isFinishing }
+        assertEquals("a+b", CameraPasswords.load(context, "tile").value)
+        // Пароль у плитки уже записан (пусть сейчас и не читается) — вписанный в адрес его не заменяет.
+        val stored = context.getSharedPreferences(CameraSecrets.PREFS, 0)
+        stored.edit().putString("tile", "нечитаемое").commit()
+        CameraPasswords.clearCache()
+        val kept = editor(DoorbellConfig.CAMERA_TYPE)
+        kept.input("door_snapshot_url").setText("http://viewer:other@192.168.77.60/snap.jpg")
+        assertTrue(kept.save())
+        await("сохранено") { kept.isFinishing }
+        assertEquals("нечитаемое", stored.getString("tile", null))
+        assertEquals("http://192.168.77.60/snap.jpg", DoorbellConfig.from(TileManager(context).loadTiles().single().config).snapshotUrl)
+    }
+
     @Test fun doorbellEditorGetsOnlyLinksAndLogin() {
         val e = editor(DoorbellConfig.TYPE)
         e.input("door_password").setText("Pa55-верно")

@@ -370,6 +370,99 @@ class HaTokenConsumerIntegrationTest {
         }
     }
 
+    /** Хранилище, которое отвечает то, что велено тестом. */
+    private class Slot : HaTokenSlot {
+        @Volatile var answer = SecretStore.ReadResult(SecretStore.Status.SUCCESS, "FAKE-STEADY")
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        override fun read(): SecretStore.ReadResult { reads.incrementAndGet(); return answer }
+        override fun write(value: String): SecretStore.Status = error("Unexpected write")
+    }
+    private val broken = SecretStore.ReadResult(SecretStore.Status.KEY_UNAVAILABLE)
+    private fun slotAccess(slot: Slot) = HaTokenAccess(slot, PreferenceLegacyHaToken { prefs }) { check(Looper.myLooper() != Looper.getMainLooper()) }
+    private fun settled(activity: MainActivity) = await { activity.lifecycleScope.coroutineContext[kotlinx.coroutines.Job]!!.children.none() }
+    private fun later(seconds: Long) = shadowOf(Looper.getMainLooper()).idleFor(seconds, TimeUnit.SECONDS)
+
+    /** STAB-01 (аудит 25.11.2026): сбой чтения токена не закрывает рабочее соединение и повторяется сам. */
+    @Test fun tokenReadFailureKeepsLiveConnectionAndIsRetried() {
+        MockWebServer().use { server ->
+            val peer = Peer()
+            server.enqueue(MockResponse().withWebSocketUpgrade(peer))
+            server.start()
+            prefs.edit().putString("ha_remote_host", server.url("/").toString()).commit()
+            val slot = Slot()
+            val activity = main()
+            set(activity, "haTokens", slotAccess(slot))
+            invoke(activity, "setupWebSocket")
+            await { peer.messages.any { it.optString("type") == "get_states" } }
+            val socket = field<HomeAssistantWebSocket?>(activity, "webSocket")
+            assertNotNull(socket)
+            slot.answer = broken
+            invoke(activity, "setupWebSocket")
+            settled(activity)
+            assertEquals(2, slot.reads.get())
+            assertSame("соединение не закрыто", socket, field<HomeAssistantWebSocket?>(activity, "webSocket"))
+            later(4); settled(activity)
+            assertEquals("ещё рано", 2, slot.reads.get())
+            later(2); settled(activity)
+            assertEquals("повтор через 5 с", 3, slot.reads.get())
+            later(31); settled(activity)
+            assertEquals("затем через 30 с", 4, slot.reads.get())
+            slot.answer = SecretStore.ReadResult(SecretStore.Status.SUCCESS, "FAKE-STEADY")
+            later(61); settled(activity)
+            assertEquals("затем через 60 с", 5, slot.reads.get())
+            later(600); settled(activity)
+            assertEquals("прочитан — больше не повторяем", 5, slot.reads.get())
+            assertSame(socket, field<HomeAssistantWebSocket?>(activity, "webSocket"))
+            assertEquals("подключение одно", 1, server.requestCount)
+            // «Токена нет» — не сбой: соединение закрывается, как раньше, повтора нет.
+            slot.answer = SecretStore.ReadResult(SecretStore.Status.ABSENT)
+            invoke(activity, "setupWebSocket")
+            settled(activity)
+            assertNull(field<HomeAssistantWebSocket?>(activity, "webSocket"))
+            later(600); settled(activity)
+            assertEquals(6, slot.reads.get())
+        }
+    }
+
+    @Test fun panelStartedDuringStorageFailureConnectsWhenItPasses() {
+        MockWebServer().use { server ->
+            val peer = Peer()
+            server.enqueue(MockResponse().withWebSocketUpgrade(peer))
+            server.start()
+            prefs.edit().putString("ha_remote_host", server.url("/").toString()).commit()
+            val slot = Slot().apply { answer = broken }
+            val activity = main()
+            set(activity, "haTokens", slotAccess(slot))
+            invoke(activity, "setupWebSocket")
+            settled(activity)
+            assertNull(field<HomeAssistantWebSocket?>(activity, "webSocket"))
+            slot.answer = SecretStore.ReadResult(SecretStore.Status.SUCCESS, "FAKE-STEADY")
+            later(6)
+            await { peer.messages.any { it.optString("type") == "get_states" } }
+            field<HomeAssistantWebSocket?>(activity, "webSocket")?.disconnect()
+        }
+    }
+
+    @Test fun failedReadDoesNotKeepConnectionWithChangedAddressOrToken() {
+        MockWebServer().use { server ->
+            val peer = Peer()
+            server.enqueue(MockResponse().withWebSocketUpgrade(peer))
+            server.start()
+            prefs.edit().putString("ha_remote_host", server.url("/").toString()).commit()
+            val slot = Slot()
+            val activity = main()
+            set(activity, "haTokens", slotAccess(slot))
+            invoke(activity, "setupWebSocket")
+            await { peer.messages.any { it.optString("type") == "get_states" } }
+            // Адрес поменяли в настройках: прежнее соединение при сбое чтения не остаётся.
+            prefs.edit().putString("ha_remote_host", "http://127.0.0.1:1").commit()
+            slot.answer = broken
+            invoke(activity, "setupWebSocket")
+            settled(activity)
+            assertNull(field<HomeAssistantWebSocket?>(activity, "webSocket"))
+        }
+    }
+
     @Test fun loadingAndChangedAddressesCannotStartObsoleteMainOrPickerConnection() {
         for (isMain in listOf(true, false)) {
             val entered = CountDownLatch(1)

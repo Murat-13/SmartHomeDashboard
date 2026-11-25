@@ -18,6 +18,22 @@ class CameraEventsTest {
     private val sunk = mutableListOf<Pair<String, List<CameraEventType>>>()
 
     @Before fun setUp() { OnvifEvents.sink = { id, e -> sunk += id to e } }
+    /** REC-04 (аудит 25.11.2026): сбой хранилища — не «пароль не задан»: повтор через секунды, а не через 5 минут. */
+    @Test fun storageFailureIsNotTreatedAsMissingPassword() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val previous = CameraPasswords.secrets
+        CameraPasswords.secrets = { CameraSecrets(it, object : SecretKeyProvider {
+            override fun existing(): javax.crypto.SecretKey? = null
+            override fun create(): javax.crypto.SecretKey = throw java.security.KeyStoreException()
+        }) }
+        val prefs = context.getSharedPreferences(CameraSecrets.PREFS, 0)
+        try {
+            org.junit.Assert.assertNull("пароля точно нет", OnvifEvents.password(context, "onvif_none"))
+            prefs.edit().putString("onvif_fail", "AAAA").commit()
+            try { OnvifEvents.password(context, "onvif_fail"); org.junit.Assert.fail() } catch (_: java.io.IOException) {}
+        } finally { CameraPasswords.secrets = previous; prefs.edit().clear().commit() }
+    }
+
     private val transport = Onvif.transport
     private val password = OnvifEvents.password
     @After fun tearDown() { OnvifEvents.detach(); Onvif.transport = transport; OnvifEvents.password = password }
