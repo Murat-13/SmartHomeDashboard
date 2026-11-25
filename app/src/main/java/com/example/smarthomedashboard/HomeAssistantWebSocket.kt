@@ -194,7 +194,7 @@ class HomeAssistantWebSocket(
         timeoutTask = Runnable {
             if (running && generation == id && !authenticated) fail("Тайм-аут подключения или авторизации")
         }.also { handler.postDelayed(it, 15_000L) }
-        webSocket = client.newWebSocket(request, SocketListener(id, gate))
+        webSocket = client.newWebSocket(request, SocketListener(id, gate, getHost()))
     }
 
     /**
@@ -205,9 +205,17 @@ class HomeAssistantWebSocket(
     private inner class SocketListener(
         @Volatile var owner: Int,
         val gate: HaMessageGate,
+        /** Адрес, к которому подключались (до перенаправлений). */
+        private val address: String,
         @Volatile var probing: Boolean = false
     ) : WebSocketListener() {
         private fun alive() = running && generation == owner
+
+        /** До первого сообщения сервера, а значит, до токена: куда на самом деле привели перенаправления. */
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!HomeAssistantAddress.unsafeRedirect(address, response.request.url, allowInsecureRemote)) return
+            ended(webSocket) { fail(HomeAssistantAddress.UNSAFE_REDIRECT) }
+        }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (probing) {
@@ -770,7 +778,7 @@ class HomeAssistantWebSocket(
         } catch (_: IllegalArgumentException) { return }
         // Не ответил и не авторизовался за отведённое время — остаёмся на запасном, проверим позже.
         probeTimeout = Runnable { abandonProbe() }.also { handler.postDelayed(it, PROBE_TIMEOUT_MS) }
-        val listener = SocketListener(owner = id, gate = HaMessageGate(), probing = true)
+        val listener = SocketListener(owner = id, gate = HaMessageGate(), address = hosts[0], probing = true)
         probeListener = listener
         probeSocket = client.newWebSocket(request, listener)
     }

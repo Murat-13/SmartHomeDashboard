@@ -141,11 +141,15 @@ class MainActivity : AppCompatActivity() {
         /** Панель уже создана: по кнопке «Домой» заставка не нужна. */
         @Volatile internal var isAlive = false
             private set
+        /** Чей это признак: экран, который уже сменился новым, его не снимает (BUG-01). */
+        private var aliveScreen: java.lang.ref.WeakReference<MainActivity>? = null
+        internal fun screenGone(screen: MainActivity) { if (aliveScreen?.get().let { it == null || it === screen }) isAlive = false }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         isAlive = true
+        aliveScreen = java.lang.ref.WeakReference(this)
         setupPanelWindow()
         setContentView(R.layout.activity_main)
         bottomPanel = findViewById(R.id.bottomPanel)
@@ -211,7 +215,7 @@ class MainActivity : AppCompatActivity() {
     private fun startVoiceAlerts() {
         connectDoorbells()
         if (android.os.Build.FINGERPRINT == "robolectric") return
-        PanelAlerts.attach(applicationContext)
+        PanelAlerts.attach(applicationContext, viewModel)
         lifecycleScope.launch {
             viewModel.uiState.map(PanelAlerts::stateKey).distinctUntilChanged().collect {
                 PanelAlerts.onState(viewModel.uiState.value)
@@ -443,7 +447,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         // При пересоздании (поворот) новая панель снова пометит себя в onCreate.
-        isAlive = false
+        screenGone(this)
         DoorbellHub.removeListener(doorbellListener)
         if (DoorbellHub.actions === doorbellActions) DoorbellHub.actions = null
         if (DoorbellHub.connection === doorbellConnection) DoorbellHub.connection = null

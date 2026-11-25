@@ -244,7 +244,15 @@ internal object PanelAlerts {
     /** Отключение на время тестов и для экранов без панели. */
     @Volatile internal var enabled = true
 
-    fun attach(context: Context) {
+    /** Панель, которая сейчас подключена; null — подключил экран без панели (редактор). */
+    private var owner: Any? = null
+
+    /**
+     * [owner] — панель (её ViewModel). Новая панель может появиться раньше, чем уничтожена прежняя («Назад» в режиме
+     * «главный экран»): тогда она становится владельцем, а прежняя, уходя, чужого не отключает (аудит 25.11.2026, BUG-01).
+     */
+    fun attach(context: Context, owner: Any? = null) {
+        if (owner != null) this.owner = owner
         if (app != null) return
         app = context.applicationContext
         tiles = com.example.smarthomedashboard.data.TileManager(context.applicationContext)
@@ -335,8 +343,10 @@ internal object PanelAlerts {
     /** Сейчас звучит сигнал или фраза (окно звонка включает звук видео после них). */
     val speaking get() = announcer?.busy == true
 
-    /** ViewModel очищен (панель закрыта): голос освобождается. */
-    fun detach() {
+    /** ViewModel очищен (панель закрыта): голос освобождается. [owner] — кто уходит; сменившуюся панель не трогает. */
+    fun detach(owner: Any? = null) {
+        if (owner != null && this.owner != null && this.owner !== owner) return
+        this.owner = null
         main.removeCallbacks(recheck)
         main.removeCallbacks(warmUp)
         DoorbellHub.detach()

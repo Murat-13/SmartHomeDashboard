@@ -263,7 +263,7 @@ class CopyInActivity : PinProtectedActivity(), PanelIdle.Busy {
             if (uri.scheme != CopyServer.SCHEME || uri.host != "copy") return null
             val parts = uri.encodedPath.orEmpty().trim('/').split('/')
             if (parts.size != 2) return null
-            val host = URLDecoder.decode(parts[0], "UTF-8")
+            val host = try { URLDecoder.decode(parts[0], "UTF-8") } catch (_: IllegalArgumentException) { return null }
             val code = CopyCode.parse(parts[1]) ?: return null
             return host.takeIf { Regex("[0-9.]+:\\d{1,5}").matches(it) && HomeAssistantAddress.isPrivateNetwork(it.substringBeforeLast(':')) }?.let { it to code }
         }

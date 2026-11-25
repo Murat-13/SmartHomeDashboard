@@ -37,6 +37,9 @@ internal class PowerHistoryRecorder(
     /** Чтение HA: тип команды, параметры, ответ (null — отказ). Задаётся владельцем соединения. */
     var reader: ((String, JSONObject, (Any?) -> Unit) -> Unit)? = null
 
+    /** Чьё соединение сейчас пишет историю ([MainViewModel]). */
+    internal var owner: Any? = null
+
     var instance: String? = null
         private set
     private var sources: Set<String> = emptySet()

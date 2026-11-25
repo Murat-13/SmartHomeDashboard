@@ -1,5 +1,6 @@
 package com.example.smarthomedashboard
 
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -70,6 +71,17 @@ internal object HomeAssistantAddress {
 
     /** Подключение без шифрования к адресу вне домашней сети — требуется явное разрешение. */
     fun needsInsecureConsent(address: String): Boolean = isCleartext(address) && !isPrivateNetwork(address)
+
+    const val UNSAFE_REDIRECT = "Сервер перенаправил на адрес без шифрования: подключение не выполняется, токен не отправлен"
+
+    /**
+     * Сервер увёл подключение с [address] на [final], и отдавать токен там нельзя: было https — стало http, либо это внешний
+     * http, которого владелец не разрешал (аудит 25.11.2026, HA-04). Обычное перенаправление http → https не мешает.
+     */
+    fun unsafeRedirect(address: String, final: HttpUrl, allowInsecureRemote: Boolean): Boolean {
+        if (final.isHttps) return false
+        return !isCleartext(address) || !allowInsecureRemote && needsInsecureConsent(final.toString())
+    }
 
     /** Предупреждение для формы адресов: только про внешний адрес без шифрования; локальный http — норма. */
     fun transportWarning(addresses: Collection<String>): String? =

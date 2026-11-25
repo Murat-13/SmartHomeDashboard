@@ -18,7 +18,42 @@ class CameraEventsTest {
     private val sunk = mutableListOf<Pair<String, List<CameraEventType>>>()
 
     @Before fun setUp() { OnvifEvents.sink = { id, e -> sunk += id to e } }
-    @After fun tearDown() { OnvifEvents.detach() }
+    private val transport = Onvif.transport
+    private val password = OnvifEvents.password
+    @After fun tearDown() { OnvifEvents.detach(); Onvif.transport = transport; OnvifEvents.password = password }
+
+    /**
+     * REC-05 (аудит 25.11.2026): камера отвечает на выборку сразу — опрос не идёт без остановки; выборка сорвалась — подписка
+     * на камере снимается, а не остаётся висеть.
+     */
+    @Test fun cameraAnsweringAtOnceIsNotPolledWithoutPauseAndSubscriptionIsDropped() {
+        val pulls = java.util.concurrent.atomic.AtomicInteger()
+        val dropped = java.util.concurrent.atomic.AtomicInteger()
+        var broken = false
+        val envelope = { body: String -> "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:tt=\"http://www.onvif.org/ver10/schema\" " +
+            "xmlns:wsa=\"http://www.w3.org/2005/08/addressing\"><s:Body>$body</s:Body></s:Envelope>" }
+        Onvif.transport = { _, body ->
+            when {
+                body.contains("GetSystemDateAndTime") -> 500 to "<x/>"
+                body.contains("GetCapabilities") -> 200 to envelope("<GetCapabilitiesResponse><Capabilities><tt:Events><tt:XAddr>http://10.0.0.1:8000/e</tt:XAddr></tt:Events></Capabilities></GetCapabilitiesResponse>")
+                body.contains("CreatePullPointSubscription") -> 200 to envelope("<CreatePullPointSubscriptionResponse><SubscriptionReference><wsa:Address>http://10.0.0.1:8000/s</wsa:Address></SubscriptionReference></CreatePullPointSubscriptionResponse>")
+                body.contains("PullMessages") -> { pulls.incrementAndGet(); if (broken) throw java.io.IOException("обрыв") else 200 to pullResponse() }
+                body.contains("Unsubscribe") -> { dropped.incrementAndGet(); 200 to envelope("") }
+                else -> 200 to envelope("")
+            }
+        }
+        OnvifEvents.password = { _, _ -> "secret" }
+        OnvifEvents.attach(org.robolectric.RuntimeEnvironment.getApplication())
+        OnvifEvents.onTiles(listOf(com.example.smarthomedashboard.data.TileEntity("onvif_rate", DoorbellConfig.CAMERA_TYPE, "grid", "Камера", 0, 0, 1, 1,
+            config = DoorbellConfig(host = "10.0.0.1", onvifPort = 8000, rtspUser = "admin").writeTo("{}"))))
+        Thread.sleep(2_500)
+        val calls = pulls.get()
+        assertTrue("выборок за 2,5 с: $calls", calls in 1..5)
+        broken = true
+        val until = System.currentTimeMillis() + 5_000
+        while (dropped.get() == 0 && System.currentTimeMillis() < until) Thread.sleep(50)
+        assertEquals("подписка снята после сбоя", 1, dropped.get())
+    }
 
     /** Ответ PullMessages как у Reolink (RuleEngine/MyRuleDetector/PeopleDetect + CellMotionDetector). */
     private fun pullResponse(vararg items: Pair<String, String?>) = """<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"

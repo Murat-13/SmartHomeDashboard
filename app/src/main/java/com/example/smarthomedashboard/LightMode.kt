@@ -121,10 +121,11 @@ internal object LightMode {
     }
 
     /**
-     * Замер плавности раскрытия: кадры окна [window] до вызова возвращённой функции. Android 7+ (FrameMetrics); на
-     * экране без аппаратного ускорения кадров нет — ничего не меряется.
+     * Замер плавности раскрытия: кадры окна [window] до вызова возвращённой функции (true — раскрытие дошло до конца и идёт
+     * в счёт, false — прервано: только снять слушатель). Вызвать обязательно: иначе слушатель остаётся у окна до его закрытия
+     * (аудит 25.11.2026, STAB-02). Android 7+ (FrameMetrics); на экране без аппаратного ускорения ничего не меряется.
      */
-    fun measure(window: Window?): () -> Unit {
+    fun measure(window: Window?): (Boolean) -> Unit {
         if (window == null) return {}
         var total = 0
         var lateFrames = 0
@@ -135,9 +136,9 @@ internal object LightMode {
         try {
             window.addOnFrameMetricsAvailableListener(listener, android.os.Handler(android.os.Looper.getMainLooper()))
         } catch (_: RuntimeException) { return {} }
-        return {
+        return { finished ->
             try { window.removeOnFrameMetricsAvailableListener(listener) } catch (_: RuntimeException) {}
-            expansionMeasured(total, lateFrames)
+            if (finished) expansionMeasured(total, lateFrames)
         }
     }
 

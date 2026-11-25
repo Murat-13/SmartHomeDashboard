@@ -1,11 +1,14 @@
 package com.example.smarthomedashboard
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
@@ -20,6 +23,7 @@ import java.util.concurrent.TimeUnit
  */
 internal object GateDirect {
     private const val USER = "admin"
+    private const val PING_MS = 3_000
     private val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(3, TimeUnit.SECONDS)
@@ -123,9 +127,15 @@ internal object GateDirect {
         }
     }
 
-    /** У своего HTTP положения нет — только «на связи ли»: ответ на адрес команды заголовками (HEAD). */
+    /**
+     * У своего HTTP положения нет — только «на связи ли»: соединение с устройством открывается и сразу закрывается, без
+     * единого запроса. К адресу команды обращаться нельзя: простые контроллеры выполняют её и на HEAD, и калитка открылась бы
+     * сама (аудит 25.11.2026, GATE-01).
+     */
     private fun pingHttp(d: Gate.Direct): DirectState? = try {
-        http.newCall(Request.Builder().url(d.openUrl).head().build()).execute().use { DirectState(true) }
+        val url = d.openUrl.toHttpUrl()
+        Socket().use { it.connect(InetSocketAddress(url.host, url.port), PING_MS) }
+        DirectState(true)
     } catch (e: IOException) {
         null
     } catch (e: IllegalArgumentException) {

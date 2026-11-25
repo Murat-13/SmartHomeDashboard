@@ -105,6 +105,11 @@ internal class BatteryModernExpansion(
     /** Таймер текущего раскрытия; null — карточка не сворачивается сама (решение владельца для домофона). */
     private var currentTimeout: Long? = timeoutMs
 
+    /** Замер плавности идущего раскрытия ([LightMode.measure]); прерванное раскрытие тоже обязано его снять. */
+    internal var measure: (android.view.Window?) -> (Boolean) -> Unit = LightMode::measure
+    private var measured: ((Boolean) -> Unit)? = null
+    private fun endMeasure(finished: Boolean) { measured?.let { measured = null; it(finished) } }
+
     /**
      * Начать снимок фона для скорого [expand] из [from] — до сборки раскрытой карточки (0.9.15): копия кадра
      * идёт параллельно с созданием и заполнением карточки, а не после них. Без [expand] снимок освобождается
@@ -183,8 +188,10 @@ internal class BatteryModernExpansion(
         val sy = start.height / target.height.toFloat().coerceAtLeast(1f)
         // [instant] — карточка уже была раскрыта и переехала с прежнего экрана (поворот): сразу на месте, без роста из плитки.
         // Плавность раскрытия — для облегчённого режима (docs/diagnostics-tz.md, решение 4).
-        val measured = if (instant) ({}) else LightMode.measure((host.context as? android.app.Activity)?.window)
-        run(if (instant) 0L else LightMode.ms(OPEN_MS), onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null); measured() }) { t ->
+        endMeasure(finished = false)
+        if (!instant) measured = measure((host.context as? android.app.Activity)?.window)
+        run(if (instant) 0L else LightMode.ms(OPEN_MS),
+            onEnd = { expandedCard.setLayerType(View.LAYER_TYPE_NONE, null); endMeasure(finished = true) }) { t ->
             expandedCard.x = start.x + (target.x - start.x) * t
             expandedCard.y = start.y + (target.y - start.y) * t
             expandedCard.scaleX = sx + (1f - sx) * t
@@ -235,6 +242,7 @@ internal class BatteryModernExpansion(
         val start = checkNotNull(original)
         closing = true
         stopTimer()
+        endMeasure(finished = false)
         (expandedCard as? ModernOverlayCard)?.collapsing()
         val from = Frame(expandedCard.x, expandedCard.y, expandedCard.scaleX, expandedCard.scaleY, expandedCard.alpha)
         val sx = start.width / expandedCard.layoutParams.width.toFloat().coerceAtLeast(1f)
@@ -293,6 +301,7 @@ internal class BatteryModernExpansion(
     /** Немедленное освобождение: анимация, таймер, overlay, размытый слой и его bitmap; компактная плитка снова видна. */
     fun clear() {
         stopTimer()
+        endMeasure(finished = false)
         animator?.let {
             animator = null
             it.removeAllListeners()

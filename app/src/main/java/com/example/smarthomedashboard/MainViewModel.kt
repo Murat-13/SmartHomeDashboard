@@ -54,6 +54,7 @@ class MainViewModel : ViewModel() {
     internal var powerHistory: PowerHistoryRecorder? = null
         set(value) {
             field = value
+            value?.owner = this
             value?.reader = { type, params, result -> webSocket?.read(type, params, result = result) ?: result(null) }
         }
 
@@ -284,7 +285,8 @@ class MainViewModel : ViewModel() {
         cancelIdentify()
         commands.reset()
         commands.disconnected()
-        powerHistory?.onDisconnected()
+        // Запись истории одна на приложение: новая панель уже могла её взять (BUG-01).
+        powerHistory?.takeIf { it.owner === this }?.onDisconnected()
         generation++
         configuration = null
         webSocket?.disconnect()
@@ -373,9 +375,10 @@ class MainViewModel : ViewModel() {
     }
 
     override fun onCleared() {
-        PanelAlerts.detach()
+        PanelAlerts.detach(this)
         detachUi()
         disconnectWebSocket()
+        powerHistory?.takeIf { it.owner === this }?.owner = null
         super.onCleared()
     }
 

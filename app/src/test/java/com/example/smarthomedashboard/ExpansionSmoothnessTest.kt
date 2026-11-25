@@ -112,6 +112,36 @@ class ExpansionSmoothnessTest {
         assertEquals(220, source.layoutParams.height)
     }
 
+    /** STAB-02 (аудит 25.11.2026): прерванное раскрытие снимает замер кадров, в счёт идёт только законченное. */
+    @Test fun interruptedOpeningAlwaysEndsFrameMeasure() {
+        var started = 0
+        val ended = mutableListOf<Boolean>()
+        expansion.measure = { started++; { finished -> ended += finished } }
+        expansion.expand("m", source, card(), target)
+        advance(400)
+        assertEquals(listOf(true), ended)
+        expansion.collapse()
+        advance(400)
+        assertEquals("закрытие замер не повторяет", listOf(true), ended)
+        // Закрыли во время раскрытия.
+        expansion.expand("m", source, card(), target)
+        advance(96)
+        expansion.collapse()
+        assertEquals(listOf(true, false), ended)
+        advance(400)
+        // Сразу раскрыли другую и всё сбросили.
+        expansion.expand("m", source, card(), target)
+        advance(48)
+        expansion.expand("n", source, card(), target)
+        advance(48)
+        expansion.clear()
+        assertEquals("сколько начато — столько и снято", started, ended.size)
+        assertEquals(listOf(true, false, false, false), ended)
+        // Без движения замера нет.
+        expansion.expand("m", source, card(), target, instant = true)
+        assertEquals(started, ended.size)
+    }
+
     @Test fun closingDuringOpenStartsFromCurrentFrameWithoutJump() {
         val card = card()
         expansion.expand("m", source, card, target)

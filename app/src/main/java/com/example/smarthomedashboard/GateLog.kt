@@ -100,8 +100,13 @@ internal object GateLog {
         val keep = entries.mapTo(HashSet()) { "${it.key}.jpg" }
         dir.listFiles()?.filter { it.name.endsWith(".jpg") && it.name !in keep }?.forEach { it.delete() }
         val tmp = File(dir, "$LIST.tmp")
-        tmp.writeText(array.toString())
-        tmp.renameTo(File(dir, LIST))
+        // Нет места или сбой памяти планшета: запись журнала теряется, но панель из-за неё не закрывается (аудит 25.11.2026, STAB-03).
+        try {
+            tmp.writeText(array.toString())
+            tmp.renameTo(File(dir, LIST))
+        } catch (e: java.io.IOException) {
+            tmp.delete(); Log.w(TAG, "Журнал открытий не записан: ${e.javaClass.simpleName}")
+        }
     }
 
     /** Подпись действия в журнале. */

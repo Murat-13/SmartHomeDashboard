@@ -406,7 +406,9 @@ class SetupActivity : AppCompatActivity() {
             // Адрес, введённый человеком, сохраняется как введён; отдельно — куда перенаправил обратный прокси.
             val saved = chosen?.address ?: if (redirected(address, result.origin)) result.origin else address
             val private = HomeAssistantAddress.isPrivateNetwork(saved)
-            val external = externalText.ifEmpty { chosen?.external.orEmpty() }
+            // Внешний адрес — только введённый человеком или полученный после входа: в объявлении по сети его мог подменить кто
+            // угодно, а туда уходил бы токен (аудит 25.11.2026, SEC-01).
+            val external = externalText
             target = if (private) HaConnector.Target(saved, external, chosen?.uuid.orEmpty())
                 else HaConnector.Target("", saved, chosen?.uuid.orEmpty())
             serverName = chosen?.name.orEmpty()

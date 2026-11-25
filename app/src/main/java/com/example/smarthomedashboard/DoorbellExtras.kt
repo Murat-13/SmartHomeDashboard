@@ -120,8 +120,13 @@ internal object RingLog {
         val array = JSONArray()
         rings.forEach { (t, a) -> array.put(JSONObject().put("t", t).put("a", a)) }
         val tmp = File(dir, "$LIST.tmp")
-        tmp.writeText(array.toString())
-        tmp.renameTo(File(dir, LIST))
+        // Нет места или сбой памяти планшета: запись журнала теряется, но панель из-за неё не закрывается (аудит 25.11.2026, STAB-03).
+        try {
+            tmp.writeText(array.toString())
+            tmp.renameTo(File(dir, LIST))
+        } catch (e: java.io.IOException) {
+            tmp.delete(); Log.w(TAG, "Журнал звонков не записан: ${e.javaClass.simpleName}")
+        }
     }
 
     private const val RETRY_MS = 1_500L

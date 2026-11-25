@@ -17,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap
 internal object OnvifEvents {
     const val REFRESH_MS = 4_000L
     private const val RENEW_MS = 60_000L
+    /** Не чаще: камера, которая отвечает сразу, а не держит запрос, опрашивалась бы без остановки (аудит 25.11.2026, REC-05). */
+    private const val MIN_PULL_MS = 700L
     private const val TAG = "OnvifEvents"
 
     data class Status(val ok: Boolean, val text: String)
@@ -120,6 +122,7 @@ internal object OnvifEvents {
             var backoff = 5_000L
             while (running) {
                 var sub: Onvif.Subscription? = null
+                var pause = 0L
                 try {
                     val pass = password(context, tileId)
                     if (pass.isNullOrEmpty()) { statuses[tileId] = Status(false, "Пароль камеры не задан"); sleep(300_000); continue }
@@ -129,8 +132,11 @@ internal object OnvifEvents {
                     backoff = 5_000L
                     var renewed = System.currentTimeMillis()
                     while (running) {
+                        val started = System.nanoTime()
                         apply(tileId, Onvif.pull(sub))
                         if (System.currentTimeMillis() - renewed > RENEW_MS) { Onvif.renew(sub); renewed = System.currentTimeMillis() }
+                        val left = MIN_PULL_MS - (System.nanoTime() - started) / 1_000_000
+                        if (left > 0) sleep(left)
                     }
                 } catch (e: InterruptedException) {
                     break
@@ -138,17 +144,19 @@ internal object OnvifEvents {
                     statuses[tileId] = Status(false, e.message.orEmpty())
                     Log.w(TAG, "События ONVIF: ${e.message}")
                     active.remove(tileId)
-                    sleep(if (e.auth) 300_000 else backoff)
+                    pause = if (e.auth) 300_000 else backoff
                     backoff = (backoff * 2).coerceAtMost(60_000L)
                 } catch (e: Exception) {
                     statuses[tileId] = Status(false, "Камера не отвечает — события по ONVIF не приходят")
                     Log.w(TAG, "События ONVIF: ${e.javaClass.simpleName}")
                     active.remove(tileId)
-                    sleep(backoff)
+                    pause = backoff
                     backoff = (backoff * 2).coerceAtMost(60_000L)
                 } finally {
-                    sub?.let { s -> if (!running) Thread { Onvif.unsubscribe(s) }.apply { isDaemon = true }.start() }
+                    // И после сбоя: иначе каждая новая попытка оставляла на камере ещё одну подписку.
+                    sub?.let { s -> Thread { Onvif.unsubscribe(s) }.apply { isDaemon = true }.start() }
                 }
+                if (pause > 0) sleep(pause)
             }
         }
 

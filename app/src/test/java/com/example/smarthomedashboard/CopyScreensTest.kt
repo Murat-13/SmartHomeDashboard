@@ -203,7 +203,8 @@ class CopyScreensTest {
     @Test fun linkOnlyFillsFieldsOnUnconfiguredPanel() {
         assertEquals("192.168.77.20:40123" to "K7H2MX9AB", CopyInActivity.link(link("smarthomedashboard://copy/192.168.77.20:40123/K7H2MX9AB")))
         for (bad in listOf("smarthomedashboard://copy/8.8.8.8:80/K7H2MX9AB", "smarthomedashboard://other/192.168.77.20:1/K7H2MX9AB", "https://copy/192.168.77.20:1/K7H2MX9AB",
-            "smarthomedashboard://copy/192.168.77.20:1/SHORT", "smarthomedashboard://copy/host:1/K7H2MX9AB", "smarthomedashboard://copy/192.168.77.20:1")) {
+            "smarthomedashboard://copy/192.168.77.20:1/SHORT", "smarthomedashboard://copy/host:1/K7H2MX9AB", "smarthomedashboard://copy/192.168.77.20:1",
+            "smarthomedashboard://copy/%zz/K7H2MX9AB")) {
             assertNull(bad, CopyInActivity.link(link(bad)))
         }
         var asked = 0

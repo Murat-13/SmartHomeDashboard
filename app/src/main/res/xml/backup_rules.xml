@@ -15,6 +15,9 @@
     <!-- Прямые события с камер: флаг, секрет вебхука, слот и отпечаток сертификата — только этого планшета. -->
     <exclude domain="sharedpref" path="camera_events.xml" />
     <exclude domain="external" path="records/" />
+    <exclude domain="external" path="talk_debug/" />
+    <exclude domain="external" path="video_debug/" />
+    <exclude domain="external" path="tablet_debug/" />
     <!-- Снимки посетителей при звонке и фразы голосом владельца — только этого планшета, не в облако. -->
     <exclude domain="file" path="doorbell_rings/" />
     <!-- Журнал открытий калиток и ворот: снимки с камеры прохода. -->

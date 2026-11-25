@@ -14,6 +14,9 @@
         <exclude domain="sharedpref" path="recording_device.xml" />
         <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
+        <exclude domain="external" path="talk_debug/" />
+        <exclude domain="external" path="video_debug/" />
+        <exclude domain="external" path="tablet_debug/" />
         <exclude domain="file" path="doorbell_rings/" />
         <!-- Журнал открытий калиток и ворот: снимки с камеры прохода. -->
         <exclude domain="file" path="gate_log/" />
@@ -37,6 +40,9 @@
         <exclude domain="sharedpref" path="recording_device.xml" />
         <exclude domain="sharedpref" path="camera_events.xml" />
         <exclude domain="external" path="records/" />
+        <exclude domain="external" path="talk_debug/" />
+        <exclude domain="external" path="video_debug/" />
+        <exclude domain="external" path="tablet_debug/" />
         <exclude domain="file" path="doorbell_rings/" />
         <!-- Журнал открытий калиток и ворот: снимки с камеры прохода. -->
         <exclude domain="file" path="gate_log/" />

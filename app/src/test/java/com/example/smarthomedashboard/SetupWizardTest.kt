@@ -95,6 +95,19 @@ class SetupWizardTest {
         assertFalse(prefs.getBoolean("setup_completed", false))
     }
 
+    /** SEC-01 (аудит 25.11.2026): внешний адрес из объявления по сети никто не проверял — скрытно он не берётся. */
+    @Test fun externalAddressFromNetworkAnnouncementIsNotTrusted() {
+        val activity = open()
+        activity.click("setup_new")
+        onChange!!(listOf(HaFound("http://192.168.77.10:8123", "Мой дом", "2026.11.3", "u1", "https://evil.example.com")))
+        idle()
+        activity.click("setup_next")
+        await("открыт вход") { shadowOf(activity).peekNextStartedActivityForResult() != null }
+        val intent = shadowOf(activity).nextStartedActivityForResult.intent
+        assertEquals("http://192.168.77.10:8123", intent.getStringExtra(HaLoginActivity.EXTRA_LOCAL))
+        assertEquals("внешний адрес — от самого Home Assistant после входа", "", intent.getStringExtra(HaLoginActivity.EXTRA_EXTERNAL).orEmpty())
+    }
+
     @Test fun typedAddressIsCheckedAndUnsuitableStaysOnStep() {
         var state = HaServer.State.NOT_HA
         val activity = open { state }

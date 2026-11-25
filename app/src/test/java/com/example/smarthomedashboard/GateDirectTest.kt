@@ -168,6 +168,20 @@ class GateDirectTest {
         repeat(5) { assertNotNull("опрос ${it + 1}", GateDirect.poll(relay(input = 0), null)) }
     }
 
+    /** GATE-01 (аудит 25.11.2026): проверка связи у своего HTTP не обращается к адресу команды — ни GET, ни HEAD. */
+    @Test fun httpGateIsPolledWithoutTouchingCommandAddress() {
+        val gate = Gate("gh", "Ворота", Gate.Kind.SCRIPT, link = Gate.Link.DIRECT, direct = Gate.Direct(protocol = Gate.Direct.Protocol.HTTP,
+            openUrl = "http://$host/open?pulse=1", closeUrl = "http://$host/close"))
+        assertEquals("устройство на связи", DirectState(true), GateDirect.poll(gate, null))
+        Thread.sleep(200)
+        assertEquals("ни одного запроса", 0, server.requestCount)
+        assertNull("устройства нет", GateDirect.poll(gate.copy(direct = gate.direct!!.copy(openUrl = "http://127.0.0.1:1/open")), null))
+        assertNull("адрес испорчен", GateDirect.poll(gate.copy(direct = gate.direct!!.copy(openUrl = "не адрес")), null))
+        // Сама команда по-прежнему уходит на адрес — один раз.
+        assertTrue(GateDirect.send(gate.copy(direct = gate.direct!!.copy(openUrl = "http://$host/open")), Gate.Action.OPEN, null).ok)
+        assertEquals(1, server.requestCount)
+    }
+
     @Test fun deviceGoneIsUnreachableNotCrash() {
         val gate = relay().copy(direct = Gate.Direct(host = "127.0.0.1:1"))
         assertEquals(GateDirect.Result(false, "устройство не отвечает"), GateDirect.send(gate, Gate.Action.OPEN, null))
