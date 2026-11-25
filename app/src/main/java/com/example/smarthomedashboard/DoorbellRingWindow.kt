@@ -135,6 +135,7 @@ internal class DoorbellRingWindow private constructor(
             card.video.callAudio = on
             if (on) inCallKeep.run() else main.removeCallbacks(inCallKeep)
             RecordingEvents.session(tileId, talk, on) // разговор — в ролик события целиком
+            PanelBusy.talk(talk, on)
         }
         replyButton.setOnClickListener { touched(); showReplies(replies.visibility != VISIBLE) }
         closeButton.setOnClickListener { touched(); close() }
@@ -319,6 +320,7 @@ internal class DoorbellRingWindow private constructor(
         isShowing = false
         RecordingEvents.session(tileId, this, false)
         RecordingEvents.session(tileId, talk, false)
+        PanelBusy.talk(talk, false)
         GateHub.unlisten(gateListener)
         closing = true
         moving = false

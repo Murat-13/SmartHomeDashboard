@@ -41,6 +41,25 @@ class PanelOwnerTest {
         assertNull("последняя панель ушла — отключено", attached())
     }
 
+    /**
+     * Второй аудит 25.11.2026, NEW-RUN-1 (решение владельца: откладывать): уведомление во время разговора не звучит — фраза из динамика
+     * ушла бы в микрофон, к человеку у калитки. Звучит, когда разговор закончен.
+     */
+    @Test fun voiceAlertWaitsForEndOfTalk() {
+        PanelBusy.resetForTests()
+        PanelAlerts.attach(context, Any())
+        val talk = Any()
+        try {
+            PanelBusy.talk(talk, true)
+            PanelAlerts.external(Alert(AlertEvent.DOORBELL_OFFLINE, "Домофон не на связи"), volume = 1f)
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertFalse("во время разговора панель молчит", PanelAlerts.speaking)
+            PanelBusy.talk(talk, false)
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertTrue("после разговора уведомление звучит", PanelAlerts.speaking)
+        } finally { PanelBusy.resetForTests() }
+    }
+
     @Test fun editorWithoutPanelNeverTakesOwnership() {
         val panel = Any()
         PanelAlerts.attach(context, panel)

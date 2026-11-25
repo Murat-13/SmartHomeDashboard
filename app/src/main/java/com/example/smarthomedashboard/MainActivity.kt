@@ -534,6 +534,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         lastTouchAt = android.os.SystemClock.uptimeMillis()
+        PanelBusy.touched()
         resetIdleTimer()
         // Окно звонка поверх панели: жесты панели (страницы, боковая панель) не работают, касания — окну.
         if (DoorbellHub.RingUi.current?.let { it.isShowing && it.host === this } == true) return super.dispatchTouchEvent(event)
@@ -1161,6 +1162,7 @@ class MainActivity : AppCompatActivity() {
                     viewModel.publishStatus("$network ($active)")
                     // Маршрут меняется и без смены статуса связи (переход на локальный без разрыва).
                     updateSystemStatus()
+                    if (SafeStart.active) SafeStart.notifyPhone(applicationContext, tileManager.getAllTiles())
                     subscribeToNeededEntities()
                     viewModel.getEntities()
                 }

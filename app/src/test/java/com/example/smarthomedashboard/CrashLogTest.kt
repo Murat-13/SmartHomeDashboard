@@ -117,6 +117,46 @@ class CrashLogTest {
         assertEquals(SafeStart.Mode.NORMAL, start())
     }
 
+    /**
+     * Второй аудит 25.11.2026, AUD-17 (решение владельца): о безопасном запуске — одно уведомление на выбранный телефон; после
+     * «Обычный запуск» и нового входа — снова одно. Телефон не выбран — ничего не отправляется.
+     */
+    @Test fun safeStartTellsChosenPhoneOnce() {
+        val sent = mutableListOf<Pair<String, Map<String, Any>>>()
+        var accept = true
+        DoorbellAway.reset()
+        DoorbellAway.sender = { d, s, data, done -> if (accept) sent += "$d.$s" to data; done(accept) }
+        val tile = com.example.smarthomedashboard.data.TileEntity("door_safe", DoorbellConfig.TYPE, "grid", "Домофон", 0, 0, 1, 1, config = DoorbellConfig.newTileConfig())
+        try {
+            SafeStart.notifyPhone(context, listOf(tile))
+            assertTrue("обычный запуск — молчит", sent.isEmpty())
+            List(3) { crashAfter(4_000) }
+            assertEquals(SafeStart.Mode.SAFE, start())
+            SafeStart.notifyPhone(context, listOf(tile))
+            assertTrue("телефон не выбран", sent.isEmpty())
+            DoorbellAway.save(context, tile.id, DoorbellAway.Settings(notifyService = "notify.mobile_app_phone"))
+            accept = false
+            SafeStart.notifyPhone(context, listOf(tile))
+            accept = true
+            SafeStart.notifyPhone(context, listOf(tile))
+            SafeStart.notifyPhone(context, listOf(tile))
+            assertEquals("не принятое Home Assistant повторяется, принятое — одно", 1, sent.size)
+            assertEquals("notify.mobile_app_phone", sent.single().first)
+            assertEquals(SafeStart.PHONE_TEXT, sent.single().second["message"])
+            // Перезапуск в том же безопасном режиме — не повторяется.
+            t += 600_000; assertEquals(SafeStart.Mode.SAFE, start())
+            SafeStart.notifyPhone(context, listOf(tile))
+            assertEquals(1, sent.size)
+            SafeStart.leave(context)
+            List(3) { crashAfter(4_000) }
+            assertEquals(SafeStart.Mode.SAFE, start())
+            SafeStart.notifyPhone(context, listOf(tile))
+            assertEquals("новый вход в безопасный запуск — новое уведомление", 2, sent.size)
+        } finally {
+            DoorbellAway.save(context, tile.id, DoorbellAway.Settings()); DoorbellAway.reset()
+        }
+    }
+
     @Test fun rareOrLateCrashesAreNotALoop() {
         // Сбой после двух минут работы — не «сразу после запуска».
         repeat(5) { crashAfter(SafeStart.SURVIVE_MS + 1_000) }

@@ -25,6 +25,8 @@ internal object UpdateInstaller {
     const val PREF_NIGHT = "update_night_install"
     const val PREF_INSTALL_STATE = "update_install_state"
     const val PREF_INSTALL_MESSAGE = "update_install_message"
+    private const val PREF_INSTALL_AT = "update_install_at"
+    private const val INSTALLING_MAX_MS = 10 * 60_000L
     const val EXTRA_NIGHT = "night"
     const val EXTRA_VERSION = "version"
     private const val WORK = "update_night_install"
@@ -32,7 +34,7 @@ internal object UpdateInstaller {
 
     enum class InstallState { NONE, INSTALLING, NEEDS_CONFIRMATION, FAILED }
 
-    enum class Outcome { STARTED, NO_UPDATE, NEEDS_PERMISSION, BACKUP_FAILED, NOT_SILENT, CANNOT_RETURN, FAILED }
+    enum class Outcome { STARTED, NO_UPDATE, NEEDS_PERMISSION, BACKUP_FAILED, NOT_SILENT, CANNOT_RETURN, FAILED, BUSY }
 
     /** Запуск сессии установки; отделён для тестов. */
     internal interface Committer {
@@ -121,8 +123,20 @@ internal object UpdateInstaller {
      */
     fun install(context: Context, allowWithoutBackup: Boolean = false, night: Boolean = false,
                 updaterDeps: AppUpdater.Deps = AppUpdater.deps(context)): Outcome {
+        // Вторая установка, пока идёт первая (кнопка дважды, кнопка ровно в ночной час), закрыла бы приложение ещё раз — и панель
+        // после этого сама бы уже не открылась (второй аудит 25.11.2026, AUD-22).
+        if (!running.compareAndSet(false, true)) return Outcome.BUSY
+        try { return installLocked(context, allowWithoutBackup, night, updaterDeps) } finally { running.set(false) }
+    }
+
+    private val running = java.util.concurrent.atomic.AtomicBoolean()
+
+    private fun installLocked(context: Context, allowWithoutBackup: Boolean, night: Boolean, updaterDeps: AppUpdater.Deps): Outcome {
         val file = AppUpdater.readyFile(context, updaterDeps) ?: return Outcome.NO_UPDATE
         val version = AppUpdater.status(context).versionName.orEmpty()
+        // Сессия уже отдана Android и ещё не ответила — вторую не начинаем.
+        val (was, _) = state(context)
+        if (was == InstallState.INSTALLING && System.currentTimeMillis() - prefs(context).getLong(PREF_INSTALL_AT, 0L) in 0 until INSTALLING_MAX_MS) return Outcome.BUSY
         if (night && !silentSupported()) return Outcome.NOT_SILENT
         if (night && !returns(context)) {
             // Ночь без панели, домофона и записи хуже, чем прежняя версия до утра. В журнал — один раз.
@@ -145,6 +159,7 @@ internal object UpdateInstaller {
             UpdateLog.add(context, "Копия перед обновлением до $version создана")
         }
         setState(context, InstallState.INSTALLING, "")
+        prefs(context).edit { putLong(PREF_INSTALL_AT, System.currentTimeMillis()) }
         if (!committer.commit(context, file, version, night)) {
             UpdateLog.add(context, "Установка $version не запущена: ошибка сессии установки")
             setState(context, InstallState.FAILED, "не удалось начать установку")
@@ -238,16 +253,25 @@ internal object UpdateInstaller {
         NightlyWork.schedule(context, NIGHT_WORK, WORK, NightWorker::class.java, 3, 30, fromWorker)
 
     /** Ночная попытка: свежая проверка, затем тихая установка готового обновления. */
-    internal fun nightRun(context: Context, deps: AppUpdater.Deps = AppUpdater.deps(context)): Outcome? {
+    internal fun nightRun(context: Context, deps: AppUpdater.Deps = AppUpdater.deps(context), busy: String? = null): Outcome? {
         if (!nightEnabled(context) || !silentSupported()) return null
         AppUpdater.check(context, deps)
+        if (busy != null) {
+            // Установка закрывает панель на несколько секунд: разговор, звонок, команда проходу оборвались бы (второй аудит, AUD-24).
+            if (AppUpdater.readyFile(context, deps) == null) return null
+            UpdateLog.add(context, "Ночная установка отложена до следующей ночи: $busy")
+            return Outcome.BUSY
+        }
         return install(context, night = true, updaterDeps = deps).takeIf { it != Outcome.NO_UPDATE }
     }
 
     class NightWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
-            withContext(Dispatchers.IO) { runCatching { nightRun(applicationContext) } }
-            schedule(applicationContext, fromWorker = true)
+            NightlyWork.run("Ночная установка", { schedule(applicationContext, fromWorker = true) }) {
+                // Экраны читаются в главном потоке; занято — попробуем следующей ночью.
+                val busy = withContext(Dispatchers.Main) { PanelBusy.reason() }
+                withContext(Dispatchers.IO) { nightRun(applicationContext, busy = busy) }
+            }
             return Result.success()
         }
     }

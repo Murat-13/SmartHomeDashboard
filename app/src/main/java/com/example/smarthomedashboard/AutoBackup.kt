@@ -297,13 +297,15 @@ internal object AutoBackup {
 
     class Worker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
-            AutoBackup.run(applicationContext)
-            // Сохранённые ролики (★) — в ту же папку копий (docs/recording.md, «Сохранность»).
-            try { ArchiveCopy.run(applicationContext) } catch (e: Exception) {
-                android.util.Log.w("ArchiveCopy", "Копия роликов не выполнена: ${e.javaClass.simpleName}")
-            }
             // Следующая — следующей ночью в 03:00 (не через 24 ч от этого запуска).
-            schedule(applicationContext, fromWorker = true)
+            NightlyWork.run("Копия настроек", { schedule(applicationContext, fromWorker = true) }) {
+                try { AutoBackup.run(applicationContext) } finally {
+                    // Сохранённые ролики (★) — в ту же папку копий (docs/recording.md, «Сохранность»).
+                    try { ArchiveCopy.run(applicationContext) } catch (e: Exception) {
+                        android.util.Log.w("ArchiveCopy", "Копия роликов не выполнена: ${e.javaClass.simpleName}")
+                    }
+                }
+            }
             // Ошибка записи видна в статусе; повторять немедленно бессмысленно — следующая попытка через сутки.
             return Result.success()
         }

@@ -167,6 +167,77 @@ class UpdateInstallerTest {
         assertEquals("по кнопке — можно", UpdateInstaller.Outcome.STARTED, UpdateInstaller.install(context, updaterDeps = deps))
     }
 
+    /**
+     * Второй аудит 25.11.2026, AUD-24 (решение владельца: «только ночью и когда свободно»): панель занята — ночная установка
+     * откладывается до следующей ночи; копия зря не делается.
+     */
+    @Test fun nightInstallWaitsWhilePanelIsBusy() {
+        ready()
+        UpdateInstaller.setNightEnabled(context, true)
+        assertEquals(UpdateInstaller.Outcome.BUSY, UpdateInstaller.nightRun(context, deps, busy = "идёт разговор"))
+        assertTrue(commits.isEmpty())
+        assertTrue(preUpdateCopies().isEmpty())
+        assertTrue(log(), log().contains("Ночная установка отложена до следующей ночи: идёт разговор"))
+        assertEquals(AppUpdater.State.READY, AppUpdater.status(context).state)
+        assertEquals("освободилась — ставится", UpdateInstaller.Outcome.STARTED, UpdateInstaller.nightRun(context, deps, busy = null))
+    }
+
+    /** Чем занята панель: разговор, команда проходу, недавние касания — и ничем через 10 минут покоя. */
+    @Test fun panelBusyReasons() {
+        var now = 1_000_000L
+        PanelBusy.resetForTests(); PanelBusy.clock = { now }
+        try {
+            assertNull(PanelBusy.reason())
+            val talk = Any()
+            PanelBusy.talk(talk, true)
+            assertEquals("идёт разговор", PanelBusy.reason())
+            PanelBusy.talk(talk, false)
+            assertNull(PanelBusy.reason())
+            PanelBusy.touched()
+            now += PanelBusy.QUIET_MS - 1
+            assertEquals("панели недавно касались", PanelBusy.reason())
+            now += 1
+            assertNull("10 минут без касаний — свободна", PanelBusy.reason())
+            PanelBusy.talk(talk, true)
+            now += 16 * 60_000L
+            assertNull("забытый разговор не держит установку вечно", PanelBusy.reason())
+        } finally { PanelBusy.resetForTests() }
+    }
+
+    /** AUD-22: вторая установка, пока идёт первая, не начинается — ни одновременно, ни пока Android не ответил на первую. */
+    @Test fun secondInstallDoesNotStartWhileFirstIsRunning() {
+        ready()
+        val inside = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        UpdateInstaller.committer = object : UpdateInstaller.Committer {
+            override fun commit(context: Context, file: File, versionName: String, night: Boolean): Boolean {
+                synchronized(commits) { commits += file to night }
+                inside.countDown(); release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                return true
+            }
+        }
+        var first: UpdateInstaller.Outcome? = null
+        val thread = Thread { first = UpdateInstaller.install(context, updaterDeps = deps) }.apply { start() }
+        assertTrue(inside.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals("одновременно", UpdateInstaller.Outcome.BUSY, UpdateInstaller.install(context, updaterDeps = deps))
+        release.countDown(); thread.join(10_000)
+        assertEquals(UpdateInstaller.Outcome.STARTED, first)
+        assertEquals("сессия ещё не ответила", UpdateInstaller.Outcome.BUSY, UpdateInstaller.install(context, updaterDeps = deps))
+        assertEquals(1, commits.size)
+        // Android ответил отказом — можно снова.
+        status(PackageInstaller.STATUS_FAILURE)
+        assertEquals(UpdateInstaller.Outcome.STARTED, UpdateInstaller.install(context, updaterDeps = deps))
+        // И пока первая ещё готовится (разрешение, копия настроек) — до того, как сессия отдана Android.
+        status(PackageInstaller.STATUS_FAILURE)
+        val preparing = java.util.concurrent.CountDownLatch(1); val go = java.util.concurrent.CountDownLatch(1)
+        UpdateInstaller.permission = object : UpdateInstaller.Permission {
+            override fun granted(context: Context): Boolean { preparing.countDown(); go.await(10, java.util.concurrent.TimeUnit.SECONDS); return true }
+        }
+        val third = Thread { UpdateInstaller.install(context, updaterDeps = deps) }.apply { start() }
+        assertTrue(preparing.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals("пока первая готовится", UpdateInstaller.Outcome.BUSY, UpdateInstaller.install(context, updaterDeps = deps))
+        go.countDown(); third.join(10_000)
+    }
+
     @Test fun panelReturnsOnlyAsHomeScreenOrOverOtherWindows() {
         assertFalse(defaultReturns(context))
         org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(true)

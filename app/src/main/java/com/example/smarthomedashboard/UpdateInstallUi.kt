@@ -68,6 +68,8 @@ internal object UpdateInstallUi {
                         "это будет записано в журнал обновлений.", "Установить без копии") {
                     run(activity, allowWithoutBackup = true, onChanged)
                 }.show()
+                UpdateInstaller.Outcome.BUSY ->
+                    Toast.makeText(activity, "Установка уже идёт", Toast.LENGTH_LONG).show()
                 UpdateInstaller.Outcome.NOT_SILENT, UpdateInstaller.Outcome.CANNOT_RETURN, UpdateInstaller.Outcome.FAILED ->
                     Toast.makeText(activity, "Не удалось начать установку — подробности в журнале обновлений", Toast.LENGTH_LONG).show()
             }

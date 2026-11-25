@@ -236,6 +236,8 @@ internal object PanelAlerts {
     private var tiles: com.example.smarthomedashboard.data.TileManager? = null
     private var settings: VoiceAlertSettings? = null
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private const val HELD_MAX = 8
+    private const val HELD_CHECK_MS = 16 * 60_000L
     private var lastReadings: BatteryReadings? = null
     private val recheck = Runnable { lastReadings?.let(::evaluate) }
     /** Синтез речи запускается после старта панели, не мешая её первой отрисовке. */
@@ -307,8 +309,27 @@ internal object PanelAlerts {
         monitor.external(alert, s, android.os.SystemClock.uptimeMillis())?.let { say(it, tone, volume, tag) }
     }
 
+    /**
+     * Уведомления, пришедшие во время разговора: фраза из динамика планшета ушла бы в микрофон — человек у калитки услышал бы
+     * «сеть пропала» или «запись остановлена». Звучат, когда разговор закончен (решение владельца 25.11.2026; второй аудит, NEW-RUN-1).
+     */
+    private val held = ArrayDeque<() -> Unit>()
+    private val sayHeld = Runnable {
+        if (PanelBusy.talking) return@Runnable
+        while (true) (held.removeFirstOrNull() ?: break)()
+    }
+
     private fun say(alert: Alert, tone: android.net.Uri? = null, volume: Float? = null, tag: String = "") {
         val context = app ?: return
+        // Звонок домофона не откладывается: логика звонка прежняя.
+        if (PanelBusy.talking && alert.event != AlertEvent.DOORBELL_RING) {
+            if (held.size >= HELD_MAX) held.removeFirst()
+            held.addLast { say(alert, tone, volume, tag) }
+            PanelBusy.onTalkEnd = { main.post(sayHeld) }
+            // Разговор, который забыли закончить, перестаёт считаться через 15 минут — фразы не теряются.
+            main.removeCallbacks(sayHeld); main.postDelayed(sayHeld, HELD_CHECK_MS)
+            return
+        }
         val minute = java.util.Calendar.getInstance().let { it.get(java.util.Calendar.HOUR_OF_DAY) * 60 + it.get(java.util.Calendar.MINUTE) }
         val level = volume ?: settings().volumeAt(minute)
         if (level <= 0f) return
@@ -349,6 +370,8 @@ internal object PanelAlerts {
         this.owner = null
         main.removeCallbacks(recheck)
         main.removeCallbacks(warmUp)
+        main.removeCallbacks(sayHeld)
+        held.clear()
         DoorbellHub.detach()
         announcer?.release()
         announcer = null

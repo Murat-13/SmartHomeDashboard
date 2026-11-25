@@ -25,6 +25,34 @@ internal object NightlyWork {
         return next.timeInMillis - now.timeInMillis
     }
 
+    /** Часы — подменяются в тестах. */
+    @Volatile internal var now: () -> Calendar = { Calendar.getInstance() }
+
+    /**
+     * Ночное окно 02:00–05:00 (решение владельца 25.11.2026). WorkManager обещает запуск «не раньше»: планшет был выключен в 03:00
+     * и включён днём, часы перевели — задача вышла бы днём, а установка обновления закрыла бы панель посреди дня (второй аудит, AUD-18).
+     */
+    fun isNight(at: Calendar = now()): Boolean = at.get(Calendar.HOUR_OF_DAY) in NIGHT_FROM until NIGHT_TO
+
+    /**
+     * Тело ночной задачи: вне ночного окна ничего не делает; следующая ночь ставится всегда — и когда работа упала
+     * (раньше исключение рвало цепочку до следующего запуска панели — аудит 25.11.2026, STAB-08).
+     */
+    inline fun run(name: String, reschedule: () -> Unit, work: () -> Unit) {
+        try {
+            if (isNight()) work() else android.util.Log.i(TAG, "$name: сейчас не ночь — отложено до следующей ночи")
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            android.util.Log.w(TAG, "$name: ${e.javaClass.simpleName}")
+        } finally {
+            reschedule()
+        }
+    }
+
+    const val NIGHT_FROM = 2
+    const val NIGHT_TO = 5
+    const val TAG = "NightlyWork"
+
     /**
      * Поставить задачу [worker] на ближайшие [hour]:[minute]. [legacy] — имя прежней периодической задачи (отменяется).
      * [fromWorker] — вызов из самой задачи в конце работы: следующая встаёт в цепочку после текущей; при запуске

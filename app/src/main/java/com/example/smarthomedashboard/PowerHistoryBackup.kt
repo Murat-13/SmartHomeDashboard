@@ -207,8 +207,7 @@ internal object PowerHistoryBackup {
 
     class Worker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
-            run(applicationContext)
-            schedule(applicationContext, fromWorker = true)
+            NightlyWork.run("Копия истории мощности", { schedule(applicationContext, fromWorker = true) }) { run(applicationContext) }
             return Result.success()
         }
     }

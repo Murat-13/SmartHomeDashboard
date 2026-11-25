@@ -44,6 +44,8 @@ internal object PanelIdle {
     /** Экран, на котором идёт отсчёт; слабая ссылка — экран не держится в памяти дольше своей жизни. */
     private var current: java.lang.ref.WeakReference<Activity>? = null
     private val back = Runnable { timeUp() }
+    /** Экран поверх панели, который сейчас открыт (главный поток). */
+    val showing: Activity? get() = current?.get()
 
     /** Экраны, которые ведут себя как панель: все, кроме самой панели, заставки и первой настройки. */
     fun managed(activity: Activity) = activity !is MainActivity && activity !is SplashActivity && activity !is SetupActivity && activity !is SafeStartActivity
@@ -73,6 +75,7 @@ internal object PanelIdle {
     /** Касание или кнопка — отсчёт заново. */
     fun touched() {
         val activity = current?.get() ?: return
+        PanelBusy.touched()
         handler.removeCallbacks(back)
         handler.postDelayed(back, timeoutMs(activity))
     }

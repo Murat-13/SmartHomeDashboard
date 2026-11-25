@@ -447,6 +447,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             video.callAudio = on
             if (on) keepOpen.run() else removeCallbacks(keepOpen)
             RecordingEvents.session(tileId, t, on) // разговор — в ролик события целиком
+            PanelBusy.talk(t, on)
         }
         TalkButton(context, t).apply {
             visibility = GONE

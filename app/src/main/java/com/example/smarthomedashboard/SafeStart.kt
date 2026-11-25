@@ -37,6 +37,8 @@ internal object SafeStart {
     private const val KEY_COUNTED = "counted"
     private const val KEY_AUTO = "auto_at"
     private const val KEY_TRIES = "auto_tries"
+    private const val KEY_NOTIFIED = "phone_notified"
+    internal const val PHONE_TEXT = "Безопасный запуск после сбоев: видео, запись и голос выключены. Коснитесь строки на панели — обычный запуск"
 
     /** Сбой раньше этого — «сразу после запуска». */
     const val SURVIVE_MS = 2 * 60_000L
@@ -86,6 +88,7 @@ internal object SafeStart {
             putBoolean(KEY_SAFE, mode != Mode.NORMAL)
             putString(KEY_QUICK, crashes.joinToString(","))
             putLong(KEY_START, t); putBoolean(KEY_OK, false); putBoolean(KEY_COUNTED, false)
+            if (mode == Mode.NORMAL) remove(KEY_NOTIFIED)
         }
         if (mode != Mode.NORMAL) Log.w(TAG, "Безопасный запуск: $mode")
         main.postDelayed({ survived(context) }, SURVIVE_MS)
@@ -121,6 +124,24 @@ internal object SafeStart {
         LightMode.refresh(context)
         RecorderService.sync(context)
         Log.i(TAG, if (auto) "Час без сбоев — обычный режим" else "Обычный запуск по кнопке")
+    }
+
+    /**
+     * Одно уведомление на телефон, выбранный у домофона или камеры, — через Home Assistant (решение владельца 25.11.2026; второй аудит,
+     * AUD-17): панель, которая сама в обычный режим не вернётся, иначе молчит о том, что видео, запись и голос выключены. Главный поток,
+     * после подключения к Home Assistant; повторяется только после следующего входа в безопасный запуск.
+     */
+    fun notifyPhone(context: Context, tiles: List<com.example.smarthomedashboard.data.TileEntity>) {
+        val p = prefs(context)
+        if (mode != Mode.SAFE || p.getBoolean(KEY_NOTIFIED, false)) return
+        val service = tiles.asSequence().filter { it.type in CameraSource.TYPES }
+            .map { DoorbellAway.settings(context, it.id).notifyService }.firstOrNull { it.isNotBlank() } ?: return
+        val message = mapOf<String, Any>("title" to "Панель умного дома", "message" to PHONE_TEXT,
+            "data" to org.json.JSONObject().put("tag", "panel_safe_start"))
+        DoorbellAway.sender(service.substringBefore('.'), service.substringAfter('.'), message) { ok ->
+            if (ok) p.edit { putBoolean(KEY_NOTIFIED, true) }
+            Log.i(TAG, if (ok) "Уведомление о безопасном запуске отправлено" else "Уведомление о безопасном запуске не отправлено")
+        }
     }
 
     /** Экран с выходом → безопасная панель. */
