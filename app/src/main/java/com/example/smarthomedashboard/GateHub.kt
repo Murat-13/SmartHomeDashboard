@@ -81,6 +81,12 @@ internal object GateHub {
     /** Свой поток для сети: команды и опрос не ждут друг друга с главным потоком. */
     private var io: ExecutorService? = null
     private fun io(): ExecutorService = io ?: Executors.newSingleThreadExecutor { r -> Thread(r, "gates-direct").apply { isDaemon = true } }.also { io = it }
+    /** Команды напрямую — отдельно от опросов; потоки живут, пока есть работа. */
+    private val commands: ExecutorService = java.util.concurrent.ThreadPoolExecutor(0, 4, 30, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue()) { r -> Thread(r, "gates-command").apply { isDaemon = true } }
+        .apply { rejectedExecutionHandler = java.util.concurrent.RejectedExecutionHandler { r, _ -> Thread(r, "gates-command-extra").apply { isDaemon = true }.start() } }
+    /** Проход → начало его текущей операции напрямую: по нему задача команды узнаёт, что она ещё нужна. */
+    private val current = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /** Последний ответ устройства по проходу; два промаха подряд — «не отвечает». */
     private val directStates = HashMap<String, DirectState>()
     private val directMisses = HashMap<String, Int>()
@@ -184,11 +190,13 @@ internal object GateHub {
         val gateId = gate.id
         // Пока ждём подтверждения, повтор не уходит; «Стоп» — всегда: остановить ход ворот важнее ожидания.
         if (ops[gateId]?.busy == true && action != Gate.Action.STOP) return false
-        deadlines.remove(gateId)?.let(main::removeCallbacks)
         val readings = readings
         val started = SystemClock.uptimeMillis()
         if (GateLogic.useDirect(gate, readings)) return runDirect(gate, action, started, origin)
         val command = GateLogic.command(gate, action, readings) ?: return false
+        // Срок прежней операции снимается, только когда новая действительно начинается: иначе неисполнимый «Стоп» оставлял проход
+        // «занятым» навсегда (второй аудит 25.11.2026, NEW-GATE-3).
+        deadlines.remove(gateId)?.let(main::removeCallbacks)
         val before = status(gate, readings)
         if (before.position == GateStatus.Position.OFFLINE) {
             finish(gate, Op(action, Phase.FAILED, started, before, null, "нет связи с Home Assistant", origin))
@@ -212,12 +220,17 @@ internal object GateHub {
     /** Без Home Assistant: команда устройству напрямую с фонового потока, итог — на главном. */
     private fun runDirect(gate: Gate, action: Gate.Action, started: Long, origin: GateLog.Origin): Boolean {
         if (!GateLogic.directSupports(gate, action)) return false
+        deadlines.remove(gate.id)?.let(main::removeCallbacks)
         val op = Op(action, Phase.SENDING, started, status(gate), null, origin = origin)
         opGates[gate.id] = gate
         set(gate.id, op)
         Log.i(TAG, "${gate.name}: ${action.name.lowercase()} → напрямую (${gate.direct?.protocol?.key})")
         val link = direct
-        io().execute {
+        // Команда не стоит в очереди за опросами молчащих устройств («Стоп» ждал бы до 6 с) и не уходит, если её время вышло
+        // (второй аудит 25.11.2026, NEW-GATE-1).
+        current[gate.id] = started
+        commands.execute {
+            if (current[gate.id] != started) { Log.i(TAG, "${gate.name}: команда устарела — не отправлена"); return@execute }
             val result = link.send(gate, action)
             main.post { onDirectResult(gate, op, result) }
         }
@@ -383,6 +396,7 @@ internal object GateHub {
     }
 
     private fun finish(gate: Gate, op: Op) {
+        current.remove(gate.id, op.startedAt)
         deadlines.remove(gate.id)?.let(main::removeCallbacks)
         clears.remove(gate.id)?.let(main::removeCallbacks)
         Log.i(TAG, "${gate.name}: ${op.action.name.lowercase()} — ${op.phase.name.lowercase()}${op.detail.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}")
@@ -479,6 +493,7 @@ internal object GateHub {
 
     /** Для тестов: всё забыть. */
     fun reset() {
+        current.clear()
         deadlines.values.forEach(main::removeCallbacks); deadlines.clear()
         clears.values.forEach(main::removeCallbacks); clears.clear()
         ops.clear(); opGates.clear(); lastPosition.clear(); lastRaw.clear(); listeners.clear()

@@ -172,6 +172,74 @@ class GatesTest {
         assertEquals(listOf(cover), back)
     }
 
+    // ---- Второй аудит 25.11.2026, пакет 2 ----
+
+    /** «Стоп» PIN не спрашивает ни в каком режиме: остановка ничего не открывает. */
+    @Test fun stopNeverAsksForPin() {
+        for (pin in GatePin.entries) for (inRing in listOf(true, false)) {
+            assertFalse("$pin", pin.required(Gate.Action.STOP, inRing))
+            for (a in listOf(Gate.Action.OPEN, Gate.Action.CLOSE, Gate.Action.STEP, Gate.Action.PEDESTRIAN)) assertEquals("$pin $a", pin.required(inRing), pin.required(a, inRing))
+        }
+    }
+
+    /** «Стоп» нажимается при «устройство не отвечает» и принимает каждое касание, остальные кнопки — как раньше. */
+    @Test fun stopButtonIsAlwaysPressable() {
+        states["cover.gate"] = "opening"; attrs["cover.gate"] = JSONObject().put("supported_features", 15)
+        hub(cover)
+        connected = false
+        GateHub.onState(context, readings)
+        val stop = HoldButton(context, "Стоп", R.drawable.ic_gate_stop).apply { instant = true }
+        val open = HoldButton(context, "Открыть", R.drawable.ic_gate_lock)
+        GateButtons.paint(stop, cover, Gate.Action.STOP, primary = false, roomy = true)
+        GateButtons.paint(open, cover, Gate.Action.OPEN, primary = true, roomy = true)
+        assertTrue("«Стоп» при «нет связи»", stop.isEnabled)
+        assertFalse("«Открыть» при «нет связи» — как раньше", open.isEnabled)
+        // Только что «Остановлено» — повторное касание принимается сразу.
+        var taps = 0
+        stop.onComplete = { taps++ }
+        stop.layout(0, 0, 200, 100)
+        for (state in DoorbellRingWindow.Gate.entries) {
+            stop.state = state
+            val t = android.os.SystemClock.uptimeMillis()
+            for (action in listOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP))
+                android.view.MotionEvent.obtain(t, t, action, 10f, 10f, 0).also { stop.dispatchTouchEvent(it); it.recycle() }
+        }
+        assertEquals(DoorbellRingWindow.Gate.entries.size, taps)
+    }
+
+    /** Неисполнимый «Стоп» (запасная связь его не умеет) не оставляет проход «занятым» навсегда. */
+    @Test fun impossibleStopDoesNotFreezeGate() {
+        val gate = Gate("gh", "Ворота", Gate.Kind.SCRIPT, open = "script.open", close = "script.close", sensor = "binary_sensor.g", confirmSeconds = 10,
+            direct = Gate.Direct(protocol = Gate.Direct.Protocol.HTTP, openUrl = "http://127.0.0.1:1/open"))
+        states["binary_sensor.g"] = "off"
+        hub(gate)
+        assertTrue(GateHub.run("gh", Gate.Action.OPEN)); idle()
+        connected = false; GateHub.onState(context, readings)
+        assertFalse(GateHub.run("gh", Gate.Action.STOP))
+        idle(10_000)
+        assertEquals("срок операции сработал", false, GateHub.op("gh")?.busy)
+        connected = true
+    }
+
+    /** Свёрнутая плитка «Проход»: «Подтверждения нет» сначала снимается, команда — следующим удержанием. */
+    @Test fun collapsedTileClearsUnconfirmedBeforeRepeating() {
+        val gate = Gate("gs", "Ворота", Gate.Kind.STEP, open = "button.step", confirmSeconds = 5)
+        states["button.step"] = "t0"
+        hub(gate)
+        answer = ServiceCommandResult.ACK_TIMEOUT
+        val card = GateTileCard(context, expanded = false)
+        card.onAction = { g, a -> GateHub.run(g.id, a) }
+        card.bind("gs")
+        card.button.onComplete!!.invoke(); idle(6_000)
+        assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("gs")?.phase)
+        assertEquals(1, sent.size)
+        card.button.onComplete!!.invoke(); idle()
+        assertEquals("первое удержание только снимает отметку", 1, sent.size)
+        assertNull(GateHub.op("gs"))
+        card.button.onComplete!!.invoke(); idle()
+        assertEquals("следующее — команда", 2, sent.size)
+    }
+
     @Test fun pinModes() {
         assertEquals(GatePin.OFF, GateStore.pin(context))
         assertFalse(GatePin.OFF.required(inRingWindow = false))

@@ -421,6 +421,34 @@ class GateDirectTest {
         assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("gs")?.phase)
     }
 
+    /** Второй аудит, NEW-GATE-1: «Стоп» не ждёт опрос молчащего соседнего устройства. */
+    @Test fun commandsDoNotQueueBehindPolls() {
+        val drive = Gate("ga", "Ворота", Gate.Kind.COVER, link = Gate.Link.DIRECT, direct = Gate.Direct(host = "192.0.2.1"))
+        val silent = Gate("gb", "Калитка", Gate.Kind.RELAY, link = Gate.Link.DIRECT, direct = Gate.Direct(host = "192.0.2.2", input = 0))
+        val polling = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val sentAt = java.util.concurrent.atomic.AtomicLong()
+        val sends = java.util.concurrent.atomic.AtomicInteger()
+        GateHub.direct = object : GateHub.DirectLink {
+            override fun send(gate: Gate, action: Gate.Action): GateDirect.Result {
+                sends.incrementAndGet(); sentAt.set(System.nanoTime()); return GateDirect.Result(true)
+            }
+            override fun poll(gate: Gate): DirectState? {
+                if (gate.id == "gb") { polling.countDown(); release.await(8, java.util.concurrent.TimeUnit.SECONDS); return null }
+                return DirectState(true, cover = "opening")
+            }
+        }
+        GateStore.save(context, listOf(drive, silent))
+        GateHub.listen {}
+        GateHub.onState(context, readings)
+        try {
+            await("опрос соседа идёт") { polling.count == 0L }
+            val t = System.nanoTime()
+            assertTrue(GateHub.run("ga", Gate.Action.STOP))
+            await("«Стоп» ушёл") { sentAt.get() != 0L }
+            assertTrue("«Стоп» не ждал опрос: ${(sentAt.get() - t) / 1_000_000} мс", sentAt.get() - t < 1_500_000_000L)
+        } finally { release.countDown() }
+    }
+
     @Test fun silentDeviceAtDeadlineIsUnconfirmed() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest) = MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)

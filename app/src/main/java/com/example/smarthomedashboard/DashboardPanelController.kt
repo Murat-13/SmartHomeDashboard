@@ -1254,7 +1254,7 @@ internal class DashboardPanelController(
     /** Кнопка прохода: при выбранном PIN — сначала PIN (тот же, что у настроек и архива), потом команда. */
     private fun runGate(gate: Gate, action: Gate.Action, inRingWindow: Boolean) {
         modernExpansion.touch()
-        if (!GateStore.pin(activity).required(inRingWindow)) { GateHub.run(gate.id, action); return }
+        if (!GateStore.pin(activity).required(action, inRingWindow)) { GateHub.run(gate.id, action); return }
         val owner = activity as? androidx.appcompat.app.AppCompatActivity ?: return
         PinSecurityUi.authorize(owner, { GateHub.run(gate.id, action) })
     }

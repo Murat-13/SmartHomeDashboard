@@ -91,9 +91,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
 
     private fun press(gateId: String, action: Gate.Action) {
         val gate = gates.firstOrNull { it.id == gateId } ?: return
-        val op = GateHub.op(gateId)
-        // «Подтверждения нет» снимается касанием; повтор — только новым удержанием (импульсное реле не дёргаем дважды).
-        if (op != null && !op.busy && op.action == action && op.phase == GateHub.Phase.UNCONFIRMED) { GateHub.dismiss(gateId); return }
+        if (clearedUnconfirmed(gateId, action)) return
         onAction?.invoke(gate, action)
     }
 
@@ -106,12 +104,21 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
     }
 
     companion object {
+    /** «Подтверждения нет» снимается касанием или удержанием; повтор — только следующим удержанием (импульсное реле не дёргаем дважды). */
+    internal fun clearedUnconfirmed(gateId: String, action: Gate.Action): Boolean {
+        val op = GateHub.op(gateId)
+        if (op == null || op.busy || op.action != action || op.phase != GateHub.Phase.UNCONFIRMED) return false
+        GateHub.dismiss(gateId)
+        return true
+    }
+
     /** Кнопка прохода по его состоянию и идущему действию — одно правило для строки кнопок и для плитки «Проход». */
     internal fun paint(button: HoldButton, gate: Gate, action: Gate.Action, primary: Boolean, roomy: Boolean) {
         val status = GateHub.status(gate)
         val op = GateHub.op(gate.id)?.takeIf { it.action == action }
         button.label = GateLogic.label(gate, action, status)
-        button.isEnabled = !status.noLink
+        // «Стоп» нажимается и при «устройство не отвечает»: связь могла вернуться, а отказ виден на кнопке.
+        button.isEnabled = !status.noLink || action == Gate.Action.STOP
         button.state = when (op?.phase) {
             GateHub.Phase.SENDING -> DoorbellRingWindow.Gate.SENDING
             GateHub.Phase.WAITING -> DoorbellRingWindow.Gate.WAITING

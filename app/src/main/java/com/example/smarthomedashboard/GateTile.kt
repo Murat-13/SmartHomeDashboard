@@ -80,7 +80,7 @@ internal class GateTileCard(context: Context, val expanded: Boolean) : FrameLayo
             addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL))
         } else {
             addView(button, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-            button.onComplete = { gate()?.let { g -> primary(g)?.let { onAction?.invoke(g, it) } } }
+            button.onComplete = { gate()?.let { g -> primary(g)?.let { if (!GateButtons.clearedUnconfirmed(g.id, it)) onAction?.invoke(g, it) } } }
         }
     }
 

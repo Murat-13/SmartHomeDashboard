@@ -484,6 +484,9 @@ internal enum class GatePin(val key: String, val title: String) {
 
     fun required(inRingWindow: Boolean) = this == ALWAYS || (this == OUTSIDE_RING && !inRingWindow)
 
+    /** «Стоп» — без PIN: остановка ничего не открывает, а ждать ввода ворота не будут (второй аудит 25.11.2026, NEW-GATE-2). */
+    fun required(action: Gate.Action, inRingWindow: Boolean) = action != Gate.Action.STOP && required(inRingWindow)
+
     companion object { fun of(key: String?) = entries.firstOrNull { it.key == key } ?: OFF }
 }
 

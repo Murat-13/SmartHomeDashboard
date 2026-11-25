@@ -391,7 +391,7 @@ internal class DoorbellRingWindow private constructor(
     }
 
     private fun runGate(gate: com.example.smarthomedashboard.Gate, action: com.example.smarthomedashboard.Gate.Action) {
-        if (!GateStore.pin(host).required(inRingWindow = true)) { GateHub.run(gate.id, action); return }
+        if (!GateStore.pin(host).required(action, inRingWindow = true)) { GateHub.run(gate.id, action); return }
         val owner = host as? androidx.appcompat.app.AppCompatActivity ?: return
         PinSecurityUi.authorize(owner, { GateHub.run(gate.id, action) })
     }
@@ -773,12 +773,13 @@ internal class HoldButton(context: Context, label: String, icon: Int) : View(con
             return onTap != null
         }
         val busy = state == DoorbellRingWindow.Gate.SENDING || state == DoorbellRingWindow.Gate.WAITING || state == DoorbellRingWindow.Gate.OPENED
+        // Мгновенная кнопка («Стоп») принимает каждое касание: повторить остановку можно сразу (NEW-GATE-2).
         if (instant) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { onTouchStart?.invoke(); isPressed = true }
                 MotionEvent.ACTION_UP -> {
                     isPressed = false
-                    if (!busy && event.x in 0f..width.toFloat() && event.y in 0f..height.toFloat()) {
+                    if (event.x in 0f..width.toFloat() && event.y in 0f..height.toFloat()) {
                         performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         onComplete?.invoke()
                     }
