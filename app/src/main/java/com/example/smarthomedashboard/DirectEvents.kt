@@ -341,7 +341,11 @@ internal object DirectEvents {
             try {
                 while (polls[tileId] === Thread.currentThread()) {
                     val now = try { driver.ringActive() } catch (e: CameraException) {
-                        if (e.auth) break
+                        if (e.auth) {
+                            // Опрос остановлен: статус говорит правду, следующая проверка запустит его заново (второй аудит, AUD-12).
+                            post(tileId, Status(Level.ERROR, "Камера не приняла логин или пароль — опрос звонка остановлен. Проверьте логин и пароль камеры"))
+                            break
+                        }
                         null
                     } catch (_: Exception) { null }
                     if (now == true && active == false) main.post { onEvents(tileId, listOf(CameraEventType.RING), "опрос") }
@@ -350,6 +354,9 @@ internal object DirectEvents {
                 }
             } catch (_: InterruptedException) {
             } finally {
+                // Запись — только своя: остановленный и уже заменённый поток чужую не тронет. Без этого умерший поток навсегда
+                // числился «идущим», и опрос не запускался заново.
+                polls.remove(tileId, Thread.currentThread())
                 driver.close()
             }
         }, "camera-poll").apply { isDaemon = true }

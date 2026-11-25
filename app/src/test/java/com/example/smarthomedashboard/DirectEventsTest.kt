@@ -272,6 +272,53 @@ class DirectEventsTest {
         assertTrue(DirectEvents.status(context, "door").text.contains("логин или пароль"))
     }
 
+    /**
+     * Второй аудит 25.11.2026, AUD-12: опрос звонка получил отказ входа и остановился — раньше запись о нём оставалась, новый опрос не
+     * запускался до перезапуска приложения, а статус говорил «опрос идёт».
+     */
+    @Test fun pollStoppedByLoginFailureCanStartAgainAndStatusIsHonest() {
+        repeat(4) { i -> camera.slots[i] = JSONObject(camera.slot(i).toString()).put("hookUrl", "http://192.0.2.5$i/x").put("indexEnable", 1) }
+        DirectEvents.attach(context)
+        DirectEvents.setEnabled(context, "door", config, true)
+        waitFor("первый опрос") { camera.polls > 0 }
+        @Suppress("UNCHECKED_CAST")
+        val map = DirectEvents::class.java.getDeclaredField("polls").apply { isAccessible = true }.get(DirectEvents) as java.util.concurrent.ConcurrentHashMap<String, Thread>
+        val first = map["door"]!!
+        camera.password = "changed"; camera.token = null // пароль в камере сменили, сессия истекла
+        waitFor("поток опроса завершился", 15_000) { !first.isAlive }
+        waitFor("запись о потоке убрана") { !map.containsKey("door") }
+        waitFor("статус — ошибка") { DirectEvents.status(context, "door").level == DirectEvents.Level.ERROR }
+        assertTrue(DirectEvents.status(context, "door").text, DirectEvents.status(context, "door").text.contains("опрос звонка остановлен"))
+        // Пароль исправили — следующая проверка снова запускает опрос, и звонок приходит.
+        camera.password = "pass"
+        val before = camera.polls
+        DirectEvents::class.java.getDeclaredMethod("startPoll", android.content.Context::class.java, String::class.java, String::class.java)
+            .apply { isAccessible = true }.invoke(DirectEvents, context, "door", "pass")
+        waitFor("опрос идёт снова") { camera.polls > before + 1 }
+        camera.visitor = 1
+        waitFor("звонок опросом") { rings.isNotEmpty() }
+    }
+
+    /** NEW-CAM-2: разовые ошибки приёма соединений не останавливают приёмник вебхуков; не проходят — он закрывается, а не висит «открытым». */
+    @Test fun hookServerSurvivesAcceptErrors() {
+        var got = 0
+        val server = CameraHookServer(0) { _, _, _ -> got++; true }
+        var failing = 3
+        server.acceptor = { s -> if (failing-- > 0) throw java.io.IOException("нет дескрипторов") else s.accept() }
+        server.start()
+        try {
+            val url = java.net.URL("http://127.0.0.1:${server.localPort}/cam/x")
+            waitFor("вебхук принят после ошибок") {
+                runCatching { (url.openConnection() as java.net.HttpURLConnection).run { requestMethod = "POST"; doOutput = true; connectTimeout = 1000; readTimeout = 2000
+                    outputStream.use { it.write("{}".toByteArray()) }; responseCode } }.isSuccess && got > 0
+            }
+        } finally { server.stop() }
+        val dead = CameraHookServer(0) { _, _, _ -> true }
+        dead.acceptor = { throw java.io.IOException("всегда") }
+        dead.start()
+        try { waitFor("неработающий приёмник закрыт — проверка откроет новый") { !dead.running } } finally { dead.stop() }
+    }
+
     /** Этап 2: событие с камеры запускает HD-запись и без HA; держится [RecordingEvents.DIRECT_HOLD_MS]. */
     @Test fun directCameraEventsDriveRecordingWithAndWithoutHa() {
         var now = 1_000_000L

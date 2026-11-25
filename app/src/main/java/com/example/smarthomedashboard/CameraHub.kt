@@ -539,8 +539,14 @@ internal object RtspRelay {
     }
 
     private fun accept(s: ServerSocket) {
+        var failures = 0
         while (!s.isClosed) {
-            val socket = try { s.accept() } catch (_: Exception) { break }
+            val socket = try { s.accept().also { failures = 0 } } catch (_: Exception) {
+                // Разовая ошибка accept не останавливает ретранслятор (второй аудит 25.11.2026, NEW-CAM-2).
+                if (s.isClosed || ++failures >= CameraHookServer.ACCEPT_FAILURES) break
+                try { Thread.sleep(CameraHookServer.ACCEPT_PAUSE_MS) } catch (_: InterruptedException) { break }
+                continue
+            }
             Thread({ Client(socket).serve() }, "rtsp-relay-client").apply { isDaemon = true; start() }
         }
     }

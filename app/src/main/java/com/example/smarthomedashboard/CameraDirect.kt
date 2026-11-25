@@ -282,6 +282,8 @@ internal class CameraHookServer(
     private var server: ServerSocket? = null
     private var pool: java.util.concurrent.ThreadPoolExecutor? = null
     private val admission = HookAdmission(MAX_PER_SECOND, MAX_CONCURRENT)
+    /** Приём соединения (в тестах — с подставными отказами). */
+    internal var acceptor: (ServerSocket) -> Socket = { it.accept() }
 
     val running get() = server?.isClosed == false
     val localPort get() = server?.localPort ?: port
@@ -296,8 +298,17 @@ internal class CameraHookServer(
         server = socket
         pool = workers
         Thread({
+            // Ошибка accept (кончились дескрипторы, сбой сети) — не конец приёмника: раньше поток молча завершался, порт оставался
+            // открытым, а проверка показывала «подключено» (второй аудит 25.11.2026, NEW-CAM-2). Не проходит — сокет закрывается,
+            // и ближайшая проверка откроет приёмник заново.
+            var failures = 0
             while (!socket.isClosed) {
-                val client = try { socket.accept() } catch (_: IOException) { break }
+                val client = try { acceptor(socket).also { failures = 0 } } catch (_: IOException) {
+                    if (socket.isClosed) break
+                    if (++failures >= ACCEPT_FAILURES) { android.util.Log.w("CameraDirect", "Приёмник вебхуков: accept не работает — закрыт"); try { socket.close() } catch (_: IOException) {}; break }
+                    try { Thread.sleep(ACCEPT_PAUSE_MS) } catch (_: InterruptedException) { break }
+                    continue
+                }
                 val from = client.inetAddress
                 if (!admission.enter(from)) { closeQuietly(client); continue }
                 try {
@@ -385,6 +396,8 @@ internal class CameraHookServer(
         /** Одновременно с одного адреса: камера шлёт события по одному, на это хватает с запасом. */
         private const val MAX_CONCURRENT = 4
         private const val WORKERS = 8
+        internal const val ACCEPT_FAILURES = 5
+        internal const val ACCEPT_PAUSE_MS = 200L
         private const val QUEUE = 16
         /** Камера шлёт запрос целиком сразу (сотни байт); на весь запрос — 3 с. */
         const val DEADLINE_MS = 3_000L
