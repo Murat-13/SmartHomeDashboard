@@ -36,7 +36,7 @@ class RecorderService : Service() {
     private var lastScan = 0L
     /** Носитель, чьи файлы в [files]: сменился — обход заново, иначе очистка считала бы файлы другого носителя. */
     private var filesRoot: String? = null
-    private val clockGuard = ClockGuard()
+    private val clockGuard by lazy { ClockGuard(RecordingDevice(this).agePausedUntil) }
     private var agePaused = false
     /** Ошибки SD-карты за последние [ERRORS_WINDOW_MS] (часы с включения планшета). */
     private val cardErrors = ArrayDeque<Long>()
@@ -185,7 +185,11 @@ class RecorderService : Service() {
                 onStatus = { _, status -> statusChanged(id, status) }
             )
             recorders[id] = Running(key, r, config)
-            r.onStorageError = { root -> try { control.execute { safe { storageFailed(root) } } } catch (_: java.util.concurrent.RejectedExecutionException) {} }
+            r.currentRoot = { rootCache }
+            r.onStorageError = { root ->
+                val at = android.os.SystemClock.elapsedRealtime() // поток управления может быть занят
+                try { control.execute { safe { storageFailed(root, at) } } } catch (_: java.util.concurrent.RejectedExecutionException) {}
+            }
             r.start()
         }
         // Останавливаемся, только если запись не включена ни для одной плитки: камера, ставшая доступной лишь
@@ -278,15 +282,15 @@ class RecorderService : Service() {
     }
 
     /**
-     * Запись на [root] не удалась. SD-карта не пишет несколько раз за [ERRORS_WINDOW_MS] — дальше в память планшета и голосом, пока
-     * карту не вынут и не вернут или приложение не перезапустится (аудит 25.11.2026, REC-02).
+     * Запись на [root] в момент [now] (время с включения планшета) не удалась. SD-карта не пишет дольше минуты — дальше в память
+     * планшета и голосом, пока карту не вынут и не вернут или приложение не перезапустится (аудит 25.11.2026, REC-02).
      */
-    private fun storageFailed(root: File) {
+    private fun storageFailed(root: File, now: Long) {
         if (root.path != RecVolumes.dirs(this).getOrNull(1)?.path || RecVolumes.brokenCard == root.path) return
-        val now = android.os.SystemClock.elapsedRealtime()
         cardErrors.addLast(now)
         while (now - cardErrors.first() > ERRORS_WINDOW_MS) cardErrors.removeFirst()
-        if (cardErrors.size < CARD_ERRORS) return
+        // Одна заминка даёт ошибку сразу у нескольких записей: важно, что карта не пишет дольше минуты.
+        if (cardErrors.size < CARD_ERRORS || now - cardErrors.first() < ERRORS_SPAN_MS) return
         Log.w(TAG, "Запись: SD-карта не пишет — дальше в память планшета")
         cardErrors.clear()
         RecVolumes.brokenCard = root.path
@@ -341,6 +345,7 @@ class RecorderService : Service() {
         val now = System.currentTimeMillis()
         if (forceScan || root.path != filesRoot || kotlin.math.abs(now - lastScan) > 6 * 3_600_000L) {
             files.clear()
+            if (root.path != filesRoot) clockGuard.storageChanged()
             filesRoot = root.path
             val since = RecCatalog.mark()
             files += RecLayout.scan(root)
@@ -353,7 +358,10 @@ class RecorderService : Service() {
         val used = files.sumOf { it.bytes }
         val limit = RecRetention.limit(device.limitGb, free, used, onFallback())
         val rules = keepRules
-        val byAge = clockGuard.trusted(now, android.os.SystemClock.elapsedRealtime(), files.maxOfOrNull { it.endMs })
+        val pausedBefore = clockGuard.pausedUntilMs
+        // Открытый файл не в счёт: он начат по тем самым часам, которые проверяются.
+        val byAge = clockGuard.trusted(now, android.os.SystemClock.elapsedRealtime(), files.filterNot { it.open }.maxOfOrNull { it.endMs })
+        if (clockGuard.pausedUntilMs != pausedBefore) device.agePausedUntil = clockGuard.pausedUntilMs
         if (byAge == agePaused) {
             agePaused = !byAge
             Log.i(TAG, if (byAge) "Запись: очистка по сроку снова идёт" else "Запись: часы планшета могли сбиться — сутки по сроку ничего не удаляется")
@@ -431,6 +439,7 @@ class RecorderService : Service() {
         /** Столько ошибок записи на SD-карту за [ERRORS_WINDOW_MS] — карта неисправна. */
         private const val CARD_ERRORS = 3
         private const val ERRORS_WINDOW_MS = 10 * 60_000L
+        private const val ERRORS_SPAN_MS = 60_000L
         /** «Не удалять по сроку» ([ClockGuard]): сто лет. */
         private const val KEEP_ALL_MS = 100L * 365 * 86_400_000L
         private val MEDIA_ACTIONS = listOf(Intent.ACTION_MEDIA_EJECT, Intent.ACTION_MEDIA_UNMOUNTED, Intent.ACTION_MEDIA_REMOVED,

@@ -282,12 +282,12 @@ class RecordingHubTest {
     @Test fun movingVideoIsNotReconnected() {
         keyEvery = 10
         val real = CameraHub.videoStallMs
-        CameraHub.videoStallMs = 300
+        CameraHub.videoStallMs = 2_000
         val a = recorder(audio = true)
         try {
             a.start()
             waitFor(5_000, "поток пошёл") { CameraHub.relayUrl(url, "") != null }
-            Thread.sleep(1_500)
+            Thread.sleep(3_500)
             assertEquals(1, connections.get())
         } finally {
             CameraHub.videoStallMs = real

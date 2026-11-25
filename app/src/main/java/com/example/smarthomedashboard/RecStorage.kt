@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Environment
 import android.os.StatFs
 import androidx.annotation.VisibleForTesting
+import androidx.core.content.edit
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -119,6 +120,11 @@ internal class RecordingDevice(context: Context) {
         get() = prefs.getInt(KEY_RESERVE, 2).coerceIn(1, 10)
         set(v) { prefs.edit().putInt(KEY_RESERVE, v.coerceIn(1, 10)).apply() }
 
+    /** [ClockGuard]: до какого момента по сроку ничего не удаляется. */
+    var agePausedUntil: Long
+        get() = prefs.getLong(KEY_AGE_PAUSED, 0)
+        set(v) = prefs.edit { putLong(KEY_AGE_PAUSED, v) }
+
     var useSdCard: Boolean
         get() = prefs.getBoolean(KEY_SD, false)
         set(v) { prefs.edit().putBoolean(KEY_SD, v).apply() }
@@ -137,6 +143,7 @@ internal class RecordingDevice(context: Context) {
         const val PREFS = "recording_device"
         private const val KEY_ENABLED = "enabled_tiles"
         private const val KEY_LIMIT = "limit_gb"
+        private const val KEY_AGE_PAUSED = "age_paused_until"
         private const val KEY_RESERVE = "reserve_gb"
         private const val KEY_SD = "use_sd"
         private const val KEY_ARCHIVE_PIN = "archive_pin"
@@ -339,18 +346,27 @@ internal object RecLocality {
  * «старше недели» по ним ничего не значит: сутки по сроку не удаляется ничего, только по месту. То же, если при запуске последняя
  * запись старше двух суток: либо планшет долго был выключен, либо часы врут, — сутки подождать не жалко. Чистая логика.
  */
-internal class ClockGuard {
+internal class ClockGuard(pausedUntilMs: Long = 0) {
     private var offsetMs: Long? = null
-    private var trustedFromMs = 0L
+    private var checkGap = true
 
-    /** [wallMs] — часы, [elapsedMs] — время с включения планшета (не прыгает), [newestMs] — конец последней записи. */
+    /** До какого момента (по часам) срок не действует; переживает перезапуск процесса. */
+    var pausedUntilMs = pausedUntilMs
+        private set
+
+    /** Носитель сменился: последнюю запись проверить заново, уже на нём. */
+    fun storageChanged() { checkGap = true }
+
+    /** [wallMs] — часы, [elapsedMs] — время с включения планшета (не прыгает), [newestMs] — конец последней законченной записи. */
     fun trusted(wallMs: Long, elapsedMs: Long, newestMs: Long?): Boolean {
         val offset = wallMs - elapsedMs
-        val before = offsetMs
+        val jumped = offsetMs?.let { kotlin.math.abs(offset - it) > JUMP_MS } == true
         offsetMs = offset
-        val suspicious = if (before == null) newestMs != null && wallMs - newestMs > GAP_MS else kotlin.math.abs(offset - before) > JUMP_MS
-        if (suspicious) trustedFromMs = elapsedMs + SETTLE_MS
-        return elapsedMs >= trustedFromMs
+        val gap = checkGap && newestMs != null && wallMs - newestMs > GAP_MS
+        checkGap = false
+        // Часы ушли назад, пока срок не действовал, — сутки отсчитываются от нового времени.
+        if (jumped || gap || pausedUntilMs - wallMs > SETTLE_MS) pausedUntilMs = wallMs + SETTLE_MS
+        return wallMs >= pausedUntilMs
     }
 
     companion object {

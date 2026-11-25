@@ -112,7 +112,28 @@ class RecordingClockTest {
         assertTrue("мелкая поправка — не сбой", g.trusted(start + 1_200_000 + 20_000, 1_201_000, start))
         assertFalse("прыгнули на 10 дней", g.trusted(start + 10 * day, 1_801_000, start))
         assertFalse("и через 23 часа", g.trusted(start + 10 * day + day - 3_600_000, 1_801_000 + day - 3_600_000, start))
+        // Процесс перезапущен посреди этих суток: последняя запись — уже по новым часам, но срок по-прежнему не действует.
+        val again = ClockGuard(g.pausedUntilMs)
+        assertFalse(again.trusted(start + 10 * day + day - 3_600_000, 1_801_000 + day - 3_600_000, start + 10 * day + day - 3_660_000))
         assertTrue("через сутки по ним можно судить", g.trusted(start + 11 * day + 1, 1_801_000 + day + 1, start))
+        assertTrue(again.trusted(start + 11 * day + 1, 1_801_000 + day + 1, start))
+    }
+
+    /** Часы вернулись назад посреди паузы — сутки от нового времени, а не до далёкого будущего. */
+    @Test fun guardPauseFollowsClockBack() {
+        val g = ClockGuard()
+        assertFalse(g.trusted(start + 400 * day, 0, start))
+        assertFalse(g.trusted(start, 10_000, start))
+        assertTrue(g.trusted(start + day + 10_000, day + 20_000, start))
+        assertTrue("то же после перезапуска", ClockGuard(start + 400 * day).let { it.trusted(start, 0, start); it.trusted(start + day, day, start) })
+    }
+
+    /** Сначала память планшета, потом карта: последняя запись проверяется на каждом носителе. */
+    @Test fun guardChecksEachStorage() {
+        val g = ClockGuard()
+        assertTrue(g.trusted(start, 0, null))
+        g.storageChanged()
+        assertFalse("на карте последняя запись — месяц назад", g.trusted(start + 60_000, 60_000, start - 30 * day))
     }
 
     @Test fun guardWaitsWhenLastRecordingIsOldAtStart() {
@@ -138,12 +159,25 @@ class RecordingClockTest {
         val s = System.currentTimeMillis() - 30 * day
         val camera = RecLayout.cameraKey(cam.id)
         val old = File(RecLayout.dayDir(root, camera, s).apply { mkdirs() }, RecLayout.closedName(RecFile.Kind.CONTINUOUS, s, 60_000)).apply { writeBytes(ByteArray(100)) }
+        // Идущий отрезок начат уже по этим часам (записи открываются до обхода) — он ничего не доказывает.
+        val now = System.currentTimeMillis()
+        val (frames, d) = sample()
+        val live = Mp4SegmentWriter(File(RecLayout.dayDir(root, camera, now).apply { mkdirs() }, RecLayout.openName(RecFile.Kind.CONTINUOUS, now)),
+            VideoParams(d.codec, d.vps, d.sps!!, d.pps!!), null, queued = true)
+        (0 until 40).forEach { i -> val b = frames[i % frames.size]; live.writeVideo(VideoFrame(i * 9_000L, b.nals, b.key), i * 100_000L) }
+        assertTrue(RecIo.flush(5_000))
+        RecordingDevice(context).agePausedUntil = 0
         val service = Robolectric.buildService(RecorderService::class.java).create().startCommand(0, 1)
         try {
-            Thread.sleep(2_500)
+            val until = System.currentTimeMillis() + 10_000
+            while (RecordingDevice(context).agePausedUntil == 0L && System.currentTimeMillis() < until) Thread.sleep(50)
+            assertTrue("очистка прошла и часам не поверила", RecordingDevice(context).agePausedUntil > now)
+            Thread.sleep(300)
             assertTrue("архив остался", old.exists())
         } finally {
+            live.close()
             service.destroy(); Thread.sleep(300)
+            RecordingDevice(context).agePausedUntil = 0
             File(root, RecLayout.ROOT).deleteRecursively()
             RecordingDevice(context).setEnabled(cam.id, false)
             RecordingStatus.clear()

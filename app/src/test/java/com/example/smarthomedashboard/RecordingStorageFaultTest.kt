@@ -142,11 +142,12 @@ class RecordingStorageFaultTest {
     private fun event(fault: Fault) {
         val root = tmp.newFolder()
         var second = 0
-        val clips = Collections.synchronizedList(mutableListOf<RecFile>())
+        val clips = Collections.synchronizedList(mutableListOf<Pair<RecFile, Set<String>>>())
         val errors = Collections.synchronizedList(mutableListOf<File>())
+        val states = mutableListOf<String>()
         val r = EventRecorder("door", "rtsp://cam/main", "", null, audio = false, root = { root }, canWrite = { true },
-            events = { if (second in 1..11) setOf("person") else emptySet() }, settings = { RecordingConfig(preSeconds = 0, postSeconds = 2) },
-            onClip = { f, _ -> clips += f }, onStatus = { _, _ -> })
+            events = { if (second in 1..5) setOf("person") else emptySet() }, settings = { RecordingConfig(preSeconds = 0, postSeconds = 8) },
+            onClip = { f, l -> clips += f to l }, onStatus = { _, s -> states += s.detail })
         r.storageRetryNs = 3_000_000L
         r.onStorageError = { errors += it }
         feed(r.ClipSink().apply { videoClock = 90_000 }, 20, { w -> r.wallClock = { w } }) { s ->
@@ -158,7 +159,13 @@ class RecordingStorageFaultTest {
         assertTrue("$fault: об ошибке сообщено", errors.isNotEmpty())
         val after = closed(root).filter { it.startMs - start >= 7_000 }
         assertEquals("$fault: событие продолжено роликом после возврата носителя", 1, after.size)
-        assertEquals("$fault: и кончилось дозаписью: последний активный кадр 11,9 с + 2 с", 13_900L, after.single().let { it.startMs + it.durationMs - start - 40 })
+        assertEquals("$fault: и кончилось дозаписью: последний активный кадр 5,9 с + 8 с", 13_900L, after.single().let { it.startMs + it.durationMs - start - 40 })
+        assertEquals("$fault: метки события — и у продолжения, начатого в дозаписи", setOf("person"), clips.single { it.first.startMs == after.single().startMs }.second)
+        if (fault == Fault.READ_ONLY) {
+            val failed = states.indexOf(ContinuousRecorder.STORAGE_RETRYING)
+            assertTrue("об отказе видно в редакторе: $states", failed >= 0)
+            assertTrue("…пока не запишется: $states", states.drop(failed + 1).takeWhile { it != EventRecorder.WRITING }.none { it == EventRecorder.IDLE })
+        }
     }
 
     /** Карту извлекают или она отказала: запись закрывает файл и продолжает на другом носителе со следующего ключевого кадра. */
@@ -170,6 +177,18 @@ class RecordingStorageFaultTest {
         feed(r.newSink().apply { videoClock = 90_000 }, 10, { w -> r.wallClock = { w } }) { s -> if (s == 4) root = tablet }
         assertEquals("на карте — до смены", listOf(0L to 3_940L), closed(card).map { (it.startMs - start) to it.durationMs })
         assertEquals("дальше — в памяти планшета", listOf(4_000L), closed(tablet).map { it.startMs - start })
+    }
+
+    /** На каждом ключевом кадре носитель и система не спрашиваются: в потоке камеры — живое видео. Неизвестно куда — файл не рвётся. */
+    @Test fun keyFramesDoNotAskTheSystem() {
+        val card = tmp.newFolder()
+        var asked = 0
+        val r = ContinuousRecorder("door", "rtsp://cam/sub", "", null, audio = false, root = { asked++; card }, canWrite = { true },
+            onSegment = {}, onStatus = { _, _ -> }, segmentMs = 60_000)
+        r.currentRoot = { null }
+        feed(r.newSink().apply { videoClock = 90_000 }, 10, { w -> r.wallClock = { w } }) { }
+        assertEquals("только при открытии отрезка", 1, asked)
+        assertEquals(listOf(0L to 9_940L), closed(card).map { (it.startMs - start) to it.durationMs })
     }
 
     /** Носитель не отвечает (запись в него зависла), очередь полна: пишущий получает ошибку, а не ждёт часами вместе с живым видео. */
@@ -212,9 +231,18 @@ class RecordingStorageFaultTest {
         while (!ok()) { if (System.currentTimeMillis() > until) throw AssertionError(what); Thread.sleep(20); shadowOf(Looper.getMainLooper()).idle() }
     }
 
-    private fun cardError() {
-        val method = RecorderService::class.java.getDeclaredMethod("storageFailed", File::class.java).apply { isAccessible = true }
-        method.invoke(service!!.get(), sd)
+    /** Ошибка записи на карту — сразу у всех записей, как при настоящей заминке: тем же путём, что из потока камеры. */
+    private fun cardError(afterSeconds: Long) {
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(afterSeconds))
+        val running = RecorderService::class.java.getDeclaredField("recorders").apply { isAccessible = true }.get(service!!.get()) as Map<*, *>
+        assertEquals("круглосуточная и HD", 2, running.size)
+        for (r in running.values) {
+            val recorder = r!!.javaClass.getDeclaredField("recorder").apply { isAccessible = true }.get(r) as CameraRecorder
+            recorder.onStorageError(sd)
+        }
+        // Поток управления отработал всё поставленное.
+        val control = RecorderService::class.java.getDeclaredField("control").apply { isAccessible = true }.get(service!!.get()) as java.util.concurrent.ExecutorService
+        control.submit {}.get(10, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     private fun broadcast(action: String, path: String) {
@@ -224,11 +252,12 @@ class RecordingStorageFaultTest {
 
     @Test fun cardThatDoesNotWriteIsReplacedByTabletMemoryUntilReturned() {
         startService()
-        cardError(); cardError()
-        Thread.sleep(200)
-        assertEquals("одна-две ошибки — ещё пробуем карту", sd, storage())
+        cardError(0); cardError(10); cardError(30)
+        assertEquals("заминка короче минуты — ещё пробуем карту", sd, storage())
         assertNull(RecVolumes.brokenCard)
-        cardError()
+        cardError(15 * 60); cardError(10)
+        assertNull("новая заминка через 15 минут — отсчёт заново", RecVolumes.brokenCard)
+        cardError(55)
         waitFor("запись не перешла в память планшета") { storage() == internal }
         assertTrue("видно в редакторе камеры", RecordingStatus.sdMissing("cam_fault"))
         assertEquals(sd.path, RecVolumes.brokenCard)

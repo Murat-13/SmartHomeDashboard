@@ -284,6 +284,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        lastTouchAt = android.os.SystemClock.uptimeMillis()
         if (!::tileManager.isInitialized) return
         refreshPinState()
         refreshBottomPanel()
@@ -338,8 +339,9 @@ class MainActivity : AppCompatActivity() {
             CameraWatch.tick(this@MainActivity) { if (drawer?.isOpen == true) updateSystemStatus() }
             TabletWatch.tick(this@MainActivity) { if (!isDestroyed) { coolPanel(); if (drawer?.isOpen == true) updateSystemStatus() } }
             shiftPanel()
-            // Безопасный запуск прожил час без сбоев, и панелью никто не пользуется — обычный режим (STAB-04).
-            if (SafeStart.recovered(this@MainActivity) && unattended()) {
+            // Безопасный запуск прожил час без сбоев, и панелью никто не пользуется — обычный режим (STAB-04). Если сбой повторится, а
+            // панель сама не откроется, лучше оставить безопасную: без человека она не вернулась бы вовсе.
+            if (SafeStart.recovered(this@MainActivity) && unattended() && UpdateInstaller.returns(this@MainActivity)) {
                 SafeStart.leave(this@MainActivity, auto = true)
                 recreate()
                 return

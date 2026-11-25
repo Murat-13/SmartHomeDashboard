@@ -94,9 +94,46 @@ class HaGoneEntityTest {
         assertEquals("вернулась обычным событием", listOf("light.a" to "unavailable", "light.a" to "off"), events)
     }
 
-    @Test fun entityAbsentFromSnapshotBecomesUnavailable() {
+    private fun later(seconds: Long) = shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(seconds))
+
+    /**
+     * Сразу после перезапуска Home Assistant снимок неполный: сущностей, чьи интеграции ещё загружаются, в нём нет. Прежние значения
+     * остаются неподтверждёнными (иначе домофон, заведённый в Home Assistant, уходил бы в «Нет сигнала»), через 5 минут — ещё снимок.
+     */
+    @Test fun entityAbsentFromSnapshotBecomesUnavailableOnlyAfterStartup() {
+        known = setOf("light.a", "light.gone", "binary_sensor.door_person")
+        start()
+        snapshot(item("light.a", "on"))
+        assertEquals("сразу после подключения — никого", mapOf("light.a" to "on"), snapshots.last())
+        later(240)
+        assertEquals(1, peer.all("get_states").size)
+        changed(JSONObject().put("entity_id", "binary_sensor.door_person").put("new_state", item("binary_sensor.door_person", "off")))
+        await("интеграция загрузилась") { events.isNotEmpty() }
+        later(62)
+        await("снимок спрошен ещё раз") { peer.all("get_states").size == 2 }
+        snapshot(item("light.a", "on"), item("binary_sensor.door_person", "off"))
+        assertEquals(mapOf("light.a" to "on", "binary_sensor.door_person" to "off", "light.gone" to "unavailable"), snapshots.last())
+        // Дальше — без новых запросов: пропавшая уже «недоступна», повторять нечего.
+        known = setOf("light.a", "binary_sensor.door_person")
+        later(1_800)
+        assertEquals(2, peer.all("get_states").size)
+    }
+
+    /** Ничего не пропало (обычное переподключение) — лишнего снимка нет. */
+    @Test fun completeSnapshotIsNotAskedAgain() {
+        known = setOf("light.a")
+        start()
+        snapshot(item("light.a", "on"))
+        later(1_800)
+        assertEquals(1, peer.all("get_states").size)
+    }
+
+    @Test fun lateEventsAndOddItemsAreNotGone() {
         known = setOf("light.a", "light.gone", "light.late", "sensor.odd")
         start()
+        snapshot(item("light.a", "on"))
+        later(302)
+        await("снимок спрошен ещё раз") { peer.all("get_states").size == 2 }
         // Событие пришло после запроса снимка — сущность есть, хотя в снимок не попала.
         changed(JSONObject().put("entity_id", "light.late").put("new_state", item("light.late", "on")))
         await("событие") { events.isNotEmpty() }

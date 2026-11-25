@@ -429,7 +429,8 @@ internal object GateLogic {
         Gate.Action.OPEN, Gate.Action.PEDESTRIAN -> now.open
         Gate.Action.CLOSE -> now.position == GateStatus.Position.CLOSED || now.position == GateStatus.Position.CLOSING
         Gate.Action.STOP -> !now.moving && now.position != GateStatus.Position.UNKNOWN
-        Gate.Action.STEP -> now.position != GateStatus.Position.UNKNOWN && now.position != before.position
+        // Пропала связь — положение неизвестно, а не «новое».
+        Gate.Action.STEP -> now.position != GateStatus.Position.UNKNOWN && !now.noLink && now.position != before.position
     }
 
     fun reacted(beforeRaw: String?, nowRaw: String?) = nowRaw != null && nowRaw != beforeRaw

@@ -159,9 +159,16 @@ class HaStateApplicationIntegrationTest {
         assertEquals("unavailable", states()["light.safe"])
         assertEquals(ConfirmedState.UNAVAILABLE, confirmed("light.safe"))
         // Переподписка: в новом снимке нет и второй лампы — её удалили, пока связи не было.
-        val before = peer.received.count { it.optString("type") == "get_states" }
-        client.subscribeEntities(emptyList())
-        await { peer.received.count { it.optString("type") == "get_states" } > before }
+        fun requests() = peer.received.count { it.optString("type") == "get_states" }
+        var before = requests()
+        client.subscribeEntities(emptyList()) // снимок, запрошенный после этих событий
+        await { requests() > before }
+        snapshot("sunny", JSONObject())
+        drain()
+        assertEquals("сразу после подключения снимок мог быть неполным", "on", states()["light.other"])
+        before = requests()
+        shadowOf(Looper.getMainLooper()).idleFor(302, TimeUnit.SECONDS)
+        await { requests() > before }
         snapshot("sunny", JSONObject())
         await { states()["light.other"] == "unavailable" }
         assertEquals(ConfirmedState.UNAVAILABLE, confirmed("light.other"))

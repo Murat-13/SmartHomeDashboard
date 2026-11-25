@@ -372,6 +372,8 @@ internal object GateHub {
     private fun check(gate: Gate, readings: BatteryReadings? = this.readings) {
         val op = ops[gate.id]?.takeIf { it.phase == Phase.WAITING } ?: return
         val now = status(gate, readings)
+        // Ответа на команду не было ([unclear]): подтверждает только перемена, а не то, что было и до неё.
+        if (op.detail.isNotBlank() && now.position == op.before.position) return
         if (GateLogic.confirmed(op.action, op.before, now)) finish(gate, op.copy(phase = Phase.DONE, detail = ""))
     }
 

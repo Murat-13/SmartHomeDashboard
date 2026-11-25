@@ -487,6 +487,7 @@ internal class VideoWatch(private val stallMs: Long, private val clock: () -> Lo
     private var last = Long.MIN_VALUE
     private var movedNs = clock()
     private var frameNs = movedNs
+    private var noticedNs = Long.MIN_VALUE
 
     /** Пакет видео с меткой RTP [timestamp]. */
     fun packet(timestamp: Long) {
@@ -500,13 +501,17 @@ internal class VideoWatch(private val stallMs: Long, private val clock: () -> Lo
     /** На каждом пакете сессии, в том числе звука и служебном. */
     fun check() {
         val now = clock()
-        if (now - movedNs > stallMs * 1_000_000 || now - frameNs > maxOf(FRAME_MS, stallMs) * 1_000_000)
-            throw RtspException("Камера не присылает видео")
+        val stalled = now - movedNs > stallMs * 1_000_000 || now - frameNs > maxOf(FRAME_MS, stallMs) * 1_000_000
+        if (!stalled) { noticedNs = Long.MIN_VALUE; return }
+        // Стояла вся сеть и только что ожила: первым мог прийти звук — видео получает ещё немного времени.
+        if (noticedNs == Long.MIN_VALUE) noticedNs = now
+        if (now - noticedNs > stallMs * 1_000_000 / GRACE_PART) throw RtspException("Камера не присылает видео")
     }
 
     companion object {
         const val STALL_MS = 15_000L
         const val FRAME_MS = 60_000L
+        private const val GRACE_PART = 5
     }
 }
 

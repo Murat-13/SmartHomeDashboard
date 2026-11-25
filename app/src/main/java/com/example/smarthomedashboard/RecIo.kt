@@ -120,6 +120,7 @@ internal object RecIo {
             try { closeStream() } catch (e: IOException) { Log.w(TAG, "Файл записи не закрыт: ${e.message}") }
             then?.invoke()
         } finally {
+            synchronized(lock) { progressNs = System.nanoTime() }
             busy -= file.path
             closes++
             closeMaxNs = maxOf(closeMaxNs, System.nanoTime() - t)

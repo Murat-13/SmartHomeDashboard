@@ -21,12 +21,34 @@ class VideoWatchTest {
     @Test fun onlySoundForFifteenSecondsIsStall() {
         frames(0, 5_000)
         nowMs = 19_000; assertEquals(false, stalled())
-        nowMs = 20_000; assertEquals(true, stalled())
+        nowMs = 20_000; assertEquals("замечено — видео получает ещё 3 с", false, stalled())
+        nowMs = 22_900; assertEquals(false, stalled())
+        nowMs = 23_100; assertEquals(true, stalled())
+    }
+
+    /** Стояла вся сеть (меньше тайм-аута чтения) и ожила: первым пришёл звук, видео — следом. Переподключаться незачем. */
+    @Test fun networkPauseIsNotStall() {
+        frames(0, 5_000)
+        nowMs = 22_000; assertEquals("звук пришёл первым", false, stalled())
+        nowMs = 22_050; watch.packet(22_000L * 90); watch.frame()
+        assertEquals(false, stalled())
+        frames(22_100, 60_000)
+        // И дальше срок считается заново.
+        nowMs = 76_000; assertEquals(false, stalled())
+        nowMs = 79_500; assertEquals(true, stalled())
+    }
+
+    /** Только служебные пакеты раз в 5 с (камера без звука). */
+    @Test fun onlyRtcpIsStall() {
+        frames(0, 1_000)
+        var at = 0L
+        for (t in 5_000L..40_000L step 5_000) { nowMs = t; if (stalled()) { at = t; break } }
+        assertEquals(20_000L + 5_000L, at.coerceAtMost(25_000))
     }
 
     @Test fun noVideoFromTheVeryStartIsStall() {
-        nowMs = 14_900; assertEquals(false, stalled())
-        nowMs = 15_100; assertEquals(true, stalled())
+        nowMs = 15_100; assertEquals(false, stalled())
+        nowMs = 18_200; assertEquals(true, stalled())
     }
 
     /** Часы камеры ушли назад на час: метки меньше прежних, отрезок никогда не кончится. */
@@ -36,7 +58,7 @@ class VideoWatchTest {
             for (t in 5_000L until 30_000 step 100) { nowMs = t; watch.check(); watch.packet(t * 90); watch.frame() }
             fail("часы камеры ушли назад — поток не подключён заново")
         } catch (_: RtspException) {}
-        assertEquals(true, nowMs in 19_000..21_000)
+        assertEquals(true, nowMs in 22_000..24_000)
     }
 
     /** Метка RTP переходит через 2^32 (раз в 13 часов) и кадры переставлены (B-кадры) — это не остановка. */
@@ -51,6 +73,9 @@ class VideoWatchTest {
         frames(0, 5_000)
         for (t in 5_000L until 64_000 step 100) { nowMs = t; watch.check(); watch.packet(t * 90) }
         nowMs = 65_100
+        watch.packet(nowMs * 90)
+        assertEquals(false, stalled())
+        nowMs = 68_200
         watch.packet(nowMs * 90)
         assertEquals(true, stalled())
     }

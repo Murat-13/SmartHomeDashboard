@@ -101,6 +101,18 @@ Workflow: [.github/workflows/deep-tests.yml](../.github/workflows/deep-tests.yml
   в шторме случайных событий датчика звонка это давало десятки включений, поэтому звонки в шторме — только плановые.
 - Не проверено: физический планшет; ночной soak 120 минут — по расписанию (02:40 по Москве).
 
+## Карта памяти (0.9.71)
+
+`SdCardDeepTest` — карту извлекают посреди записи и возвращают; только с аргументом `sdCard=1` и виртуальной картой эмулятора (нужен образ
+с `adb root`; карта больше 1 ГБ — меньше запись не начинает):
+
+```bash
+adb -s emulator-5554 root
+adb -s emulator-5554 shell "truncate -s 3G /data/misc/vold/virtual_disk && restorecon /data/misc/vold/virtual_disk"
+adb -s emulator-5554 shell sm set-virtual-disk true
+adb -s emulator-5554 shell sm partition disk:7,424 public   # номер — из sm list-disks
+```
+
 ## Другие версии Android (0.9.66, дополнено 0.9.68)
 
 Workflow `Android versions` (ночью и вручную, по желанию — одна версия: поле `api`): эмуляторы Android 7, 10, 12 и 16 с разными экранами, все

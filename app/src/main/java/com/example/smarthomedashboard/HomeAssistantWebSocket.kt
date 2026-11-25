@@ -66,6 +66,8 @@ class HomeAssistantWebSocket(
     @Volatile private var generation = 0
     @Volatile private var running = false
     private var authenticated = false
+    private var authenticatedAt = 0L
+    private var goneCheck: Runnable? = null
     private var authSent = false
     private var endpointIndex = 0
     private var failures = 0
@@ -94,6 +96,8 @@ class HomeAssistantWebSocket(
         const val FORECAST_NOT_SUPPORTED = "forecast_not_supported"
         /** Состояние сущности, которой в Home Assistant больше нет, — как у недоступной. */
         const val GONE = "unavailable"
+        /** Раньше этого после подключения отсутствие в снимке ничего не значит: Home Assistant мог ещё запускаться. */
+        const val GONE_AFTER_MS = 5 * 60_000L
         const val DAILY = "daily"
         const val HOURLY = "hourly"
         /**
@@ -348,6 +352,7 @@ class HomeAssistantWebSocket(
             "auth_invalid" -> fail("Отказ авторизации: неверный или отозванный токен", tokenRejected = true)
             "auth_ok" -> if (authSent && !authenticated) {
                 authenticated = true
+                authenticatedAt = SystemClock.elapsedRealtime()
                 failures = 0
                 timeoutTask?.let { handler.removeCallbacks(it) }
                 timeoutTask = null
@@ -394,7 +399,7 @@ class HomeAssistantWebSocket(
                             }
                         })
                     }
-                    onStatesSnapshot(states + missing(message.entities, request.changed))
+                    onStatesSnapshot(states + gone(message.entities, request.changed))
                     onEntitiesList?.invoke(message.entities)
                     return
                 }
@@ -462,10 +467,25 @@ class HomeAssistantWebSocket(
         }
     }
 
-    /** Сущности, которых в снимке нет: удалены или переименованы, пока связи не было. Чьё событие пришло после запроса — те есть. */
-    private fun missing(present: List<HaEntity>, changed: Set<String>): List<HaEntityState> {
+    /**
+     * Сущности, которых в снимке нет: удалены или переименованы, пока связи не было (чьё событие пришло после запроса — те есть). Сразу
+     * после перезапуска Home Assistant снимок неполный — интеграции ещё загружаются: прежние значения остаются «не подтверждёнными»,
+     * как и до этого, а через [GONE_AFTER_MS] после подключения снимок спрашивается ещё раз.
+     */
+    private fun gone(present: List<HaEntity>, changed: Set<String>): List<HaEntityState> {
         val here = present.mapTo(HashSet()) { it.entityId }
-        return knownEntities().filter { it !in here && it !in changed }.map { HaEntityState(it, GONE, JSONObject()) }
+        val absent = knownEntities().filter { it !in here && it !in changed }
+        if (absent.isEmpty()) return emptyList()
+        val left = authenticatedAt + GONE_AFTER_MS - SystemClock.elapsedRealtime()
+        if (left <= 0) return absent.map { HaEntityState(it, GONE, JSONObject()) }
+        if (goneCheck == null) {
+            val id = generation
+            goneCheck = Runnable {
+                goneCheck = null
+                if (running && generation == id && authenticated && stateRequest == null) ensureStates()
+            }.also { handler.postDelayed(it, left) }
+        }
+        return emptyList()
     }
 
     private fun deliverState(entityId: String, state: String, attributes: JSONObject) {
@@ -479,6 +499,8 @@ class HomeAssistantWebSocket(
         stateRequest?.timeout?.let { handler.removeCallbacks(it) }
         stateRequest = null
         cancelStatesRetry()
+        goneCheck?.let { handler.removeCallbacks(it) }
+        goneCheck = null
         statesFailures = 0
         registryTimeout?.let { handler.removeCallbacks(it) }
         registryTimeout = null

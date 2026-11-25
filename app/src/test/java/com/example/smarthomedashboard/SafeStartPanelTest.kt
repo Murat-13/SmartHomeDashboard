@@ -39,9 +39,11 @@ class SafeStartPanelTest {
         repeat(3) { SafeStart.processStarted(context); t += 4_000; SafeStart.crashed(context); t += 5_000 }
         SafeStart.processStarted(context)
         assertEquals(SafeStart.Mode.SAFE, SafeStart.mode)
+        UpdateInstaller.returns = { true }
     }
 
-    @After fun clear() { SafeStart.resetForTests(context); LightMode.resetForTests() }
+    @After fun clear() { SafeStart.resetForTests(context); LightMode.resetForTests(); UpdateInstaller.returns = realReturns }
+    private val realReturns = UpdateInstaller.returns
 
     private fun idleMinutes(n: Int) = repeat(n) { t += 60_000; shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(1)) }
 
@@ -63,9 +65,24 @@ class SafeStartPanelTest {
         // Человек пользуется панелью — посреди дела режим не меняется.
         idleMinutes(1); touch(activity); idleMinutes(3)
         assertEquals("касались 3 минуты назад", SafeStart.Mode.SAFE, SafeStart.mode)
+        // Был в Настройках — касания там панель не видит; вернулся — отсчёт заново.
+        controller.pause(); idleMinutes(6); controller.resume(); controller.windowFocusChanged(true)
+        shadowOf(Looper.getMainLooper()).idle()
+        idleMinutes(3)
+        assertEquals("вернулся 3 минуты назад", SafeStart.Mode.SAFE, SafeStart.mode)
         idleMinutes(5)
         assertEquals("касаний нет 5 минут — обычный режим", SafeStart.Mode.NORMAL, SafeStart.mode)
         assertNull("и плашки больше нет", banner(controller.get()).takeIf { controller.get() !== activity })
+        controller.pause().stop().destroy()
+    }
+
+    /** Панель после сбоя сама не откроется (не главный экран, нет «поверх других окон») — безопасная лучше закрытой. */
+    @Test fun panelThatCannotReturnStaysSafe() {
+        UpdateInstaller.returns = { false }
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        controller.windowFocusChanged(true)
+        idleMinutes(120)
+        assertEquals(SafeStart.Mode.SAFE, SafeStart.mode)
         controller.pause().stop().destroy()
     }
 }

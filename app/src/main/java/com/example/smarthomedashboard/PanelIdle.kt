@@ -110,6 +110,11 @@ internal object PanelIdle {
             if (event.actionMasked == MotionEvent.ACTION_DOWN) touched()
             return false
         }
+        /** Из окна открыли следующее: фокус экрана при этом не меняется. */
+        override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+            super.onWindowFocusChanged(hasWindowFocus)
+            if (!hasWindowFocus) coveredByWindow()
+        }
     }
 
     private fun timeUp() {

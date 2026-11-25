@@ -305,6 +305,38 @@ class GatesTest {
         assertEquals(GateHub.Phase.REACTED, GateHub.op("g1")?.phase)
     }
 
+    /** Связь с Home Assistant пропала — это не «новое положение» ворот: «Готово» с повтором через 5 с было бы хуже «не удалось». */
+    @Test fun lostConnectionIsNotNewPosition() {
+        states["cover.gate"] = "closed"; attrs["cover.gate"] = JSONObject().put("supported_features", 15)
+        hub(Gate("g6", "Ворота", Gate.Kind.STEP, open = "button.step", sensor = "cover.gate", confirmSeconds = 20))
+        states["button.step"] = "2026-11-25T10:00:00"
+        state("cover.gate", "closed")
+        answer = ServiceCommandResult.DISCONNECTED
+        GateHub.run("g6", Gate.Action.STEP); idle()
+        connected = false
+        GateHub.onState(context, readings); idle()
+        assertEquals("связи нет — ждём", GateHub.Phase.WAITING, GateHub.op("g6")?.phase)
+        // Связь вернулась, ворота стоят где стояли.
+        connected = true
+        GateHub.onState(context, readings); idle()
+        assertEquals(GateHub.Phase.WAITING, GateHub.op("g6")?.phase)
+        idle(20_000)
+        assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("g6")?.phase)
+        connected = true
+    }
+
+    /** Ворота и так были приоткрыты: без ответа на «Открыть» это ничего не подтверждает, перемена — подтверждает. */
+    @Test fun oldPositionDoesNotConfirmLostAnswer() {
+        states["cover.gate"] = "open"; attrs["cover.gate"] = JSONObject().put("supported_features", 15)
+        hub(cover)
+        answer = ServiceCommandResult.ACK_TIMEOUT
+        GateHub.run("g2", Gate.Action.OPEN); idle()
+        state("cover.gate", "open")
+        assertEquals(GateHub.Phase.WAITING, GateHub.op("g2")?.phase)
+        state("cover.gate", "opening")
+        assertEquals(GateHub.Phase.DONE, GateHub.op("g2")?.phase)
+    }
+
     /** Срок вышел раньше ответа (ждать ответа Home Assistant панель может дольше срока прохода). */
     @Test fun deadlineBeforeAnswerIsUnconfirmed() {
         states["switch.gate_relay"] = "off"

@@ -119,6 +119,21 @@ class PanelIdleTest {
         controller.pause().stop().destroy()
     }
 
+    /** Окно из окна: фокус экрана при этом уже не меняется. */
+    @Config(sdk = [34])
+    @Test fun windowOpenedFromWindowIsWatchedToo() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val first = android.app.AlertDialog.Builder(activity).setTitle("Первое").create().apply { show() }
+        activity.window.callback.onWindowFocusChanged(false); idle(50)
+        val second = android.app.AlertDialog.Builder(activity).setTitle("Второе").create().apply { show() }
+        val sensor = first.window!!.decorView.findViewWithTag<android.view.View>(PanelIdle.TOUCHES_TAG)
+        sensor.onWindowFocusChanged(false); idle(50)
+        assertNotNull(second.window!!.decorView.findViewWithTag<android.view.View>(PanelIdle.TOUCHES_TAG))
+        second.dismiss(); first.dismiss()
+        controller.pause().stop().destroy()
+    }
+
     @Test fun leftScreenDoesNotJumpToPanel() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         controller.pause().stop()

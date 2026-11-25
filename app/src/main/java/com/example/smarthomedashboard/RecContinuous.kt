@@ -39,6 +39,8 @@ internal abstract class CameraRecorder(
 
     /** Носитель [File] не пишет (несколько раз подряд — служба переходит в память планшета). Поток камеры. */
     internal var onStorageError: (root: File) -> Unit = {}
+    /** Куда пишется сейчас — без обращения к носителю и системе (поток камеры, на каждом ключевом кадре); null — неизвестно. */
+    internal var currentRoot: (() -> File?)? = null
     /** Часы планшета (в тестах — подмена). */
     internal var wallClock: () -> Long = System::currentTimeMillis
     /** Носитель не пишет — следующая попытка не раньше (в тестах меньше). */
@@ -84,6 +86,9 @@ internal abstract class CameraRecorder(
         status = Status(state, detail)
         onStatus(this, status)
     }
+
+    /** Пишется уже не на [was] (карту извлекают, она перестала писать). */
+    protected fun elsewhere(was: File?, root: () -> File?): Boolean = was != null && (currentRoot ?: root)()?.let { it.path != was.path } == true
 
     /**
      * Ошибка носителя, а не камеры: запись закрывает свой файл и пробует снова, поток камеры и живое видео не рвутся (аудит
@@ -217,7 +222,7 @@ internal class ContinuousRecorder(
         }
 
         /** Носитель сменился (карту извлекают, она перестала писать) — файл закрывается, новый на другом. */
-        private fun moved() = fileRoot?.let { it.path != root()?.path } == true
+        private fun moved() = elsewhere(fileRoot, root)
 
         private inline fun stored(block: () -> Unit) {
             try { block() } catch (e: Exception) { if (storageError(e)) storageFailed(e) else throw e }
@@ -242,7 +247,7 @@ internal class ContinuousRecorder(
 
         private fun open(params: VideoParams, us: Long) {
             val started = System.nanoTime()
-            if (started < retryAtNs && root()?.path == fileRoot?.path) return
+            if (started < retryAtNs && !elsewhere(fileRoot, root)) return
             try { openFile(params, us) } finally { RecBusy.open(System.nanoTime() - started) }
         }
 

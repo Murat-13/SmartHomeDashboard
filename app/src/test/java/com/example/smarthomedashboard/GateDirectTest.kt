@@ -404,6 +404,23 @@ class GateDirectTest {
         await("подтверждение по входу") { GateHub.op("gd")?.phase == GateHub.Phase.DONE }
     }
 
+    /** Устройство пропало после команды: «не отвечает» — не «новое положение» калитки. */
+    @Test fun deviceGoneAfterCommandIsNotConfirmed() {
+        val step = Gate("gs", "Ворота", Gate.Kind.STEP, link = Gate.Link.DIRECT, confirmSeconds = 10,
+            direct = Gate.Direct(host = "127.0.0.1:${server.port}", input = 0, pulseSeconds = 1))
+        GateStore.save(context, listOf(step))
+        GateHub.onState(context, readings)
+        await("положение известно") { GateHub.status(step).position == GateStatus.Position.CLOSED }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST)
+        }
+        assertTrue(GateHub.run("gs", Gate.Action.STEP))
+        await("устройство не отвечает", stepMs = 500) { GateHub.status(step).position == GateStatus.Position.UNREACHABLE }
+        assertEquals(GateHub.Phase.WAITING, GateHub.op("gs")?.phase)
+        await("срок вышел", stepMs = 1_000) { GateHub.op("gs")?.busy == false }
+        assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("gs")?.phase)
+    }
+
     @Test fun silentDeviceAtDeadlineIsUnconfirmed() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest) = MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)

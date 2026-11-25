@@ -40,6 +40,7 @@ class RecordingColdStartTest {
         service?.destroy()
         Thread.sleep(300)
         File(root, RecLayout.ROOT).deleteRecursively()
+        RecordingDevice(context).agePausedUntil = 0
         RecordingDevice(context).enabledTiles.forEach { RecordingDevice(context).setEnabled(it, false) }
         RecordingStatus.clear()
     }

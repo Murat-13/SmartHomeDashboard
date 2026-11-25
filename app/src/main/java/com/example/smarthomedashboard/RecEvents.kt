@@ -29,10 +29,11 @@ internal object RecordingEvents {
     /** [labels] — ключи сработавших датчиков ([RecordingConfig.TRIGGERS]); null — состояние HA неизвестно. */
     private val active = ConcurrentHashMap<String, Set<String>>()
     private val known = ConcurrentHashMap.newKeySet<String>()
-    /** Плитка → ключ события → до какого времени (стена, мс) оно считается идущим. */
+    /** Плитка → ключ события → до какого времени ([clock]) оно считается идущим. */
     private val directUntil = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
     const val DIRECT_HOLD_MS = 10_000L
-    internal var clock: () -> Long = { System.currentTimeMillis() }
+    /** Не стенные часы: они могут поправиться посреди события (REC-03). */
+    internal var clock: () -> Long = { android.os.SystemClock.elapsedRealtime() }
 
     /**
      * Сеанс у калитки: окно звонка открыто или идёт разговор. Пока он держится, ролик события пишется дальше, после —
@@ -103,7 +104,7 @@ internal object RecordingEvents {
 }
 
 /**
- * Когда писать ролик события. Чистая логика: время — стена (мс), [update] вызывается на каждом кадре видео.
+ * Когда писать ролик события. Чистая логика: время — шкала потока (мс), [update] вызывается на каждом кадре видео.
  * Событие начинается, когда сработал хоть один датчик; заканчивается через [postMs] после того, как погасли все
  * (или стало неизвестно). Новое срабатывание во время дозаписи продлевает тот же ролик.
  */
@@ -136,6 +137,9 @@ internal class EventPlanner(private val postMs: Long) {
         if (recording && current != null) labels += current
         return out
     }
+
+    /** Метки прерванного файла — продолжению того же события. */
+    fun keepLabels(previous: Set<String>) { if (recording) labels += previous }
 }
 
 /**
@@ -278,29 +282,30 @@ internal class EventRecorder(
             if (frame.key) timeline.sync(us)
             if (frame.key) d.sps?.let { sps -> d.pps?.let { pps -> params = VideoParams(d.codec, d.vps, sps, pps) } }
             buffer.addVideo(frame, us, if (frame.key) params else null)
-            // Сессия идёт — «ждёт события»; «нет места» остаётся до следующего удачного ролика.
-            if (status.state == State.CONNECTING || status.state == State.RETRYING) report(State.RECORDING, IDLE)
+            // Сессия идёт — «ждёт события»; «нет места» и «носитель не пишет» остаются до следующего удачного ролика.
+            if (status.state == State.CONNECTING || status.state == State.RETRYING && status.detail != ContinuousRecorder.STORAGE_RETRYING) report(State.RECORDING, IDLE)
             val current = events()
             // Дозапись — по шкале потока, а не по часам: они могут поправиться посреди события.
             when (planner.update(us / 1_000, current)) {
                 EventPlanner.Decision.IDLE -> Unit
-                EventPlanner.Decision.START -> { failed = false; stored(current) { openFromBuffer(us, current) } }
-                EventPlanner.Decision.CONTINUE -> stored(current) { write(frame, us, current) }
-                EventPlanner.Decision.STOP -> { stored(current) { write(frame, us, current) }; closeClip(current); report(State.RECORDING, IDLE) }
+                EventPlanner.Decision.START -> { failed = false; stored { openFromBuffer(us, current) } }
+                EventPlanner.Decision.CONTINUE -> stored { write(frame, us, current) }
+                EventPlanner.Decision.STOP -> { stored { write(frame, us, current) }; closeClip(current); report(State.RECORDING, IDLE) }
             }
         }
 
         /** Носитель сменился (карту извлекают, она перестала писать) — ролик продолжается на другом. */
-        private fun moved() = fileRoot?.let { it.path != root()?.path } == true
+        private fun moved() = elsewhere(fileRoot, root)
 
-        private inline fun stored(current: Set<String>?, block: () -> Unit) {
-            try { block() } catch (e: Exception) { if (storageError(e)) storageFailed(e, current) else throw e }
+        private inline fun stored(block: () -> Unit) {
+            try { block() } catch (e: Exception) { if (storageError(e)) storageFailed(e) else throw e }
         }
 
-        private fun storageFailed(e: Exception, current: Set<String>?) {
+        private fun storageFailed(e: Exception) {
             Log.w(TAG, "Запись события: носитель не пишет (${e.javaClass.simpleName}: ${e.message})")
             val broken = fileRoot
-            closeClip(current)
+            // Событие то же: у продолжения — те же метки.
+            planner.keepLabels(closeClip(null))
             retryAtNs = System.nanoTime() + storageRetryNs
             report(State.RETRYING, ContinuousRecorder.STORAGE_RETRYING)
             broken?.let(onStorageError)
@@ -312,7 +317,7 @@ internal class EventRecorder(
             val us = timeline.audioUs(frame, rate) ?: return
             buffer.addAudio(frame, us)
             val w = writer ?: return
-            stored(null) { w.writeAudio(frame, us - clipStartUs) }
+            stored { w.writeAudio(frame, us - clipStartUs) }
         }
 
         /** Начало события: ролик с первого ключевого кадра буфера (предзапись), затем весь буфер по порядку. */
@@ -347,7 +352,7 @@ internal class EventRecorder(
 
         private fun open(params: VideoParams, us: Long): Boolean {
             val started = System.nanoTime()
-            if (started < retryAtNs && root()?.path == fileRoot?.path) return false
+            if (started < retryAtNs && !elsewhere(fileRoot, root)) return false
             try { return openFile(params, us) } finally { RecBusy.open(System.nanoTime() - started) }
         }
 
@@ -374,14 +379,15 @@ internal class EventRecorder(
             return true
         }
 
-        private fun closeClip(current: Set<String>?) {
-            val w = writer ?: run { planner.takeLabels(current); return }
+        private fun closeClip(current: Set<String>?): Set<String> {
+            val w = writer ?: return planner.takeLabels(current)
             val f = file
             writer = null
             file = null
             val labels = planner.takeLabels(current)
             // Дописать, обрезать и переименовать — в потоке записи [RecIo]; метки события — уже сейчас.
             RecLayout.finishLater(w, f, camera, RecFile.Kind.EVENT, clipStartWall, (lastUs - clipStartUs) / 1_000) { onClip(it, labels) }
+            return labels
         }
 
         /** Конец сессии (обрыв, остановка): идущий ролик закрывается — событие продолжится новым после переподключения. */
