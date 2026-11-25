@@ -22,6 +22,13 @@ internal object RecCatalog {
     /** Удаления и ★ последнего времени: обход, начатый раньше, о них не знает ([upToDate]). */
     private class Edit(val at: Long, val old: RecFile, val new: RecFile?)
     private val edits = ArrayDeque<Edit>()
+    /** Момент самой поздней правки, которую история уже не помнит: чтение, начатое раньше, сверять нельзя. */
+    private var forgotten = Long.MIN_VALUE
+    /**
+     * Правка из архива или очистки (★, удаление): служба записи ведёт свой список файлов и узнаёт о ней отсюда (второй аудит
+     * 25.11.2026, NEW-REC-1). Зовётся под замком каталога — только передать дальше.
+     */
+    @Volatile var onEdit: ((old: RecFile, new: RecFile?) -> Unit)? = null
 
     /** Отметка начала чтения носителя — для [publish], [publishCamera] и [reconcile]. */
     fun mark(): Long = System.nanoTime()
@@ -38,7 +45,7 @@ internal object RecCatalog {
 
     /** Записи одной камеры, прочитанные архивом с [since]. Обход службы не хуже — поверх него не пишутся. */
     fun publishCamera(root: File, camera: String, files: Collection<RecFile>, since: Long) = synchronized(lock) {
-        if (root.path in complete) return@synchronized
+        if (root.path in complete || since <= forgotten) return@synchronized
         roots.getOrPut(root.path) { HashMap() }[camera] =
             upToDate(root.path, camera, files, since).filterNot { it.open }.associateByTo(LinkedHashMap()) { it.path.path }
         listed += root.path to camera
@@ -74,27 +81,38 @@ internal object RecCatalog {
      * Сверка с прочитанным сейчас ([listed], чтение начато в [since]): чего на носителе нет — убрать, чего нет здесь — добавить.
      * Файлы последних минут не трогаются: они могли закрыться, пока шло чтение. true — что-то изменилось.
      */
-    fun reconcile(roots: List<File>, camera: String, listed: List<RecFile>, since: Long, now: Long = System.currentTimeMillis()): Boolean =
-        synchronized(lock) {
-            val known = camera(roots, camera) ?: return@synchronized false
+    fun reconcile(roots: List<File>, camera: String, listed: List<RecFile>, since: Long, now: Long = System.currentTimeMillis()): Boolean {
+        var removed = false
+        val found = synchronized(lock) {
+            // История правок с начала чтения неполна (за это время удалено очень много) — прочитанному верить нельзя: удалённое
+            // вернулось бы в список (второй аудит 25.11.2026, AUD-03). Следующая сверка возьмёт свежее чтение.
+            if (since <= forgotten) return false
+            val known = camera(roots, camera) ?: return false
             val border = now - SETTLE_MS
             val fresh = roots.flatMap { root -> upToDate(root.path, camera, listed.filter { rootOf(it) == root.path }, since) }
             val present = fresh.mapTo(HashSet()) { it.path.path }
             val paths = known.mapTo(HashSet()) { it.path.path }
             val gone = known.filter { it.path.path !in present && it.endMs < border }
-            val found = fresh.filter { it.path.path !in paths && !it.open && it.endMs < border }
             gone.forEach { f -> rootOf(f)?.let { this.roots[it]?.get(f.camera)?.remove(f.path.path) } }
-            found.forEach { add(it.copy(bytes = it.path.length())) }
-            gone.isNotEmpty() || found.isNotEmpty()
+            removed = gone.isNotEmpty()
+            fresh.filter { it.path.path !in paths && !it.open && it.endMs < border }
         }
+        // Размеры — вне замка: носитель может отвечать медленно, а каталог нужен потоку службы записи (AUD-04).
+        val sized = found.map { it.copy(bytes = it.path.length()) }
+        if (sized.isNotEmpty()) synchronized(lock) { sized.forEach { f -> if (edits.none { it.at >= since && it.old.path == f.path }) add(f) } }
+        return removed || sized.isNotEmpty()
+    }
 
     private fun known(root: String, camera: String) = root in complete || (root to camera) in listed
 
     private fun rootOf(file: RecFile): String? = file.path.parentFile?.parentFile?.parentFile?.parentFile?.path
 
     private fun edit(old: RecFile, new: RecFile?) {
-        edits.addLast(Edit(System.nanoTime(), old, new))
-        while (edits.size > EDITS) edits.removeFirst()
+        val at = System.nanoTime()
+        edits.addLast(Edit(at, old, new))
+        // История — по времени (чтение носителя длится секунды), с запасным пределом по числу; что забыто — помнит [forgotten].
+        while (edits.size > EDITS || edits.first().at < at - EDITS_NS) forgotten = edits.removeFirst().at
+        onEdit?.invoke(old, new)
         rootOf(old)?.let { roots[it]?.get(old.camera)?.remove(old.path.path) }
         if (new != null) add(new)
     }
@@ -112,7 +130,8 @@ internal object RecCatalog {
     }
 
     private const val SETTLE_MS = 2 * 60_000L
-    private const val EDITS = 500
+    private const val EDITS = 20_000
+    private const val EDITS_NS = 10 * 60_000_000_000L
 
-    internal fun clear() = synchronized(lock) { roots.clear(); complete.clear(); sized.clear(); listed.clear(); edits.clear() }
+    internal fun clear() = synchronized(lock) { roots.clear(); complete.clear(); sized.clear(); listed.clear(); edits.clear(); forgotten = Long.MIN_VALUE }
 }

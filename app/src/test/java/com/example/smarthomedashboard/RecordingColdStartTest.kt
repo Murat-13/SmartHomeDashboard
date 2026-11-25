@@ -163,6 +163,36 @@ class RecordingColdStartTest {
         assertTrue("Камера не в сети планшета — срок камеры 14 дней", remoteFile.exists())
     }
 
+    /**
+     * Второй аудит 25.11.2026, NEW-REC-1: ★ поставили самому старому ролику, пока место заполнено. Служба знала его по прежнему имени:
+     * очистка «удаляла» запись (файла с тем именем уже нет) и стирала метки сохранённого ролика.
+     */
+    @Test fun starredFromArchiveKeepsLabelsWhenCleanupRuns() {
+        context.deleteDatabase(RecIndex.DB_NAME)
+        val cam = tile("cam_star", RecordingConfig(mode = always, remoteMode = always, keepContinuousDays = 90, keepEventDays = 90))
+        TileManager(context).saveTiles(listOf(cam))
+        RecordingDevice(context).setEnabled(cam.id, true)
+        val camera = RecLayout.cameraKey(cam.id)
+        val event = RecLayout.parse(put(cam.id, RecFile.Kind.EVENT, 3.0), camera)!!
+        RecIndex(context).use { it.add(event, setOf("person")) }
+        val marker = put(cam.id, RecFile.Kind.CONTINUOUS, 400.0)
+        coldStart(marker)
+        val until = System.currentTimeMillis() + 5_000
+        while (RecCatalog.camera(listOf(root), camera)?.any { it.path == event.path } != true && System.currentTimeMillis() < until) Thread.sleep(50)
+        // Человек в архиве ставит ★.
+        val starred = RecArchive(context, roots = { listOf(root) }).setStarred(event, true)!!
+        // Места не хватает — очистка удаляет самое старое.
+        ShadowStatFs.registerStats(root, 100_000, 100_000, 100_000)
+        val newer = RecLayout.parse(put(cam.id, RecFile.Kind.CONTINUOUS, 0.2), camera)!!
+        RecorderService::class.java.getDeclaredMethod("segmentClosed", RecFile::class.java).apply { isAccessible = true }.let { m ->
+            val control = RecorderService::class.java.getDeclaredField("control").apply { isAccessible = true }.get(service!!.get()) as java.util.concurrent.ExecutorService
+            control.submit { m.invoke(service!!.get(), newer) }.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        assertTrue("ролик со ★ на месте", starred.path.exists())
+        RecIndex(context).use { assertEquals("и его метки тоже", setOf("person"), it.labels(camera, event.startMs)) }
+        context.deleteDatabase(RecIndex.DB_NAME)
+    }
+
     /** Нехватка места по-прежнему важнее срока: удаляется самое старое, ★ не трогается. */
     @Test fun lowSpaceStillDeletesOldestButKeepsStarred() {
         val cam = tile("cam_full", RecordingConfig(mode = always, remoteMode = always, keepContinuousDays = 90))

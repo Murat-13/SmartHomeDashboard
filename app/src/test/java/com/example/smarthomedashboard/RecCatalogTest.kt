@@ -104,4 +104,33 @@ class RecCatalogTest {
         assertFalse(RecCatalog.reconcile(listOf(sd), "door", listOf(found, fresh), since, now))
         assertEquals(listOf(star.path, fresh.path), RecCatalog.camera(listOf(sd), "door")!!.sortedBy { it.startMs }.map { it.path })
     }
+
+    /**
+     * Второй аудит 25.11.2026, AUD-03: архив прочитал папки, а служба за это время удалила очень много записей. Раньше история
+     * помнила 500 правок — остальные удалённые возвращались в список архива.
+     */
+    @Test fun massCleanupDuringArchiveReadDoesNotResurrectFiles() {
+        val all = (0 until 2000).map { rec(sd, "door", t0 + it * 60_000L) }
+        RecCatalog.publish(sd, all, RecCatalog.mark())
+        val since = RecCatalog.mark()
+        RecCatalog.remove(all.take(1500))
+        RecCatalog.reconcile(listOf(sd), "door", all, since, now = t0 + 400L * 86_400_000)
+        assertEquals(500, RecCatalog.camera(listOf(sd), "door")!!.size)
+    }
+
+    /** Правок больше, чем помнит история: такому чтению не верим вовсе — ничего не добавляется и не убирается. */
+    @Test fun readOlderThanHistoryIsIgnored() {
+        val all = (0 until 100).map { rec(sd, "door", t0 + it * 60_000L) }
+        RecCatalog.publish(sd, all, RecCatalog.mark())
+        val since = RecCatalog.mark()
+        RecCatalog.remove(all.take(60))
+        val noise = rec(sd, "yard", t0)
+        repeat(20_100) { RecCatalog.replace(noise, noise) }
+        assertFalse(RecCatalog.reconcile(listOf(sd), "door", all, since, now = t0 + 400L * 86_400_000))
+        assertEquals(40, RecCatalog.camera(listOf(sd), "door")!!.size)
+        // Свежее чтение сверяется как обычно.
+        val again = RecCatalog.mark()
+        assertTrue(RecCatalog.reconcile(listOf(sd), "door", all.drop(70), again, now = t0 + 400L * 86_400_000))
+        assertEquals(30, RecCatalog.camera(listOf(sd), "door")!!.size)
+    }
 }

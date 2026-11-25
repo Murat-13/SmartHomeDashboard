@@ -50,6 +50,16 @@ class RecorderService : Service() {
             try { control.execute { safe { storageChanged(mounted) } } } catch (_: java.util.concurrent.RejectedExecutionException) {}
         }
     }
+    /**
+     * ★ и удаление из архива: свой список файлов узнаёт о них сразу, а не при обходе раз в 6 часов. Иначе очистка «удаляла» запись
+     * по прежнему имени и стирала метки («Человек», «Звонок») у только что сохранённого ролика (второй аудит 25.11.2026, NEW-REC-1).
+     */
+    private val catalogEdits: (RecFile, RecFile?) -> Unit = { old, new ->
+        try { control.execute { safe {
+            files.removeAll { it.path == old.path }
+            if (new != null && filesRoot?.let { new.path.path.startsWith("$it/") } == true && files.none { it.path == new.path }) files += new
+        } } } catch (_: java.util.concurrent.RejectedExecutionException) {}
+    }
     /** Первый обход носителя после запуска отложен до открытия записей ([startupCleanup]). */
     private var cleanupPending = false
     @Volatile private var freeCache = Long.MAX_VALUE
@@ -93,6 +103,7 @@ class RecorderService : Service() {
             MEDIA_ACTIONS.forEach(::addAction)
             addDataScheme("file")
         }, null, Handler(mediaThread.looper), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        RecCatalog.onEdit = catalogEdits
         control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.takeIf { DebugSwitches.allowed(this) }?.let { java.io.File(it, "video_debug") } } }
         // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
         control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
@@ -106,6 +117,7 @@ class RecorderService : Service() {
 
     override fun onDestroy() {
         try { unregisterReceiver(media) } catch (_: IllegalArgumentException) {}
+        if (RecCatalog.onEdit === catalogEdits) RecCatalog.onEdit = null
         mediaThread.quitSafely()
         // Остановка камер (закрытие отрезков, до 3 с на камеру) — на потоке управления: главный поток не ждёт.
         // После shutdown() поток дорабатывает уже поставленные задачи и завершается сам.
