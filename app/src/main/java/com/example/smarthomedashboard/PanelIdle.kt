@@ -36,7 +36,7 @@ internal object PanelIdle {
     private val back = Runnable { timeUp() }
 
     /** Экраны, которые ведут себя как панель: все, кроме самой панели, заставки и первой настройки. */
-    fun managed(activity: Activity) = activity !is MainActivity && activity !is SplashActivity && activity !is SetupActivity
+    fun managed(activity: Activity) = activity !is MainActivity && activity !is SplashActivity && activity !is SetupActivity && activity !is SafeStartActivity
 
     val callbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(activity: Activity) {

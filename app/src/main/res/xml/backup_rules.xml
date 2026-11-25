@@ -26,6 +26,9 @@
     <!-- Проверка планшета: заряд, нагрев и отметки — только этого планшета. -->
     <exclude domain="sharedpref" path="tablet_watch.xml" />
     <exclude domain="sharedpref" path="tablet_talk.xml" />
+    <exclude domain="sharedpref" path="safe_start.xml" />
+    <exclude domain="sharedpref" path="crash_log.xml" />
+    <exclude domain="file" path="crashes/" />
     <exclude domain="sharedpref" path="camera_tls.xml" />
     <exclude domain="file" path="doorbell_phrases/" />
     <exclude domain="database" path="recording_index.db" />

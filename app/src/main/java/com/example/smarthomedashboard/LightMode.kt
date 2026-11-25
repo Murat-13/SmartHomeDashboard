@@ -80,6 +80,7 @@ internal object LightMode {
         if (context != null) memoryReason = memoryReason(context)
         val auto = autoReason()
         val (on, why) = when {
+            SafeStart.active -> true to "безопасный запуск"
             hot -> true to "планшет перегрет"
             batteryHeat == TabletWatch.Heat.HOT -> true to "аккумулятор слишком горячий"
             choice == Choice.ON -> true to "по выбору"

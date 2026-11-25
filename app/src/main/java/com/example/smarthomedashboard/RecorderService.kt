@@ -99,6 +99,7 @@ class RecorderService : Service() {
     /** Сверить нужные записи с идущими (поток управления). */
     private fun sync() {
         val device = RecordingDevice(this)
+        // Безопасный запуск (docs/reliability.md): записей нет, сроки хранения — по-прежнему по всем камерам.
         val tiles = TileManager(this).loadTiles().filter { it.type in CameraSource.TYPES }
         keepRules = tiles.associate { RecLayout.cameraKey(it.id) to RecordingConfig.from(it.config) }
         // Ключ записи: id плитки — круглосуточная (субпоток), id + [HD] — события (основной поток).
@@ -107,7 +108,7 @@ class RecorderService : Service() {
         val passwords = HashMap<String, String?>()
         val passwordFor = HashMap<String, String?>()
         for (tile in tiles) {
-            if (!device.enabled(tile.id)) continue
+            if (SafeStart.active || !device.enabled(tile.id)) continue
             val rec = RecordingConfig.from(tile.config)
             val source = CameraSource.of(tile) ?: continue
             val sub = source.subUrl
@@ -386,7 +387,7 @@ class RecorderService : Service() {
             val app = context.applicationContext
             val device = RecordingDevice(app)
             val any = device.enabledTiles.isNotEmpty() || RecordingStatus.active
-            if (!any) return
+            if (!any || SafeStart.active && !RecordingStatus.active) return
             try {
                 val intent = Intent(app, RecorderService::class.java)
                 if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(intent) else app.startService(intent)

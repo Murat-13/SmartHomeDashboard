@@ -254,7 +254,7 @@ internal object PanelAlerts {
         main.postDelayed(warmUp, WARM_UP_DELAY_MS)
     }
 
-    private val warmUp = Runnable { if (app != null && enabled && settings().enabled.isNotEmpty()) announcer()?.warmUp() }
+    private val warmUp = Runnable { if (app != null && enabled && !SafeStart.active && settings().enabled.isNotEmpty()) announcer()?.warmUp() }
 
     /** Что с синтезом речи — для экрана настроек голоса. */
     fun voiceStatus(): String = announcer?.status ?: "Синтез речи ещё не запускался"

@@ -1,6 +1,7 @@
 package com.example.smarthomedashboard
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -130,6 +131,7 @@ class MainActivity : AppCompatActivity() {
         private const val BRIGHTNESS_STEP = 0.02f
         /** Ошибка операции при живом соединении видна на плашке столько, затем плашка скрывается. */
         internal const val PILL_OPERATION_ERROR_MS = 12_000L
+        private const val SAFE_BANNER_SP = 15f
         private const val PAGE_FLING = 1000f
         private const val DOTS_VISIBLE_MS = 2_000L
         private const val PEEK_FALLBACK_MS = 400L
@@ -149,6 +151,7 @@ class MainActivity : AppCompatActivity() {
         bottomPanel = findViewById(R.id.bottomPanel)
         dimOverlay = findViewById(R.id.dimOverlay)
         dimOverlay.setOnClickListener { panelController.collapseAll() }
+        showSafeBanner()
         setupPanelHint(findViewById(R.id.panelHint), findViewById(R.id.tvPanelHint), findViewById(R.id.btnPanelHintClose))
         // Реальная высота панели известна только после layout: тогда уточняем место подсказки.
         bottomPanel.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
@@ -172,6 +175,33 @@ class MainActivity : AppCompatActivity() {
         setupWebSocket()
         showWelcomeOnFirstLaunch()
         startVoiceAlerts()
+    }
+
+    /** Безопасный запуск (docs/reliability.md): что выключено и как вернуть. */
+    private fun showSafeBanner() {
+        if (!SafeStart.active) return
+        val d = resources.displayMetrics.density
+        val bar = TextView(this).apply {
+            tag = "safe_banner"
+            text = "Безопасный запуск: видео, запись и голос выключены. Коснитесь — обычный запуск"
+            textSize = SAFE_BANNER_SP
+            gravity = android.view.Gravity.CENTER
+            minHeight = (48 * d).toInt()
+            setPadding((20 * d).toInt(), 0, (20 * d).toInt(), 0)
+            setTextColor(android.graphics.Color.WHITE)
+            background = BatteryModernCard.rounded(android.graphics.Color.rgb(120, 78, 20), 24 * d, android.graphics.Color.argb(160, 255, 190, 90))
+            setOnClickListener { confirmNormalStart() }
+        }
+        val root = findViewById<FrameLayout>(R.id.mainRoot)
+        root.addView(bar, root.indexOfChild(dimOverlay), FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL).apply { topMargin = (8 * d).toInt() })
+    }
+
+    private fun confirmNormalStart() {
+        AlertDialog.Builder(this).setTitle("Обычный запуск")
+            .setMessage("Панель несколько раз подряд закрылась с ошибкой сразу после запуска. Включить видео, запись и голос? Если ошибка повторится, безопасный запуск вернётся сам.")
+            .setPositiveButton("Включить") { _, _ -> SafeStart.leave(this); recreate() }
+            .setNegativeButton("Пока нет", null).show()
     }
 
     /**

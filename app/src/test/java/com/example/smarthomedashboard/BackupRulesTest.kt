@@ -34,8 +34,8 @@ class BackupRulesTest {
             (0 until nodes.length).map { nodes.item(it) as Element }.map { it.getAttribute("domain") to it.getAttribute("path") }
         }
         assertTrue("files/backups/ исключена: $excludes", ("file" to "backups/") in excludes)
-        // Кроме копий — только снимки посетителей и фразы голосом владельца (домофон): остальные файлы — в backup.
-        val allowed = setOf("backups/", "doorbell_rings/", "doorbell_phrases/", "gate_log/")
+        // Кроме копий — только снимки посетителей, фразы голосом владельца (домофон) и записи о сбоях этого планшета: остальные файлы — в backup.
+        val allowed = setOf("backups/", "doorbell_rings/", "doorbell_phrases/", "gate_log/", "crashes/")
         assertTrue("других файлов приложения исключение не касается", excludes.none { it.first == "file" && it.second !in allowed })
     }
     @Test fun legacyBackupExcludesOnlySensitivePrefsAndKeepsTiles() {
@@ -74,6 +74,8 @@ class BackupRulesTest {
             assertFalse("Отпечатки сертификатов камер — только этого планшета", rulesPermit(root, "camera_tls.xml"))
             assertFalse("Проверка планшета — только этого планшета", rulesPermit(root, "tablet_watch.xml"))
             assertFalse("Звук разговора — только этого планшета", rulesPermit(root, "tablet_talk.xml"))
+            assertFalse("Безопасный запуск — только этого планшета", rulesPermit(root, "safe_start.xml"))
+            assertTrue("Сбои — не в облако", ("file" to "crashes/") in excludes)
         }
     }
 

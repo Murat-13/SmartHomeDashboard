@@ -711,6 +711,14 @@
                         android:layout_marginTop="@dimen/modern_space_m"
                         android:text="Журнал обновлений" />
 
+                    <Button
+                        android:id="@+id/btnSupport"
+                        style="@style/Widget.Modern.Button.Secondary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/modern_space_m"
+                        android:text="Сбои и отчёт" />
+
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"

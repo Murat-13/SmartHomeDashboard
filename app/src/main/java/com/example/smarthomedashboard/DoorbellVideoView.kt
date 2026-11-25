@@ -1426,7 +1426,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
             PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
         )
         /** В тестах Robolectric декодеров нет: только снимок. */
-        internal val ENABLED = android.os.Build.FINGERPRINT != "robolectric"
+        internal val ENABLED get() = android.os.Build.FINGERPRINT != "robolectric" && !SafeStart.active
     }
 }
 

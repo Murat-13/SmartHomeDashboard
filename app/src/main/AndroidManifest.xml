@@ -158,6 +158,17 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <!-- Сбои и отчёт, безопасный запуск (docs/reliability.md). -->
+        <activity
+            android:name=".SupportActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
+        <activity
+            android:name=".SafeStartActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.SmartHomeDashboard.Modern" />
         <activity
             android:name=".GateEditorActivity"
             android:exported="false"

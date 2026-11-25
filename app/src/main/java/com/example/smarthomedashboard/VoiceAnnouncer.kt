@@ -209,7 +209,8 @@ internal class VoiceAnnouncer(
         if (playing !== sound) return
         val text = sound.phrase
         val engine = tts
-        if (text.isNullOrBlank()) { finished(); return }
+        // Безопасный запуск (docs/reliability.md): сигналы остаются, синтез речи не запускается.
+        if (text.isNullOrBlank() || SafeStart.active) { finished(); return }
         if (engine == null || !ttsReady) {
             ensureTts()
             if (tts == null) { finished(); return } // синтеза нет, повтор запуска позже: только сигнал

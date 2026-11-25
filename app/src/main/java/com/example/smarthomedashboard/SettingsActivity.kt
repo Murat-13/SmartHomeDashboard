@@ -297,6 +297,7 @@ class SettingsActivity : PinProtectedActivity() {
             if (requireAdmin()) UpdateInstallUi.start(this) { updateUpdateStatus() }
         }
         findViewById<Button?>(R.id.btnUpdateLog)?.setOnClickListener { UpdateInstallUi.showLog(this) }
+        findViewById<Button?>(R.id.btnSupport)?.setOnClickListener { startActivity(Intent(this, SupportActivity::class.java)) }
         findViewById<CompoundButton?>(R.id.cbNightInstall)?.let { night ->
             night.isChecked = UpdateInstaller.nightEnabled(this)
             if (!UpdateInstaller.silentSupported()) {
@@ -315,7 +316,7 @@ class SettingsActivity : PinProtectedActivity() {
         button?.isEnabled = false
         findViewById<TextView?>(R.id.tvUpdateStatus)?.text = "Проверка обновлений…"
         lifecycleScope.launch {
-            withContext(Dispatchers.IO) { AppUpdater.check(applicationContext) }
+            withContext(Dispatchers.IO) { AppUpdater.check(applicationContext, manual = true) }
             button?.isEnabled = true
             updateUpdateStatus()
         }

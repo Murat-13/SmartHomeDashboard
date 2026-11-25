@@ -121,6 +121,11 @@ internal object SystemBarInsets {
 class SmartHomeApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Сбои и безопасный запуск (docs/reliability.md) — раньше всего остального; в тестах Robolectric не включаются.
+        if (android.os.Build.FINGERPRINT != "robolectric") {
+            SafeStart.processStarted(this)
+            CrashLog.install(this)
+        }
         registerActivityLifecycleCallbacks(SystemBarInsets.callbacks)
         registerActivityLifecycleCallbacks(PanelIdle.callbacks)
         // Профиль планшета (docs/diagnostics-tz.md, часть 2): опыт показа видео прошлых запусков.
