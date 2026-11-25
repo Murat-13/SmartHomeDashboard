@@ -41,23 +41,36 @@ internal class PanelScreens(private val density: Float) {
     private fun build(tiles: List<TileEntity>, width: Int, height: Int): Plan {
         val stored = tiles.associate { it.id to Place.parse(it.portrait) }
         if (stored.values.none { it != null }) {
-            val items = tiles.map { tile ->
-                val size = TilePlacement.size(tile.container, tile.config)
-                PortraitLayout.Item(tile.id, tile.container == BOTTOM, tile.x, tile.y, size.width, size.height)
-            }
-            val result = PortraitLayout.auto(items, width, height, gap, margin)
+            val result = PortraitLayout.auto(tiles.map(::item), width, height, gap, margin)
             return Plan(result.places, result.parts, custom = false)
         }
         // Своя раскладка: сохранённые места; плитки, добавленные после неё, — на первое свободное место.
         val places = stored.filterValues { it != null }.mapValues { it.value!! }.toMutableMap()
         tiles.filter { places[it.id] == null }.forEach { tile ->
-            val size = TilePlacement.size(tile.container, tile.config)
-            val w = size.width.coerceAtMost(width - 2 * margin).coerceAtLeast(1)
-            val h = size.height.coerceAtMost(height - 60 - 2 * margin).coerceAtLeast(1)
+            val size = item(tile)
+            val w = size.w.coerceAtMost(width - 2 * margin).coerceAtLeast(1)
+            val h = size.h.coerceAtMost(height - 60 - 2 * margin).coerceAtLeast(1)
             places[tile.id] = freeSpot(places.values, w, h, width, height, if (tile.container == BOTTOM) PortraitLayout.ALL_PARTS else null)
         }
         val parts = (places.values.maxOfOrNull { it.part } ?: 0) + 1
         return Plan(places, parts.coerceAtLeast(1), custom = true)
+    }
+
+    /**
+     * Плитка такой, какой её показывает панель: «Климат» и видео — в своей пропорции и не меньше предела
+     * ([HomeClimateConfig.fit], [DoorbellConfig.fit]), остальные — в сохранённом размере.
+     */
+    private fun item(tile: TileEntity): PortraitLayout.Item {
+        val saved = TilePlacement.size(tile.container, tile.config)
+        val bottom = tile.container == BOTTOM
+        val (size, minH) = when {
+            bottom -> (saved.width to saved.height) to 0
+            tile.type == HomeClimateConfig.TYPE -> HomeClimateConfig.fit(saved.width, saved.height) to HomeClimateConfig.MIN_HEIGHT
+            DoorbellConfig.isVideo(tile.type) ->
+                DoorbellConfig.fit(saved.width, saved.height, DoorbellConfig.from(tile.config).aspect) to DoorbellConfig.MIN_HEIGHT
+            else -> (saved.width to saved.height) to 0
+        }
+        return PortraitLayout.Item(tile.id, bottom, tile.x, tile.y, size.first, size.second, minH)
     }
 
     /** Первое место сверху слева без наложений; [fixedPart] — для кнопок (видны на всех экранах страницы). */

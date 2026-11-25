@@ -16,7 +16,8 @@ import kotlin.math.roundToInt
 internal object PortraitLayout {
     const val MIN_SCALE = 0.75f
 
-    data class Item(val id: String, val bottom: Boolean, val x: Int, val y: Int, val w: Int, val h: Int)
+    /** [minH] — высота, меньше которой плитка не показывается («Климат», видео держат пропорцию и предел); 0 — предела нет. */
+    data class Item(val id: String, val bottom: Boolean, val x: Int, val y: Int, val w: Int, val h: Int, val minH: Int = 0)
 
     data class Place(val x: Int, val y: Int, val w: Int, val h: Int, val part: Int = 0) {
         fun json(): String = """{"x":$x,"y":$y,"w":$w,"h":$h,"part":$part}"""
@@ -91,10 +92,14 @@ internal object PortraitLayout {
     private class Row(val items: List<Pair<Item, Pair<Int, Int>>>, val width: Int, val height: Int)
     private class Flow(val rows: List<Row>, val height: Int)
 
-    /** Размер с масштабом; шире экрана или выше свободной высоты — уменьшается с сохранением пропорций. */
+    /**
+     * Размер с масштабом, но не меньше предела плитки: меньше она всё равно не показывается и легла бы на соседей. Шире
+     * экрана или выше свободной высоты — уменьшается с сохранением пропорций.
+     */
     private fun sized(item: Item, scale: Float, usableW: Int, maxH: Int): Pair<Int, Int> {
-        var w = (item.w * scale).roundToInt().coerceAtLeast(1)
-        var h = (item.h * scale).roundToInt().coerceAtLeast(1)
+        val own = if (item.minH <= 0 || item.h <= 0) scale else maxOf(scale, minOf(1f, item.minH / item.h.toFloat()))
+        var w = (item.w * own).roundToInt().coerceAtLeast(1)
+        var h = (item.h * own).roundToInt().coerceAtLeast(1)
         if (w > usableW) { h = (h * usableW / w.toFloat()).roundToInt().coerceAtLeast(1); w = usableW }
         if (h > maxH) { w = (w * maxH / h.toFloat()).roundToInt().coerceAtLeast(1); h = maxH }
         return w to h

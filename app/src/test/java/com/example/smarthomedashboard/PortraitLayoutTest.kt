@@ -103,6 +103,26 @@ class PortraitLayoutTest {
         }
     }
 
+    /** «Климат» и видео не показываются меньше своего предела: раскладка оставляет им это место, а не сжимает под соседей. */
+    @Test fun tilesWithLimitKeepItWhenEverythingShrinks() {
+        repeat(200) { seed ->
+            val rnd = Random(seed)
+            val items = (0 until rnd.nextInt(8, 24)).map {
+                val limited = rnd.nextInt(3) == 0
+                val h = if (limited) rnd.nextInt(120, 260) else rnd.nextInt(100, 420)
+                Item("t$it", false, rnd.nextInt(0, 1800), rnd.nextInt(0, 1100), if (limited) h * 2 else rnd.nextInt(120, 480), h,
+                    minH = if (limited) 120 else 0)
+            }
+            val (w, h) = listOf(900 to 1200, 720 to 1280, 1200 to 1920)[seed % 3]
+            val r = PortraitLayout.auto(items, w, h, 18, 18)
+            check(items, w, h, r, 18)
+            items.filter { it.minH > 0 }.forEach {
+                val p = r.places.getValue(it.id)
+                assertTrue("Не меньше предела: $p", p.h >= 120 && p.w >= 239)
+            }
+        }
+    }
+
     @Test fun storedPlaceRoundTripsAndRejectsDamage() {
         val place = Place(10, 20, 300, 200, 1)
         assertEquals(place, Place.parse(place.json()))

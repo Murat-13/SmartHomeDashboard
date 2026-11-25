@@ -147,6 +147,29 @@ class PanelPortraitTest {
         assertEquals("Все плитки показаны", 4 + 30 + 10, (first + second).size)
     }
 
+    /**
+     * Узкое окно 900×1200 (портрет внутри горизонтального экрана, эмулятор 1920×1200): плитки уменьшены до 75 %, а
+     * «Климат» и видео держат свой предел — раньше они ложились на соседей.
+     */
+    @Test fun smallClimateAndVideoTilesDoNotOverlapNeighboursWhenShrunk() {
+        val rows = (0 until 4).flatMap { row ->
+            listOf(
+                TileEntity("a$row", "sensor", "grid", "Датчик", 20, 20 + row * 260, 1, 1, config = """{"button_size":300,"widget_height":220}"""),
+                TileEntity("w$row", "weather", "grid", "Погода", 340, 20 + row * 260, 1, 1, config = """{"button_size":300,"widget_height":220}"""),
+                TileEntity("c$row", HomeClimateConfig.TYPE, "grid", "Климат", 660, 20 + row * 260, 1, 1, config = "{}"),
+                TileEntity("v$row", DoorbellConfig.CAMERA_TYPE, "grid", "Камера", 900, 20 + row * 260, 1, 1,
+                    config = """{"button_size":150,"widget_height":110}"""))
+        }
+        open(900, 1200, rows)
+        assertClean(900, 1200)
+        repeat(controller.screenCount()) { screen ->
+            controller.showScreen(screen)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertClean(900, 1200)
+            boxes().filter { it.id.startsWith("c") }.forEach { assertTrue("Климат не меньше предела: $it", it.w >= 240 && it.h >= 120) }
+        }
+    }
+
     @Test fun phoneSizesNeverOverlap() {
         for ((w, h) in listOf(1080 to 2400, 720 to 1280, 1600 to 2560)) {
             open(w, h, ownerTiles(extraWidgets = 6))
