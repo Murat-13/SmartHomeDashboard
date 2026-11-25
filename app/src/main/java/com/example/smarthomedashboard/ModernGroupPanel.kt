@@ -303,7 +303,8 @@ internal class ModernGroupPanel(
         val panelH = min(rootH - 2 * margin, headerH + contentH)
 
         val cx = parent.centerX()
-        var x = (cx - panelW / 2).coerceIn(margin, rootW - margin - panelW)
+        // Панель во всю высоту или ширину: из-за округления верхняя граница на доли пикселя меньше нижней (аудит 25.11.2026, STAB-07).
+        var x = (cx - panelW / 2).coerceIn(margin, max(margin, rootW - margin - panelW))
         var y: Float
         val above = parent.top - gap - panelH
         val below = parent.bottom + gap
@@ -314,7 +315,7 @@ internal class ModernGroupPanel(
                 // Сбоку от родителя, если там хватает места; иначе по центру экрана.
                 val leftX = parent.left - gap - panelW
                 val rightX = parent.right + gap
-                y = (parent.centerY() - panelH / 2).coerceIn(margin, rootH - margin - panelH)
+                y = (parent.centerY() - panelH / 2).coerceIn(margin, max(margin, rootH - margin - panelH))
                 x = when {
                     rightX + panelW <= rootW - margin -> rightX
                     leftX >= margin -> leftX

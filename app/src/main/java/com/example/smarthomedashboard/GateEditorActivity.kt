@@ -464,7 +464,8 @@ class GateEditorActivity : PinProtectedActivity() {
             GateHub.Phase.WAITING -> "Команда принята, жду подтверждения…"
             GateHub.Phase.DONE -> "Готово: " + GateLogic.statusText(GateHub.status(draft)).ifBlank { "подтверждено" }
             GateHub.Phase.REACTED -> "Реле сработало; положение неизвестно — проверьте калитку."
-            GateHub.Phase.UNCONFIRMED -> "Команда принята, но подтверждения нет. Проверьте калитку и, если нужно, датчик положения."
+            GateHub.Phase.UNCONFIRMED -> if (op.detail.isBlank()) "Команда принята, но подтверждения нет. Проверьте калитку и, если нужно, датчик положения."
+                else "Исход неизвестен: ${op.detail}. Проверьте калитку."
             GateHub.Phase.FAILED -> "Не удалось: " + op.detail.ifBlank { "попробуйте ещё раз" }
         }
     }

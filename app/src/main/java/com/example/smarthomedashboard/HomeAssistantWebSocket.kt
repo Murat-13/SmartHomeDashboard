@@ -51,7 +51,9 @@ class HomeAssistantWebSocket(
      * Соединение без разрыва перешло с запасного адреса на основной (локальный): данные продолжают
      * приходить, снимок состояний запрошен заново. [onDisconnected]/[onConnected] при этом не вызываются.
      */
-    private val onEndpointSwitched: () -> Unit = {}
+    private val onEndpointSwitched: () -> Unit = {},
+    /** Сущности, чьё состояние панель уже показывает: кого из них в снимке нет, того в Home Assistant больше нет. */
+    private val knownEntities: () -> Set<String> = { emptySet() }
 ) {
     private val hosts = (listOf(host) + alternateHosts).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     private val handler = Handler(Looper.getMainLooper())
@@ -90,6 +92,8 @@ class HomeAssistantWebSocket(
         /** Подписка на прогноз отклонена (интеграция погоды ещё не загрузилась): повтор через 30 с, 2 и 10 минут. */
         val FORECAST_RETRY_MS = longArrayOf(30_000L, 120_000L, 600_000L)
         const val FORECAST_NOT_SUPPORTED = "forecast_not_supported"
+        /** Состояние сущности, которой в Home Assistant больше нет, — как у недоступной. */
+        const val GONE = "unavailable"
         const val DAILY = "daily"
         const val HOURLY = "hourly"
         /**
@@ -390,7 +394,7 @@ class HomeAssistantWebSocket(
                             }
                         })
                     }
-                    onStatesSnapshot(states)
+                    onStatesSnapshot(states + missing(message.entities, request.changed))
                     onEntitiesList?.invoke(message.entities)
                     return
                 }
@@ -424,6 +428,9 @@ class HomeAssistantWebSocket(
                     val state = data?.optJSONObject("new_state")
                     if (state != null) deliverState(data.optString("entity_id"),
                         state.optString("state", "unknown"), state.optJSONObject("attributes") ?: JSONObject())
+                    // Сущность удалили или переименовали: прежнее значение больше не «свежее» (аудит 25.11.2026, HA-03).
+                    else if (data != null && data.has("new_state") && data.isNull("new_state") && data.optString("entity_id").isNotBlank())
+                        deliverState(data.optString("entity_id"), GONE, JSONObject())
                 }
                 forecastSubscriptions[json.optInt("id")]?.let { request ->
                     if (event.has("forecast") && request.status != ForecastStatus.COMPLETE) {
@@ -453,6 +460,12 @@ class HomeAssistantWebSocket(
                 }
             }
         }
+    }
+
+    /** Сущности, которых в снимке нет: удалены или переименованы, пока связи не было. Чьё событие пришло после запроса — те есть. */
+    private fun missing(present: List<HaEntity>, changed: Set<String>): List<HaEntityState> {
+        val here = present.mapTo(HashSet()) { it.entityId }
+        return knownEntities().filter { it !in here && it !in changed }.map { HaEntityState(it, GONE, JSONObject()) }
     }
 
     private fun deliverState(entityId: String, state: String, attributes: JSONObject) {

@@ -145,6 +145,31 @@ class HaStateApplicationIntegrationTest {
         peer.result(request, JSONArray().put(JSONObject().put("entity_id", "weather.a")
             .put("state", value).put("attributes", attrs)))
     }
+    /** HA-03 (аудит 25.11.2026): настоящая панель — удалённая сущность и пропавшая из снимка больше не «включена». */
+    @Test fun goneEntitiesAreNotShownAsLive() {
+        start()
+        state("light.safe", "on"); state("light.other", "on"); drain()
+        fun states() = get<Map<String, String>>("singleStates")
+        fun confirmed(id: String) = ReflectionHelpers.getField<DashboardDeviceState>(androidx.lifecycle.ViewModelProvider(activity)[MainViewModel::class.java], "devices").confirmedState(id)
+        assertEquals(ConfirmedState.ON, confirmed("light.safe"))
+        val subscription = peer.received.single { it.optString("type") == "subscribe_events" }.getInt("id")
+        peer.socket!!.send(JSONObject().put("type", "event").put("id", subscription).put("event", JSONObject().put("event_type", "state_changed")
+            .put("data", JSONObject().put("entity_id", "light.safe").put("new_state", JSONObject.NULL))).toString())
+        drain()
+        assertEquals("unavailable", states()["light.safe"])
+        assertEquals(ConfirmedState.UNAVAILABLE, confirmed("light.safe"))
+        // Переподписка: в новом снимке нет и второй лампы — её удалили, пока связи не было.
+        val before = peer.received.count { it.optString("type") == "get_states" }
+        client.subscribeEntities(emptyList())
+        await { peer.received.count { it.optString("type") == "get_states" } > before }
+        snapshot("sunny", JSONObject())
+        await { states()["light.other"] == "unavailable" }
+        assertEquals(ConfirmedState.UNAVAILABLE, confirmed("light.other"))
+        // Вернули — обычное событие, значение снова живое.
+        state("light.other", "off"); drain()
+        assertEquals(ConfirmedState.OFF, confirmed("light.other"))
+    }
+
     private fun attrs(eid: String = "weather.a") = get<Map<String, JSONObject>>("entityAttributes").getValue(eid)
     private fun forecast7() = JSONArray("""[{"time":"09:00","condition":"clear","temperature":7}]""")
     private fun texts(view: View): List<String> = when (view) {

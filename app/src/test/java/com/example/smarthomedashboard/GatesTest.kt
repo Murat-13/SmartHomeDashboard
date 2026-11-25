@@ -258,6 +258,78 @@ class GatesTest {
         assertEquals(2, sent.size)
     }
 
+    // ---- GATE-02 (аудит 25.11.2026): команда ушла, а ответа нет ----
+
+    /** «Шаг»: второй импульс остановил бы или развернул ворота. Нет ответа или обрыв — не «не удалось», а «Подтверждения нет». */
+    @Test fun lostAnswerIsUnconfirmedNotFailed() {
+        for ((lost, why) in listOf(ServiceCommandResult.ACK_TIMEOUT to "Home Assistant не ответил", ServiceCommandResult.DISCONNECTED to "нет связи с Home Assistant")) {
+            GateHub.reset()
+            states["button.step"] = "2026-11-25T10:00:00"
+            hub(Gate("g5", "Ворота", Gate.Kind.STEP, open = "button.step", confirmSeconds = 20))
+            answer = lost
+            GateHub.run("g5", Gate.Action.STEP); idle()
+            assertEquals("$lost: ждём факта", GateHub.Phase.WAITING, GateHub.op("g5")?.phase)
+            val before = sent.size
+            assertFalse("повтор не уходит", GateHub.run("g5", Gate.Action.STEP))
+            assertEquals(before, sent.size)
+            idle(20_000)
+            assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("g5")?.phase)
+            assertEquals(why, GateHub.op("g5")?.detail)
+            idle(120_000)
+            assertEquals("держится, пока не коснутся", GateHub.Phase.UNCONFIRMED, GateHub.op("g5")?.phase)
+            assertEquals("исход неизвестен: $why", GateLog.list(context).maxBy { it.atMs }.result)
+            val button = HoldButton(context, "Ворота", R.drawable.ic_gate_lock)
+            GateButtons.paint(button, GateHub.gate("g5")!!, Gate.Action.STEP, primary = true, roomy = true)
+            assertEquals("Подтверждения нет", button.stateCaption)
+            assertEquals("$why · коснитесь, чтобы снять", button.stateHint)
+            GateHub.dismiss("g5")
+        }
+    }
+
+    /** Ответ потерялся, а ворота поехали (или реле сработало) — это видно по факту. */
+    @Test fun lostAnswerIsConfirmedByFact() {
+        states["cover.gate"] = "closed"; attrs["cover.gate"] = JSONObject().put("supported_features", 15)
+        hub(cover)
+        answer = ServiceCommandResult.ACK_TIMEOUT
+        GateHub.run("g2", Gate.Action.OPEN); idle()
+        state("cover.gate", "opening")
+        assertEquals(GateHub.Phase.DONE, GateHub.op("g2")?.phase)
+        assertEquals("", GateHub.op("g2")?.detail)
+        // Кнопка без датчика: отметка нажатия сменилась — «сработало».
+        GateHub.reset()
+        states["button.r"] = "2026-11-22T10:00:00"
+        hub(relay.copy(open = "button.r", confirmSeconds = 5))
+        GateHub.run("g1", Gate.Action.OPEN); idle()
+        state("button.r", "2026-11-22T10:05:00")
+        idle(5_000)
+        assertEquals(GateHub.Phase.REACTED, GateHub.op("g1")?.phase)
+    }
+
+    /** Срок вышел раньше ответа (ждать ответа Home Assistant панель может дольше срока прохода). */
+    @Test fun deadlineBeforeAnswerIsUnconfirmed() {
+        states["switch.gate_relay"] = "off"
+        hub(relay.copy(confirmSeconds = 5))
+        answer = null
+        GateHub.run("g1", Gate.Action.OPEN); idle()
+        idle(5_000)
+        assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("g1")?.phase)
+        assertEquals("Home Assistant не ответил", GateHub.op("g1")?.detail)
+    }
+
+    /** «Стоп» — исключение: повторить его безопасно, и нужно сразу, без снятия касанием. */
+    @Test fun lostAnswerToStopMayBeRepeatedAtOnce() {
+        states["cover.gate"] = "opening"; attrs["cover.gate"] = JSONObject().put("supported_features", 15)
+        hub(cover)
+        answer = ServiceCommandResult.ACK_TIMEOUT
+        GateHub.run("g2", Gate.Action.STOP); idle()
+        assertEquals(GateHub.Phase.FAILED, GateHub.op("g2")?.phase)
+        answer = null
+        idle(50)
+        assertTrue(GateHub.run("g2", Gate.Action.STOP)); idle()
+        idle(cover.confirmSeconds * 1000L)
+        assertEquals(GateHub.Phase.FAILED, GateHub.op("g2")?.phase)
+    }
+
     @Test fun openedElsewhereIsNoticedButNotOnFirstLook() {
         states["lock.wicket"] = "unlocked"
         hub(lock)

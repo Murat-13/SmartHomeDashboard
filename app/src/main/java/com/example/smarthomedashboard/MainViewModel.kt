@@ -192,6 +192,7 @@ class MainViewModel : ViewModel() {
                     stateCallback?.invoke(entityId, state, attributes)
                 }
             },
+            knownEntities = { if (generation == currentGeneration) devices.singleStates.keys.toSet() else emptySet() },
             onStatesSnapshot = { states ->
                 if (generation == currentGeneration) {
                     snapshotDepth++

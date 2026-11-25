@@ -384,6 +384,50 @@ class ModernButtonsTest {
         assertEquals(1, activity.findViewById<FrameLayout>(android.R.id.content).childCount)
     }
 
+    /**
+     * Аудит 25.11.2026, STAB-07: панель группы во всю высоту (много устройств) или ширину (узкое окно) экрана. На части плотностей верхняя
+     * граница из-за округления меньше нижней — раскрытие роняло панель.
+     */
+    private fun opensWithinScreen(fullHeight: Boolean, tile: TileEntity) {
+        val metrics = activity.resources.displayMetrics
+        val density = metrics.density
+        open(tile)
+        val content = activity.findViewById<View>(android.R.id.content)
+        val width = content.width; val height = content.height
+        // Плотности, на которых границы перепутаны (тот же расчёт, что в панели).
+        val side = (if (fullHeight) height else width).toFloat()
+        val dangerous = (130..640).filter { dpi ->
+            val margin = 16 * (dpi / 160f)
+            side - margin - (side - 2 * margin) < margin
+        }
+        assertTrue("таких плотностей нет — проверять нечего", dangerous.size > 5)
+        try {
+            for (dpi in dangerous.filterIndexed { i, _ -> i % maxOf(1, dangerous.size / 12) == 0 } + listOf(160, 240, 320)) {
+                metrics.density = dpi / 160f
+                open(tile)
+                touch(tile("g"), MotionEvent.ACTION_DOWN)
+                advance(1100)
+                touch(tile("g"), MotionEvent.ACTION_UP)
+                idle()
+                val view = controller().modernGroup.panelView
+                assertNotNull("$dpi dpi", view)
+                val lp = view!!.layoutParams
+                val margin = 16 * metrics.density
+                if (dpi in dangerous) assertEquals("$dpi dpi: панель во всю сторону", side - 2 * margin, (if (fullHeight) lp.height else lp.width).toFloat(), 1f)
+                assertTrue("$dpi dpi: панель в пределах экрана: x ${view.x} y ${view.y} ${lp.width}×${lp.height}", view.x >= margin - 1 && view.y >= margin - 1 &&
+                    view.x + lp.width <= width - margin + 1 && view.y + lp.height <= height - margin + 1)
+                controller().modernGroup.close()
+                advance(500)
+            }
+        } finally { metrics.density = density }
+        assertTrue("раскрытие — не команда", calls().isEmpty())
+    }
+
+    @Test fun bigGroupOpensOnEveryScreenDensity() = opensWithinScreen(fullHeight = true,
+        group("g", *(1..150).map { "light.l$it" }.toTypedArray()).copy(x = 100, y = 200))
+
+    @Test fun emptyGroupOpensInNarrowWindowOnEveryScreenDensity() = opensWithinScreen(fullHeight = false, group("g").copy(x = 100, y = 200))
+
     @Test fun holdUsesSystemLongPressTimeoutAndNeverTogglesGroup() {
         open(group("g", "light.a"))
         event("light.a", "off")

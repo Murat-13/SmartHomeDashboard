@@ -1,5 +1,7 @@
 package com.example.smarthomedashboard
 
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -38,8 +40,14 @@ internal object GateDirect {
             // повторное использование закрытого давало IOException на каждом опросе (найдено на планшете 22.11).
             // Повтор запроса не включаем: команда («импульс») не должна уйти дважды.
             .connectionPool(okhttp3.ConnectionPool(0, 1, TimeUnit.SECONDS))
+            .eventListener(object : EventListener() {
+                override fun requestHeadersStart(call: Call) { call.request().tag(Sent::class.java)?.sent = true }
+            })
             .build()
     }
+
+    /** Метка запроса команды: ушла ли она устройству (соединение открыто, запрос отправляется). */
+    private class Sent { @Volatile var sent = false }
 
     /** Ключ пароля прохода в зашифрованном хранилище. */
     fun secretKey(gateId: String) = "gate_$gateId"
@@ -70,8 +78,8 @@ internal object GateDirect {
         return clean.takeIf { it.toHttpUrlOrNull() == url.toHttpUrlOrNull()?.newBuilder()?.password("")?.build() }
     }
 
-    /** Итог команды: принята / отказ (с причиной для кнопки). */
-    data class Result(val ok: Boolean, val detail: String = "")
+    /** Итог команды: принята / отказ (с причиной для кнопки); [unclear] — ушла, а ответа нет: могла и выполниться. */
+    data class Result(val ok: Boolean, val detail: String = "", val unclear: Boolean = false)
 
     /** Что ответило устройство на «Найти устройство». */
     data class Info(val model: String, val id: String, val gen: Int, val authNeeded: Boolean, val authOk: Boolean)
@@ -103,21 +111,22 @@ internal object GateDirect {
 
     fun send(gate: Gate, action: Gate.Action, password: String?): Result {
         val d = gate.direct ?: return Result(false, "связь напрямую не настроена")
+        val sent = Sent()
         return try {
             when (d.protocol) {
                 Gate.Direct.Protocol.SHELLY -> {
                     val (method, params) = shellyCall(gate, action) ?: return Result(false, "устройство так не умеет")
-                    rpc(d.host, method, params, password).use { describe(it) }
+                    rpc(d.host, method, params, password, sent).use { describe(it) }
                 }
                 Gate.Direct.Protocol.HTTP -> {
                     val url = if (action == Gate.Action.CLOSE) d.closeUrl else d.openUrl
                     if (url.isBlank()) return Result(false, "адрес команды не задан")
                     val request = Request.Builder().url(url).apply { if (d.post) post(ByteArray(0).toRequestBody()) }.build()
-                    call(request, password).use { describe(it) }
+                    call(request, password, sent).use { describe(it) }
                 }
             }
         } catch (e: IOException) {
-            Result(false, "устройство не отвечает")
+            Result(false, "устройство не отвечает", unclear = sent.sent)
         } catch (e: IllegalArgumentException) {
             Result(false, "неверный адрес")
         }
@@ -197,14 +206,15 @@ internal object GateDirect {
         r.body?.string()?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
     }
 
-    private fun rpc(host: String, method: String, params: Map<String, String>, password: String?): Response {
+    private fun rpc(host: String, method: String, params: Map<String, String>, password: String?, sent: Sent? = null): Response {
         val query = params.entries.joinToString("&") { "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}" }
         val url = base(host) + "/rpc/" + method + if (query.isEmpty()) "" else "?$query"
-        return call(Request.Builder().url(url).build(), password)
+        return call(Request.Builder().url(url).build(), password, sent)
     }
 
     /** Запрос; на 401 с Digest — повтор с ответом на вызов (пароль не уходит по сети открытым). */
-    private fun call(request: Request, password: String?): Response {
+    private fun call(command: Request, password: String?, sent: Sent? = null): Response {
+        val request = if (sent == null) command else command.newBuilder().tag(Sent::class.java, sent).build()
         val first = http.newCall(request).execute()
         // Логин и пароль в адресе своего запроса (http://логин:пароль@…) важнее сохранённого пароля Shelly.
         val user = request.url.username.ifEmpty { USER }
@@ -212,6 +222,7 @@ internal object GateDirect {
         if (first.code != 401 || secret.isEmpty()) return first
         val challenge = first.header("WWW-Authenticate").orEmpty()
         first.close()
+        sent?.sent = false // «нужен пароль» — команда не выполнена
         val header = if (challenge.startsWith("Basic", ignoreCase = true)) okhttp3.Credentials.basic(user, secret)
         else Digest.authorization(challenge, request.method, request.url.encodedPath +
             (request.url.encodedQuery?.let { "?$it" } ?: ""), user, secret) ?: return http.newCall(request).execute()

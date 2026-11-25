@@ -232,6 +232,7 @@ internal object GateHub {
         if (!same(gate.id, op)) return
         val current = ops.getValue(gate.id)
         if (!current.busy) return
+        if (result.unclear && current.action != Gate.Action.STOP) { unclear(gate, current, result.detail); return }
         if (!result.ok) { finish(gate, current.copy(phase = Phase.FAILED, detail = result.detail)); return }
         if (current.action == Gate.Action.STOP) { finish(gate, current.copy(phase = Phase.DONE)); return }
         // Положение узнать неоткуда (реле без датчика, свой запрос) — честно: «сработало», проверьте глазами.
@@ -319,11 +320,14 @@ internal object GateHub {
         val current = ops.getValue(gate.id)
         if (!current.busy) return
         if (result != ServiceCommandResult.ACKNOWLEDGED) {
-            finish(gate, current.copy(phase = Phase.FAILED, detail = when (result) {
+            val detail = when (result) {
                 ServiceCommandResult.REJECTED -> "Home Assistant отказал"
                 ServiceCommandResult.ACK_TIMEOUT -> "Home Assistant не ответил"
                 else -> "нет связи с Home Assistant"
-            }))
+            }
+            val sent = result == ServiceCommandResult.ACK_TIMEOUT || result == ServiceCommandResult.DISCONNECTED
+            if (sent && current.action != Gate.Action.STOP) unclear(gate, current, detail)
+            else finish(gate, current.copy(phase = Phase.FAILED, detail = detail))
             return
         }
         // «Стоп» подтверждается приёмом команды: движение прекращается мгновенно, ждать нечего.
@@ -332,24 +336,43 @@ internal object GateHub {
         check(gate)
     }
 
+    /**
+     * Команда ушла, а ответа нет: могла и выполниться. «Не удалось» с повтором здесь опасно — второй импульс остановил бы или
+     * развернул ворота (аудит 25.11.2026, GATE-02). Ждём факта до конца срока, дальше — «Подтверждения нет» (снимается касанием).
+     * «Стоп» сюда не попадает: повторить его безопасно и нужно сразу.
+     */
+    private fun unclear(gate: Gate, op: Op, detail: String) {
+        val hopeless = GateLogic.useDirect(gate, readings) && !GateLogic.directConfirmable(gate, readings)
+        if (hopeless) { finish(gate, op.copy(phase = Phase.UNCONFIRMED, detail = detail)); return }
+        set(gate.id, op.copy(phase = Phase.WAITING, detail = detail))
+        if (GateLogic.useDirect(gate, readings)) pollNow(gate) else check(gate)
+    }
+
     private fun onDeadline(gateId: String, op: Op) {
         if (!same(gateId, op)) return
         val gate = opGates[gateId] ?: gate(gateId) ?: return
         val current = ops.getValue(gateId)
         if (!current.busy) return
-        val reacted = !GateLogic.useDirect(gate, readings) && GateLogic.reacted(current.beforeRaw, raw(gate.open))
-        finish(gate, current.copy(phase = when {
-            current.phase == Phase.SENDING -> Phase.FAILED
+        val direct = GateLogic.useDirect(gate, readings)
+        val reacted = !direct && GateLogic.reacted(current.beforeRaw, raw(gate.open))
+        val silent = current.phase == Phase.SENDING
+        val phase = when {
+            silent && current.action == Gate.Action.STOP -> Phase.FAILED
             reacted -> Phase.REACTED
             else -> Phase.UNCONFIRMED
-        }, detail = if (current.phase != Phase.SENDING) "" else if (GateLogic.useDirect(gate, readings)) "устройство не ответило" else "Home Assistant не ответил"))
+        }
+        finish(gate, current.copy(phase = phase, detail = when {
+            phase == Phase.REACTED -> ""
+            silent -> if (direct) "устройство не ответило" else "Home Assistant не ответил"
+            else -> current.detail
+        }))
     }
 
     /** Ждём факта: новое положение — готово. */
     private fun check(gate: Gate, readings: BatteryReadings? = this.readings) {
         val op = ops[gate.id]?.takeIf { it.phase == Phase.WAITING } ?: return
         val now = status(gate, readings)
-        if (GateLogic.confirmed(op.action, op.before, now)) finish(gate, op.copy(phase = Phase.DONE))
+        if (GateLogic.confirmed(op.action, op.before, now)) finish(gate, op.copy(phase = Phase.DONE, detail = ""))
     }
 
     private fun set(gateId: String, op: Op) {
@@ -381,7 +404,7 @@ internal object GateHub {
         val result = when (op.phase) {
             Phase.DONE -> if (op.action == Gate.Action.STOP) "остановлено" else GateLogic.statusText(status(gate)).ifBlank { "готово" }
             Phase.REACTED -> "сработало, положение неизвестно"
-            Phase.UNCONFIRMED -> "команда принята, подтверждения нет"
+            Phase.UNCONFIRMED -> if (op.detail.isBlank()) "команда принята, подтверждения нет" else "исход неизвестен: ${op.detail}"
             Phase.FAILED -> "не удалось" + op.detail.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
             Phase.SENDING, Phase.WAITING -> return
         }

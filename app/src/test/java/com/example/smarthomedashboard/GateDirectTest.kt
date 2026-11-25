@@ -345,6 +345,77 @@ class GateDirectTest {
         assertNull(GateDirect.probe("127.0.0.1:1", null))
     }
 
+    // ---- GATE-02 (аудит 25.11.2026): команда ушла устройству, а ответа нет ----
+
+    /** Адрес — цифрами: у имени localhost два адреса, и после сбоя OkHttp начинает с другого. */
+    private fun device(input: Int = -1) = relay(input).let { it.copy(direct = it.direct!!.copy(host = "127.0.0.1:${server.port}")) }
+
+    /** Устройство приняло соединение и запрос, но не ответило: могло и выполнить. Не открылось соединение — точно нет. */
+    @Test fun requestThatLeftButGotNoAnswerIsUnclear() {
+        fun answerWith(policy: okhttp3.mockwebserver.SocketPolicy) {
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse { calls += request.path.orEmpty(); return MockResponse().setSocketPolicy(policy) }
+            }
+        }
+        answerWith(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST)
+        assertEquals(GateDirect.Result(false, "устройство не отвечает", unclear = true), GateDirect.send(device(), Gate.Action.OPEN, null))
+        assertEquals("один импульс, без повтора", 1, calls.size)
+        answerWith(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
+        assertEquals(GateDirect.Result(false, "устройство не отвечает", unclear = true),
+            GateDirect.send(httpGate("http://127.0.0.1:${server.port}/open"), Gate.Action.OPEN, null))
+        // Ответ есть — исход ясен, каким бы он ни был.
+        server.dispatcher = object : Dispatcher() { override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(500) }
+        assertEquals(GateDirect.Result(false, "устройство отказало (500)"), GateDirect.send(device(), Gate.Action.OPEN, null))
+    }
+
+    /** Устройство ответило «нужен пароль» (команда не выполнена) и пропало до повтора с паролем — исход ясен. */
+    @Test fun refusedWithoutPasswordThenGoneIsFailed() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(401)
+                .setHeader("WWW-Authenticate", "Digest qop=\"auth\", realm=\"r\", nonce=\"n\", algorithm=SHA-256")
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.SHUTDOWN_SERVER_AFTER_RESPONSE)
+        }
+        assertEquals(GateDirect.Result(false, "устройство не отвечает"), GateDirect.send(device(), Gate.Action.OPEN, "пароль"))
+    }
+
+    @Test fun unclearDirectCommandIsUnconfirmedAndNotRepeated() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path.orEmpty().startsWith("/rpc/Switch.Set")) { calls += request.path.orEmpty(); output = true
+                    return MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST) }
+                return shelly.dispatch(request)
+            }
+        }
+        // Положение узнать неоткуда — сразу «подтверждения нет», а не «не удалось, удерживайте, чтобы повторить».
+        GateStore.save(context, listOf(device()))
+        assertTrue(GateHub.run("gd", Gate.Action.OPEN))
+        await("итог") { GateHub.op("gd")?.busy == false }
+        assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("gd")!!.phase)
+        assertEquals("устройство не отвечает", GateHub.op("gd")!!.detail)
+        assertEquals(1, calls.count { it.startsWith("/rpc/Switch.Set") })
+        GateHub.dismiss("gd")
+        // Есть датчик — дождались факта.
+        GateStore.save(context, listOf(device(input = 0)))
+        GateHub.onState(context, readings)
+        await("первый опрос") { calls.any { it.startsWith("/rpc/Input.GetStatus") } }
+        assertTrue(GateHub.run("gd", Gate.Action.OPEN))
+        await("ждём факта") { GateHub.op("gd")?.phase == GateHub.Phase.WAITING }
+        door = true
+        await("подтверждение по входу") { GateHub.op("gd")?.phase == GateHub.Phase.DONE }
+    }
+
+    @Test fun silentDeviceAtDeadlineIsUnconfirmed() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
+        }
+        GateStore.save(context, listOf(device().copy(confirmSeconds = 5)))
+        assertTrue(GateHub.run("gd", Gate.Action.OPEN))
+        Thread.sleep(300) // запрос ушёл, ответа нет
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+        assertEquals(GateHub.Phase.UNCONFIRMED, GateHub.op("gd")!!.phase)
+        assertEquals("устройство не ответило", GateHub.op("gd")!!.detail)
+    }
+
     // ---- Исполнение через GateHub ----
 
     @Test fun relayWithoutSensorSaysReactedNotOpened() {

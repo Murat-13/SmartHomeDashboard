@@ -143,7 +143,7 @@ internal class GateButtons(context: Context, private val vertical: Boolean) : Li
 
     private fun hint(action: Gate.Action, op: GateHub.Op?, status: GateStatus, primary: Boolean, roomy: Boolean): String? = when (op?.phase) {
         GateHub.Phase.REACTED -> op.detail.ifBlank { "реле сработало, положение неизвестно — проверьте" }
-        GateHub.Phase.UNCONFIRMED -> "команда принята · коснитесь, чтобы снять"
+        GateHub.Phase.UNCONFIRMED -> op.detail.ifBlank { "команда принята" } + " · коснитесь, чтобы снять"
         GateHub.Phase.FAILED -> op.detail.ifBlank { "попробуйте ещё раз" } + if (GateLogic.instant(action)) "" else " · удерживайте, чтобы повторить"
         GateHub.Phase.SENDING, GateHub.Phase.WAITING, GateHub.Phase.DONE -> null
         // Где проход и «удерживайте» — только на главной кнопке прохода: на каждой кнопке это лишний шум.
