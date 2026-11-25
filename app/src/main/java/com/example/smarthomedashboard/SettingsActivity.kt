@@ -1151,9 +1151,9 @@ class SettingsActivity : PinProtectedActivity() {
                 data?.data?.let { uri ->
                     val text = try {
                         val input = contentResolver.openInputStream(uri) ?: throw IOException()
-                        input.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                        ConfigImport.readText(input)
                     } catch (e: Exception) {
-                        if (e !is IOException && e !is SecurityException) throw e
+                        if (e !is IOException && e !is SecurityException && e !is IllegalArgumentException) throw e
                         Toast.makeText(this, "Не удалось импортировать файл: проверьте формат настроек", Toast.LENGTH_LONG).show()
                         return
                     }

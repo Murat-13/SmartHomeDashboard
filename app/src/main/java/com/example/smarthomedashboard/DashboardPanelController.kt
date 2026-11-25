@@ -169,7 +169,7 @@ internal class DashboardPanelController(
 
     /** Число страниц: явно созданные (в том числе пустые) и все, где есть плитки; минимум одна. */
     fun pageCount(): Int = maxOf(1, pagePrefs().getInt(PREF_PAGE_COUNT, 1),
-        (tileManager.getAllTiles().maxOfOrNull { it.page } ?: 0) + 1)
+        (tileManager.getAllTiles().maxOfOrNull { it.page } ?: 0) + 1).coerceAtMost(ConfigImport.MAX_PAGES)
 
     /** Новая пустая страница справа; возвращает её номер. */
     fun addPage(): Int {

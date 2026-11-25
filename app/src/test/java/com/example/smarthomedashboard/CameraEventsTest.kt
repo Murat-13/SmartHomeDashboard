@@ -83,6 +83,13 @@ class CameraEventsTest {
                 "</tt:Data></tt:Message></wsnt:Message></wsnt:NotificationMessage>"
         } + "</tev:PullMessagesResponse></s:Body></s:Envelope>"
 
+    /** Второй аудит 25.11.2026, NEW-CAM-9: тысячи вложенных тегов переполнили бы стек при поиске по дереву — ответ не принимается. */
+    @Test fun deeplyNestedAnswerIsRefused() {
+        val deep = "<a>".repeat(5_000) + "</a>".repeat(5_000)
+        try { Onvif.parse(deep); org.junit.Assert.fail("принят") } catch (e: Onvif.OnvifException) { assertEquals("Ответ камеры не разобран", e.message) }
+        Onvif.parse("<a>".repeat(30) + "x" + "</a>".repeat(30))
+    }
+
     @Test fun parsesTopicsAndStatesOfDifferentMakers() {
         val events = Onvif.events(Onvif.parse(pullResponse(
             "tns1:RuleEngine/MyRuleDetector/PeopleDetect" to "true",

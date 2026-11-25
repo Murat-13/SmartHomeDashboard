@@ -266,7 +266,8 @@ internal class SdpFixingInputStream(
         val headerLines = headText.split("\r\n").filter { it.isNotEmpty() }
         val length = header(headerLines, "content-length")?.toIntOrNull() ?: 0
         if (length <= 0) return head.toByteArray()
-        if (length > MAX_BODY) { passThrough = true; return head.toByteArray() + readExactly(length) }
+        // Тело идёт дальше как есть, без чтения в память: длину называет камера (NEW-CAM-5).
+        if (length > MAX_BODY) { passThrough = true; return head.toByteArray() }
         val body = readExactly(length)
         if (header(headerLines, "content-type")?.contains("application/sdp", ignoreCase = true) != true) {
             return head.toByteArray() + body

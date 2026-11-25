@@ -145,12 +145,15 @@ internal object OnvifEvents {
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Onvif.OnvifException) {
+                    // Остановленный работник не пишет статус поверх нового работника той же плитки (NEW-CAM-9).
+                    if (!running) break
                     statuses[tileId] = Status(false, e.message.orEmpty())
                     Log.w(TAG, "События ONVIF: ${e.message}")
                     active.remove(tileId)
                     pause = if (e.auth) 300_000 else backoff
                     backoff = (backoff * 2).coerceAtMost(60_000L)
                 } catch (e: Exception) {
+                    if (!running) break
                     statuses[tileId] = Status(false, "Камера не отвечает — события по ONVIF не приходят")
                     Log.w(TAG, "События ONVIF: ${e.javaClass.simpleName}")
                     active.remove(tileId)

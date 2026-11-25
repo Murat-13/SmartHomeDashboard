@@ -103,7 +103,7 @@ class SetupActivity : AppCompatActivity() {
         if (result.resultCode == Activity.RESULT_OK && data != null) copied(data)
     }
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) restoreFrom { contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }
+        if (uri != null) restoreFrom { contentResolver.openInputStream(uri)?.let(ConfigImport::readText) }
     }
     private val openFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
         if (tree != null) {

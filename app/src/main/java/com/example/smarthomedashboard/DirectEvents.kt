@@ -313,10 +313,17 @@ internal object DirectEvents {
         }
     }
 
+    private val pinLock = Any()
+
     private fun driver(context: Context, tileId: String, host: String, user: String, password: String): CameraEventDriver {
         val p = prefs(context)
         return driverFactory(host, user, password, p.getString("$tileId.pin", null)) { print ->
-            p.edit().putString("$tileId.pin", print).apply()
+            // События и запасной опрос подключаются впервые одновременно: запоминает первый, второй сверяется (второй аудит, AUD-11).
+            synchronized(pinLock) {
+                val known = p.getString("$tileId.pin", null)
+                if (known == null) p.edit().putString("$tileId.pin", print).apply()
+                else if (known != print) throw java.security.cert.CertificateException("Сертификат камеры изменился")
+            }
         }
     }
 

@@ -38,12 +38,17 @@ internal object CameraTls {
     /** Порт RTSP поверх TLS, если в адресе его нет. */
     const val PORT = 322
 
+    /** Два первых подключения сразу (основной и субпоток): второй сверяется с тем, что запомнил первый (второй аудит, AUD-11). */
+    internal fun remember(key: String, pin: String) {
+        val known = pins.putIfAbsent(key, pin)
+        if (known == null) store?.edit { putString(key, pin) }
+        else if (known != pin) throw java.security.cert.CertificateException("Сертификат камеры изменился")
+    }
+
     /** TLS поверх уже подключённого [socket]; отпечаток не совпал — [java.io.IOException]. */
     fun wrap(socket: Socket, host: String, port: Int): Socket {
         val key = "$host:$port"
-        val trust = PinnedTrust(pins[key]) { pin ->
-            if (pins.putIfAbsent(key, pin) == null) store?.edit { putString(key, pin) }
-        }
+        val trust = PinnedTrust(pins[key]) { pin -> remember(key, pin) }
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), SecureRandom()) }
             .socketFactory.createSocket(socket, host, port, true) as SSLSocket
         ssl.startHandshake()

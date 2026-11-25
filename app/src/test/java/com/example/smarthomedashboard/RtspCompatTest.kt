@@ -69,6 +69,16 @@ class RtspCompatTest {
     }
 
     /** Ответы камеры, как их читает плеер: описание исправлено, длина пересчитана, остальное — байт в байт. */
+    /** Второй аудит 25.11.2026, NEW-CAM-5: огромная длина ответа (её называет камера) не выделяется в памяти — ответ идёт дальше как есть. */
+    @Test fun hugeAnswerIsPassedThroughWithoutBuffering() {
+        val bytes = "RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 2000000000\r\n\r\n0123456789".toByteArray()
+        val input = SdpFixingInputStream(ByteArrayInputStream(bytes))
+        val out = ByteArrayOutputStream()
+        val chunk = ByteArray(64)
+        while (true) { val n = input.read(chunk, 0, chunk.size); if (n < 0) break; out.write(chunk, 0, n) }
+        assertArrayEquals(bytes, out.toByteArray())
+    }
+
     @Test fun socketStreamFixesOnlyDescribeAnswer() {
         val sdpBytes = subSdp.toByteArray()
         val before = ("RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: OPTIONS, DESCRIBE\r\n\r\n" +

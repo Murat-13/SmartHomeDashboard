@@ -92,7 +92,7 @@ class ReolinkTalkTest {
     }
 
     /** Поддельная камера: вход с AES, возможности, настройка разговора, приём блоков, сброс. */
-    private class FakeCamera(val password: String = "secret") : AutoCloseable {
+    private class FakeCamera(val password: String = "secret", val block: String = "1024") : AutoCloseable {
         val server = ServerSocket(0)
         val blocks = AtomicInteger()
         val resets = AtomicInteger()
@@ -138,7 +138,7 @@ class ReolinkTalkTest {
                     msgId == 10 -> {
                         val xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<TalkAbility version=\"1.1\">\n<duplexList>\n<duplex>FDX</duplex>\n</duplexList>\n" +
                             "<audioStreamModeList>\n<audioStreamMode>followVideoStream</audioStreamMode>\n</audioStreamModeList>\n<audioConfigList>\n<audioConfig>\n" +
-                            "<audioType>adpcm</audioType>\n<sampleRate>16000</sampleRate>\n<samplePrecision>16</samplePrecision>\n<lengthPerEncoder>1024</lengthPerEncoder>\n" +
+                            "<audioType>adpcm</audioType>\n<sampleRate>16000</sampleRate>\n<samplePrecision>16</samplePrecision>\n<lengthPerEncoder>$block</lengthPerEncoder>\n" +
                             "<soundTrack>mono</soundTrack>\n</audioConfig>\n</audioConfigList>\n</TalkAbility>\n</body>\n"
                         header(out, 10, BcCrypto.aesCfb(key, xml.toByteArray(), true), num, 200, 0x6414, 0)
                     }
@@ -283,6 +283,18 @@ class ReolinkTalkTest {
             assertEquals("сверх заказа не убирается", trimmed, talk.trimmedMs, 0.0)
             assertTrue(cam.badBlocks.toString(), cam.badBlocks.isEmpty())
             talk.close()
+        }
+    }
+
+    /**
+     * Второй аудит 25.11.2026, NEW-CAM-4: длину блока называет камера. Минус ронял поток отправки (и приложение), ноль крутил его без
+     * пауз — теперь канал не открывается, разговор идёт запасным путём.
+     */
+    @Test fun impossibleBlockLengthIsRefused() {
+        for (block in listOf("0", "-8", "1000000", "1023")) FakeCamera(block = block).use { cam ->
+            val talk = BaichuanTalkSession("127.0.0.1", "admin", "secret", port = cam.server.localPort)
+            try { talk.open(); fail("блок $block принят") } catch (e: java.io.IOException) { assertTrue(e.message, e.message!!.contains("блок звука $block")) }
+            finally { talk.close() }
         }
     }
 

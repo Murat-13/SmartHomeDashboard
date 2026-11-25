@@ -98,6 +98,8 @@ internal class BaichuanTalkSession(
             lengthPerEncoder = tag(xml, "lengthPerEncoder")?.toIntOrNull() ?: 1024
             val type = tag(xml, "audioType") ?: "adpcm"
             if (type != "adpcm" || rate != 16_000) throw TalkException("Камера просит звук $type $rate Гц")
+            // Не то число роняло бы поток отправки (минус), крутило бы его без пауз (ноль) или заняло бы всю память (NEW-CAM-4).
+            if (lengthPerEncoder !in MIN_BLOCK..MAX_BLOCK || lengthPerEncoder % 2 != 0) throw TalkException("Камера просит блок звука $lengthPerEncoder")
             val duplex = tag(xml, "duplex") ?: "FDX"
             val mode = tag(xml, "audioStreamMode") ?: "followVideoStream"
             var config = request(MSG_TALK_CONFIG, ext = extension(), payload = talkConfig(duplex, mode))
@@ -363,6 +365,8 @@ internal class BaichuanTalkSession(
         const val PORT = 9000
         /** Сколько тишины в начале не досылать: очередь камеры ≈ 1,25 с тает до ≈ 0,5 с (1,2 с — уже провалы). */
         const val DRAIN_MS = 1_000.0
+        const val MIN_BLOCK = 256
+        const val MAX_BLOCK = 4_096
         const val BUSY = "Сейчас говорит другое устройство"
         private const val MAGIC = 0x0ABCDEF0
         private const val MAGIC_REV = 0x0FEDCBA0

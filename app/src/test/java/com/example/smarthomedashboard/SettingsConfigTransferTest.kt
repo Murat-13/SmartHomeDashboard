@@ -388,4 +388,43 @@ class SettingsConfigTransferTest {
         assertEquals("dark", prefs.getString("app_theme", null))
     }
 
+
+    /**
+     * Второй аудит 25.11.2026, AUD-20: файл с миллионами страниц или нулевым временем экрана не принимается (панель после него не
+     * открылась бы или гасла бы сразу); ничего не записано.
+     */
+    @Test fun impossibleValuesInFileAreRefusedBeforeAnyWrite() {
+        seed()
+        val before = prefs.all.toMap() to tiles.all.toMap()
+        fun tile(page: Int) = """[{"id":"t","type":"button","container":"grid","title":"T","x":0,"y":0,"width":1,"height":1,"page":$page}]"""
+        val bad = listOf(
+            JSONObject().put("page_count", 2_000_000_000), JSONObject().put("page_count", 0),
+            JSONObject().put("screen_timeout_minutes", 0), JSONObject().put("screen_timeout_minutes", -5), JSONObject().put("screen_timeout_minutes", 40_000_000),
+            JSONObject().put("tiles_json", tile(5_000_000)),
+            JSONObject().put("tiles_json", "[" + List(ConfigImport.MAX_TILES + 1) { tile(0).trim('[', ']') }.joinToString(",") + "]"))
+        for (json in bad) {
+            try { ConfigImport.apply(context, json); fail("принято: ${json.toString().take(60)}") } catch (_: IllegalArgumentException) {}
+            assertEquals(before, prefs.all.toMap() to tiles.all.toMap())
+        }
+        try { ConfigImport.parse(" ".repeat(ConfigImport.MAX_CHARS) + "{}"); fail("файл больше предела принят") } catch (_: IllegalArgumentException) {}
+        try { ConfigImport.readText(java.io.ByteArrayInputStream(ByteArray(ConfigImport.MAX_CHARS + 1) { ' '.code.toByte() })); fail() } catch (_: IllegalArgumentException) {}
+        ConfigImport.apply(context, JSONObject().put("page_count", ConfigImport.MAX_PAGES).put("screen_timeout_minutes", 1).put("tiles_json", tile(ConfigImport.MAX_PAGES - 1)))
+        assertEquals(ConfigImport.MAX_PAGES, prefs.getInt("page_count", 0))
+    }
+
+    /** AUD-19: плитки не записались (нет места) — общие настройки из файла не применяются: иначе новые страницы и проходы при старых плитках. */
+    @Test fun failedTilesWriteLeavesSettingsUntouched() {
+        seed()
+        val before = prefs.all.toMap()
+        val real = ConfigImport.writer
+        var writes = 0
+        ConfigImport.writer = { writes++; false }
+        try {
+            try {
+                ConfigImport.apply(context, JSONObject().put("page_count", 3).put("tiles_json", "[]")); fail("отказ записи не замечен")
+            } catch (_: IllegalArgumentException) {}
+            assertEquals("после отказа плиток настройки не пишутся", 1, writes)
+            assertEquals(before, prefs.all.toMap())
+        } finally { ConfigImport.writer = real }
+    }
 }

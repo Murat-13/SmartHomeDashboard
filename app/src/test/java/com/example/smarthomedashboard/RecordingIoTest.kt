@@ -180,4 +180,19 @@ class RecordingIoTest {
         val frames = (0 until count).map { i -> val b = decoded[i % decoded.size]; VideoFrame(i * 9_000L, b.nals, b.key) }
         return frames to d
     }
+
+    /** Второй аудит 25.11.2026, AUD-06: одно имя файла двум потокам сразу не достаётся — «свободно?» и «занять» неразделимы. */
+    @Test fun oneFileNameIsNeverGivenToTwoWriters() {
+        val dir = tmp.newFolder("race")
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            repeat(3_000) { round ->
+                val file = File(dir, "c_$round.part.mp4")
+                val start = java.util.concurrent.CyclicBarrier(2)
+                val opened = (1..2).map { pool.submit<QueuedFileChannel?> { start.await(); try { QueuedFileChannel(file) } catch (_: java.io.IOException) { null } } }.mapNotNull { it.get() }
+                assertEquals("круг $round", 1, opened.size)
+                opened.forEach { it.close() }
+            }
+        } finally { pool.shutdownNow(); RecIo.flush(20_000) }
+    }
 }

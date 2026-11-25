@@ -28,6 +28,13 @@ class CameraQuirksTest {
     private val servers = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<ServerSocket>())
     @After fun tearDown() { sessions.forEach { runCatching { it.abort() } }; servers.forEach { runCatching { it.close() } }; CameraTls.clearForTests() }
 
+    /** Второй аудит 25.11.2026, AUD-11: два первых подключения сразу — второй сверяется с отпечатком, который запомнил первый. */
+    @Test fun secondFirstConnectionMustMatchRememberedCertificate() {
+        CameraTls.remember("192.0.2.9:322", "aa")
+        CameraTls.remember("192.0.2.9:322", "aa")
+        try { CameraTls.remember("192.0.2.9:322", "bb"); org.junit.Assert.fail("чужой сертификат принят") } catch (_: java.security.cert.CertificateException) {}
+    }
+
     /** Только петля: на всех адресах порт может совпасть с чужим сервером на 127.0.0.1, и подключение ушло бы туда. */
     private fun loopback() = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
 

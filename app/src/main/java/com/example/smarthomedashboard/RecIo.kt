@@ -111,7 +111,7 @@ internal object RecIo {
     /** Байты в очередях сейчас (для тестов и журнала). */
     val queuedBytes: Long get() = lanes.values.sumOf { synchronized(it.lock) { it.queued } }
 
-    internal fun opened(file: File, channel: QueuedFileChannel) { busy += file.path; channels += channel }
+    internal fun opened(file: File, channel: QueuedFileChannel): Boolean = busy.add(file.path).also { if (it) channels += channel }
 
     /** Носитель извлекают: закрыть всё, что на нём открыто, прямо сейчас, не дожидаясь очереди. */
     internal fun abandon() {
@@ -196,9 +196,9 @@ internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
     init {
         // Имя нового файла выбирается свободным ([RecLayout.freeStart]); если всё же занято — два ролика в одном файле
         // недопустимы: ошибка записи (сессия переподключится), а не ожидание в потоке камеры (ревью 24.11.2026).
-        if (file.path in RecIo.busyFiles()) throw IOException("Файл записи уже пишется: ${file.name}")
+        // «Свободно?» и «занять» — одним действием: иначе два потока могли занять одно имя (второй аудит 25.11.2026, AUD-06).
         if (RecEject.on(file)) throw IOException(RecEject.MESSAGE)
-        RecIo.opened(file, this)
+        if (!RecIo.opened(file, this)) throw IOException("Файл записи уже пишется: ${file.name}")
     }
 
     /** Файл на извлекаемом носителе — закрыть немедленно; недописанное восстановится, когда носитель вернут. false — занят (открывается). */

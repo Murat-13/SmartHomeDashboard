@@ -37,6 +37,7 @@ class HaLoginTest {
         val revoked = CopyOnWriteArrayList<String>()
         val commands = CopyOnWriteArrayList<JSONObject>()
         var admin = true
+        var dropAfterConfig = false
         var external = "https://home.example.com"
         val origin get() = HaServer.origin(server.url("/").toString())
 
@@ -69,7 +70,7 @@ class HaLoginTest {
                     .put("success", ok).put(if (ok) "result" else "error", result).toString())
                 when (json.getString("type")) {
                     "auth" -> webSocket.send(if (json.getString("access_token") == "TEMP") """{"type":"auth_ok"}""" else """{"type":"auth_invalid"}""")
-                    "get_config" -> answer(JSONObject().put("location_name", "Мой дом").put("external_url", external))
+                    "get_config" -> { answer(JSONObject().put("location_name", "Мой дом").put("external_url", external)); if (dropAfterConfig) webSocket.close(1001, "restart") }
                     "auth/current_user" -> answer(JSONObject().put("is_admin", admin))
                     "auth/long_lived_access_token" -> {
                         commands += json
@@ -124,6 +125,22 @@ class HaLoginTest {
         assertEquals(3650, ha.commands.single().getInt("lifespan"))
         assertEquals(listOf("REFRESH"), ha.revoked)
         assertFalse("токен не печатается", granted.toString().contains("LONG-LIVED"))
+    }
+
+    /**
+     * Второй аудит 25.11.2026, AUD-16: Home Assistant закрыл соединение посреди входа (перезапуск) — ошибка сразу, а не после трёх
+     * ожиданий по 30 секунд; доступ не запрашивается повторно под другим именем.
+     */
+    @Test fun lostConnectionDuringLoginFailsFast() = FakeHa().use { ha ->
+        val attempt = HaLogin.onTablet(ha.origin)
+        ha.challenge = HaLogin.challenge(attempt.verifier)
+        ha.dropAfterConfig = true
+        val started = System.nanoTime()
+        try { HaLogin.grant(attempt, "CODE", "Панель — тест"); org.junit.Assert.fail("вход прошёл") } catch (e: HaLogin.LoginException) {
+            assertEquals("Home Assistant закрыл соединение", e.message)
+        }
+        assertTrue("без ожиданий по 30 с", (System.nanoTime() - started) / 1_000_000 < 10_000)
+        assertTrue("повторов нет", ha.commands.size <= 1)
     }
 
     @Test fun takenNameIsRetriedOnceAndUnencryptedExternalAddressIsIgnored() = FakeHa().use { ha ->

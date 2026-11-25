@@ -909,7 +909,8 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
         // Выключенный датчик движения: экран всегда с рабочей яркостью, выбранная сущность сохраняется.
         motionSensorId = prefs.getString("motion_sensor_id", null)?.takeIf { prefs.getBoolean(PREF_MOTION_ENABLED, true) }
-        screenTimeoutMinutes = prefs.getInt("screen_timeout_minutes", 5)
+        // Страховка от испорченного значения: ноль или минус гасили бы экран сразу после касания.
+        screenTimeoutMinutes = prefs.getInt("screen_timeout_minutes", 5).coerceIn(1, ConfigImport.MAX_TIMEOUT_MINUTES)
         tempUnit = prefs.getString("temp_unit", "C") ?: "C"
     }
 

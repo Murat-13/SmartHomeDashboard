@@ -48,6 +48,7 @@ internal object HaCalls {
                 }
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = fail(HomeAssistantAddress.errorMessage(t))
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = fail("Home Assistant закрыл соединение")
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = fail("Home Assistant закрыл соединение")
         })
         try {
@@ -56,8 +57,9 @@ internal object HaCalls {
             var id = 0
             return block { type, data ->
                 val latch = CountDownLatch(1)
-                synchronized(lock) { answer = null; waiting = latch; expected = ++id }
-                socket.send(data.put("id", id).put("type", type).toString())
+                // Связь уже потеряна или сообщение не ушло — ошибка сразу, а не через 30 секунд ожидания (второй аудит, AUD-16).
+                synchronized(lock) { failure?.let { throw HaLogin.LoginException(it) }; answer = null; waiting = latch; expected = ++id }
+                if (!socket.send(data.put("id", id).put("type", type).toString())) throw HaLogin.LoginException(synchronized(lock) { failure } ?: "Соединение с Home Assistant потеряно")
                 if (!latch.await(WAIT_S, TimeUnit.SECONDS)) throw HaLogin.LoginException("Home Assistant не отвечает")
                 val json = synchronized(lock) { failure?.let { throw HaLogin.LoginException(it) }; answer }
                     ?: throw HaLogin.LoginException("Home Assistant не отвечает")
@@ -138,8 +140,9 @@ internal object HaLogin {
             return HaCalls.open(attempt.origin, access) { call ->
                 val config = call("get_config", JSONObject()) as? JSONObject ?: JSONObject()
                 val user = runCatching { call("auth/current_user", JSONObject()) as? JSONObject }.getOrNull()
-                val token = try { create(call, name) } catch (_: LoginException) {
-                    // Такое имя уже есть (два входа в одну секунду): ещё раз с другим.
+                val token = try { create(call, name) } catch (e: LoginException) {
+                    // Такое имя уже есть (два входа в одну секунду): ещё раз с другим. Потеряна связь — не повторяем.
+                    if (e.message != NOT_GRANTED) throw e
                     create(call, "$name ${secret(3)}")
                 }
                 Granted(token, config.optString("location_name"),

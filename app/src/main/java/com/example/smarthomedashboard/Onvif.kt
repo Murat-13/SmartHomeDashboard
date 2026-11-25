@@ -72,6 +72,7 @@ internal object Onvif {
     /** Порты ONVIF по очереди, если владелец не задал свой: Hikvision/Dahua — 80, Reolink — 8000, TP-Link — 2020. */
     val PORTS = listOf(80, 8000, 8080, 2020, 8899)
     private const val MAX_RESPONSE = 512 * 1024
+    private const val MAX_DEPTH = 64
 
     private const val DEVICE_NS = "http://www.onvif.org/ver10/device/wsdl"
     private const val MEDIA_NS = "http://www.onvif.org/ver10/media/wsdl"
@@ -434,6 +435,8 @@ internal object Onvif {
                     val node = Node(parser.name, attrs)
                     stack.last().children += node
                     stack.addLast(node)
+                    // Разбор и поиск по дереву рекурсивны: тысячи вложенных тегов переполнили бы стек (NEW-CAM-9).
+                    if (stack.size > MAX_DEPTH) throw OnvifException("Ответ камеры не разобран")
                 }
                 XmlPullParser.TEXT -> stack.last().text += parser.text.trim()
                 XmlPullParser.END_TAG -> stack.removeLast()
