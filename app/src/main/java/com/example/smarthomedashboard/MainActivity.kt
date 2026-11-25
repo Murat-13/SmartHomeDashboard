@@ -341,7 +341,7 @@ class MainActivity : AppCompatActivity() {
             shiftPanel()
             // Безопасный запуск прожил час без сбоев, и панелью никто не пользуется — обычный режим (STAB-04). Если сбой повторится, а
             // панель сама не откроется, лучше оставить безопасную: без человека она не вернулась бы вовсе.
-            if (SafeStart.recovered(this@MainActivity) && unattended() && UpdateInstaller.returns(this@MainActivity)) {
+            if (SafeStart.recovered(this@MainActivity) && unattended() && SafeStart.returns(this@MainActivity)) {
                 SafeStart.leave(this@MainActivity, auto = true)
                 recreate()
                 return

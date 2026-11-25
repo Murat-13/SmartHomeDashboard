@@ -144,13 +144,18 @@ internal object SafeStart {
      * «поверх других окон», которое человек дал для возврата после включения ([BootReturn]); без него — ничего.
      */
     fun restartLater(context: Context) {
-        if (quick(context).size >= RESTARTS || !Settings.canDrawOverlays(context) || !BootReturn.overlayEnabled(context)) return
+        if (quick(context).size >= RESTARTS || !restartable(context)) return
         val intent = Intent(context, SplashActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val options = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) null else
             ActivityOptions.makeBasic().setPendingIntentCreatorBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED).toBundle()
         val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT, options)
         context.getSystemService(AlarmManager::class.java)?.set(AlarmManager.RTC, now() + RESTART_MS, pending)
     }
+
+    private fun restartable(context: Context) = Settings.canDrawOverlays(context) && BootReturn.overlayEnabled(context)
+
+    /** Вернётся ли панель после сбоя сама — Android ([HomeScreenMode]) или [restartLater]. В тестах — подмена. */
+    internal var returns: (Context) -> Boolean = { HomeScreenMode.isDefaultHome(it) || restartable(it) }
 
     internal fun resetForTests(context: Context) {
         main.removeCallbacksAndMessages(null)

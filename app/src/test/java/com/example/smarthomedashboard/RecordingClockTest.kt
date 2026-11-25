@@ -159,6 +159,9 @@ class RecordingClockTest {
         val s = System.currentTimeMillis() - 30 * day
         val camera = RecLayout.cameraKey(cam.id)
         val old = File(RecLayout.dayDir(root, camera, s).apply { mkdirs() }, RecLayout.closedName(RecFile.Kind.CONTINUOUS, s, 60_000)).apply { writeBytes(ByteArray(100)) }
+        // Часы уже сбивались раньше: остались записи «из будущего». И они ничего не доказывают.
+        val f = System.currentTimeMillis() + 20 * day
+        File(RecLayout.dayDir(root, camera, f).apply { mkdirs() }, RecLayout.closedName(RecFile.Kind.CONTINUOUS, f, 60_000)).writeBytes(ByteArray(100))
         // Идущий отрезок начат уже по этим часам (записи открываются до обхода) — он ничего не доказывает.
         val now = System.currentTimeMillis()
         val (frames, d) = sample()
@@ -176,7 +179,9 @@ class RecordingClockTest {
             assertTrue("архив остался", old.exists())
         } finally {
             live.close()
-            service.destroy(); Thread.sleep(300)
+            val control = RecorderService::class.java.getDeclaredField("control").apply { isAccessible = true }.get(service.get()) as java.util.concurrent.ExecutorService
+            service.destroy()
+            assertTrue(control.awaitTermination(20, java.util.concurrent.TimeUnit.SECONDS))
             RecordingDevice(context).agePausedUntil = 0
             File(root, RecLayout.ROOT).deleteRecursively()
             RecordingDevice(context).setEnabled(cam.id, false)

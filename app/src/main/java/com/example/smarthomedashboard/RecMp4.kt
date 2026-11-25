@@ -267,7 +267,7 @@ internal object Mp4Finalize {
 
     /** true — файл заменён обычным MP4. Кадры, метки и флаги ключевых кадров — без изменений. */
     fun remux(file: File): Boolean {
-        if (!isFragmented(file)) return false
+        if (RecEject.on(file) || !isFragmented(file)) return false
         val originalLength = file.length()
         val tmp = File(file.parentFile, file.name + ".remux")
         val extractor = android.media.MediaExtractor()
@@ -289,6 +289,7 @@ internal object Mp4Finalize {
             if (tracks.isEmpty()) return false
             var buffer = ByteBuffer.allocateDirect(maxInput)
             while (true) {
+                if (RecEject.on(file)) throw java.io.IOException(RecEject.MESSAGE)
                 buffer.clear()
                 var size = try { extractor.readSampleData(buffer, 0) } catch (_: IllegalArgumentException) { -2 }
                 // Кадр больше буфера (getSampleSize — только с API 28): буфер вдвое больше и ещё раз.
@@ -308,13 +309,14 @@ internal object Mp4Finalize {
             muxer.close()
             output.close(); output = null
             synchronized(LOCK) {
+                if (RecEject.on(file)) return false // временный файл уберёт восстановление
                 // Пока перекладывали, файл переименовали (звёздочка), удалили или дописали — оставляем как есть.
                 if (!file.isFile || file.length() != originalLength || tmp.length() == 0L) { tmp.delete(); return false }
                 if (!tmp.renameTo(file)) { tmp.delete(); return false }
             }
             return true
         } catch (e: Exception) {
-            tmp.delete()
+            if (!RecEject.on(file)) tmp.delete()
             throw e
         } finally {
             try { output?.close() } catch (_: Exception) {}

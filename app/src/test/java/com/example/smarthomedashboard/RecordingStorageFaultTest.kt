@@ -58,11 +58,14 @@ class RecordingStorageFaultTest {
         RecVolumes.brokenCard = null
     }
 
+    private fun control() = RecorderService::class.java.getDeclaredField("control").apply { isAccessible = true }.get(service!!.get()) as java.util.concurrent.ExecutorService
+
     @After fun tearDown() {
-        service?.destroy()
-        Thread.sleep(300)
+        // Служба прошлого теста дорабатывает в своём потоке и в конце очищает общее состояние записи — дождаться.
+        if (service != null) { service!!.destroy(); assertTrue(control().awaitTermination(20, java.util.concurrent.TimeUnit.SECONDS)) }
         RecVolumes.dirsOverride = null
         RecVolumes.brokenCard = null
+        RecEject.returned(sd)
         listOf(internal, sd).forEach { it.deleteRecursively() }
         RecordingDevice(context).setEnabled("cam_fault", false)
         RecordingDevice(context).useSdCard = false
@@ -179,6 +182,80 @@ class RecordingStorageFaultTest {
         assertEquals("дальше — в памяти планшета", listOf(4_000L), closed(tablet).map { it.startMs - start })
     }
 
+    /**
+     * Карту извлекают: Android закрывает приложение, у которого на ней открыт файл, через ≈ 0,1 с — ждать ближайшего ключевого кадра нельзя
+     * (эмулятор, 25.11.2026). Файлы закрываются сразу, новые на ней не открываются, недописанное восстанавливается после возврата.
+     */
+    @Test fun filesOnEjectedCardAreClosedAtOnce() {
+        val card = tmp.newFolder(); val tablet = tmp.newFolder()
+        var root = card
+        fun openStreams(): Int = (RecIo::class.java.getDeclaredField("channels").apply { isAccessible = true }.get(RecIo) as Set<*>).count { c ->
+            val out = c!!.javaClass.getDeclaredField("out").apply { isAccessible = true }.get(c) as java.io.FileOutputStream?
+            val file = c.javaClass.getDeclaredField("file").apply { isAccessible = true }.get(c) as File
+            file.path.startsWith(card.path) && out != null && out.fd.valid()
+        }
+        val r = ContinuousRecorder("door", "rtsp://cam/sub", "", null, audio = false, root = { root }, canWrite = { true },
+            onSegment = {}, onStatus = { _, _ -> }, segmentMs = 60_000)
+        r.storageRetryNs = 3_000_000L
+        try {
+            feed(r.newSink().apply { videoClock = 90_000 }, 12, { w -> r.wallClock = { w } }) { s ->
+                if (s == 4) { assertEquals(1, openStreams()); RecEject.start(card.path); assertEquals("закрыт сразу, без кадра и очереди", 0, openStreams()) }
+                if (s in 5..7) { Thread.sleep(5); assertEquals("на извлекаемой карте ничего не открывается", 0, openStreams()) }
+                if (s == 7) root = tablet
+            }
+            val left = RecLayout.scan(card)
+            assertEquals("недописанный файл не тронут: $left", listOf(true), left.map { it.open })
+            assertEquals("дальше — в памяти планшета", listOf(7_000L), closed(tablet).map { it.startMs - start })
+            RecEject.returned(File(card, "x"))
+            assertEquals(1, RecLayout.recover(card, skip = RecIo.busyFiles()))
+            assertTrue("восстановлен", closed(card).single().bytes > 0)
+        } finally { RecEject.returned(File(card, "x")) }
+    }
+
+    /** Один файл как раз открывается на медленном носителе — остальные закрываются, не дожидаясь его. */
+    @Test fun slowFileDoesNotHoldOthersOnEject() {
+        val card = tmp.newFolder()
+        val channels = List(3) { QueuedFileChannel(File(card, "c_$it.part.mp4")).apply { write(java.nio.ByteBuffer.wrap(ByteArray(10))) } }
+        assertTrue(RecIo.flush(5_000))
+        fun valid(c: QueuedFileChannel) = (c.javaClass.getDeclaredField("out").apply { isAccessible = true }.get(c) as java.io.FileOutputStream).fd.valid()
+        val held = CountDownLatch(1); val free = CountDownLatch(1)
+        val slow = thread { (channels[0].javaClass.getDeclaredField("lock").apply { isAccessible = true }.get(channels[0]) as java.util.concurrent.locks.ReentrantLock).let {
+            it.lock(); held.countDown(); free.await(); it.unlock() } }
+        held.await()
+        val eject = thread { RecEject.start(card.path) }
+        try {
+            waitFor("остальные файлы ждут занятый", 2_000) { channels.drop(1).none(::valid) }
+            assertTrue(valid(channels[0]))
+        } finally { free.countDown() }
+        slow.join(5_000); eject.join(5_000)
+        assertFalse(valid(channels[0]))
+        channels.forEach { it.close() }
+        assertTrue(RecIo.flush(5_000))
+        RecEject.returned(File(card, "x"))
+    }
+
+    /** Носитель перестал отвечать посреди закрытия файла — записанное не удаляется: восстановится при запуске. */
+    @Test fun fileIsKeptWhenStorageFailsWhileClosing() {
+        val root = tmp.newFolder()
+        val dir = dayDir(root).apply { mkdirs() }
+        val f = File(dir, RecLayout.openName(RecFile.Kind.CONTINUOUS, start))
+        val d = H264Depacketizer()
+        val frames = mutableListOf<VideoFrame>()
+        var seq = 0
+        accessUnits(nals(resource("sample.h264")), false).forEachIndexed { i, au ->
+            packetize(au, false, i * 9_000L, seq).forEach { p -> frames += d.push(RtpPacket.parse(p, p.size)!!); seq++ }
+        }
+        val w = Mp4SegmentWriter(f, VideoParams(d.codec, d.vps, d.sps!!, d.pps!!), null, queued = true)
+        repeat(30) { i -> val b = frames[i % frames.size]; w.writeVideo(VideoFrame(i * 9_000L, b.nals, b.key), i * 100_000L) }
+        assertTrue(RecIo.flush(5_000))
+        assertTrue(f.setReadable(false) && f.setWritable(false)) // открыть для обрезки нельзя
+        RecLayout.finishLater(w, f, "door", RecFile.Kind.CONTINUOUS, start, 3_000) {}
+        assertTrue(RecIo.flush(5_000))
+        assertTrue("файл остался", f.exists())
+        assertTrue(f.setReadable(true) && f.setWritable(true))
+        assertEquals(1, RecLayout.recover(root))
+    }
+
     /** На каждом ключевом кадре носитель и система не спрашиваются: в потоке камеры — живое видео. Неизвестно куда — файл не рвётся. */
     @Test fun keyFramesDoNotAskTheSystem() {
         val card = tmp.newFolder()
@@ -241,8 +318,7 @@ class RecordingStorageFaultTest {
             recorder.onStorageError(sd)
         }
         // Поток управления отработал всё поставленное.
-        val control = RecorderService::class.java.getDeclaredField("control").apply { isAccessible = true }.get(service!!.get()) as java.util.concurrent.ExecutorService
-        control.submit {}.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        control().submit {}.get(10, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     private fun broadcast(action: String, path: String) {
@@ -259,7 +335,7 @@ class RecordingStorageFaultTest {
         assertNull("новая заминка через 15 минут — отсчёт заново", RecVolumes.brokenCard)
         cardError(55)
         waitFor("запись не перешла в память планшета") { storage() == internal }
-        assertTrue("видно в редакторе камеры", RecordingStatus.sdMissing("cam_fault"))
+        waitFor("не видно в редакторе камеры") { RecordingStatus.sdMissing("cam_fault") }
         assertEquals(sd.path, RecVolumes.brokenCard)
         // Подключили другой носитель — эта карта по-прежнему неисправна.
         broadcast(Intent.ACTION_MEDIA_MOUNTED, "/storage/other")
@@ -271,15 +347,44 @@ class RecordingStorageFaultTest {
         assertNull(RecVolumes.brokenCard)
     }
 
+    /** Между заминками карта писала — они не складываются; ошибки из-за извлечения — не неисправность. */
+    @Test fun recordedSegmentOrEjectResetsCardErrors() {
+        startService()
+        cardError(0)
+        val camera = RecLayout.cameraKey("cam_fault")
+        val s = System.currentTimeMillis() - 60_000
+        val f = File(RecLayout.dayDir(sd, camera, s).apply { mkdirs() }, RecLayout.closedName(RecFile.Kind.CONTINUOUS, s, 60_000)).apply { writeBytes(ByteArray(100)) }
+        RecorderService::class.java.getDeclaredMethod("segmentClosed", RecFile::class.java).apply { isAccessible = true }.invoke(service!!.get(), RecLayout.parse(f, camera)!!)
+        cardError(300); cardError(5)
+        assertNull("карта между заминками писала", RecVolumes.brokenCard)
+        ShadowEnvironment.setExternalStorageState(sd, Environment.MEDIA_EJECTING)
+        RecEject.start(sd.path)
+        cardError(90); cardError(90)
+        assertNull("её извлекают", RecVolumes.brokenCard)
+        RecEject.returned(sd)
+    }
+
+    /** Поток управления занят, кэш носителя устарел: файл и сверка «пишется уже не туда» узнают носитель из одного места. */
+    @Test fun staleStorageCacheIsRefreshedWhenCameraThreadAsks() {
+        startService()
+        val type = RecorderService::class.java
+        fun field(name: String) = type.getDeclaredField(name).apply { isAccessible = true }
+        field("rootCache").set(service!!.get(), internal)
+        field("rootCacheAt").set(service!!.get(), 0L)
+        assertEquals(sd, type.getDeclaredMethod("cameraRoot").apply { isAccessible = true }.invoke(service!!.get()))
+        assertEquals("иначе отрезок менялся бы на каждом ключевом кадре", sd, storage())
+    }
+
     /** Извлечение: узнаём сразу, а не через 10 минут, — иначе Android закроет приложение с файлами на карте. */
     @Test fun ejectMovesRecordingAtOnce() {
         startService()
         ShadowEnvironment.setExternalStorageState(sd, Environment.MEDIA_UNMOUNTED)
         broadcast(Intent.ACTION_MEDIA_EJECT, sd.path)
+        waitFor("файлы на карте не закрыты", 1_500) { RecEject.on(File(sd, "records/x")) }
         waitFor("запись не ушла с извлекаемой карты", 1_500) { storage() == internal } // обычная сверка носителя — раз в 5 с
         ShadowEnvironment.setExternalStorageState(sd, Environment.MEDIA_MOUNTED)
         broadcast(Intent.ACTION_MEDIA_MOUNTED, sd.path)
-        waitFor("запись не вернулась", 1_500) { storage() == sd }
+        waitFor("запись не вернулась", 1_500) { storage() == sd && !RecEject.on(File(sd, "records/x")) }
     }
 
     /** Карта пропала между обходами: файлы на ней не «удалены» — их метки остаются. */

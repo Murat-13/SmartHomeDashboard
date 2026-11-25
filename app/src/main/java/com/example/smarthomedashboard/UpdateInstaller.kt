@@ -107,7 +107,7 @@ internal object UpdateInstaller {
     fun canInstall(context: Context) = permission.granted(context)
 
     /**
-     * Откроется ли панель после замены или сбоя сама: Android не даёт открыть окно из фона, если она не главный экран и нет разрешения
+     * Откроется ли панель после замены сама: Android не даёт открыть окно из фона, если она не главный экран и нет разрешения
      * «поверх других окон» (аудит 25.11.2026, STAB-05). В тестах — подмена.
      */
     @androidx.annotation.VisibleForTesting

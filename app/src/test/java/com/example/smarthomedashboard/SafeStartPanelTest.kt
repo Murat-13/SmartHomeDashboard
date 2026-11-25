@@ -39,11 +39,11 @@ class SafeStartPanelTest {
         repeat(3) { SafeStart.processStarted(context); t += 4_000; SafeStart.crashed(context); t += 5_000 }
         SafeStart.processStarted(context)
         assertEquals(SafeStart.Mode.SAFE, SafeStart.mode)
-        UpdateInstaller.returns = { true }
+        SafeStart.returns = { true }
     }
 
-    @After fun clear() { SafeStart.resetForTests(context); LightMode.resetForTests(); UpdateInstaller.returns = realReturns }
-    private val realReturns = UpdateInstaller.returns
+    @After fun clear() { SafeStart.resetForTests(context); LightMode.resetForTests(); SafeStart.returns = realReturns }
+    private val realReturns = SafeStart.returns
 
     private fun idleMinutes(n: Int) = repeat(n) { t += 60_000; shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(1)) }
 
@@ -76,9 +76,20 @@ class SafeStartPanelTest {
         controller.pause().stop().destroy()
     }
 
+    /** Разрешение «поверх других окон» осталось, а возврат после сбоя выключен — сама не откроется. */
+    @Test fun returnNeedsBothPermissionAndSwitch() {
+        assertEquals(false, realReturns(context))
+        org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(true)
+        try {
+            assertEquals(false, realReturns(context))
+            BootReturn.setOverlay(context, true)
+            assertEquals(true, realReturns(context))
+        } finally { BootReturn.setOverlay(context, false); org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(false) }
+    }
+
     /** Панель после сбоя сама не откроется (не главный экран, нет «поверх других окон») — безопасная лучше закрытой. */
     @Test fun panelThatCannotReturnStaysSafe() {
-        UpdateInstaller.returns = { false }
+        SafeStart.returns = { false }
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         controller.windowFocusChanged(true)
         idleMinutes(120)

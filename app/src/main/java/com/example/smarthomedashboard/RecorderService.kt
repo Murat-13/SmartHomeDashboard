@@ -40,9 +40,13 @@ class RecorderService : Service() {
     private var agePaused = false
     /** Ошибки SD-карты за последние [ERRORS_WINDOW_MS] (часы с включения планшета). */
     private val cardErrors = ArrayDeque<Long>()
+    /** Свой поток: главный может быть занят, а на закрытие файлов у Android — десятки миллисекунд ([RecEject]). */
+    private val mediaThread by lazy { android.os.HandlerThread("rec-media").apply { start() } }
     private val media = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val mounted = intent.data?.path?.takeIf { intent.action == Intent.ACTION_MEDIA_MOUNTED }
+            val volume = intent.data?.path ?: return
+            val mounted = volume.takeIf { intent.action == Intent.ACTION_MEDIA_MOUNTED }
+            if (mounted != null) RecEject.returned(File(volume)) else RecEject.start(volume)
             try { control.execute { safe { storageChanged(mounted) } } } catch (_: java.util.concurrent.RejectedExecutionException) {}
         }
     }
@@ -88,7 +92,7 @@ class RecorderService : Service() {
         androidx.core.content.ContextCompat.registerReceiver(this, media, android.content.IntentFilter().apply {
             MEDIA_ACTIONS.forEach(::addAction)
             addDataScheme("file")
-        }, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        }, null, Handler(mediaThread.looper), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.let { java.io.File(it, "video_debug") } } }
         // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
         control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
@@ -102,6 +106,7 @@ class RecorderService : Service() {
 
     override fun onDestroy() {
         try { unregisterReceiver(media) } catch (_: IllegalArgumentException) {}
+        mediaThread.quitSafely()
         // Остановка камер (закрытие отрезков, до 3 с на камеру) — на потоке управления: главный поток не ждёт.
         // После shutdown() поток дорабатывает уже поставленные задачи и завершается сам.
         control.execute { safe { stopAll() }; RecordingStatus.clear() }
@@ -255,6 +260,7 @@ class RecorderService : Service() {
 
     /** Носитель и свободное место — заранее, в потоке управления (для потоков камер, [rootCache]). */
     private fun refreshStorage() {
+        RecVolumes.dirs(this).forEach { dir -> if (dir != null && RecVolumes.mounted(dir)) RecEject.returned(dir) }
         val root = storageRoot()
         val free = root?.let { freeBytes(it) } ?: 0L
         rootCache = root
@@ -267,7 +273,9 @@ class RecorderService : Service() {
     /** Папка записей для потока камеры: из кэша; устарел (поток управления занят дольше обычного) — как раньше, сразу. */
     private fun cameraRoot(): File? {
         val cached = rootCache
-        return if (cached != null && System.currentTimeMillis() - rootCacheAt <= STORAGE_STALE_MS) cached else storageRoot()
+        if (cached != null && System.currentTimeMillis() - rootCacheAt <= STORAGE_STALE_MS) return cached
+        // Поток управления занят: узнанное здесь — и для сверки «пишется уже не туда» ([CameraRecorder.currentRoot]).
+        return storageRoot().also { rootCache = it; rootCacheAt = System.currentTimeMillis() }
     }
 
     /** Можно ли открыть новый отрезок: место сверх неприкосновенного остатка. Дёшево: кэш обновляет поток управления. */
@@ -286,7 +294,7 @@ class RecorderService : Service() {
      * планшета и голосом, пока карту не вынут и не вернут или приложение не перезапустится (аудит 25.11.2026, REC-02).
      */
     private fun storageFailed(root: File, now: Long) {
-        if (root.path != RecVolumes.dirs(this).getOrNull(1)?.path || RecVolumes.brokenCard == root.path) return
+        if (root.path != RecVolumes.dirs(this).getOrNull(1)?.path || RecVolumes.brokenCard == root.path || RecEject.on(root)) return
         cardErrors.addLast(now)
         while (now - cardErrors.first() > ERRORS_WINDOW_MS) cardErrors.removeFirst()
         // Одна заминка даёт ошибку сразу у нескольких записей: важно, что карта не пишет дольше минуты.
@@ -302,8 +310,13 @@ class RecorderService : Service() {
      * кадре.
      */
     private fun storageChanged(mounted: String? = null) {
+        if (mounted != null) cardErrors.clear()
         if (mounted != null && RecVolumes.brokenCard?.startsWith("$mounted/") == true) RecVolumes.brokenCard = null
         refreshStorage()
+        // Отрезки, недописанные из-за извлечения.
+        storageRoot()?.takeIf { mounted != null && it.path.startsWith("$mounted/") }?.let { root ->
+            RecIo.call(RECOVER_WAIT_MS) { RecLayout.recover(root, skip = RecIo.busyFiles()) }
+        }
         retention(forceScan = false)
     }
 
@@ -326,6 +339,8 @@ class RecorderService : Service() {
     private fun segmentClosed(file: RecFile) {
         // Обход носителя мог уже найти этот файл (закрылся, пока шёл обход после запуска) — не считать дважды.
         if (filesRoot?.let { file.path.path.startsWith("$it/") } == true && files.none { it.path == file.path }) files += file
+        // Карта записала отрезок — прежние заминки не в счёт.
+        if (cardErrors.isNotEmpty() && RecVolumes.dirs(this).getOrNull(1)?.let { file.path.path.startsWith("${it.path}/") } == true) cardErrors.clear()
         RecCatalog.add(file)
         retention(forceScan = false)
     }
@@ -359,8 +374,8 @@ class RecorderService : Service() {
         val limit = RecRetention.limit(device.limitGb, free, used, onFallback())
         val rules = keepRules
         val pausedBefore = clockGuard.pausedUntilMs
-        // Открытый файл не в счёт: он начат по тем самым часам, которые проверяются.
-        val byAge = clockGuard.trusted(now, android.os.SystemClock.elapsedRealtime(), files.filterNot { it.open }.maxOfOrNull { it.endMs })
+        // Открытый файл не в счёт: он начат по тем самым часам, которые проверяются. Записи «из будущего» (часы уже сбивались) — тоже.
+        val byAge = clockGuard.trusted(now, android.os.SystemClock.elapsedRealtime(), files.filter { !it.open && it.endMs <= now }.maxOfOrNull { it.endMs })
         if (clockGuard.pausedUntilMs != pausedBefore) device.agePausedUntil = clockGuard.pausedUntilMs
         if (byAge == agePaused) {
             agePaused = !byAge

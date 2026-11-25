@@ -12,6 +12,8 @@ import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Запись файлов камер на носитель — в своём потоке, а не в потоке, который читает камеру (проверка аудита 23.11.2026,
@@ -45,6 +47,7 @@ internal object RecIo {
     private var queuedMax = 0L
     /** Файлы, открытые через очередь и ещё не закрытые до конца: их не трогает восстановление после падения. */
     private val busy = ConcurrentHashMap.newKeySet<String>()
+    private val channels = ConcurrentHashMap.newKeySet<QueuedFileChannel>()
 
     // Итоги за минуту для журнала — только поток записи.
     private var reportSince = 0L
@@ -83,7 +86,13 @@ internal object RecIo {
     /** Байты в очереди сейчас (для тестов и журнала). */
     val queuedBytes: Long get() = synchronized(lock) { queued }
 
-    internal fun opened(file: File) { busy += file.path }
+    internal fun opened(file: File, channel: QueuedFileChannel) { busy += file.path; channels += channel }
+
+    /** Носитель извлекают: закрыть всё, что на нём открыто, прямо сейчас, не дожидаясь очереди. */
+    internal fun abandon() {
+        // Чей файл сейчас открывается на медленном носителе — последним: остальные его не ждут.
+        channels.filterNot { it.abandonIfEjected(wait = false) }.forEach { it.abandonIfEjected(wait = true) }
+    }
 
     /** Поставить в очередь запись [bytes] байт; поток камеры ждёт, только если очередь полна. */
     internal fun write(bytes: Int, task: () -> Unit) {
@@ -114,7 +123,7 @@ internal object RecIo {
     }
 
     /** Закрыть файл в потоке записи после всех его байтов; [then] — там же, сразу после закрытия. */
-    internal fun close(file: File, closeStream: () -> Unit, then: (() -> Unit)?) = execute {
+    internal fun close(file: File, channel: QueuedFileChannel, closeStream: () -> Unit, then: (() -> Unit)?) = execute {
         val t = System.nanoTime()
         try {
             try { closeStream() } catch (e: IOException) { Log.w(TAG, "Файл записи не закрыт: ${e.message}") }
@@ -122,6 +131,7 @@ internal object RecIo {
         } finally {
             synchronized(lock) { progressNs = System.nanoTime() }
             busy -= file.path
+            channels -= channel
             closes++
             closeMaxNs = maxOf(closeMaxNs, System.nanoTime() - t)
             report()
@@ -148,15 +158,33 @@ internal object RecIo {
  */
 internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
     @Volatile private var failure: IOException? = null
-    /** Только поток записи. */
+    /** Поток записи; закрыть раньше может [abandonIfEjected] — под [lock]. */
     private var out: FileOutputStream? = null
+    private val lock = ReentrantLock()
     @Volatile private var open = true
 
     init {
         // Имя нового файла выбирается свободным ([RecLayout.freeStart]); если всё же занято — два ролика в одном файле
         // недопустимы: ошибка записи (сессия переподключится), а не ожидание в потоке камеры (ревью 24.11.2026).
         if (file.path in RecIo.busyFiles()) throw IOException("Файл записи уже пишется: ${file.name}")
-        RecIo.opened(file)
+        if (RecEject.on(file)) throw IOException(RecEject.MESSAGE)
+        RecIo.opened(file, this)
+    }
+
+    /** Файл на извлекаемом носителе — закрыть немедленно; недописанное восстановится, когда носитель вернут. false — занят (открывается). */
+    fun abandonIfEjected(wait: Boolean): Boolean {
+        if (!RecEject.on(file)) return true
+        failure = IOException(RecEject.MESSAGE)
+        if (wait) lock.lock() else if (!lock.tryLock()) return false
+        try { out?.close() } catch (_: IOException) {} finally { lock.unlock() }
+        return true
+    }
+
+    private fun stream(): FileOutputStream? = lock.withLock {
+        if (failure == null && RecEject.on(file)) failure = IOException(RecEject.MESSAGE)
+        if (failure != null) return@withLock null
+        val s = out ?: FileOutputStream(file).also { out = it }
+        if (failure == null) s else { s.close(); null }
     }
 
     override fun write(src: ByteBuffer): Int {
@@ -167,9 +195,9 @@ internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
         val copy = ByteArray(n).also { src.get(it) }
         RecIo.write(n) {
             if (failure == null) {
-                try { (out ?: FileOutputStream(file).also { out = it }).write(copy) } catch (e: Exception) {
+                try { stream()?.write(copy) } catch (e: Exception) {
                     // Любая ошибка носителя — как раньше, ошибка записи; поток записи не падает (ревью 24.11.2026).
-                    failure = e as? IOException ?: IOException(e)
+                    if (failure == null) failure = e as? IOException ?: IOException(e)
                 }
             }
         }
@@ -184,8 +212,26 @@ internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
     fun close(then: (() -> Unit)?) {
         if (!open) return
         open = false
-        RecIo.close(file, { out?.close(); out = null }, then)
+        RecIo.close(file, this, { lock.withLock { out?.close(); out = null } }, then)
     }
+}
+
+/**
+ * Носители, которые извлекают. Android закрывает приложение, у которого на извлекаемой карте открыт файл, примерно через 0,1 с после
+ * сообщения об извлечении (эмулятор, 25.11.2026): панель исчезла бы со стены. Поэтому файлы записи закрываются сразу, а новых на
+ * этом носителе не открывается, пока его не вернут.
+ */
+internal object RecEject {
+    const val MESSAGE = "Носитель извлекают"
+    private val volumes = ConcurrentHashMap.newKeySet<String>()
+
+    fun on(file: File): Boolean = volumes.any { file.path == it || file.path.startsWith("$it/") }
+
+    /** Извлекают [volume] (`/storage/…`). */
+    fun start(volume: String) { volumes += volume; RecIo.abandon() }
+
+    /** Носитель папки [dir] снова на месте (вернули или извлечь не вышло). */
+    fun returned(dir: File) { volumes.removeIf { dir.path.startsWith("$it/") || dir.path == it } }
 }
 
 /**

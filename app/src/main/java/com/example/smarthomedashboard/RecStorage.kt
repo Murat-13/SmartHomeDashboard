@@ -218,8 +218,9 @@ internal object RecLayout {
 
     /** Закрытый файл: обрезать по последнему целому фрагменту и переименовать в закрытое имя. */
     private fun closed(file: File?, camera: String, kind: RecFile.Kind, startMs: Long, contentMs: Long): RecFile? {
-        if (file == null) return null
-        val ok = try { Mp4Repair.truncateToLastFragment(file) > 0 } catch (_: Exception) { false }
+        // Носитель извлекают или он не отвечает — файл не трогаем: восстановится, когда носитель вернут или при запуске.
+        if (file == null || RecEject.on(file)) return null
+        val ok = try { Mp4Repair.truncateToLastFragment(file) > 0 } catch (_: java.io.IOException) { return null }
         if (!ok) { file.delete(); return null }
         val duration = contentMs.coerceAtLeast(0) + 40
         val done = File(file.parentFile, closedName(kind, startMs, duration))
