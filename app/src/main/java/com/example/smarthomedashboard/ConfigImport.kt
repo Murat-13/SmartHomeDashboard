@@ -84,7 +84,8 @@ internal object ConfigImport {
             if (json.has(key)) booleans[key] = json.get(key) as? Boolean ?: throw JSONException("Неверный тип настройки")
         }
         integers[DashboardPanelController.PREF_PAGE_COUNT]?.let { require(it in 1..MAX_PAGES) }
-        integers["screen_timeout_minutes"]?.let { require(it in 1..MAX_TIMEOUT_MINUTES) }
+        // Настройки принимают любое время от минуты — своя же копия обязана читаться: больше суток обрезается, а не отклоняется.
+        integers["screen_timeout_minutes"]?.let { require(it >= 1); integers["screen_timeout_minutes"] = it.coerceAtMost(MAX_TIMEOUT_MINUTES) }
         val address = ConfigBackup.ADDRESS_KEYS.associateWith { key ->
             if (json.has(key)) (json.get(key) as? String ?: throw JSONException("Неверный тип настройки")).trim() else null
         }

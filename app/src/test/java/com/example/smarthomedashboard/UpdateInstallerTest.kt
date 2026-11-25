@@ -174,12 +174,12 @@ class UpdateInstallerTest {
     @Test fun nightInstallWaitsWhilePanelIsBusy() {
         ready()
         UpdateInstaller.setNightEnabled(context, true)
-        assertEquals(UpdateInstaller.Outcome.BUSY, UpdateInstaller.nightRun(context, deps, busy = "идёт разговор"))
+        assertEquals(UpdateInstaller.Outcome.BUSY, UpdateInstaller.nightRun(context, deps) { "идёт разговор" })
         assertTrue(commits.isEmpty())
         assertTrue(preUpdateCopies().isEmpty())
         assertTrue(log(), log().contains("Ночная установка отложена до следующей ночи: идёт разговор"))
         assertEquals(AppUpdater.State.READY, AppUpdater.status(context).state)
-        assertEquals("освободилась — ставится", UpdateInstaller.Outcome.STARTED, UpdateInstaller.nightRun(context, deps, busy = null))
+        assertEquals("освободилась — ставится", UpdateInstaller.Outcome.STARTED, UpdateInstaller.nightRun(context, deps) { null })
     }
 
     /** Чем занята панель: разговор, команда проходу, недавние касания — и ничем через 10 минут покоя. */

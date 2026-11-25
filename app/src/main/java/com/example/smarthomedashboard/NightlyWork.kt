@@ -41,8 +41,9 @@ internal object NightlyWork {
     inline fun run(name: String, reschedule: () -> Unit, work: () -> Unit) {
         try {
             if (isNight()) work() else android.util.Log.i(TAG, "$name: сейчас не ночь — отложено до следующей ночи")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             android.util.Log.w(TAG, "$name: ${e.javaClass.simpleName}")
         } finally {
             reschedule()

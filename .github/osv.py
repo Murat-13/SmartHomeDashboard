@@ -12,9 +12,8 @@ def coordinates(text):
     for line in text.splitlines():
         m = re.search(r"[+\\]--- ([\w.\-]+):([\w.\-]+):([^\s]+)(?: -> ([^\s]+))?", line)
         if not m or "(n)" in line: continue
-        version = (m.group(4) or m.group(3)).rstrip("(*c)").strip()
-        version = re.sub(r"^\{strictly (.+)\}$", r"\1", version)
-        if version and not version.startswith("project"): found.add((m.group(1) + ":" + m.group(2), version))
+        version = re.sub(r"\s*\((\*|c|n)\)$", "", (m.group(4) or m.group(3)).strip())
+        if version and version[0].isdigit(): found.add((m.group(1) + ":" + m.group(2), version))
     return sorted(found)
 
 def ask(packages):

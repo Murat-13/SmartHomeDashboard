@@ -174,6 +174,8 @@ internal class DashboardPanelController(
     /** Новая пустая страница справа; возвращает её номер. */
     fun addPage(): Int {
         val index = pageCount()
+        // Предел страниц общий с импортом настроек: сверх него — последняя, новая не создаётся.
+        if (index >= ConfigImport.MAX_PAGES) return index - 1
         pagePrefs().edit { putInt(PREF_PAGE_COUNT, index + 1) }
         return index
     }

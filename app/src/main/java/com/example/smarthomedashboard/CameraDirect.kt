@@ -252,7 +252,8 @@ internal class PinnedTrust(@Volatile private var pin: String?, private val onPin
         val leaf = chain?.firstOrNull() ?: throw CertificateException("Камера не прислала сертификат")
         val print = fingerprint(leaf.encoded)
         val known = pin
-        if (known == null) { pin = print; onPin(print); return }
+        // Сначала сверка с тем, что успел запомнить другой: отказ не должен оставить этот отпечаток принятым (ревью 26.11.2026).
+        if (known == null) { onPin(print); pin = print; return }
         if (known != print) throw CertificateException("Сертификат камеры изменился")
     }
 

@@ -87,8 +87,6 @@ internal object GateHub {
         .apply { rejectedExecutionHandler = java.util.concurrent.RejectedExecutionHandler { r, _ -> Thread(r, "gates-command-extra").apply { isDaemon = true }.start() } }
     /** Проход → начало его текущей операции напрямую: по нему задача команды узнаёт, что она ещё нужна. */
     private val current = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    /** Команда проходу отправляется или ждёт подтверждения. */
-    val commandRunning get() = current.isNotEmpty()
     /** Последний ответ устройства по проходу; два промаха подряд — «не отвечает». */
     private val directStates = HashMap<String, DirectState>()
     private val directMisses = HashMap<String, Int>()
@@ -114,6 +112,8 @@ internal object GateHub {
     private var app: Context? = null
     private var cached: List<Gate>? = null
     private val ops = HashMap<String, Op>()
+    /** Команда проходу (через Home Assistant или напрямую) отправляется или ждёт подтверждения. Главный поток. */
+    val commandRunning get() = ops.values.any { it.busy }
     /** Проход, которым исполняется действие: может быть ещё не сохранён («Проверить» в редакторе). */
     private val opGates = HashMap<String, Gate>()
     private val deadlines = HashMap<String, Runnable>()

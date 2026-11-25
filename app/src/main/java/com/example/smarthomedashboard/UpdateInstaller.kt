@@ -253,9 +253,10 @@ internal object UpdateInstaller {
         NightlyWork.schedule(context, NIGHT_WORK, WORK, NightWorker::class.java, 3, 30, fromWorker)
 
     /** Ночная попытка: свежая проверка, затем тихая установка готового обновления. */
-    internal fun nightRun(context: Context, deps: AppUpdater.Deps = AppUpdater.deps(context), busy: String? = null): Outcome? {
+    internal fun nightRun(context: Context, deps: AppUpdater.Deps = AppUpdater.deps(context), busyNow: () -> String? = { null }): Outcome? {
         if (!nightEnabled(context) || !silentSupported()) return null
         AppUpdater.check(context, deps)
+        val busy = busyNow()
         if (busy != null) {
             // Установка закрывает панель на несколько секунд: разговор, звонок, команда проходу оборвались бы (второй аудит, AUD-24).
             if (AppUpdater.readyFile(context, deps) == null) return null
@@ -268,9 +269,8 @@ internal object UpdateInstaller {
     class NightWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         override suspend fun doWork(): Result {
             NightlyWork.run("Ночная установка", { schedule(applicationContext, fromWorker = true) }) {
-                // Экраны читаются в главном потоке; занято — попробуем следующей ночью.
-                val busy = withContext(Dispatchers.Main) { PanelBusy.reason() }
-                withContext(Dispatchers.IO) { nightRun(applicationContext, busy = busy) }
+                // Экраны читаются в главном потоке, прямо перед установкой (после проверки и загрузки); занято — следующей ночью.
+                withContext(Dispatchers.IO) { nightRun(applicationContext) { kotlinx.coroutines.runBlocking(Dispatchers.Main) { PanelBusy.reason() } } }
             }
             return Result.success()
         }
