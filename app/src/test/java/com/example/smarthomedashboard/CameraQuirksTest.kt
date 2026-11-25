@@ -432,8 +432,9 @@ class CameraQuirksTest {
         p.waitFor(30, TimeUnit.SECONDS)
         val store = KeyStore.getInstance("PKCS12").apply { file.inputStream().use { load(it, "camera".toCharArray()) } }
         file.delete()
-        val keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(store, "camera".toCharArray()) }
-        return SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }.serverSocketFactory.createServerSocket()
+        // Камера — на обычном TLS Java, а не на Conscrypt из Robolectric: его серверной стороне на JDK 21 (CI) закрыт java.net.
+        val keys = KeyManagerFactory.getInstance("SunX509", "SunJSSE").apply { init(store, "camera".toCharArray()) }
+        return SSLContext.getInstance("TLS", "SunJSSE").apply { init(keys.keyManagers, null, null) }.serverSocketFactory.createServerSocket()
             .apply { reuseAddress = true; bind(java.net.InetSocketAddress("127.0.0.1", port)) }
     }
 

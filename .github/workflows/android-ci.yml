@@ -40,6 +40,15 @@ jobs:
       - name: Настроить Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      # Образы Android для Robolectric — из кэша, а нет — заранее и с повторами (.github/robolectric.sh).
+      - name: Кэш образов Robolectric
+        uses: actions/cache@v6
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ hashFiles('.github/robolectric.txt') }}
+      - name: Образы Robolectric
+        run: bash .github/robolectric.sh
+
       # Android SDK уже есть на ubuntu-latest (ANDROID_HOME), лицензии приняты.
       # Недостающую платформу android-34 AGP скачает сам.
       - name: Тесты и сборка
