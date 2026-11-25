@@ -37,7 +37,9 @@ import java.lang.reflect.InvocationTargetException
 @LooperMode(LooperMode.Mode.PAUSED)
 class DataCompatibilityTest {
     private val context = RuntimeEnvironment.getApplication()
-    private val versions = listOf("v0.9.1", "v0.9.4", "v0.9.8")
+    private val versions = listOf("v0.9.1", "v0.9.4", "v0.9.8", "v0.9.19", "v0.9.72")
+    /** Образцы со страницами, плиткой «Камера» и проходами (второй аудит 25.11.2026): формат текущей версии. */
+    private val withPages = setOf("v0.9.72")
 
     private fun fixture(version: String) = JSONObject(requireNotNull(javaClass.classLoader!!.getResource("compat/$version.json")) {
         "Нет образца $version"
@@ -77,7 +79,11 @@ class DataCompatibilityTest {
             val manager = TileManager(context)
             val tiles = manager.getAllTiles()
             assertEquals("$version: ни одна плитка не потеряна", org.json.JSONArray(raw).length(), tiles.size)
-            assertTrue("$version: старые плитки на главной странице", tiles.all { it.page == 0 })
+            if (version in withPages) {
+                assertEquals("$version: плитка второй страницы на месте", listOf("c_cam"), tiles.filter { it.page == 1 }.map { it.id })
+                assertEquals("$version: проходы прочитаны", listOf("g_wicket", "g_gate"), GateStore.load(context).map { it.id })
+                assertEquals("$version: плитка прохода знает свой проход", "g_wicket", GateTileConfig.gateId(tiles.single { it.type == GateTileConfig.TYPE }.config))
+            } else assertTrue("$version: старые плитки на главной странице", tiles.all { it.page == 0 })
             // Клиент получает все state_changed; важно, что каждая сущность старой плитки обновляет именно её.
             val index = PanelDependencyIndex(tiles)
             for (tile in tiles) {
@@ -108,7 +114,8 @@ class DataCompatibilityTest {
             ArchitectureTestAccess.methods(activity).single { it.name == "refreshBottomPanel" && it.parameterTypes.isEmpty() }
                 .apply { isAccessible = true }.invoke(activity)
             shadowOf(Looper.getMainLooper()).idle()
-            for (tile in manager.getAllTiles()) {
+            // На экране — первая страница; у прежних версий все плитки на ней.
+            for (tile in manager.getAllTiles().filter { it.page == 0 }) {
                 assertNotNull("$version: плитка ${tile.id} (${tile.type}) построена", panel.findViewWithTag<View>(tile.id))
             }
             DoorbellHub.actions = null

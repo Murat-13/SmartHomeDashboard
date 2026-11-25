@@ -42,3 +42,12 @@ Robolectric копит память от класса к классу; к ~1450-
 
 detekt запускать так же, как Deep tests: с `--build-upon-default-config` (без флага часть правил не включается).
 
+## Известные уязвимости библиотек (0.9.72)
+
+Шаг «Известные уязвимости библиотек (OSV)» в Deep tests: `.github/osv.py` читает дерево зависимостей рабочей сборки
+(`releaseRuntimeClasspath`) и спрашивает базу [OSV](https://osv.dev) — в запросах только открытые имена и версии библиотек. Новая запись
+роняет проверку; принятые (с объяснением, почему пути атаки нет) — в `.github/osv-ignore.txt`. Локально:
+
+```bash
+./gradlew :app:dependencies --configuration releaseRuntimeClasspath | python3 .github/osv.py
+```

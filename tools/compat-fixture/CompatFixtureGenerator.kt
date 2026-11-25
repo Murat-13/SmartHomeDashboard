@@ -66,7 +66,15 @@ class CompatFixtureGenerator {
             add("c_climate", "home_climate_modern", "grid", "Климат", 1200, 360, json.toString())
         }
         companion("InverterModernConfig", "{}")?.let { add("c_inv", "inverter_modern", "grid", "Инвертор", 1200, 700, fill(it, "c_inv")) }
-        companion("DoorbellConfig", "{}")?.let { add("c_door", "doorbell_modern", "grid", "Калитка", 1500, 120, fill(it, "c_door")) }
+        (companion("DoorbellConfig", "{}") ?: companion("DoorbellConfig", "{}", false))?.let { add("c_door", "doorbell_modern", "grid", "Калитка", 1500, 120, fill(it, "c_door")) }
+        // Плитка «Камера» (с 0.9.26) — на второй странице (страницы — с 0.9.5).
+        companion("DoorbellConfig", "{}", true)?.let { tiles += TileEntity("c_cam", "camera_modern", "grid", "Камера", 40, 120, 1, 1, config = fill(it, "c_cam"), page = 1) }
+        // ПРОХОДЫ (с 0.9.49): для более старых версий этот блок удалить — классов там нет.
+        GateStore.save(ctx, listOf(
+            Gate("g_wicket", "Калитка", Gate.Kind.RELAY, open = "switch.c_wicket", sensor = "binary_sensor.c_wicket_open"),
+            Gate("g_gate", "Ворота", Gate.Kind.COVER, open = "cover.c_gate")))
+        add("c_gate", GateTileConfig.TYPE, "grid", "Проход", 1500, 700, GateTileConfig.newTileConfig("{}", "g_wicket"))
+        // КОНЕЦ блока проходов.
         TileManager(ctx).saveTiles(tiles)
         ctx.getSharedPreferences("dashboard_prefs", 0).edit().putString("app_theme", "dark").putString("temp_unit", "C")
             .putInt("screen_timeout_minutes", 7).putInt("pin_session_minutes", 30).putBoolean("kiosk_mode", false)

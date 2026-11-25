@@ -52,6 +52,11 @@ jobs:
           ./gradlew testDebugUnitTest --tests '*PanelChaosTest*' --tests '*HaProtocolFuzzTest*' --tests '*EditorChaosTest*'
           --tests '*DataCompatibilityTest*' -Ptest.maxHeap=3g
           -Pchaos.iterations=${{ github.event_name == 'schedule' && '1500' || inputs.chaos_iterations || '300' }} --stacktrace
+      # Известные уязвимости библиотек рабочей сборки по базе OSV (docs/ci.md); принятые — в .github/osv-ignore.txt.
+      - name: Известные уязвимости библиотек (OSV)
+        run: |
+          set -o pipefail
+          ./gradlew -q :app:dependencies --configuration releaseRuntimeClasspath | python3 .github/osv.py
       # Статический анализ без плагина в сборке: отдельный detekt-cli, только потенциальные ошибки
       # (config/detekt). Принятые находки — в baseline; новая находка роняет проверку.
       - name: Статический анализ (detekt)

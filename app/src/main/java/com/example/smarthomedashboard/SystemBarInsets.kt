@@ -126,6 +126,12 @@ class SmartHomeApp : Application() {
             SafeStart.processStarted(this)
             CrashLog.install(this)
         }
+        // Отладочная сборка: чтение и запись на диск в главном потоке, незакрытые файлы и «утёкшие» экраны — строкой в журнал
+        // (второй аудит 25.11.2026). В выпускаемой сборке не включается; поведение не меняет.
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && android.os.Build.FINGERPRINT != "robolectric") {
+            android.os.StrictMode.setThreadPolicy(android.os.StrictMode.ThreadPolicy.Builder().detectDiskReads().detectDiskWrites().detectNetwork().penaltyLog().build())
+            android.os.StrictMode.setVmPolicy(android.os.StrictMode.VmPolicy.Builder().detectLeakedClosableObjects().detectActivityLeaks().penaltyLog().build())
+        }
         registerActivityLifecycleCallbacks(SystemBarInsets.callbacks)
         registerActivityLifecycleCallbacks(PanelIdle.callbacks)
         // Профиль планшета (docs/diagnostics-tz.md, часть 2): опыт показа видео прошлых запусков.
