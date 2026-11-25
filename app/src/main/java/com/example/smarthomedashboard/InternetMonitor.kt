@@ -12,7 +12,9 @@ import android.os.Looper
  * Наличие Wi-Fi само по себе интернетом не считается. null — состояние ещё неизвестно.
  */
 internal class InternetMonitor(context: Context, private val onChange: (Boolean?) -> Unit) {
-    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    // У приложения, не у экрана: на Android 12 система держит обработчик подписки, а через него — и того, у кого взят сервис;
+    // каждый поворот оставлял в памяти весь прежний экран (25.11.2026).
+    private val connectivity = context.applicationContext.getSystemService(ConnectivityManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private var callback: ConnectivityManager.NetworkCallback? = null
     var available: Boolean? = null
