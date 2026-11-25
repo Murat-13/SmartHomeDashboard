@@ -20,7 +20,10 @@ import androidx.core.content.ContextCompat
  */
 class SafeStartActivity : AppCompatActivity() {
     private val main = Handler(Looper.getMainLooper())
-    private val retry = Runnable { openPanel(normal = false) }
+    /** Поверх открыты Настройки (панель чинят) — попытка открыть панель их не перебивает: ждём ещё (STAB-08). */
+    private val retry: Runnable = object : Runnable {
+        override fun run() { if (PanelIdle.showing != null) main.postDelayed(this, RETRY_MS) else openPanel(normal = false) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,18 +34,6 @@ class SafeStartActivity : AppCompatActivity() {
 
     override fun onUserInteraction() {
         super.onUserInteraction()
-        main.removeCallbacks(retry)
-        main.postDelayed(retry, RETRY_MS)
-    }
-
-    /** Поверх открыты Настройки (панель чинят): попытка открыть панель их не перебивает; вернулись — отсчёт заново (STAB-08). */
-    override fun onStop() {
-        main.removeCallbacks(retry)
-        super.onStop()
-    }
-
-    override fun onRestart() {
-        super.onRestart()
         main.removeCallbacks(retry)
         main.postDelayed(retry, RETRY_MS)
     }

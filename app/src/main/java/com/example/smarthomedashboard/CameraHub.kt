@@ -281,7 +281,8 @@ internal class SharedStream(
 
     private fun loop() {
         var backoffMs = 2_000L
-        var refused = false
+        var failure: Exception? = null
+        var refusals = 0
         while (running) {
             val started = System.nanoTime()
             broadcast(CameraRecorder.State.CONNECTING)
@@ -422,7 +423,7 @@ internal class SharedStream(
                     }
                 })
             } catch (e: Exception) {
-                refused = e is RtspException && e.status == 401
+                failure = e
                 if (running) {
                     Log.w(TAG, "${e.javaClass.simpleName}: ${e.message}")
                     broadcast(CameraRecorder.State.RETRYING, e.message ?: e.javaClass.simpleName)
@@ -449,7 +450,10 @@ internal class SharedStream(
             if (System.nanoTime() - started > 60_000_000_000L) backoffMs = 2_000L
             // Камера не приняла пароль: пробовать его каждые 30 с незачем (часть камер за это блокирует вход) — раз в 5 минут.
             // Новый пароль из редактора запускает запись заново сразу (аудит 25.11.2026, REC-06).
-            if (refused) { backoffMs = REFUSED_RETRY_MS; refused = false }
+            // Один отказ бывает и временным (камера перезагружается, занята) — редкие попытки только со второго подряд.
+            refusals = if (failure.let { it is RtspException && it.status == 401 }) refusals + 1 else 0
+            if (refusals >= 2) backoffMs = REFUSED_RETRY_MS
+            failure = null
             try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { if (!running) break }
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }

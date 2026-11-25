@@ -1175,10 +1175,14 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    /** Один поток: два списка подряд ложатся в том же порядке, в каком пришли. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val entityWriter = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(1)
+
     private fun cacheEntities(e: List<HaEntity>) {
         // Тысячи сущностей в текст — не в главном потоке (аудит 25.11.2026, STAB-08).
         val prefs = getSharedPreferences("dashboard_prefs", MODE_PRIVATE)
-        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+        lifecycleScope.launch(entityWriter) {
             val json = com.google.gson.Gson().toJson(e)
             prefs.edit { putString("cached_entities", json); putLong("cached_entities_time", System.currentTimeMillis()) }
         }

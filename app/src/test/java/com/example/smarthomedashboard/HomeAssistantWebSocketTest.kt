@@ -305,13 +305,20 @@ class HomeAssistantWebSocketTest {
         assertEquals(2, server.requestCount)
         socket.disconnect()
 
-        val denied = server(Peer(accept = false))
+        // Обычная неудача, затем отказ токена: вернувшаяся сеть отклонённый токен не повторяет.
+        val denied = MockWebServer().also { servers.add(it) }
+        denied.enqueue(MockResponse().setResponseCode(500))
+        denied.enqueue(MockResponse().withWebSocketUpgrade(Peer(accept = false)))
+        denied.start()
         val second = client(denied.url("/").toString(), status = { status = it })
         second.connect()
-        await { status.contains("10 минут") }
+        awaitAdvancing { status.contains("10 минут") }
+        assertEquals(2, denied.requestCount)
+        shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.SECONDS)
         second.networkReturned()
         shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MINUTES)
-        assertEquals("после отказа токена сеть попытку не ускоряет", 1, denied.requestCount)
+        Thread.sleep(700) // запрос, если бы он ушёл, идёт в своём потоке
+        assertEquals("после отказа токена сеть попытку не ускоряет", 2, denied.requestCount)
         second.disconnect()
     }
 

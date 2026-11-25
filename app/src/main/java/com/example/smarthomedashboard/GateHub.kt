@@ -90,6 +90,8 @@ internal object GateHub {
         .apply { rejectedExecutionHandler = java.util.concurrent.RejectedExecutionHandler { r, _ -> Thread(r, "gates-command-extra").apply { isDaemon = true }.start() } }
     /** Проход → начало его текущей операции напрямую: по нему задача команды узнаёт, что она ещё нужна. */
     private val current = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** Какое действие сейчас отправляется проходу напрямую (главный поток). */
+    private val sending = HashMap<String, Gate.Action>()
     /** Последний ответ устройства по проходу; два промаха подряд — «не отвечает». */
     private val directStates = HashMap<String, DirectState>()
     private val directMisses = HashMap<String, Int>()
@@ -234,7 +236,9 @@ internal object GateHub {
         // Команда не стоит в очереди за опросами молчащих устройств («Стоп» ждал бы до 6 с) и не уходит, если её время вышло
         // (второй аудит 25.11.2026, NEW-GATE-1).
         // Прежняя команда ещё в пути (ждёт соединения) — обрываем: иначе «Стоп» пришёл бы раньше «Открыть» (ревью 26.11.2026).
-        if (current.containsKey(gate.id)) link.cancel(gate.id)
+        // Повторный «Стоп» идущий «Стоп» не обрывает.
+        if (current.containsKey(gate.id) && !(action == Gate.Action.STOP && sending[gate.id] == Gate.Action.STOP)) link.cancel(gate.id)
+        sending[gate.id] = action
         current[gate.id] = started
         commands.execute {
             if (current[gate.id] != started) { Log.i(TAG, "${gate.name}: команда устарела — не отправлена"); return@execute }

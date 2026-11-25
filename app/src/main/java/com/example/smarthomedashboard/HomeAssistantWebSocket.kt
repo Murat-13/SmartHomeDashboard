@@ -197,6 +197,9 @@ class HomeAssistantWebSocket(
     private fun openConnection() {
         if (!running) return
         reconnectTask = null
+        // Попытка началась: «отложенной обычной попытки» больше нет — иначе вернувшаяся сеть ускорила бы и ожидание после
+        // отказа токена (ревью 26.11.2026).
+        waitingReconnect = false
         cancelPrimaryProbe()
         cancelIncoming()
         val id = ++generation

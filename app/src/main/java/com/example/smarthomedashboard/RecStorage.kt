@@ -273,7 +273,7 @@ internal object RecLayout {
             val ok = try { Mp4Repair.truncateToLastFragment(f.path) > 0 } catch (_: java.io.IOException) {
                 // Файл не прочитался (носитель занят, сбой чтения) — это ещё не «в нём ничего нет»: попробуем при следующем запуске.
                 // Старше трёх суток — уже не прочитается (аудит 25.11.2026, REC-06).
-                if (System.currentTimeMillis() - modified in 0 until KEEP_UNREAD_MS) continue
+                if (System.currentTimeMillis() - modified < KEEP_UNREAD_MS) continue
                 false
             } catch (_: Exception) { false }
             if (!ok) { f.path.delete(); continue }

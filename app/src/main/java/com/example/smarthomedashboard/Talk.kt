@@ -1116,7 +1116,7 @@ internal class DoorbellTalk(
         main.removeCallbacks(afterChime)
         pendingClip = null
         playing = false
-        if (inCall) { inCall = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
+        if (inCall) { inCall = false; active = false; main.removeCallbacks(callWatch); communication(false); onCall?.invoke(false) }
         main.removeCallbacks(testBreak)
         stopStreet()
         stopDuplex()
