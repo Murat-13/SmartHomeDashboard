@@ -1,7 +1,6 @@
 package com.example.smarthomedashboard.deep
 
 import android.view.View
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import com.example.smarthomedashboard.DoorbellCard
@@ -24,29 +23,16 @@ import org.junit.runner.RunWith
 @LargeTest
 class DoorbellStreamTest {
     private lateinit var ha: FakeHomeAssistant
-    private var scenario: ActivityScenario<MainActivity>? = null
+    private var screen: TestScreen<MainActivity>? = null
     private val host: String? get() = argument("rtspHost")
 
     @After fun stop() {
-        // ActivityScenario.close (как recreate, launch и onActivity) ждёт свободного главного потока, а при живом видео
-        // на медленном эмуляторе CI его можно ждать часами (Deep tests для c48c75c). Сначала закрыть экран без ожидания —
-        // видео остановится, — потом close.
-        resumedActivity()?.let { a ->
-            onMain { a.finish() }
-            runCatching { waitFor(10_000, "экран закрыт") { onMain { a.isDestroyed } } }
-        }
-        scenario?.close()
+        screen?.close()
         if (::ha.isInitialized) ha.close()
     }
 
-    /** Поворот: экран пересоздаётся «ради смены конфигурации» — без ожидания свободного главного потока (см. [stop]). */
-    private fun rotate(): MainActivity {
-        val old = panel() ?: error("нет экрана панели")
-        onMain { old.recreate() }
-        var next: MainActivity? = null
-        waitFor(15_000, "новый экран после поворота") { next = panel(); next != null && next !== old }
-        return next!!
-    }
+    /** Поворот: экран пересоздаётся «ради смены конфигурации». */
+    private fun rotate(): MainActivity = screen!!.recreate()
 
     private fun open(main: String, sub: String, autoCollapse: Boolean = true) {
         assumeTrue("Нужен аргумент rtspHost (RTSP-стенд CI)", host != null)
@@ -57,11 +43,10 @@ class DoorbellStreamTest {
             autoCollapse = autoCollapse))
         seedStates(ha, tiles)
         prepareApp(ha, tiles)
-        scenario = ActivityScenario.launch(MainActivity::class.java)
+        screen = TestScreen(MainActivity::class.java)
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
     }
 
-    /** Экран панели — без ожидания свободного главного потока ([resumedActivity]): при живом видео его можно не дождаться. */
     private fun panel(): MainActivity? = resumedActivity() as? MainActivity
 
     private fun card(): DoorbellCard? = panel()?.let { a ->
@@ -204,8 +189,8 @@ class DoorbellStreamTest {
             val failed = card()?.let { c -> onMain { c.video.failedAttempts } } ?: 0
             assertTrue("$name: попытка заканчивается ошибкой (были: $seen, неудачных попыток $failed)",
                 DoorbellVideoView.Status.ERROR in seen || failed > 0)
-            scenario?.close()
-            scenario = null
+            screen?.close()
+            screen = null
             ha.close()
         }
     }

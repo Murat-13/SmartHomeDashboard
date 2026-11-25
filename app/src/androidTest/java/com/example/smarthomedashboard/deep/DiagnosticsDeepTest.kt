@@ -3,7 +3,6 @@ package com.example.smarthomedashboard.deep
 import android.content.Intent
 import android.view.View
 import android.widget.TextView
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.smarthomedashboard.DoorbellConfig
 import com.example.smarthomedashboard.DoorbellEditorActivity
@@ -26,10 +25,10 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class DiagnosticsDeepTest {
     private lateinit var ha: FakeHomeAssistant
-    private var scenario: ActivityScenario<DoorbellEditorActivity>? = null
+    private var screen: TestScreen<DoorbellEditorActivity>? = null
 
     @After fun stop() {
-        scenario?.close()
+        screen?.close()
         if (::ha.isInitialized) ha.close()
     }
 
@@ -43,7 +42,7 @@ class DiagnosticsDeepTest {
         val config = JSONObject(DoorbellConfig.newTileConfig()).put(DoorbellConfig.KEY, door.toJson()).toString()
         prepareApp(ha, listOf(TileEntity("deep_door", DoorbellConfig.TYPE, "grid", "Домофон", 40, 40, 1, 1, config = config)))
         DoorbellEditorActivity.diagSeconds = 30
-        scenario = ActivityScenario.launch(Intent(appContext, DoorbellEditorActivity::class.java).putExtra("tile_id", "deep_door"))
+        screen = TestScreen(DoorbellEditorActivity::class.java, Intent(appContext, DoorbellEditorActivity::class.java).putExtra("tile_id", "deep_door"))
         fun view(tag: String): View? { val activity = resumedActivity(); return onMain { activity?.window?.decorView?.findViewWithTag<View>(tag) } }
         waitFor(10_000, "раздел «Диагностика»") { view("door_diag_run") != null }
         val run = view("door_diag_run")!!
@@ -86,7 +85,7 @@ class DiagnosticsDeepTest {
         prepareApp(ha, listOf(TileEntity("deep_cam", DoorbellConfig.CAMERA_TYPE, "grid", "Камера", 40, 40, 1, 1, config = config)))
         com.example.smarthomedashboard.CameraApply.setEnabled(appContext, true)
         DoorbellEditorActivity.diagSeconds = 20
-        scenario = ActivityScenario.launch(Intent(appContext, DoorbellEditorActivity::class.java).putExtra("tile_id", "deep_cam"))
+        screen = TestScreen(DoorbellEditorActivity::class.java, Intent(appContext, DoorbellEditorActivity::class.java).putExtra("tile_id", "deep_cam"))
         fun view(tag: String): View? { val activity = resumedActivity(); return onMain { activity?.window?.decorView?.findViewWithTag<View>(tag) } }
         try {
             waitFor(10_000, "раздел «Диагностика»") { view("door_diag_run") != null }
@@ -113,7 +112,7 @@ class DiagnosticsDeepTest {
         val door = DoorbellConfig(rtspMain = "rtsp://10.0.2.2:1/main", rtspSub = "rtsp://10.0.2.2:1/sub")
         val config = JSONObject(DoorbellConfig.newTileConfig()).put(DoorbellConfig.KEY, door.toJson()).toString()
         prepareApp(ha, listOf(TileEntity("deep_door", DoorbellConfig.TYPE, "grid", "Домофон", 40, 40, 1, 1, config = config)))
-        val tablet = ActivityScenario.launch<TabletActivity>(Intent(appContext, TabletActivity::class.java))
+        val tablet = TestScreen(TabletActivity::class.java)
         try {
             fun text(tag: String): String? { val activity = resumedActivity(); return onMain { (activity?.window?.decorView?.findViewWithTag<View>(tag) as? TextView)?.text?.toString() } }
             waitFor(10_000, "экран «Планшет»") { text("tablet_h264") != null }

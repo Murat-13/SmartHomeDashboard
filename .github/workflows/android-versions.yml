@@ -8,23 +8,44 @@ on:
     # 04:10 по Москве.
     - cron: '10 1 * * *'
   workflow_dispatch:
+    inputs:
+      api:
+        description: 'Только эта версия (24, 29, 31 или 36); пусто — все'
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Список версий
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.list.outputs.include }}
+    steps:
+      - id: list
+        env:
+          ONLY: ${{ inputs.api }}
+        run: |
+          cat > all.json <<'JSON'
+          [
+            {"name": "Android 7, 10 дюймов", "api": 24, "target": "default", "arch": "x86_64", "profile": "Nexus 10", "what": "class=com.example.smarthomedashboard.deep.PanelEndToEndTest"},
+            {"name": "Android 10, 10 дюймов", "api": 29, "target": "default", "arch": "x86_64", "profile": "pixel_c", "what": "package=com.example.smarthomedashboard.deep"},
+            {"name": "Android 12, 1024 на 768", "api": 31, "target": "default", "arch": "x86_64", "profile": "Nexus 9", "what": "package=com.example.smarthomedashboard.deep"},
+            {"name": "Android 16, планшет", "api": 36, "target": "google_apis", "arch": "x86_64", "profile": "pixel_tablet", "what": "package=com.example.smarthomedashboard.deep"}
+          ]
+          JSON
+          echo "include=$(jq -c --arg only "$ONLY" '[.[] | select($only == "" or (.api | tostring) == $only)]' all.json)" >> "$GITHUB_OUTPUT"
+
   emulator:
+    needs: plan
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { name: 'Android 7, 10 дюймов', api: 24, target: default, arch: x86_64, profile: 'Nexus 10', what: 'class=com.example.smarthomedashboard.deep.PanelEndToEndTest' }
-          - { name: 'Android 10, 10 дюймов', api: 29, target: default, arch: x86_64, profile: 'pixel_c', what: 'package=com.example.smarthomedashboard.deep' }
-          - { name: 'Android 12, 1024 на 768', api: 31, target: default, arch: x86_64, profile: 'Nexus 9', what: 'package=com.example.smarthomedashboard.deep' }
-          - { name: 'Android 16, планшет', api: 36, target: google_apis, arch: x86_64, profile: pixel_tablet, what: 'package=com.example.smarthomedashboard.deep' }
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -52,7 +73,7 @@ jobs:
             adb shell svc power stayon true
             adb shell settings put system screen_off_timeout 2147483647
             adb shell settings put global hide_error_dialogs 1
-            ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.${{ matrix.what }} -Pandroid.testInstrumentationRunnerArguments.skipPortrait=1 -Pandroid.testInstrumentationRunnerArguments.soakMinutes=0 -Pandroid.testInstrumentationRunnerArguments.stormSeconds=30 --stacktrace
+            ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.${{ matrix.what }} -Pandroid.testInstrumentationRunnerArguments.soakMinutes=0 -Pandroid.testInstrumentationRunnerArguments.stormSeconds=30 --stacktrace
       - name: Отчёты эмулятора
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
@@ -61,5 +82,6 @@ jobs:
           path: |
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/
+            app/build/outputs/connected_android_test_additional_output/
           if-no-files-found: ignore
           retention-days: 14

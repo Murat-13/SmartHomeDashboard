@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.view.View
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import com.example.smarthomedashboard.CameraHub
@@ -40,16 +39,12 @@ import java.util.concurrent.atomic.AtomicInteger
 @LargeTest
 class CameraBrandsDeepTest {
     private lateinit var ha: FakeHomeAssistant
-    private var scenario: ActivityScenario<MainActivity>? = null
+    private var screen: TestScreen<MainActivity>? = null
     private var camera: FakeCamera? = null
     private var web: MockWebServer? = null
 
     @After fun stop() {
-        resumedActivity()?.let { a ->
-            onMain { a.finish() }
-            runCatching { waitFor(10_000, "экран закрыт") { onMain { a.isDestroyed } } }
-        }
-        scenario?.close()
+        screen?.close()
         if (::ha.isInitialized) ha.close()
         camera?.close()
         web?.shutdown()
@@ -66,7 +61,7 @@ class CameraBrandsDeepTest {
         val saved = CountDownLatch(1)
         onMain { CameraPasswords.save(appContext, TILE, FakeCamera.PASSWORD) { saved.countDown() } }
         assertTrue("пароль камеры записан", saved.await(10, TimeUnit.SECONDS))
-        scenario = ActivityScenario.launch(MainActivity::class.java)
+        screen = TestScreen(MainActivity::class.java)
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
     }
 

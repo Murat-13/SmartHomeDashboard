@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.smarthomedashboard.DoorbellConfig
 import com.example.smarthomedashboard.GateTileConfig
@@ -34,12 +33,12 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class GatesDeepTest {
     private lateinit var ha: FakeHomeAssistant
-    private var scenario: ActivityScenario<MainActivity>? = null
+    private var screen: TestScreen<MainActivity>? = null
 
     private var shelly: MockWebServer? = null
 
     @After fun stop() {
-        scenario?.close()
+        screen?.close()
         if (::ha.isInitialized) ha.close()
         shelly?.shutdown()
     }
@@ -85,15 +84,14 @@ class GatesDeepTest {
         // Через GateStore: список проходов в памяти процесса (от прошлого теста) сбрасывается.
         GateStore.save(appContext, listOf(wicket))
 
-        scenario = ActivityScenario.launch(MainActivity::class.java)
+        screen = TestScreen(MainActivity::class.java)
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
-        var activity: MainActivity? = null
-        scenario!!.onActivity { activity = it }
-        val tile = onMain { activity!!.window.decorView.findViewWithTag<View>("deep_door") }
-        tap(activity!!, tile)
+        val activity = screen!!.activity
+        val tile = onMain { activity.window.decorView.findViewWithTag<View>("deep_door") }
+        tap(activity, tile)
         var button: HoldButton? = null
         waitFor(10_000, "кнопка «Открыть калитку» в раскрытой плитке") {
-            button = onMain { activity!!.window.decorView.findViewWithTag<View>("door_expanded")?.findViewWithTag("gate_gate_deep_open") }
+            button = onMain { activity.window.decorView.findViewWithTag<View>("door_expanded")?.findViewWithTag("gate_gate_deep_open") }
             button?.isShown == true
         }
         assertEquals("Открыть калитку", onMain { button!!.label })
@@ -148,13 +146,12 @@ class GatesDeepTest {
         // Через GateStore: список проходов в памяти процесса (от прошлого теста) сбрасывается.
         GateStore.save(appContext, listOf(wicket))
 
-        scenario = ActivityScenario.launch(MainActivity::class.java)
+        screen = TestScreen(MainActivity::class.java)
         waitFor(30_000, "подключение к фальшивому HA") { ha.connected() >= 1 }
-        var activity: MainActivity? = null
-        scenario!!.onActivity { activity = it }
+        val activity = screen!!.activity
         var button: HoldButton? = null
         waitFor(10_000, "плитка «Калитка» с кнопкой") {
-            button = onMain { activity!!.window.decorView.findViewWithTag<View>("deep_gate")?.findViewWithTag("gate_tile_button") }
+            button = onMain { activity.window.decorView.findViewWithTag<View>("deep_gate")?.findViewWithTag("gate_tile_button") }
             button?.isShown == true
         }
         waitFor(10_000, "опрос Shelly: закрыто по датчику") { onMain { button!!.stateHint.orEmpty() }.startsWith("Закрыт") }
@@ -170,7 +167,7 @@ class GatesDeepTest {
         door.set(false)
         hold(button!!, 80)
         waitFor(10_000, "раскрытая плитка прохода") {
-            onMain { activity!!.window.decorView.findViewWithTag<View>("gate_expanded")?.isShown == true }
+            onMain { activity.window.decorView.findViewWithTag<View>("gate_expanded")?.isShown == true }
         }
         log("Плитка «Калитка»: Shelly напрямую — импульс ушёл, вход подтвердил, касание раскрыло")
     }

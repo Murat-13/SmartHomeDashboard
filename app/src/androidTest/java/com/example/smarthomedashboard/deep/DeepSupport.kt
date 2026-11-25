@@ -2,6 +2,7 @@ package com.example.smarthomedashboard.deep
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.os.Debug
 import android.os.Handler
 import android.os.Looper
@@ -134,6 +135,50 @@ internal fun waitFor(timeoutMs: Long, what: String, condition: () -> Boolean) {
 internal fun resumedActivity(): Activity? = onMain {
     androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
         .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).firstOrNull()
+}
+
+/**
+ * Экран теста вместо `ActivityScenario`: тот в launch, onActivity, recreate и close ждёт свободного главного потока, а на
+ * панели почти всегда что-то движется (пульсация аварии, потоки инвертора, видео) — на эмуляторах Android 7 и 16 тесты
+ * висели до конца отпущенного времени (25.11.2026). Здесь ждут только нужного состояния экрана.
+ */
+internal class TestScreen<T : Activity>(private val type: Class<T>, intent: Intent = Intent(appContext, type)) : java.io.Closeable {
+    init {
+        appContext.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        waitFor(60_000, "экран ${type.simpleName}") { current() != null }
+    }
+
+    fun current(): T? = resumedActivity()?.takeIf(type::isInstance)?.let(type::cast)
+
+    val activity: T get() = current() ?: error("Экрана ${type.simpleName} нет на переднем плане")
+
+    /** Пересоздание — как при повороте. */
+    fun recreate(): T {
+        val old = activity
+        onMain { old.recreate() }
+        var next: T? = null
+        waitFor(30_000, "экран после пересоздания") { next = current(); next != null && next !== old }
+        return next!!
+    }
+
+    /** Закрыть все экраны приложения: следующий тест начинает с пустого. */
+    override fun close() {
+        val open = onMain {
+            val monitor = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+            androidx.test.runner.lifecycle.Stage.entries.filter { it != androidx.test.runner.lifecycle.Stage.DESTROYED }
+                .flatMap { monitor.getActivitiesInStage(it) }.distinct().onEach { it.finish() }
+        }
+        runCatching { waitFor(15_000, "экраны закрыты") { onMain { open.all { it.isDestroyed } } } }
+    }
+}
+
+/** Дамп кучи рядом с отчётом (папку даёт Gradle, CI прикладывает её к прогону): по нему видно, кто держит старый экран. */
+internal fun dumpHeap(name: String) {
+    val dir = argument("additionalTestOutputDir")?.let(::File)?.takeIf { it.isDirectory || it.mkdirs() }
+        ?: appContext.getExternalFilesDir(null) ?: return
+    val file = File(dir, "$name.hprof")
+    runCatching { Debug.dumpHprofData(file.path) }
+    log("Дамп кучи: ${file.name}, ${file.length() / 1024} КБ")
 }
 
 internal fun <T> onMain(block: () -> T): T {

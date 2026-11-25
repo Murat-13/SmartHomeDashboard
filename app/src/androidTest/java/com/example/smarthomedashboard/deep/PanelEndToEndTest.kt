@@ -4,7 +4,6 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import com.example.smarthomedashboard.MainActivity
@@ -30,7 +29,7 @@ import kotlin.random.Random
 class PanelEndToEndTest {
     private lateinit var ha: FakeHomeAssistant
     private lateinit var ids: List<String>
-    private var scenario: ActivityScenario<MainActivity>? = null
+    private var screen: TestScreen<MainActivity>? = null
 
     @Before fun start() {
         assumeTrue("Только эмулятор: тест заменяет данные приложения", isEmulator())
@@ -41,23 +40,24 @@ class PanelEndToEndTest {
     }
 
     @After fun stop() {
-        scenario?.close()
+        screen?.close()
         if (::ha.isInitialized) ha.close()
     }
 
-    private fun launch(): ActivityScenario<MainActivity> = ActivityScenario.launch(MainActivity::class.java).also {
-        scenario = it
+    private fun launch(): TestScreen<MainActivity> = TestScreen(MainActivity::class.java).also {
+        screen = it
         waitFor(30_000, "подключение к фальшивому HA и снимок состояний") { ha.auths.get() >= 1 && ha.snapshots.get() >= 1 && ha.connected() >= 1 }
     }
 
+    /** Экран на переднем плане; во время пересоздания его мгновение нет — ждём. */
     private fun activity(): MainActivity {
         var found: MainActivity? = null
-        scenario!!.onActivity { found = it }
+        waitFor(30_000, "экран панели") { found = screen!!.current(); found != null }
         return found!!
     }
 
     private fun tile(id: String): View? {
-        val activity = activity()
+        val activity = screen!!.current() ?: return null
         return onMain { activity.window.decorView.findViewWithTag<View>(id) }
     }
 
@@ -214,7 +214,7 @@ class PanelEndToEndTest {
     @Test fun rotationAndRecreationKeepPanelAndConnection() {
         launch()
         repeat(3) {
-            scenario!!.recreate()
+            screen!!.recreate()
             waitFor(10_000, "плитки после пересоздания") { tile("deep_door") != null }
         }
         waitFor(30_000, "связь после пересоздания") { ha.connected() >= 1 }
@@ -229,7 +229,7 @@ class PanelEndToEndTest {
         waitFor(10_000, "плитка климата") { tile("deep_climate") != null }
         tap(activity(), tile("deep_climate")!!)
         waitFor(3_000, "раскрыто") { expanded() }
-        scenario!!.recreate()
+        screen!!.recreate()
         waitFor(10_000, "плитки после пересоздания") { tile("deep_door") != null }
         waitFor(5_000, "снова раскрыто после пересоздания") { expanded() }
         collapseIfExpanded()
@@ -238,10 +238,8 @@ class PanelEndToEndTest {
 
     /** 0.9.19: в вертикальном положении плитки не накладываются и не выходят за экран. */
     @Test fun portraitLayoutHasNoOverlaps() {
-        // На части экранов (1920×1200) плитки накладываются — разобрать отдельно (AGENTS.md); прогон версий Android этого не ждёт.
-        org.junit.Assume.assumeTrue("Пропуск по аргументу skipPortrait", argument("skipPortrait") != "1")
         launch()
-        scenario!!.onActivity { it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+        activity().let { a -> onMain { a.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT } }
         try {
             waitFor(15_000, "портрет") {
                 val current = activity()
@@ -263,7 +261,7 @@ class PanelEndToEndTest {
                 assertFalse("Наложение ${rects[i]} / ${rects[j]}", android.graphics.RectF.intersects(a, rects[j]))
             }
         } finally {
-            scenario!!.onActivity { it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+            activity().let { a -> onMain { a.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED } }
         }
     }
 
@@ -272,16 +270,9 @@ class PanelEndToEndTest {
      * статические реестры (домофон, голос, PIN), ни отложенные задачи и анимации их не удерживают.
      */
     @Test fun recreatedScreensAreNotLeaked() {
-        // Android 12: старые экраны 6 из 6 (25.11.2026), на 10, 14 и 16 нет — разобрать отдельно (AGENTS.md).
-        org.junit.Assume.assumeTrue("Android 12 — открытая задача", android.os.Build.VERSION.SDK_INT != 31)
         launch()
         val old = mutableListOf<java.lang.ref.WeakReference<MainActivity>>()
-        repeat(6) {
-            scenario!!.onActivity { old += java.lang.ref.WeakReference(it) }
-            tile("deep_bms")?.let { v -> tap(activity(), v); Thread.sleep(700) }
-            scenario!!.recreate()
-            waitFor(10_000, "плитки после пересоздания") { tile("deep_door") != null }
-        }
+        repeat(6) { recreateOnce(old) }
         var alive = old.size
         repeat(20) {
             if (alive == 0) return@repeat
@@ -289,7 +280,16 @@ class PanelEndToEndTest {
             alive = old.count { it.get() != null }
         }
         log("Старых экранов в памяти после 6 пересозданий: $alive")
+        if (alive > 1 || (alive > 0 && argument("dumpHeap") == "1")) dumpHeap("old-screens")
         assertTrue("Старые экраны удерживаются в памяти: $alive из ${old.size}", alive <= 1)
+    }
+
+    /** Отдельной функцией: её переменные не держат старый экран, пока тест считает оставшиеся. */
+    private fun recreateOnce(old: MutableList<java.lang.ref.WeakReference<MainActivity>>) {
+        old += java.lang.ref.WeakReference(activity())
+        tile("deep_bms")?.let { v -> tap(activity(), v); Thread.sleep(700) }
+        screen!!.recreate()
+        waitFor(10_000, "плитки после пересоздания") { tile("deep_door") != null }
     }
 
     /** Ночной прогон: часы работы под потоком событий, звонками и обрывами — ресурсы не растут без предела. */
