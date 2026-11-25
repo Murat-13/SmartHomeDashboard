@@ -16,7 +16,6 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.KeyStore
 import java.security.MessageDigest
-import java.util.Collections
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
@@ -29,8 +28,8 @@ import kotlin.concurrent.thread
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class CameraQuirksTest {
-    private val sessions = Collections.synchronizedList(mutableListOf<RtspSession>())
-    private val servers = Collections.synchronizedList(mutableListOf<ServerSocket>())
+    private val sessions = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<RtspSession>())
+    private val servers = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<ServerSocket>())
     @After fun tearDown() { sessions.forEach { runCatching { it.abort() } }; servers.forEach { runCatching { it.close() } }; CameraTls.clearForTests() }
 
     /** Только петля: на всех адресах порт может совпасть с чужим сервером на 127.0.0.1, и подключение ушло бы туда. */
@@ -74,9 +73,11 @@ class CameraQuirksTest {
     )
 
     private val realm = "IP Camera (A1)"
-    private val requests = Collections.synchronizedList(mutableListOf<String>())
-    private val accepted = Collections.synchronizedList(mutableListOf<String>())
-    private val answers = Collections.synchronizedList(mutableListOf<String>())
+    private val requests = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<String>())
+    /** Что случилось у самой поддельной камеры — в сообщение о неудаче. */
+    private val problems = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<String>())
+    private val accepted = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<String>())
+    private val answers = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<String>())
 
     private fun sdp(control: String, eol: String, extra: String) = listOf("v=0", "o=- 1 1 IN IP4 0.0.0.0", "s=cam", "t=0 0", "m=video 0 RTP/AVP 96",
         "a=rtpmap:96 H264/90000", "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z2QAM6wVFKAoAPGQ,aO48sA==", "a=control:$control",
@@ -114,7 +115,7 @@ class CameraQuirksTest {
         thread(isDaemon = true) {
             while (!server.isClosed) {
                 val s = try { server.accept() } catch (_: Exception) { break }
-                thread(isDaemon = true) { try { serve(q, s, url) } catch (_: Exception) {} finally { runCatching { s.close() } } }
+                thread(isDaemon = true) { try { serve(q, s, url) } catch (e: Exception) { problems += e.toString() } finally { runCatching { s.close() } } }
             }
         }
         return url
@@ -193,7 +194,8 @@ class CameraQuirksTest {
     private fun watch(url: String, packets: Int = 60, user: String = "admin", clock: () -> Long = { System.nanoTime() / 1_000_000 }): RtspSession {
         val session = RtspSession(url, user, "secret", readTimeoutMs = 4_000, clock = clock)
         sessions += session
-        val setups = session.open { it.isVideo || it.isAudio }
+        val setups = try { session.open { it.isVideo || it.isAudio } }
+            catch (e: java.io.IOException) { throw AssertionError("не подключились: $e; у камеры: $problems; запросы: $requests", e) }
         val video = setups.first { it.track.isVideo }
         var got = 0
         val done = java.util.concurrent.CountDownLatch(1)
@@ -334,7 +336,7 @@ class CameraQuirksTest {
         val url = camera(Quirk(rtcpInside = true))
         val session = RtspSession(url, "admin", "secret", readTimeoutMs = 4_000).also { sessions += it }
         session.open { it.isVideo }
-        val types = Collections.synchronizedList(mutableListOf<Int>())
+        val types = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<Int>())
         var rtcp = 0
         val done = java.util.concurrent.CountDownLatch(1)
         thread(isDaemon = true) {

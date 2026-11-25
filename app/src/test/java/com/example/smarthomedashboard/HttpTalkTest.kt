@@ -14,14 +14,13 @@ import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
-import java.util.Collections
 import kotlin.concurrent.thread
 
 /** Голос в динамик по HTTP (docs/talk-tz.md, «Hikvision и Dahua»): на поддельных камерах, по открытым описаниям протоколов. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class HttpTalkTest {
-    private val servers = Collections.synchronizedList(mutableListOf<ServerSocket>())
+    private val servers = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<ServerSocket>())
     private val onvif = TalkChannels.onvif
     private val http = TalkChannels.http
     private val talks = mutableListOf<TalkChannel>()
@@ -38,10 +37,10 @@ class HttpTalkTest {
     /** Поддельная камера: [answer] — что ответить на запрос (null — промолчать и слушать звук). */
     private inner class Camera(val answer: Camera.(method: String, path: String) -> String?) {
         val server = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1")).also { servers += it }
-        val requests = Collections.synchronizedList(mutableListOf<String>())
-        val heads = Collections.synchronizedList(mutableListOf<String>())
+        val requests = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<String>())
+        val heads = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<String>())
         val audio = ByteArrayOutputStream()
-        val streams = Collections.synchronizedList(mutableListOf<Socket>())
+        val streams = java.util.concurrent.CopyOnWriteArrayList(mutableListOf<Socket>())
         var nonce = "n1"
         /** Новый nonce на каждый запрос (так у Dahua). */
         var fresh = false
