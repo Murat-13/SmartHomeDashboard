@@ -30,10 +30,11 @@ import java.lang.reflect.InvocationTargetException
 @LooperMode(LooperMode.Mode.PAUSED)
 class SettingsSectionsTest {
     private val prefs = RuntimeEnvironment.getApplication().getSharedPreferences("dashboard_prefs", 0)
+    private val controller = Robolectric.buildActivity(SettingsActivity::class.java)
     private val activity by lazy {
         prefs.edit().clear().putString("ha_local_host", "http://previous.example.invalid")
             .putInt("screen_timeout_minutes", 5).putInt("pin_session_minutes", 60).commit()
-        Robolectric.buildActivity(SettingsActivity::class.java).create().get().also {
+        controller.create().get().also {
             allowSettingsTestAccess(it)
             shadowOf(Looper.getMainLooper()).idle()
         }
@@ -94,6 +95,23 @@ class SettingsSectionsTest {
         assertEquals("http://192.168.77.10:8123", activity.findViewById<EditText>(R.id.etHaLocalHost).text.toString())
         assertEquals("https://home.example.com", activity.findViewById<EditText>(R.id.etHaRemoteHost).text.toString())
         assertEquals("сохраняется только проверкой или входом", "http://previous.example.invalid", prefs.getString("ha_local_host", null))
+    }
+
+    /** Аудит 25.11.2026, STAB-06: экран закрылся сам (возврат на панель) с открытым поиском — поиск останавливается, а не идёт до перезапуска. */
+    @Test fun searchStopsWithTheScreen() {
+        var running = 0
+        activity.newDiscovery = { context, on -> HaDiscovery(context, on, object : HaBrowser {
+            override fun start(onService: (HaService) -> Unit) { running++ }
+            override fun stop() { running-- }
+        }, names = emptyList(), network = { null }) }
+        activity.findViewById<View>(R.id.btnHaFind).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, running)
+        val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() as android.app.AlertDialog
+        controller.destroy()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("поиск остановлен", 0, running)
+        assertFalse("окно не осталось без экрана", dialog.isShowing)
     }
 
     @Test fun safeSettingsApplyImmediatelyAndInvalidValuesAreNotWritten() {

@@ -334,6 +334,32 @@ internal object RecLocality {
     private val TUNNELS = listOf("tun", "ppp", "wg", "ipsec", "utun", "tap")
 }
 
+/**
+ * Можно ли сейчас удалять записи по сроку (аудит 25.11.2026, REC-03). Часы планшета прыгнули (сбой, неверное время при включении) —
+ * «старше недели» по ним ничего не значит: сутки по сроку не удаляется ничего, только по месту. То же, если при запуске последняя
+ * запись старше двух суток: либо планшет долго был выключен, либо часы врут, — сутки подождать не жалко. Чистая логика.
+ */
+internal class ClockGuard {
+    private var offsetMs: Long? = null
+    private var trustedFromMs = 0L
+
+    /** [wallMs] — часы, [elapsedMs] — время с включения планшета (не прыгает), [newestMs] — конец последней записи. */
+    fun trusted(wallMs: Long, elapsedMs: Long, newestMs: Long?): Boolean {
+        val offset = wallMs - elapsedMs
+        val before = offsetMs
+        offsetMs = offset
+        val suspicious = if (before == null) newestMs != null && wallMs - newestMs > GAP_MS else kotlin.math.abs(offset - before) > JUMP_MS
+        if (suspicious) trustedFromMs = elapsedMs + SETTLE_MS
+        return elapsedMs >= trustedFromMs
+    }
+
+    companion object {
+        const val JUMP_MS = 3_600_000L
+        const val GAP_MS = 2 * 86_400_000L
+        const val SETTLE_MS = 86_400_000L
+    }
+}
+
 /** Что удалить и можно ли писать дальше. Чистая логика: тестируется без файлов. */
 internal object RecRetention {
     data class Rules(val keepContinuousMs: Long, val keepEventMs: Long)
@@ -502,17 +528,20 @@ internal object RecVolumes {
     /** Куда идёт запись; [fallback] — выбрана SD-карта, а её нет: пишем в память планшета. */
     class Target(val root: File?, val fallback: Boolean)
 
+    /** Папка SD-карты, которая перестала писать (до её извлечения и возврата или перезапуска приложения); null — всё в порядке. */
+    @Volatile var brokenCard: String? = null
+
     /** Папки приложения на носителях: [0] — память планшета, [1] — SD-карта (null или нет — карты нет). */
     fun dirs(context: Context): Array<File?> =
         try { (dirsOverride ?: { c -> c.getExternalFilesDirs(null) })(context) } catch (_: Exception) { emptyArray() }
 
     fun mounted(dir: File?): Boolean = dir != null && Environment.getExternalStorageState(dir) == Environment.MEDIA_MOUNTED
 
-    /** SD-карта, если выбрана и вставлена, иначе память планшета. */
+    /** SD-карта, если выбрана, вставлена и пишет, иначе память планшета. */
     fun target(context: Context, useSd: Boolean): Target {
         val dirs = dirs(context)
         val sd = dirs.getOrNull(1)
-        if (useSd && mounted(sd)) return Target(sd, fallback = false)
+        if (useSd && mounted(sd) && sd?.path != brokenCard) return Target(sd, fallback = false)
         return Target(dirs.getOrNull(0) ?: context.filesDir, fallback = useSd)
     }
 

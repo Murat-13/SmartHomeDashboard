@@ -30,6 +30,8 @@ class RecordingHubTest {
     private val server = ServerSocket(0)
     private val connections = AtomicInteger()
     private val sent = AtomicInteger()
+    /** Через столько кадров камера перестаёт слать видео и шлёт только звук; -1 — не перестаёт. */
+    @Volatile private var soundOnlyAfter = -1
     /** Каждый такой по счёту кадр камеры — ключевой (SPS, PPS, IDR тремя пакетами); 0 — ключевых нет. */
     @Volatile private var keyEvery = 0
 
@@ -84,6 +86,13 @@ class RecordingHubTest {
                             while (!s.isClosed) {
                                 val key = keyEvery > 0 && frame % keyEvery == 0
                                 val nals = if (key) listOf(SPS, PPS, byteArrayOf(0x65, i.toByte(), 2, 3)) else listOf(byteArrayOf(0x41, i.toByte(), 2, 3))
+                                if (soundOnlyAfter in 0..frame) {
+                                    val p = RecordingTestSupport.rtp(97, true, i and 0xFFFF, frame * 320L, byteArrayOf(0, 16, 0, 16, 1, 2))
+                                    synchronized(out) { out.write(byteArrayOf('$'.code.toByte(), 2, (p.size shr 8).toByte(), p.size.toByte()) + p); out.flush() }
+                                    i++; frame++
+                                    Thread.sleep(20)
+                                    continue
+                                }
                                 for ((index, nal) in nals.withIndex()) {
                                     val p = RecordingTestSupport.rtp(96, index == nals.lastIndex, i and 0xFFFF, frame * 3000L, nal)
                                     synchronized(out) { out.write(byteArrayOf('$'.code.toByte(), 0, (p.size shr 8).toByte(), p.size.toByte()) + p); out.flush() }
@@ -248,6 +257,42 @@ class RecordingHubTest {
         assertNotNull(a.status)
         assertEquals(CameraRecorder.State.STOPPED, a.status.state)
         viewer.close()
+    }
+
+    /**
+     * Аудит 25.11.2026, REC-01: камера не закрывает соединение, но видео больше не присылает (только звук). Отрезок не
+     * закрывался никогда, звук копился в памяти, а «● REC» горел. Теперь поток подключается заново.
+     */
+    @Test fun soundWithoutVideoReconnects() {
+        keyEvery = 10
+        soundOnlyAfter = 15
+        val real = CameraHub.videoStallMs
+        CameraHub.videoStallMs = 700
+        val a = recorder(audio = true)
+        try {
+            a.start()
+            waitFor(10_000, "второе подключение к камере") { connections.get() >= 2 }
+        } finally {
+            CameraHub.videoStallMs = real
+            a.stop()
+        }
+    }
+
+    /** Видео идёт — соединение не трогается, хотя порог давно прошёл. */
+    @Test fun movingVideoIsNotReconnected() {
+        keyEvery = 10
+        val real = CameraHub.videoStallMs
+        CameraHub.videoStallMs = 300
+        val a = recorder(audio = true)
+        try {
+            a.start()
+            waitFor(5_000, "поток пошёл") { CameraHub.relayUrl(url, "") != null }
+            Thread.sleep(1_500)
+            assertEquals(1, connections.get())
+        } finally {
+            CameraHub.videoStallMs = real
+            a.stop()
+        }
     }
 
     private companion object {

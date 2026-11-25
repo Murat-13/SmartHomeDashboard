@@ -62,7 +62,9 @@ class RecordingColdStartTest {
      * Холодный запуск службы и её первая очистка (поток управления). Очистка одна на все файлы: дождавшись удаления
      * [marker] (он старше любого срока), проверяем остальные.
      */
-    private fun coldStart(marker: File) {
+    private fun coldStart(marker: File, fresh: Boolean = true) {
+        // Запись, законченная только что: без свежих записей запуск похож на сбитые часы (ClockGuard), и срок сутки не действует.
+        if (fresh) put("cam_fresh", RecFile.Kind.CONTINUOUS, 0.01)
         service = Robolectric.buildService(RecorderService::class.java).create().startCommand(0, 1)
         val until = System.currentTimeMillis() + 10_000
         while (marker.exists() && System.currentTimeMillis() < until) Thread.sleep(50)
@@ -98,9 +100,9 @@ class RecordingColdStartTest {
         val cam = tile("cam_list", RecordingConfig(mode = always, remoteMode = always))
         TileManager(context).saveTiles(listOf(cam))
         RecordingDevice(context).setEnabled(cam.id, true)
-        val kept = put(cam.id, RecFile.Kind.EVENT, 2.0)
+        val kept = put(cam.id, RecFile.Kind.EVENT, 1.0)
         val marker = put(cam.id, RecFile.Kind.CONTINUOUS, 400.0)
-        coldStart(marker)
+        coldStart(marker, fresh = false)
         val camera = RecLayout.cameraKey(cam.id)
         fun known() = RecCatalog.camera(listOf(root), camera)?.map { it.path.path }
         val until = System.currentTimeMillis() + 5_000

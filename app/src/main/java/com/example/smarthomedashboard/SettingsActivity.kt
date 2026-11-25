@@ -721,10 +721,13 @@ class SettingsActivity : PinProtectedActivity() {
             adapter.clear(); adapter.addAll(found.map { listOf(it.title, it.version, it.address).filter(String::isNotBlank).joinToString(" · ") })
             dialog.setTitle("Выберите Home Assistant")
         }
-        dialog.setOnDismissListener { search.stop() }
+        dialog.setOnDismissListener { search.stop(); if (networkSearch?.second === search) networkSearch = null }
         dialog.show()
         search.start()
+        networkSearch = dialog to search
     }
+    /** Идущий поиск и его окно: экран закрылся сам (возврат на панель) — поиск останавливается с ним. */
+    private var networkSearch: Pair<AlertDialog, HaDiscovery>? = null
     internal var newDiscovery: (Context, (List<HaFound>) -> Unit) -> HaDiscovery = { context, onChange -> HaDiscovery(context, onChange) }
 
     /** «Войти заново»: страница Home Assistant или QR; адреса — из полей, сохраняются вместе с новым доступом. */
@@ -1036,6 +1039,7 @@ class SettingsActivity : PinProtectedActivity() {
         tokenRequest++
         weatherRequest++
         cancelProbe()
+        networkSearch?.let { (dialog, search) -> search.stop(); dialog.dismiss() }
         super.onDestroy()
     }
 

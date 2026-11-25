@@ -24,6 +24,9 @@ import java.util.concurrent.TimeUnit
  * Поток открыт, пока к нему подключена хоть одна запись. Без записи живое видео идёт к камере напрямую, как раньше.
  */
 internal object CameraHub {
+    /** Сколько ждать продвижения видео при живом соединении ([VideoWatch]); в тестах меньше. */
+    @Volatile internal var videoStallMs = VideoWatch.STALL_MS
+
     data class Key(val url: String, val user: String, val password: String?)
 
     private val streams = ConcurrentHashMap<Key, SharedStream>()
@@ -323,6 +326,7 @@ internal class SharedStream(
                 trace = ArrivalTrace.open(CameraHub.debugDir, key.url)
                 val frames = trace
                 val summary = StreamStats(video.track.clockRate.takeIf { it > 0 } ?: 90_000).also { stats = it }
+                val watch = VideoWatch(CameraHub.videoStallMs)
                 s.read(object : RtspSession.Sink {
                     /** За минуту: байты и кадры видео и самое долгое время, на которое получатели кадра заняли этот поток. */
                     private var videoBytes = 0L
@@ -332,6 +336,7 @@ internal class SharedStream(
                     private var keyTs = -1L
 
                     override fun onRtp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
+                        watch.check()
                         val readNs = if (setup === video) System.nanoTime() else 0L
                         if (setup === video) {
                             // Под одним замком с подключением плеера: он получает сохранённое и дальше живое без пропуска.
@@ -343,6 +348,7 @@ internal class SharedStream(
                         val rtp = RtpPacket.parse(packet, length) ?: return
                         if (setup === video) {
                             frames?.packet(rtp.timestamp, rtp.length, readNs)
+                            watch.packet(rtp.timestamp)
                             summary.packet(rtp.sequence, rtp.timestamp, rtp.length, readNs,
                                 RtpKey.isKey(depacketizer.codec == VideoDepacketizer.Codec.H265, rtp.payload, rtp.offset, rtp.length))
                             videoBytes += rtp.length
@@ -372,6 +378,7 @@ internal class SharedStream(
                             }
                             val started = System.nanoTime()
                             for (frame in depacketizer.push(rtp)) {
+                                watch.frame()
                                 // Метка кадра у разборщика — развёрнутая (64 бита), у пакета — 32 бита.
                                 if (frame.key) keyTs = frame.timestamp and 0xFFFFFFFFL
                                 recent.frame(frame.key)
@@ -402,6 +409,7 @@ internal class SharedStream(
                     }
 
                     override fun onRtcp(setup: RtspSession.Setup, packet: ByteArray, length: Int) {
+                        watch.check()
                         if (setup === video) {
                             probe.senderReport(packet, length)
                             frames?.senderReport(System.nanoTime(), probe.srRtp, probe.srWallMs)
@@ -465,6 +473,40 @@ internal class SharedStream(
         /** Больше — уже не неровность прихода, а сбой связи. */
         const val MAX_JITTER_MS = 1_000L
         const val TAG = "CameraHub"
+    }
+}
+
+/**
+ * Соединение с камерой живо, а видео не движется: камера шлёт только звук или её часы ушли назад (аудит 25.11.2026, REC-01). Отрезок
+ * записи меняется только на кадре видео — звук копился бы в памяти без предела, а «● REC» горел бы. [stallMs] без продвижения видео
+ * или [FRAME_MS] без единого целого кадра (у камер с редким ключевым кадром после потери пакета их нет десятки секунд) — ошибка
+ * сессии, поток подключается заново.
+ */
+internal class VideoWatch(private val stallMs: Long, private val clock: () -> Long = System::nanoTime) {
+    private val unwrapper = RtpTimestampUnwrapper()
+    private var last = Long.MIN_VALUE
+    private var movedNs = clock()
+    private var frameNs = movedNs
+
+    /** Пакет видео с меткой RTP [timestamp]. */
+    fun packet(timestamp: Long) {
+        val ts = unwrapper.unwrap(timestamp)
+        if (ts > last) { last = ts; movedNs = clock() }
+    }
+
+    /** Целый кадр. */
+    fun frame() { frameNs = clock() }
+
+    /** На каждом пакете сессии, в том числе звука и служебном. */
+    fun check() {
+        val now = clock()
+        if (now - movedNs > stallMs * 1_000_000 || now - frameNs > maxOf(FRAME_MS, stallMs) * 1_000_000)
+            throw RtspException("Камера не присылает видео")
+    }
+
+    companion object {
+        const val STALL_MS = 15_000L
+        const val FRAME_MS = 60_000L
     }
 }
 

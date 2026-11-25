@@ -338,6 +338,12 @@ class MainActivity : AppCompatActivity() {
             CameraWatch.tick(this@MainActivity) { if (drawer?.isOpen == true) updateSystemStatus() }
             TabletWatch.tick(this@MainActivity) { if (!isDestroyed) { coolPanel(); if (drawer?.isOpen == true) updateSystemStatus() } }
             shiftPanel()
+            // Безопасный запуск прожил час без сбоев, и панелью никто не пользуется — обычный режим (STAB-04).
+            if (SafeStart.recovered(this@MainActivity) && unattended()) {
+                SafeStart.leave(this@MainActivity, auto = true)
+                recreate()
+                return
+            }
             addressWatch.tick(localRoute == true && viewModel.uiState.value.connectionStatus == ConnectionStatus.Connected)
             clockHandler.postDelayed(this, CAMERA_WATCH_MS)
         }
@@ -356,6 +362,12 @@ class MainActivity : AppCompatActivity() {
         window.attributes = params
         Log.i("MainActivity", "Остывание панели: яркость " + if (brightness < 0) "обычная" else "ниже на четверть")
     }
+
+    private var lastTouchAt = android.os.SystemClock.uptimeMillis()
+
+    /** Панель на экране, но ею не пользуются: нет касаний столько, сколько до затемнения, ничего не раскрыто и не открыто. */
+    private fun unattended() = android.os.SystemClock.uptimeMillis() - lastTouchAt >= screenTimeoutMinutes * 60_000L && hasWindowFocus() &&
+        !isEditMode && !panelController.isAnythingExpanded() && drawer?.isOpen != true && DoorbellHub.RingUi.current == null
 
     private var shiftMinutes = 0
 
@@ -519,6 +531,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        lastTouchAt = android.os.SystemClock.uptimeMillis()
         resetIdleTimer()
         // Окно звонка поверх панели: жесты панели (страницы, боковая панель) не работают, касания — окну.
         if (DoorbellHub.RingUi.current?.let { it.isShowing && it.host === this } == true) return super.dispatchTouchEvent(event)

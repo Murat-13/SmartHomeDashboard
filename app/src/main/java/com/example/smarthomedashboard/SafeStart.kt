@@ -18,7 +18,8 @@ import androidx.core.content.edit
  * Безопасный запуск (docs/reliability.md). Три сбоя подряд сразу после запуска — панель открывается без видео, записи, размытия и
  * голоса ([Mode.SAFE]): планшет на стене не мигает сбоями, а показывает плитки. Падает и так — экран с выходом: обновление,
  * настройки, копия ([Mode.RESCUE], [SafeStartActivity]). Прожила два минуты — сбои забыты; час без сбоев в безопасном режиме —
- * следующий запуск обычный. Откатиться на прежнюю версию Android не даёт, поэтому выход — починка и быстрое обновление.
+ * обычный режим включается сам, когда панелью никто не пользуется ([recovered]), а следующий запуск обычный в любом случае. Откатиться
+ * на прежнюю версию Android не даёт, поэтому выход — починка и быстрое обновление.
  */
 internal object SafeStart {
     enum class Mode { NORMAL, SAFE, RESCUE }
@@ -34,6 +35,8 @@ internal object SafeStart {
     private const val KEY_START = "start"
     private const val KEY_OK = "ok"
     private const val KEY_COUNTED = "counted"
+    private const val KEY_AUTO = "auto_at"
+    private const val KEY_TRIES = "auto_tries"
 
     /** Сбой раньше этого — «сразу после запуска». */
     const val SURVIVE_MS = 2 * 60_000L
@@ -41,6 +44,9 @@ internal object SafeStart {
     internal const val CRASHES = 3
     internal const val SAFE_CRASHES = 2
     internal const val RECOVER_MS = 60 * 60_000L
+    /** Обычный режим, включённый сам, снова привёл к сбоям раньше этого — следующая попытка вдвое позже (до 16 часов). */
+    private const val AUTO_FAILED_MS = 30 * 60_000L
+    private const val MAX_TRIES = 4
     private const val RESTART_MS = 3_000L
     private const val RESTARTS = 5
 
@@ -69,7 +75,11 @@ internal object SafeStart {
             crashes.size >= CRASHES -> Mode.SAFE
             else -> Mode.NORMAL
         }
-        if (mode == Mode.SAFE && !safe) crashes = emptyList()
+        if (mode == Mode.SAFE && !safe) {
+            crashes = emptyList()
+            val again = t - p.getLong(KEY_AUTO, 0) in 0..AUTO_FAILED_MS
+            p.edit { putInt(KEY_TRIES, if (again) (p.getInt(KEY_TRIES, 0) + 1).coerceAtMost(MAX_TRIES) else 0) }
+        }
         survived = false
         startedAt = t
         p.edit {
@@ -97,13 +107,20 @@ internal object SafeStart {
         }
     }
 
-    /** «Обычный запуск»: забыть сбои; видео и запись — сразу. */
-    fun leave(context: Context) {
-        prefs(context).edit(commit = true) { putBoolean(KEY_SAFE, false); putString(KEY_QUICK, "") }
+    /** Безопасный режим час прожил без сбоев — обычный можно включить самому (аудит 25.11.2026, STAB-04). */
+    fun recovered(context: Context): Boolean =
+        mode == Mode.SAFE && now() - startedAt >= RECOVER_MS shl prefs(context).getInt(KEY_TRIES, 0)
+
+    /** «Обычный запуск»: забыть сбои; видео и запись — сразу. [auto] — панель вернулась сама. */
+    fun leave(context: Context, auto: Boolean = false) {
+        prefs(context).edit(commit = true) {
+            putBoolean(KEY_SAFE, false); putString(KEY_QUICK, "")
+            if (auto) putLong(KEY_AUTO, now()) else { remove(KEY_AUTO); remove(KEY_TRIES) }
+        }
         mode = Mode.NORMAL
         LightMode.refresh(context)
         RecorderService.sync(context)
-        Log.i(TAG, "Обычный запуск по кнопке")
+        Log.i(TAG, if (auto) "Час без сбоев — обычный режим" else "Обычный запуск по кнопке")
     }
 
     /** Экран с выходом → безопасная панель. */

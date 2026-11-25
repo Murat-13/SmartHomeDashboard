@@ -155,6 +155,45 @@ class CrashLogTest {
         assertEquals(SafeStart.Mode.NORMAL, start())
     }
 
+    /** Аудит 25.11.2026, STAB-04: исправная панель сама не перезапускается — час без сбоев, и обычный режим можно включить сразу. */
+    @Test fun quietHourAllowsNormalModeWithoutRestart() {
+        repeat(3) { crashAfter(4_000) }
+        assertEquals(SafeStart.Mode.SAFE, start())
+        t += SafeStart.RECOVER_MS - 1_000
+        assertFalse("часа ещё нет", SafeStart.recovered(context))
+        t += 1_000
+        assertTrue(SafeStart.recovered(context))
+        SafeStart.leave(context, auto = true)
+        assertEquals(SafeStart.Mode.NORMAL, SafeStart.mode)
+        assertFalse(SafeStart.recovered(context))
+    }
+
+    /** Обычный режим опять привёл к сбоям — следующая попытка вдвое позже, а не каждый час без конца. */
+    @Test fun repeatedCrashesAfterReturnMakeNextReturnLater() {
+        repeat(3) { crashAfter(4_000) }
+        start()
+        for (hours in listOf(1, 2, 4, 8, 16, 16)) {
+            t += hours * SafeStart.RECOVER_MS - 1_000
+            assertFalse("раньше $hours ч", SafeStart.recovered(context))
+            t += 1_000
+            assertTrue("через $hours ч", SafeStart.recovered(context))
+            SafeStart.leave(context, auto = true)
+            t += 60_000
+            repeat(3) { crashAfter(4_000) } // видео снова роняет панель
+            assertEquals(SafeStart.Mode.SAFE, start())
+        }
+        // Человек включил сам — счёт заново; сбой через день после возврата — тоже не «опять».
+        SafeStart.leave(context)
+        repeat(3) { crashAfter(4_000) }; start()
+        t += SafeStart.RECOVER_MS
+        assertTrue(SafeStart.recovered(context))
+        SafeStart.leave(context, auto = true)
+        t += 24 * 3_600_000L
+        repeat(3) { crashAfter(4_000) }; start()
+        t += SafeStart.RECOVER_MS
+        assertTrue(SafeStart.recovered(context))
+    }
+
     @Test fun safeModeTurnsOffHeavyThings() {
         repeat(3) { crashAfter(4_000) }
         start()

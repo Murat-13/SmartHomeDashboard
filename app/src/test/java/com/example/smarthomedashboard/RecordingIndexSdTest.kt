@@ -54,6 +54,7 @@ class RecordingIndexSdTest {
     @After fun tearDown() {
         stop()
         RecVolumes.dirsOverride = null
+        RecVolumes.brokenCard = null
         listOf(internal, sd).forEach { it.deleteRecursively() }
         RecordingDevice(context).setEnabled("cam_sd", false)
         RecordingDevice(context).useSdCard = false

@@ -70,6 +70,55 @@ class PanelIdleTest {
         assertNotNull("видео кончилось — без касаний на панель", backToPanel(activity))
     }
 
+    /**
+     * Аудит 25.11.2026, STAB-06: правка идёт в окнах (диалогах) — у них свои касания, экран их не видит. Пять минут правки в окнах
+     * закрывали редактор с потерей черновика.
+     */
+    @Config(sdk = [34])
+    @Test fun touchesInDialogCountToo() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        var clicked = 0
+        val button = android.widget.Button(activity).apply { text = "В окне"; setOnClickListener { clicked++ } }
+        val dialog = android.app.AlertDialog.Builder(activity).setTitle("Правка").setView(button).setPositiveButton("Готово", null).create()
+        dialog.show()
+        activity.window.callback.onWindowFocusChanged(false) // окно забрало фокус ввода
+        idle(50)
+        val root = dialog.window!!.decorView
+        fun touchDialog() {
+            val t = SystemClock.uptimeMillis()
+            val at = IntArray(2).also { button.getLocationInWindow(it) }
+            for ((action, dt) in listOf(MotionEvent.ACTION_DOWN to 0, MotionEvent.ACTION_UP to 30))
+                root.dispatchTouchEvent(MotionEvent.obtain(t, t + dt, action, at[0] + 5f, at[1] + 5f, 0))
+            idle(200)
+        }
+        repeat(3) { idle(4 * 60_000L); touchDialog() }
+        assertNull("касания в окне — человек здесь", backToPanel(activity))
+        assertEquals("сами касания доходят до кнопки окна", 3, clicked)
+        idle(5 * 60_000L + 100)
+        assertNotNull("окно брошено — на панель, как раньше", backToPanel(activity))
+        dialog.dismiss()
+        controller.pause().stop().destroy()
+    }
+
+    /** Окно может забирать фокус много раз (вложенные окна) — слой в каждом один, размеры окна не меняются. */
+    @Config(sdk = [34])
+    @Test fun watchedWindowLooksTheSame() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val dialog = android.app.AlertDialog.Builder(activity).setTitle("Правка").setMessage("Текст").create()
+        dialog.show()
+        idle(50)
+        val root = dialog.window!!.decorView as android.view.ViewGroup
+        val before = root.width to root.height
+        repeat(3) { activity.window.callback.onWindowFocusChanged(false); idle(50) }
+        assertEquals(1, (0 until root.childCount).count { root.getChildAt(it).tag == PanelIdle.TOUCHES_TAG })
+        assertEquals(before, root.width to root.height)
+        assertNull("на самом экране слоя нет", activity.window.decorView.findViewWithTag<android.view.View>(PanelIdle.TOUCHES_TAG))
+        dialog.dismiss()
+        controller.pause().stop().destroy()
+    }
+
     @Test fun leftScreenDoesNotJumpToPanel() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         controller.pause().stop()

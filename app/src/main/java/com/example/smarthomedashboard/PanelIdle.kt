@@ -1,17 +1,24 @@
 package com.example.smarthomedashboard
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
+import android.view.inspector.WindowInspector
+import android.widget.FrameLayout
+import androidx.annotation.RequiresApi
 
 /**
  * Экраны поверх панели (архив, настройки, редакторы) ведут себя как панель (решение владельца 23.11.2026: «во время
@@ -21,6 +28,9 @@ import android.view.WindowManager
  * - нет касаний столько же, сколько панель ждёт до затемнения (`screen_timeout_minutes`, по умолчанию 5 мин), —
  *   возврат на панель; дальше всё как обычно (затемнение по датчику движения).
  * Экран может попросить подождать ([Busy]) — архив, пока играет видео. Заставка и первая настройка — не трогаются.
+ *
+ * Всплывающие окна экрана (диалоги) — свои окна, экран касаний в них не видит: пять минут правки только в них закрывали редактор с
+ * потерей черновика (аудит 25.11.2026, STAB-06). Окно открылось — у экрана пропал фокус; тогда в него ставится [Touches].
  */
 internal object PanelIdle {
     /** Экран занят и без касаний (идёт видео) — на панель пока не возвращаться. */
@@ -67,6 +77,41 @@ internal object PanelIdle {
         handler.postDelayed(back, timeoutMs(activity))
     }
 
+    /** Экран потерял фокус ввода: поверх него могло открыться своё окно (Android 10+; раньше окна приложения не перечислить). */
+    private fun coveredByWindow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) handler.post { current?.get()?.let { watchWindows(it) } }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun watchWindows(activity: Activity) {
+        val own = activity.window?.decorView
+        for (root in WindowInspector.getGlobalWindowViews()) {
+            // Только окна-диалоги: их корень — FrameLayout системы; выпадающие списки и прочее не трогаем.
+            if (root === own || root !is FrameLayout || root.javaClass.simpleName != "DecorView" || activityOf(root) !== activity) continue
+            if (root.findViewWithTag<View>(TOUCHES_TAG) == null) root.addView(Touches(activity), ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        touched()
+    }
+
+    private fun activityOf(view: View): Activity? {
+        var context: Context? = view.context
+        while (context is android.content.ContextWrapper) { if (context is Activity) return context; context = context.baseContext }
+        return null
+    }
+
+    /** Прозрачный слой поверх содержимого окна: отмечает касание и отдаёт его дальше. Места в окне не занимает. */
+    @SuppressLint("ViewConstructor")
+    private class Touches(context: Context) : View(context) {
+        init { tag = TOUCHES_TAG; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO; isFocusable = false }
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) =
+            setMeasuredDimension(exact(widthMeasureSpec), exact(heightMeasureSpec))
+        private fun exact(spec: Int) = if (MeasureSpec.getMode(spec) == MeasureSpec.EXACTLY) MeasureSpec.getSize(spec) else 0
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) touched()
+            return false
+        }
+    }
+
     private fun timeUp() {
         val activity = current?.get() ?: return
         if ((activity as? Busy)?.idleBusy == true) { touched(); return }
@@ -85,7 +130,12 @@ internal object PanelIdle {
             if (event.action == KeyEvent.ACTION_DOWN) touched()
             return inner.dispatchKeyEvent(event)
         }
+        override fun onWindowFocusChanged(hasFocus: Boolean) {
+            inner.onWindowFocusChanged(hasFocus)
+            if (!hasFocus) coveredByWindow()
+        }
     }
 
     private const val TAG = "PanelIdle"
+    internal const val TOUCHES_TAG = "panel_idle_touches"
 }

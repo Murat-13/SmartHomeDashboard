@@ -160,7 +160,11 @@ class RecordingEventsTest {
     private fun run(r: EventRecorder, seconds: Int, d: VideoDepacketizer, frames: List<VideoFrame>) {
         val sink = r.ClipSink()
         sink.videoClock = 90_000
+        val base0 = System.currentTimeMillis()
+        var wall = base0
+        r.wallClock = { wall } // часы идут вместе с потоком: он подаётся быстрее, чем снимался
         for (i in 0 until seconds * 10) {
+            wall = base0 + i * 100L
             val base = frames[i % frames.size]
             val frame = VideoFrame(i * 9_000L, base.nals, base.key)
             clock(i * 100L)

@@ -54,11 +54,15 @@ class UpdateInstallerTest {
         UpdateInstaller.permission = object : UpdateInstaller.Permission {
             override fun granted(context: Context) = granted
         }
+        UpdateInstaller.returns = { returns }
     }
+    /** Панель после замены откроется сама. */
+    private var returns = true
 
     @After fun tearDown() {
         UpdateInstaller.committer = defaultCommitter
         UpdateInstaller.permission = defaultPermission
+        UpdateInstaller.returns = defaultReturns
         dir.deleteRecursively()
     }
 
@@ -143,6 +147,43 @@ class UpdateInstallerTest {
         prefs.edit().remove(AutoBackup.PREF_TREE).commit()
         assertEquals(UpdateInstaller.Outcome.STARTED, UpdateInstaller.nightRun(context, deps))
         assertTrue(commits.single().second)
+    }
+
+    /**
+     * Аудит 25.11.2026, STAB-05: панель не главный экран и без «поверх других окон» после замены не откроется — ночью не ставится;
+     * по кнопке — как раньше.
+     */
+    @Test fun nightInstallWaitsWhenPanelCannotReturn() {
+        ready()
+        UpdateInstaller.setNightEnabled(context, true)
+        returns = false
+        assertEquals(UpdateInstaller.Outcome.CANNOT_RETURN, UpdateInstaller.nightRun(context, deps))
+        assertEquals("и на следующую ночь", UpdateInstaller.Outcome.CANNOT_RETURN, UpdateInstaller.nightRun(context, deps))
+        assertTrue(commits.isEmpty())
+        assertTrue("копия зря не делается", preUpdateCopies().isEmpty())
+        assertEquals("Установка: ${UpdateInstaller.CANNOT_RETURN}", UpdateInstaller.statusLine(context))
+        assertEquals("в журнале — один раз", 1, UpdateLog.lines(context).count { "не откроется сама" in it })
+        assertEquals(AppUpdater.State.READY, AppUpdater.status(context).state)
+        assertEquals("по кнопке — можно", UpdateInstaller.Outcome.STARTED, UpdateInstaller.install(context, updaterDeps = deps))
+    }
+
+    @Test fun panelReturnsOnlyAsHomeScreenOrOverOtherWindows() {
+        assertFalse(defaultReturns(context))
+        org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(true)
+        try { assertTrue(defaultReturns(context)) } finally { org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    /** Запись с камер панели не ждёт: служба запускается сразу после замены, и после установки через adb тоже. */
+    @Test fun recordingStartsRightAfterReplacement() {
+        val always = RecordingConfig.Mode.CONTINUOUS_EVENTS
+        com.example.smarthomedashboard.data.TileManager(context).saveTiles(listOf(com.example.smarthomedashboard.data.TileEntity("cam_upd", DoorbellConfig.CAMERA_TYPE,
+            "grid", "Камера", 0, 0, 1, 1, config = RecordingConfig(mode = always, remoteMode = always).writeTo(
+                DoorbellConfig(rtspMain = "rtsp://127.0.0.1:9/main", rtspSub = "rtsp://127.0.0.1:9/sub").writeTo(DoorbellConfig.newTileConfig())))))
+        RecordingDevice(context).setEnabled("cam_upd", true)
+        try {
+            UpdateInstaller.ReplacedReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED))
+            assertEquals(RecorderService::class.java.name, shadowOf(context).nextStartedService?.component?.className)
+        } finally { RecordingDevice(context).setEnabled("cam_upd", false) }
     }
 
     @Config(sdk = [30])
@@ -236,5 +277,6 @@ class UpdateInstallerTest {
     private companion object {
         val defaultCommitter = UpdateInstaller.committer
         val defaultPermission = UpdateInstaller.permission
+        val defaultReturns = UpdateInstaller.returns
     }
 }

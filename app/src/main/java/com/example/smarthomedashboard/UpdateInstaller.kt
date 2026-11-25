@@ -32,7 +32,7 @@ internal object UpdateInstaller {
 
     enum class InstallState { NONE, INSTALLING, NEEDS_CONFIRMATION, FAILED }
 
-    enum class Outcome { STARTED, NO_UPDATE, NEEDS_PERMISSION, BACKUP_FAILED, NOT_SILENT, FAILED }
+    enum class Outcome { STARTED, NO_UPDATE, NEEDS_PERMISSION, BACKUP_FAILED, NOT_SILENT, CANNOT_RETURN, FAILED }
 
     /** Запуск сессии установки; отделён для тестов. */
     internal interface Committer {
@@ -107,6 +107,15 @@ internal object UpdateInstaller {
     fun canInstall(context: Context) = permission.granted(context)
 
     /**
+     * Откроется ли панель после замены сама: Android не даёт открыть окно из фона, если она не главный экран и нет разрешения
+     * «поверх других окон» (аудит 25.11.2026, STAB-05). В тестах — подмена.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var returns: (Context) -> Boolean = { HomeScreenMode.isDefaultHome(it) || android.provider.Settings.canDrawOverlays(it) }
+    internal const val CANNOT_RETURN = "ночью не ставится: панель после обновления не откроется сама. Сделайте её главным экраном или " +
+        "разрешите «поверх других окон» (Настройки → «Устройство» → «Планшет») — или установите по кнопке"
+
+    /**
      * Запуск установки готового обновления. [allowWithoutBackup] — админ по PIN подтвердил продолжение без копии.
      * [night] — фоновая установка: только при поддержке тихой установки, без продолжения без копии.
      */
@@ -115,6 +124,12 @@ internal object UpdateInstaller {
         val file = AppUpdater.readyFile(context, updaterDeps) ?: return Outcome.NO_UPDATE
         val version = AppUpdater.status(context).versionName.orEmpty()
         if (night && !silentSupported()) return Outcome.NOT_SILENT
+        if (night && !returns(context)) {
+            // Ночь без панели, домофона и записи хуже, чем прежняя версия до утра. В журнал — один раз.
+            if (state(context).second != CANNOT_RETURN) UpdateLog.add(context, "Установка $version: $CANNOT_RETURN")
+            setState(context, InstallState.FAILED, CANNOT_RETURN)
+            return Outcome.CANNOT_RETURN
+        }
         if (!canInstall(context)) {
             UpdateLog.add(context, "Установка $version: нет разрешения Android на установку приложений")
             return Outcome.NEEDS_PERMISSION
@@ -204,6 +219,8 @@ internal object UpdateInstaller {
     class ReplacedReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+            // Запись с камер панели не ждёт: после замены Android разрешает запустить её сразу.
+            RecorderService.sync(context)
             val ours = state(context).first in setOf(InstallState.INSTALLING, InstallState.NEEDS_CONFIRMATION)
             AppUpdater.afterUpdate(context)
             setState(context, InstallState.NONE, "")

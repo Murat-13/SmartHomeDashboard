@@ -36,8 +36,12 @@ internal object RecIo {
         Thread(it, "rec-io").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
     }
     private val lock = Object()
+    /** Носитель не принимает ничего дольше этого, а очередь полна — ошибка записи: поток камеры и живое видео его не ждут. */
+    @Volatile internal var stuckMs = 10_000L
     /** Байты в очереди; под [lock]. */
     private var queued = 0L
+    /** Когда носитель последний раз что-то принял (или очередь была пуста); под [lock]. */
+    private var progressNs = System.nanoTime()
     private var queuedMax = 0L
     /** Файлы, открытые через очередь и ещё не закрытые до конца: их не трогает восстановление после падения. */
     private val busy = ConcurrentHashMap.newKeySet<String>()
@@ -85,7 +89,9 @@ internal object RecIo {
     internal fun write(bytes: Int, task: () -> Unit) {
         val started = System.nanoTime()
         synchronized(lock) {
+            if (queued == 0L) progressNs = System.nanoTime()
             while (queued > 0 && queued + bytes > LIMIT_BYTES) {
+                if (System.nanoTime() - progressNs > stuckMs * 1_000_000) throw IOException("Носитель не отвечает")
                 try { lock.wait(1_000) } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     throw InterruptedIOException("Запись остановлена")
@@ -98,7 +104,7 @@ internal object RecIo {
         executor.execute {
             val t = System.nanoTime()
             try { task() } finally {
-                synchronized(lock) { queued -= bytes; lock.notifyAll() }
+                synchronized(lock) { queued -= bytes; progressNs = System.nanoTime(); lock.notifyAll() }
                 writes++
                 writtenBytes += bytes
                 writeMaxNs = maxOf(writeMaxNs, System.nanoTime() - t)
@@ -137,7 +143,7 @@ internal object RecIo {
 
 /**
  * Файл, который пишется через [RecIo]: байты копируются и уходят в очередь, сам файл создаётся и пишется в потоке
- * записи. Ошибка носителя (нет места, карту вынули) приходит при следующей записи — как и раньше, обрывом сессии записи.
+ * записи. Ошибка носителя (нет места, карту вынули, она не отвечает) приходит при следующей записи — [CameraRecorder] закрывает файл.
  */
 internal class QueuedFileChannel(private val file: File) : WritableByteChannel {
     @Volatile private var failure: IOException? = null

@@ -34,6 +34,18 @@ class RecorderService : Service() {
     /** Файлы записей в памяти: полный обход диска — при запуске и раз в 6 часов. */
     private val files = ArrayList<RecFile>()
     private var lastScan = 0L
+    /** Носитель, чьи файлы в [files]: сменился — обход заново, иначе очистка считала бы файлы другого носителя. */
+    private var filesRoot: String? = null
+    private val clockGuard = ClockGuard()
+    private var agePaused = false
+    /** Ошибки SD-карты за последние [ERRORS_WINDOW_MS] (часы с включения планшета). */
+    private val cardErrors = ArrayDeque<Long>()
+    private val media = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val mounted = intent.data?.path?.takeIf { intent.action == Intent.ACTION_MEDIA_MOUNTED }
+            try { control.execute { safe { storageChanged(mounted) } } } catch (_: java.util.concurrent.RejectedExecutionException) {}
+        }
+    }
     /** Первый обход носителя после запуска отложен до открытия записей ([startupCleanup]). */
     private var cleanupPending = false
     @Volatile private var freeCache = Long.MAX_VALUE
@@ -72,6 +84,11 @@ class RecorderService : Service() {
         val notification = notification()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+        // Карту извлекают или вернули: файлы на ней закрываются сразу (иначе Android завершит приложение), запись идёт дальше.
+        androidx.core.content.ContextCompat.registerReceiver(this, media, android.content.IntentFilter().apply {
+            MEDIA_ACTIONS.forEach(::addAction)
+            addDataScheme("file")
+        }, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         control.execute { safe { CameraHub.debugDir = getExternalFilesDir(null)?.let { java.io.File(it, "video_debug") } } }
         // Раз в 10 минут: очистка и сверка (камера могла стать доступной только издалека, вернулась SD-карта).
         control.scheduleWithFixedDelay({ safe { sync(); retention(forceScan = false) } }, 10, 10, TimeUnit.MINUTES)
@@ -84,6 +101,7 @@ class RecorderService : Service() {
     }
 
     override fun onDestroy() {
+        try { unregisterReceiver(media) } catch (_: IllegalArgumentException) {}
         // Остановка камер (закрытие отрезков, до 3 с на камеру) — на потоке управления: главный поток не ждёт.
         // После shutdown() поток дорабатывает уже поставленные задачи и завершается сам.
         control.execute { safe { stopAll() }; RecordingStatus.clear() }
@@ -167,6 +185,7 @@ class RecorderService : Service() {
                 onStatus = { _, status -> statusChanged(id, status) }
             )
             recorders[id] = Running(key, r, config)
+            r.onStorageError = { root -> try { control.execute { safe { storageFailed(root) } } } catch (_: java.util.concurrent.RejectedExecutionException) {} }
             r.start()
         }
         // Останавливаемся, только если запись не включена ни для одной плитки: камера, ставшая доступной лишь
@@ -258,15 +277,42 @@ class RecorderService : Service() {
         return freeCache >= RecordingDevice(this).reserveGb * RecRetention.GB
     }
 
+    /**
+     * Запись на [root] не удалась. SD-карта не пишет несколько раз за [ERRORS_WINDOW_MS] — дальше в память планшета и голосом, пока
+     * карту не вынут и не вернут или приложение не перезапустится (аудит 25.11.2026, REC-02).
+     */
+    private fun storageFailed(root: File) {
+        if (root.path != RecVolumes.dirs(this).getOrNull(1)?.path || RecVolumes.brokenCard == root.path) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        cardErrors.addLast(now)
+        while (now - cardErrors.first() > ERRORS_WINDOW_MS) cardErrors.removeFirst()
+        if (cardErrors.size < CARD_ERRORS) return
+        Log.w(TAG, "Запись: SD-карта не пишет — дальше в память планшета")
+        cardErrors.clear()
+        RecVolumes.brokenCard = root.path
+        storageChanged()
+    }
+
+    /**
+     * Носитель сменился (поток управления); [mounted] — какой подключили. Файлы идущих записей переезжают на следующем ключевом
+     * кадре.
+     */
+    private fun storageChanged(mounted: String? = null) {
+        if (mounted != null && RecVolumes.brokenCard?.startsWith("$mounted/") == true) RecVolumes.brokenCard = null
+        refreshStorage()
+        retention(forceScan = false)
+    }
+
     /** SD-карта пропала или вернулась — сказать один раз (решение владельца 18.11), запись не прерывается. */
     private fun checkSdCard() {
         val missing = onFallback()
         if (missing == sdMissing) return
         sdMissing = missing
         if (missing) {
-            Log.w(TAG, "Запись: SD-карта не найдена — пишем в память планшета")
+            val broken = RecVolumes.brokenCard != null
+            Log.w(TAG, if (broken) "Запись: SD-карта не пишет — пишем в память планшета" else "Запись: SD-карта не найдена — пишем в память планшета")
             val voice = recorders.values.any { it.config.voiceProblems }
-            if (voice) main.post { PanelAlerts.external(Alert(AlertEvent.RECORDING_STOPPED, SD_MISSING_PHRASE)) }
+            if (voice) main.post { PanelAlerts.external(Alert(AlertEvent.RECORDING_STOPPED, if (broken) SD_BROKEN_PHRASE else SD_MISSING_PHRASE)) }
         } else {
             Log.i(TAG, "Запись: SD-карта снова доступна")
         }
@@ -275,7 +321,7 @@ class RecorderService : Service() {
 
     private fun segmentClosed(file: RecFile) {
         // Обход носителя мог уже найти этот файл (закрылся, пока шёл обход после запуска) — не считать дважды.
-        if (files.none { it.path == file.path }) files += file
+        if (filesRoot?.let { file.path.path.startsWith("$it/") } == true && files.none { it.path == file.path }) files += file
         RecCatalog.add(file)
         retention(forceScan = false)
     }
@@ -293,8 +339,9 @@ class RecorderService : Service() {
         checkSdCard()
         val root = storageRoot() ?: return
         val now = System.currentTimeMillis()
-        if (forceScan || now - lastScan > 6 * 3_600_000L) {
+        if (forceScan || root.path != filesRoot || kotlin.math.abs(now - lastScan) > 6 * 3_600_000L) {
             files.clear()
+            filesRoot = root.path
             val since = RecCatalog.mark()
             files += RecLayout.scan(root)
             RecCatalog.publish(root, files, since)
@@ -306,11 +353,19 @@ class RecorderService : Service() {
         val used = files.sumOf { it.bytes }
         val limit = RecRetention.limit(device.limitGb, free, used, onFallback())
         val rules = keepRules
+        val byAge = clockGuard.trusted(now, android.os.SystemClock.elapsedRealtime(), files.maxOfOrNull { it.endMs })
+        if (byAge == agePaused) {
+            agePaused = !byAge
+            Log.i(TAG, if (byAge) "Запись: очистка по сроку снова идёт" else "Запись: часы планшета могли сбиться — сутки по сроку ничего не удаляется")
+        }
         val plan = RecRetention.plan(files, { camera ->
             val c = rules[camera] ?: RecordingConfig()
-            RecRetention.Rules(c.keepContinuousDays * 86_400_000L, c.keepEventDays * 86_400_000L)
+            if (byAge) RecRetention.Rules(c.keepContinuousDays * 86_400_000L, c.keepEventDays * 86_400_000L)
+            else RecRetention.Rules(KEEP_ALL_MS, KEEP_ALL_MS)
         }, now, free, limit, device.reserveGb * RecRetention.GB)
-        val deleted = plan.delete.filter { f -> (f.path.delete() || !f.path.exists()).also { if (it) files.remove(f) } }
+        // Файла нет — удалён, только если сам носитель на месте: на вынутой карте он недоступен, и его метки ещё нужны.
+        val present = File(root, RecLayout.ROOT).isDirectory
+        val deleted = plan.delete.filter { f -> (f.path.delete() || present && !f.path.exists()).also { if (it) files.remove(f) } }
         RecCatalog.remove(deleted)
         try { index.remove(deleted) } catch (e: Exception) { Log.w(TAG, "Запись: индекс событий: ${e.javaClass.simpleName}") }
         if (plan.delete.isNotEmpty()) {
@@ -372,6 +427,14 @@ class RecorderService : Service() {
         private const val TAG = "Recording"
         private const val CHANNEL = "recording"
         private const val NOTIFICATION_ID = 4107
+        const val SD_BROKEN_PHRASE = "Карта памяти не записывает, запись идёт в память планшета"
+        /** Столько ошибок записи на SD-карту за [ERRORS_WINDOW_MS] — карта неисправна. */
+        private const val CARD_ERRORS = 3
+        private const val ERRORS_WINDOW_MS = 10 * 60_000L
+        /** «Не удалять по сроку» ([ClockGuard]): сто лет. */
+        private const val KEEP_ALL_MS = 100L * 365 * 86_400_000L
+        private val MEDIA_ACTIONS = listOf(Intent.ACTION_MEDIA_EJECT, Intent.ACTION_MEDIA_UNMOUNTED, Intent.ACTION_MEDIA_REMOVED,
+            Intent.ACTION_MEDIA_BAD_REMOVAL, Intent.ACTION_MEDIA_MOUNTED)
         const val SD_MISSING_PHRASE = "Карта памяти не найдена, запись идёт в память планшета"
         /** Суффикс ключа записи событий в HD (и её состояния в [RecordingStatus]). */
         const val HD = "#hd"

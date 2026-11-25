@@ -969,7 +969,8 @@ class DoorbellEditorActivity : PinProtectedActivity() {
                 CameraRecorder.State.STOPPED -> ""
             }
         }.orEmpty()
-        val sd = if (RecordingStatus.sdMissing(original.id)) "SD-карта не найдена — запись идёт в память планшета" else ""
+        val sd = if (RecordingStatus.sdMissing(original.id)) (if (RecVolumes.brokenCard != null) "SD-карта не записывает" else "SD-карта не найдена") +
+            " — запись идёт в память планшета" else ""
         recordingStatus.text = listOf(state, hd, sd, estimateText()).filter { it.isNotBlank() }.joinToString("\n")
         if (::localityLabel.isInitialized) {
             val where = when (cameraLocal) {

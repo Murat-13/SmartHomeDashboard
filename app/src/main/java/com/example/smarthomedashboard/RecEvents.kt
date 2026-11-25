@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
 import com.example.smarthomedashboard.data.TileEntity
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -253,7 +254,7 @@ internal class EventRecorder(
     /** Ролики одной RTSP-сессии. Отдельно — для тестов без сети. */
     inner class ClipSink : Sink {
         override var audioParams: AudioParams? = null
-        private val timeline = Timeline()
+        private val timeline = Timeline { wallClock() }
         override var videoClock: Int
             get() = timeline.videoClock
             set(v) { timeline.videoClock = v }
@@ -263,6 +264,9 @@ internal class EventRecorder(
         private var params: VideoParams? = null
         private var writer: Mp4SegmentWriter? = null
         private var file: File? = null
+        /** Носитель идущего ролика и когда можно пробовать снова после его ошибки. */
+        private var fileRoot: File? = null
+        private var retryAtNs = 0L
         private var clipStartUs = 0L
         private var clipStartWall = 0L
         private var lastUs = 0L
@@ -271,17 +275,35 @@ internal class EventRecorder(
 
         override fun video(frame: VideoFrame, d: VideoDepacketizer) {
             val us = timeline.videoUs(frame)
+            if (frame.key) timeline.sync(us)
             if (frame.key) d.sps?.let { sps -> d.pps?.let { pps -> params = VideoParams(d.codec, d.vps, sps, pps) } }
             buffer.addVideo(frame, us, if (frame.key) params else null)
             // Сессия идёт — «ждёт события»; «нет места» остаётся до следующего удачного ролика.
             if (status.state == State.CONNECTING || status.state == State.RETRYING) report(State.RECORDING, IDLE)
             val current = events()
-            when (planner.update(timeline.wallMs(us), current)) {
+            // Дозапись — по шкале потока, а не по часам: они могут поправиться посреди события.
+            when (planner.update(us / 1_000, current)) {
                 EventPlanner.Decision.IDLE -> Unit
-                EventPlanner.Decision.START -> { failed = false; openFromBuffer(us, current) }
-                EventPlanner.Decision.CONTINUE -> write(frame, us, current)
-                EventPlanner.Decision.STOP -> { write(frame, us, current); closeClip(current); report(State.RECORDING, IDLE) }
+                EventPlanner.Decision.START -> { failed = false; stored(current) { openFromBuffer(us, current) } }
+                EventPlanner.Decision.CONTINUE -> stored(current) { write(frame, us, current) }
+                EventPlanner.Decision.STOP -> { stored(current) { write(frame, us, current) }; closeClip(current); report(State.RECORDING, IDLE) }
             }
+        }
+
+        /** Носитель сменился (карту извлекают, она перестала писать) — ролик продолжается на другом. */
+        private fun moved() = fileRoot?.let { it.path != root()?.path } == true
+
+        private inline fun stored(current: Set<String>?, block: () -> Unit) {
+            try { block() } catch (e: Exception) { if (storageError(e)) storageFailed(e, current) else throw e }
+        }
+
+        private fun storageFailed(e: Exception, current: Set<String>?) {
+            Log.w(TAG, "Запись события: носитель не пишет (${e.javaClass.simpleName}: ${e.message})")
+            val broken = fileRoot
+            closeClip(current)
+            retryAtNs = System.nanoTime() + storageRetryNs
+            report(State.RETRYING, ContinuousRecorder.STORAGE_RETRYING)
+            broken?.let(onStorageError)
         }
 
         override fun audioArrival(ts: Long) = timeline.audioArrival(ts)
@@ -290,7 +312,7 @@ internal class EventRecorder(
             val us = timeline.audioUs(frame, rate) ?: return
             buffer.addAudio(frame, us)
             val w = writer ?: return
-            w.writeAudio(frame, us - clipStartUs)
+            stored(null) { w.writeAudio(frame, us - clipStartUs) }
         }
 
         /** Начало события: ролик с первого ключевого кадра буфера (предзапись), затем весь буфер по порядку. */
@@ -313,8 +335,8 @@ internal class EventRecorder(
                 if (!frame.key || failed || keyParams == null || !open(keyParams, us)) return
                 w = writer ?: return
             } else if (frame.key && keyParams != null &&
-                (us - clipStartUs >= config.maxClipMinutes * 60_000_000L || !keyParams.sameAs(w.video))) {
-                // Предел ролика или смена параметров потока (ночной режим): следующий файл того же события.
+                (us - clipStartUs >= config.maxClipMinutes * 60_000_000L || !keyParams.sameAs(w.video) || moved())) {
+                // Предел ролика, смена параметров потока (ночной режим) или носителя: следующий файл того же события.
                 closeClip(current)
                 if (!open(keyParams, us)) return
                 w = writer ?: return
@@ -325,6 +347,7 @@ internal class EventRecorder(
 
         private fun open(params: VideoParams, us: Long): Boolean {
             val started = System.nanoTime()
+            if (started < retryAtNs && root()?.path == fileRoot?.path) return false
             try { return openFile(params, us) } finally { RecBusy.open(System.nanoTime() - started) }
         }
 
@@ -333,7 +356,13 @@ internal class EventRecorder(
             if (base == null) { failed = true; report(State.NO_STORAGE, "Нет места для записи"); return false }
             if (!canWrite()) { failed = true; report(State.NO_SPACE, "Запись остановлена: нет места"); return false }
             val dir = RecLayout.dayDir(base, camera, timeline.wallMs(us))
-            if (!dir.isDirectory && !dir.mkdirs()) { failed = true; report(State.NO_STORAGE, "Папка записи недоступна"); return false }
+            fileRoot = base
+            if (!dir.isDirectory && !dir.mkdirs()) {
+                report(State.NO_STORAGE, "Папка записи недоступна")
+                retryAtNs = System.nanoTime() + storageRetryNs
+                onStorageError(base)
+                return false
+            }
             val start = RecLayout.freeStart(dir, RecFile.Kind.EVENT, timeline.wallMs(us))
             val f = File(dir, RecLayout.openName(RecFile.Kind.EVENT, start))
             writer = Mp4SegmentWriter(f, params, audioParams, queued = true)
