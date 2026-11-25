@@ -380,7 +380,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 if (jitterFloor) {
                     val user = source?.user.orEmpty()
                     if (floorFollows) {
-                        val seed = LiveCatchUp.floorFor(CameraHub.floorJitterMs(playingRtsp, user))
+                        val seed = LiveCatchUp.floorFor(CameraHub.floorJitterMs(arrivalUrl, user))
                         if (seed != seedFloor) {
                             val (nextSeed, nextFloor) = LiveCatchUp.followFloor(seedFloor, catchUpFloor, seed)
                             Log.i(TAG, "Запас по неровности прихода: $seedFloor → $nextSeed мс (${shownHeight}p)")
@@ -388,7 +388,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                             catchUpFloor = nextFloor
                         }
                     } else {
-                        val seed = LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(playingRtsp, user))
+                        val seed = LiveCatchUp.floorFor(CameraHub.arrivalJitterMs(arrivalUrl, user))
                         if (seed > seedFloor) { seedFloor = seed; if (catchUpFloor < seed) catchUpFloor = seed }
                     }
                 }
@@ -402,7 +402,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     screenDelay.add(videoLag)
                     if (sound != null) {
                         val soundLag = sound.totalBufferedDuration
-                        val ahead = CameraHub.audioAheadMs(playingRtsp, source?.user.orEmpty())
+                        // Звук идёт по RTSP, картинка по Reolink приходит раньше — звук опережает её на столько же меньше.
+                        val ahead = CameraHub.audioAheadMs(playingRtsp, source?.user.orEmpty())?.let { if (viaFast) it - ReolinkVideo.LEAD_MS else it }
                         late = SoundLate.sample(videoLag, soundLag, ahead ?: 0, (now - shown.atNs) / 1_000_000)
                         if (late != null) {
                             soundLead.add(videoLag, soundLag, ahead)
@@ -729,17 +730,66 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         ownUrl = ""
     }
 
+    // ---- Видео по протоколу Reolink (docs/doorbell.md) ----
+
+    /** Картинка этого показа идёт по протоколу Reolink; звук и всё остальное — по RTSP, как раньше. */
+    internal var viaFast = false
+        private set
+    private var fastWaitSince = 0L
+    /** Поток, по которому меряется приход кадров этого показа. */
+    private val arrivalUrl get() = if (viaFast) ReolinkVideo.urlFor(playingRtsp) ?: playingRtsp else playingRtsp
+
+    /**
+     * Ждать ли картинку по протоколу Reolink (недолго, [FAST_WAIT_MS]): камера Reolink, её поток RTSP уже идёт через планшет — от него звук
+     * и мгновенный запасной путь, — и этот путь недавно не подводил. false — показывать (по Reolink, если готов, иначе как раньше).
+     */
+    private fun awaitFast(src: Source, rtsp: String): Boolean {
+        val url = ReolinkVideo.urlFor(rtsp) ?: return false
+        if (skipRelay || LiveTuning.off(context, "no_bc") || ReolinkVideo.held(url) || CameraHub.relayUrl(rtsp, src.user) == null) { fastWaitSince = 0; return false }
+        if (ownHold != null && ownUrl != url) releaseOwn()
+        if (ownHold != null && CameraHub.ready(url, src.user)) { fastWaitSince = 0; return false }
+        val now = SystemClock.elapsedRealtime()
+        if (ownHold == null) {
+            if (!ownReading) {
+                ownReading = true
+                val generation = attempt
+                CameraPasswords.read(context, src.secretKey) { password ->
+                    ownReading = false
+                    if (generation != attempt || !visible || player != null || source != src) return@read
+                    ownHold = CameraHub.hold(CameraHub.Key(url, src.user, password))
+                    ownUrl = url
+                    fastWaitSince = SystemClock.elapsedRealtime()
+                    main.postDelayed(relayWait, FAST_POLL_MS)
+                }
+            }
+            return true
+        }
+        if (fastWaitSince == 0L) fastWaitSince = now
+        if (now - fastWaitSince >= FAST_WAIT_MS) {
+            fastWaitSince = 0
+            ReolinkVideo.refused(url)
+            releaseOwn()
+            return false
+        }
+        main.removeCallbacks(relayWait)
+        main.postDelayed(relayWait, FAST_POLL_MS)
+        return true
+    }
+
     private fun startRtsp(src: Source) {
         val wanted = rtspFor(src)
         if (wantsOwn(wanted) && startOwn(src, wanted)) return
         if (awaitRelay(src)) return
+        if (awaitFast(src, wanted)) return
         val generation = ++attempt
         CameraPasswords.read(context, src.secretKey) { password ->
             if (generation != attempt || !visible || player != null) return@read
             // Этап 4 (docs/recording.md): этот поток уже идёт ради записи — смотрим через планшет, соединение с камерой одно.
             val rtsp = rtspFor(src)
             playingRtsp = rtsp
-            val relay = if (skipRelay) null else CameraHub.relayUrl(rtsp, src.user)
+            val fast = if (skipRelay || ownHold == null || ownUrl != ReolinkVideo.urlFor(rtsp)) null else CameraHub.relayUrl(ownUrl, src.user)
+            viaFast = fast != null
+            val relay = fast ?: if (skipRelay) null else CameraHub.relayUrl(rtsp, src.user)
             viaRelay = relay != null
             splitSound = viaRelay && !LiveTuning.off(context, "player_audio")
             soundFollows = !LiveTuning.off(context, "sound_free")
@@ -803,6 +853,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     private fun startHls(src: Source) {
         val generation = ++attempt
+        viaFast = false
         playingRtsp = ""
         DoorbellHub.streamUrl(src.camera) { url ->
             if (generation != attempt || !visible || player != null) return@streamUrl
@@ -831,8 +882,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         floorFollows = !LiveTuning.off(context, "floor_grows")
         // Неровность ещё не измерена (запуск приложения, просмотр без записи) — запомненная профилем планшета.
         seedFloor = if (!jitterFloor) 0 else LiveCatchUp.floorFor(source?.user.orEmpty().let { user ->
-            (if (floorFollows) CameraHub.floorJitterMs(playingRtsp, user) else CameraHub.arrivalJitterMs(playingRtsp, user))
-                .takeIf { it > 0 } ?: TabletProfile.jitter(playingRtsp)
+            (if (floorFollows) CameraHub.floorJitterMs(arrivalUrl, user) else CameraHub.arrivalJitterMs(arrivalUrl, user))
+                .takeIf { it > 0 } ?: TabletProfile.jitter(arrivalUrl)
         })
         catchUpFloor = seedFloor
         burstUntil = 0
@@ -922,7 +973,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                 unreachable = false
                 skipRelay = false
                 relayWaitSince = 0
-                if (ownHold != null && viaRelay) ownPath += playingRtsp
+                if (viaFast) ReolinkVideo.worked(ownUrl) else if (ownHold != null && viaRelay) ownPath += playingRtsp
                 status = Status.PLAYING
                 updateQuality()
                 firstFrameAt = SystemClock.elapsedRealtime()
@@ -946,7 +997,7 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
                     stallNote = "${exo.videoSize.height}p, запас ${exo.totalBufferedDuration} мс (за секунду до неё $lastBuffered), скорость ${exo.playbackParameters.speed}, " +
                         "${stallAt - firstFrameAt} мс после первого кадра" + if (burstUntil != 0L) ", во время рывка" else ""
                     stallProbe.begin(exo.videoDecoderCounters, liveFactory?.video?.decoderNote(),
-                        if (viaRelay) CameraHub.sinceLastFrameMs(playingRtsp, source?.user.orEmpty()) else null, main)
+                        if (viaRelay) CameraHub.sinceLastFrameMs(arrivalUrl, source?.user.orEmpty()) else null, main)
                 }
                 if (player === exo && state == Player.STATE_READY && stallAt != 0L) {
                     val details = stallProbe.end(exo.videoDecoderCounters)
@@ -976,12 +1027,16 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     internal fun failed(reason: String) {
         failedAttempts++
-        Log.w(TAG, "Видео домофона: $reason" + if (viaRelay) " (через планшет)" else "")
+        Log.w(TAG, "Видео домофона: $reason" + if (viaFast) " (Reolink)" else if (viaRelay) " (через планшет)" else "")
+        if (viaFast) ReolinkVideo.urlFor(playingRtsp)?.let(ReolinkVideo::refused)
         // Ретранслятор подвёл (запись переподключается, выключена) — следующая попытка напрямую; не вышло напрямую —
         // снова через планшет. Первый сбой ретранслятора не считается недоступностью камеры.
-        skipRelay = viaRelay
+        // Подвёл путь Reolink — следующая попытка обычная, через планшет.
+        skipRelay = viaRelay && !viaFast
         if (viaRelay) {
+            if (viaFast) releaseOwn()
             viaRelay = false
+            viaFast = false
             releasePlayer()
             status = Status.ERROR
             retryPending = true
@@ -1407,6 +1462,9 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         internal val undecodable = mutableSetOf<String>()
         /** Камеры, которых встроенный плеер не понял, а свой клиент показал (до перезапуска приложения). */
         internal val ownPath = mutableSetOf<String>()
+        /** Сколько ждать картинку по протоколу Reolink, прежде чем показать как раньше. */
+        private const val FAST_WAIT_MS = 1_500L
+        private const val FAST_POLL_MS = 40L
         private const val OWN_AFTER = 2
         private const val OWN_WAIT_MS = 10_000L
         internal val hardwareRejected = mutableSetOf<String>()

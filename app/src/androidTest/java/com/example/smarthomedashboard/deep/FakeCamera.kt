@@ -13,11 +13,11 @@ import kotlin.concurrent.thread
  * кругу, без сети и камер владельца. Со странностями других марок (docs/cameras.md): [sha256] — вход только Digest SHA-256,
  * [wrongHost] — в описании чужой адрес, [asks] — камера сама спрашивает внутри потока и без ответа рвёт сессию.
  */
-internal class FakeCamera(private val sha256: Boolean = false, private val wrongHost: Boolean = false, private val asks: Boolean = false) : Closeable {
+internal class FakeCamera(private val sha256: Boolean = false, private val wrongHost: Boolean = false, private val asks: Boolean = false, path: String = "cam") : Closeable {
     private val server = ServerSocket(0)
     val connections = AtomicInteger()
-    val url = "rtsp://127.0.0.1:${server.localPort}/cam"
-    private val units: List<List<ByteArray>>
+    val url = "rtsp://127.0.0.1:${server.localPort}/$path"
+    internal val units: List<List<ByteArray>>
     private val sdp: String
 
     init {

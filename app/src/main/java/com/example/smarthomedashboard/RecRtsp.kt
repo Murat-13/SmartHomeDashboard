@@ -1,7 +1,6 @@
 package com.example.smarthomedashboard
 
 import java.io.BufferedInputStream
-import java.io.Closeable
 import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
@@ -145,7 +144,7 @@ internal class RtspSession(
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     /** Заголовок `Require` во всех запросах (ONVIF-обратный канал: `www.onvif.org/ver20/backchannel`). */
     private val require: String? = null
-) : Closeable {
+) : FeedSession {
     /** Дорожка, для которой выполнен SETUP: RTP идёт в канал [rtpChannel], RTCP — в [rtpChannel] + 1. */
     data class Setup(val track: SdpTrack, val rtpChannel: Int)
 
@@ -169,11 +168,11 @@ internal class RtspSession(
     var setups: List<Setup> = emptyList()
         private set
     /** Описание потока камеры (ответ DESCRIBE) — для локального ретранслятора живого видео ([RtspRelay]). */
-    var sdp: String = ""
+    override var sdp: String = ""
         private set
 
     /** Подключиться и начать воспроизведение дорожек, выбранных [wanted]. Возвращает выполненные SETUP. */
-    fun open(wanted: (SdpTrack) -> Boolean): List<Setup> {
+    override fun open(wanted: (SdpTrack) -> Boolean): List<Setup> {
         connect()
         options()
         val describe = describe()
@@ -276,7 +275,7 @@ internal class RtspSession(
     }
 
     /** Читать поток до ошибки, конца или [close]. */
-    fun read(sink: Sink) {
+    override fun read(sink: Sink) {
         val byChannel = HashMap<Int, Pair<Setup, Boolean>>()
         for (s in setups) { byChannel[s.rtpChannel] = s to true; byChannel[s.rtpChannel + 1] = s to false }
         var buffer = ByteArray(64 * 1024)

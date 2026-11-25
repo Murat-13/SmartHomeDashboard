@@ -104,6 +104,42 @@ class CameraBrandsDeepTest {
         assertEquals(DoorbellVideoView.Status.PLAYING, status())
     }
 
+    /**
+     * Reolink (docs/doorbell.md, «Видео по протоколу Reolink»): поток RTSP уже идёт через планшет (как при записи) — картинка приходит по
+     * протоколу Reolink; он пропал — показ продолжается через планшет сам; его нет вовсе — показ начинается как раньше.
+     */
+    @Test fun reolinkProtocolWithInstantFallback() {
+        val cam = FakeCamera(path = "h264Preview_01_main").also { camera = it }
+        val reolink = FakeReolink(cam.units)
+        val hold = CameraHub.hold(CameraHub.Key(cam.url, FakeCamera.USER, FakeCamera.PASSWORD))
+        try {
+            waitFor(10_000, "поток RTSP через планшет") { CameraHub.relayUrl(cam.url, FakeCamera.USER) != null }
+            open(DoorbellConfig(rtspMain = cam.url, rtspSub = cam.url, rtspUser = FakeCamera.USER, talk = false))
+            playing("по протоколу Reolink")
+            assertTrue("картинка — по протоколу Reolink", onMainFast())
+            assertEquals(listOf("main"), reolink.streams.toList())
+            // Камера перестала отвечать на порту 9000: показ продолжается через планшет, без «Нет сигнала».
+            reolink.close()
+            waitFor(20_000, "показ через планшет") { status() == DoorbellVideoView.Status.PLAYING && !onMainFast() }
+            playing("после пропажи протокола")
+            assertEquals("к камере по RTSP — одно подключение", 1, cam.connections.get())
+            log("Reolink: пропал протокол — показ через планшет, подключений по RTSP ${cam.connections.get()}")
+        } finally { hold.release(); reolink.close() }
+    }
+
+    @Test fun reolinkWithoutItsPortStartsAsBefore() {
+        val cam = FakeCamera(path = "h264Preview_01_main").also { camera = it }
+        val hold = CameraHub.hold(CameraHub.Key(cam.url, FakeCamera.USER, FakeCamera.PASSWORD))
+        try {
+            waitFor(10_000, "поток RTSP через планшет") { CameraHub.relayUrl(cam.url, FakeCamera.USER) != null }
+            open(DoorbellConfig(rtspMain = cam.url, rtspSub = cam.url, rtspUser = FakeCamera.USER, talk = false))
+            playing("без порта 9000")
+            assertTrue("обычным путём", !onMainFast())
+        } finally { hold.release() }
+    }
+
+    private fun onMainFast() = card()?.let { c -> onMain { c.video.viaFast } } == true
+
     private fun md5(text: String) = MessageDigest.getInstance("MD5").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
 
     /** Камера без потока: снимок по HTTP с Digest, раз в несколько секунд. */

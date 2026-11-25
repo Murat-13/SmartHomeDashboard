@@ -34,7 +34,7 @@ internal object CameraHub {
     /** Подключить запись к общему потоку камеры (поток создаётся при первой). Поток управления записью. */
     @Synchronized
     fun attach(key: Key, recorder: CameraRecorder,
-               sessionFactory: (String, String, String?) -> RtspSession, encoderFactory: () -> AacEncoder): SharedStream {
+               sessionFactory: (String, String, String?) -> FeedSession, encoderFactory: () -> AacEncoder): SharedStream {
         val stream = streams.getOrPut(key) { SharedStream(key, sessionFactory, encoderFactory) }
         stream.add(recorder)
         return stream
@@ -63,7 +63,7 @@ internal object CameraHub {
     }
 
     @Synchronized
-    fun hold(key: Key, sessionFactory: (String, String, String?) -> RtspSession = { u, l, p -> RtspSession(u, l, p) },
+    fun hold(key: Key, sessionFactory: (String, String, String?) -> FeedSession = ReolinkVideo::feed,
              encoderFactory: () -> AacEncoder = { AacEncoder() }): Hold {
         val stream = streams.getOrPut(key) { SharedStream(key, sessionFactory, encoderFactory) }
         stream.hold()
@@ -78,6 +78,9 @@ internal object CameraHub {
         }
         if (last) stream.stop(STOP_MS)
     }
+
+    /** Поток [url] идёт и ключевой кадр в нём уже был — показ начнётся сразу. */
+    fun ready(url: String, user: String) = streams.values.any { it.key.url == url && it.key.user == user && it.live && !it.awaitingKeyFrame }
 
     /** Поток [url] уже открыт или открывается (записью или живым видео). */
     fun has(url: String, user: String) = streams.values.any { it.key.url == url.trim() && it.key.user == user }
@@ -147,7 +150,7 @@ internal object CameraHub {
  */
 internal class SharedStream(
     val key: CameraHub.Key,
-    private val sessionFactory: (String, String, String?) -> RtspSession,
+    private val sessionFactory: (String, String, String?) -> FeedSession,
     private val encoderFactory: () -> AacEncoder
 ) {
     /** На сколько самый поздний кадр за последнюю минуту пришёл позже обычного (0 — ещё не измерено). */
@@ -182,7 +185,7 @@ internal class SharedStream(
 
     private val consumers = CopyOnWriteArrayList<Attached>()
     @Volatile private var running = false
-    @Volatile private var session: RtspSession? = null
+    @Volatile private var session: FeedSession? = null
     private var thread: Thread? = null
     /** Описание потока для ретранслятора; null — поток сейчас не идёт. */
     @Volatile var relaySdp: String? = null
