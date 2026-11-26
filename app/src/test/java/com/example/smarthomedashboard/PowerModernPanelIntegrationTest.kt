@@ -285,6 +285,26 @@ class PowerModernPanelIntegrationTest {
         assertEquals(GraphPeriod.HOUR, PowerGraphPanel.savedPeriod(prefs, "grid"))
     }
 
+    /** Касание в области графика, которое там никто не взял (пустое место), не доходит до плитки под раскрытой карточкой. */
+    @Test fun touchNobodyTookInsideExpandedCardDoesNotReachTilesBelow() {
+        open(gridV = "228", invV = "230")
+        advance(2_500)
+        tap(panel.findViewWithTag<FrameLayout>("inverter"))
+        advance(400)
+        assertTrue(controller.modernExpansion.isOpen)
+        val content = activity.findViewById<FrameLayout>(android.R.id.content)
+        val scrim = content.findViewWithTag<View>("bm_scrim")
+        val below = panel.findViewWithTag<FrameLayout>("grid")
+        var reached = false
+        below.setOnTouchListener { _, _ -> reached = true; true }
+        // Точка плитки «Сеть»: карточка там касание не берёт — дальше его останавливает слой под карточкой.
+        val down = SystemClock.uptimeMillis()
+        val e = MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, 5f, 5f, 0)
+        val taken = try { scrim.dispatchTouchEvent(e) } finally { e.recycle() }
+        assertTrue("слой под раскрытой карточкой забирает касание", taken)
+        assertFalse(reached)
+    }
+
     private fun touch(view: View, action: Int, x: Float, y: Float, down: Long) {
         val e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
         try { view.dispatchTouchEvent(e) } finally { e.recycle() }

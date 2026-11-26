@@ -161,6 +161,10 @@ internal class BatteryModernExpansion(
             setBackgroundColor(Color.BLACK)
             alpha = 0f
             isClickable = false
+            // Касание, которое карточка отдала своей области с жестами (график, варианты) и там никто не взял, дальше не идёт:
+            // иначе оно нажимало плитку под раскрытой карточкой.
+            @Suppress("ClickableViewAccessibility")
+            setOnTouchListener { _, _ -> true }
         }
         scrim = dim
         // Снимок — до первого кадра раскрытия: в нём ещё нет карточки и затемнения.
