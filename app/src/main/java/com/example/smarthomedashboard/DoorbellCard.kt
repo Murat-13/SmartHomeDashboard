@@ -673,6 +673,7 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
             snapshot.haStatus != null && haKnows -> NEUTRAL to snapshot.haStatus
             !config.hasVideo && (camera || config.visitor.isBlank()) -> NEUTRAL to "Не настроен — откройте редактор"
             noSignal -> OFFLINE to "Нет сигнала"
+            video.passwordRefused -> OFFLINE to "Камера не принимает пароль"
             snapshot.ringing -> RING to "Звонят в калитку"
             snapshot.person -> PERSON to "Человек у калитки"
             snapshot.detections.isNotEmpty() -> NEUTRAL to snapshot.detections.joinToString(" · ") { it.title }
@@ -738,9 +739,11 @@ internal class DoorbellCard(context: Context, val expanded: Boolean, val camera:
         val show = offlineVeil.visibility != VISIBLE && !video.hasGuest && (s == DoorbellVideoView.Status.CONNECTING ||
             s == DoorbellVideoView.Status.ERROR || s == DoorbellVideoView.Status.NO_SOURCE)
         connecting.visibility = if (show) VISIBLE else GONE
-        if (show) set(connecting, when (s) {
-            DoorbellVideoView.Status.NO_SOURCE -> "Видео не настроено"
-            DoorbellVideoView.Status.ERROR -> video.lastFrameAt?.let { "Нет видео с ${clock(it)} · переподключение…" }
+        if (show) set(connecting, when {
+            s == DoorbellVideoView.Status.NO_SOURCE -> "Видео не настроено"
+            // Камера на связи, но вход не принимает: «переподключение…» здесь обманывало бы — нужен человек.
+            video.passwordRefused -> "Камера не принимает логин или пароль · проверьте в редакторе"
+            s == DoorbellVideoView.Status.ERROR -> video.lastFrameAt?.let { "Нет видео с ${clock(it)} · переподключение…" }
                 ?: "Нет видео · переподключение…"
             else -> "Подключение к домофону…"
         })

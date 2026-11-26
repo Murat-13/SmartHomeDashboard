@@ -326,4 +326,39 @@ class RecordingHubTest {
         assertEquals(1, connections.get())
         assertTrue(before > 0)
     }
+
+    /**
+     * Камера не принимает пароль (случай 25.11.2026: 13 минут отказов после смены адреса): поток сообщает об этом живому видео, после
+     * второго отказа пробует редко, а сохранение камеры в редакторе ([CameraHub.retryRefused]) запускает попытку сразу.
+     */
+    @Test fun refusedPasswordIsReportedAndEditorSaveRetriesAtOnce() {
+        val refuse = java.util.concurrent.atomic.AtomicBoolean(true)
+        val attempts = AtomicInteger()
+        val factory = { u: String, user: String, password: String? ->
+            attempts.incrementAndGet()
+            if (refuse.get()) object : FeedSession {
+                override val sdp = ""
+                override fun open(wanted: (SdpTrack) -> Boolean): List<RtspSession.Setup> = throw RtspException("Неверный логин или пароль камеры", 401)
+                override fun read(sink: RtspSession.Sink) = Unit
+                override fun close() = Unit
+            } else ReolinkVideo.feed(u, user, password)
+        }
+        assertFalse(CameraHub.refusing(url, ""))
+        val hold = CameraHub.hold(CameraHub.Key(url, "", null), factory)
+        try {
+            waitFor(5_000, "два отказа подряд") { attempts.get() >= 2 }
+            assertTrue("живое видео знает причину", CameraHub.refusing(url, ""))
+            Thread.sleep(700)
+            assertEquals("дальше — редкие попытки", 2, attempts.get())
+            // Пароль исправили на самой камере, в панели он прежний: ключ потока тот же, будит его сохранение в редакторе.
+            refuse.set(false)
+            CameraHub.retryRefused()
+            waitFor(5_000, "поток пошёл сразу после сохранения") { CameraHub.relayUrl(url, "") != null }
+            assertFalse(CameraHub.refusing(url, ""))
+            assertEquals(3, attempts.get())
+        } finally {
+            hold.release()
+            waitFor(3_000, "поток закрыт") { !CameraHub.has(url, "") }
+        }
+    }
 }

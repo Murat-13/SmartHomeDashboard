@@ -1306,11 +1306,13 @@ class DoorbellEditorActivity : PinProtectedActivity() {
             DirectEvents.setPort(this, directPort)
             DirectEvents.setEnabled(this, original.id, saved, directHere, secretKey)
         }
-        if (secret == null) { RecorderService.sync(this); applyDirect(); finishSaved(); return true }
+        // Камеру могли починить на её стороне (пароль, адрес): поток, который ждёт редкой попытки после отказа пароля, пробует сейчас.
+        if (secret == null) { RecorderService.sync(this); CameraHub.retryRefused(); applyDirect(); finishSaved(); return true }
         CameraPasswords.save(this, secretKey, secret) { ok ->
             if (!ok) Toast.makeText(this, "Настройки сохранены, но пароль камеры записать не удалось", Toast.LENGTH_LONG).show()
             // Новый пароль — запись переподключится с ним.
             RecorderService.sync(this)
+            CameraHub.retryRefused()
             applyDirect()
             finishSaved()
         }

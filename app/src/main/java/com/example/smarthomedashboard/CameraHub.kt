@@ -84,6 +84,18 @@ internal object CameraHub {
         if (last) stream.stop(STOP_MS)
     }
 
+    /**
+     * Камера ответила потоку [url], что логин или пароль не подходят, и с тех пор он не подключился. Живое видео в это время к
+     * камере само не стучится (часть камер за серию неверных входов закрывает вход на несколько минут) и пишет причину на плитке.
+     */
+    fun refusing(url: String, user: String) = streams.values.any { it.key.url == url.trim() && it.key.user == user && it.refused && !it.live }
+
+    /**
+     * Человек сохранил камеру в редакторе: потоки, которые ждут своей редкой попытки после отказа пароля, пробуют сейчас —
+     * пароль могли исправить на самой камере, а не в панели (ключ потока тогда прежний).
+     */
+    fun retryRefused() { streams.values.forEach { it.retryRefused() } }
+
     /** Поток [url] идёт и ключевой кадр в нём уже был — показ начнётся сразу. */
     fun ready(url: String, user: String) = streams.values.any { it.key.url == url && it.key.user == user && it.live && !it.awaitingKeyFrame }
 
@@ -279,6 +291,19 @@ internal class SharedStream(
 
     private fun broadcast(state: CameraRecorder.State, detail: String = "") = consumers.forEach { it.recorder.streamStatus(state, detail) }
 
+    /** Последняя попытка кончилась отказом пароля (401), новой удачной ещё не было. */
+    @Volatile internal var refused = false
+        private set
+    /** Поток спит до редкой попытки после отказа пароля ([REFUSED_RETRY_MS]). */
+    @Volatile private var waitingRefused = false
+    @Volatile private var retryAsked = false
+
+    internal fun retryRefused() {
+        if (!waitingRefused) return
+        retryAsked = true
+        thread?.interrupt()
+    }
+
     private fun loop() {
         var backoffMs = 2_000L
         var failure: Exception? = null
@@ -453,8 +478,13 @@ internal class SharedStream(
             // Один отказ бывает и временным (камера перезагружается, занята) — редкие попытки только со второго подряд.
             refusals = if (failure.let { it is RtspException && it.status == 401 }) refusals + 1 else 0
             if (refusals >= 2) backoffMs = REFUSED_RETRY_MS
+            refused = refusals > 0
             failure = null
+            waitingRefused = refusals >= 2
             try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { if (!running) break }
+            waitingRefused = false
+            // Разбудили из редактора — следующая пауза снова короткая; откажет опять — вернётся редкая.
+            if (retryAsked) { retryAsked = false; Thread.interrupted(); backoffMs = 1_000L }
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
         relaySdp = null

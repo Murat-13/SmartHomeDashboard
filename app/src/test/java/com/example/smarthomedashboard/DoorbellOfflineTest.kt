@@ -66,6 +66,48 @@ class DoorbellOfflineTest {
         card.dispose()
     }
 
+    /**
+     * Камера на связи, но пароль не принимает (25.11.2026): общий поток записи получил отказ — плитка пишет причину, а видео к камере
+     * само не подключается; поток подключился — видео идёт дальше как обычно.
+     */
+    @Test fun refusedPasswordIsShownAndVideoDoesNotKnockItself() {
+        val url = "rtsp://10.255.255.1/h264Preview_01_sub"
+        val refuse = java.util.concurrent.atomic.AtomicBoolean(true)
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val factory = { _: String, _: String, _: String? ->
+            attempts.incrementAndGet()
+            object : FeedSession {
+                override val sdp = ""
+                override fun open(wanted: (SdpTrack) -> Boolean): List<RtspSession.Setup> =
+                    throw if (refuse.get()) RtspException("Неверный логин или пароль камеры", 401) else java.io.IOException("нет связи")
+                override fun read(sink: RtspSession.Sink) = Unit
+                override fun close() = Unit
+            }
+        }
+        val hold = CameraHub.hold(CameraHub.Key(url, "", null), factory)
+        // В тестовой среде живое видео выключено по отпечатку сборки — на время теста включаем: до плеера дело не дойдёт.
+        val fingerprint = android.os.Build.FINGERPRINT
+        org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build::class.java, "FINGERPRINT", "test")
+        try {
+            val until = System.currentTimeMillis() + 5_000
+            while (!CameraHub.refusing(url, "") && System.currentTimeMillis() < until) Thread.sleep(20)
+            assertTrue(CameraHub.refusing(url, ""))
+            val card = card(DoorbellConfig(rtspSub = url), emptyMap())
+            advance(6_000)
+            assertTrue(card.video.passwordRefused)
+            assertFalse("видео само к камере не стучится", card.video.hasPlayer)
+            assertEquals("Камера не принимает пароль", card.findViewWithTag<TextView>("door_status").text.toString())
+            assertEquals("Камера не принимает логин или пароль · проверьте в редакторе",
+                card.findViewWithTag<TextView>("door_connecting").text.toString())
+            card.dispose()
+        } finally {
+            org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build::class.java, "FINGERPRINT", fingerprint)
+            hold.release()
+            val until = System.currentTimeMillis() + 3_000
+            while (CameraHub.has(url, "") && System.currentTimeMillis() < until) Thread.sleep(20)
+        }
+    }
+
     /** Плитка только с адресом RTSP: HA о домофоне не знает — «Нет сигнала» по самому видео, после нескольких неудач. */
     @Test fun rtspOnlyTileShowsNoSignalAfterRepeatedFailures() {
         val config = DoorbellConfig(rtspSub = "rtsp://10.255.255.1/sub")

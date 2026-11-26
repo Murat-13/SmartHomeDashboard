@@ -249,6 +249,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private set(value) { if (field != value) { field = value; onStatus?.invoke(status) } }
     private var consecutiveFailures = 0
 
+    /**
+     * Камера отвечает, но логин или пароль не принимает — так она ответила общему потоку записи ([CameraHub.refusing]). Видео в это
+     * время к ней само не подключается: лишние неверные входы часть камер наказывает закрытым на минуты входом. На плитке — причина.
+     */
+    var passwordRefused = false
+        private set(value) { if (field != value) { field = value; onStatus?.invoke(status) } }
+
     /** Когда был показан последний живой кадр (для «Нет видео с 14:05»). */
     var lastFrameAt: Long? = null
         private set
@@ -779,6 +786,13 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
 
     private fun startRtsp(src: Source) {
         val wanted = rtspFor(src)
+        if (CameraHub.refusing(wanted, src.user)) {
+            passwordRefused = true
+            main.removeCallbacks(relayWait)
+            main.postDelayed(relayWait, REFUSED_POLL_MS)
+            return
+        }
+        passwordRefused = false
         if (wantsOwn(wanted) && startOwn(src, wanted)) return
         if (awaitRelay(src)) return
         if (awaitFast(src, wanted)) return
@@ -1449,6 +1463,8 @@ internal class DoorbellVideoView(context: Context) : FrameLayout(context), Panel
         private const val MINUTE_TICKS = 60
         /** Сколько живое видео ждёт общий поток записи (ключевой кадр субпотока — раз в 4 с) и как часто смотрит. */
         private const val RELAY_WAIT_MS = 5_000L
+        /** Как часто видео смотрит, принял ли общий поток пароль камеры. */
+        private const val REFUSED_POLL_MS = 2_000L
         private const val RELAY_POLL_MS = 150L
         /** Столько неудач подряд — адрес считается недоступным (≈ 15 с при паузах 2, 4, 8 с). */
         internal const val UNREACHABLE_AFTER = 3
